@@ -15,12 +15,13 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DEAD_AFTER_ATTEMPTS, formatWait, heldTurnFor, stopRow } from "./engine.ts";
+import { snapshotLoopLabel } from "./job-lines.ts";
 import { type LeaseStore, type ProcessProbe, holderAlive, sessionFileName } from "./lease.ts";
-import { conversationLabel } from "./session-head.ts";
-import { redact } from "./redact.ts";
+import { conversationLabel, shortSessionId } from "./session-head.ts";
+import { previewRedacted, redact } from "./redact.ts";
 import type { RequestStore, SessionRequest } from "./requests.ts";
-import { stamp } from "./schedule.ts";
-import type { RunRequester } from "./store.ts";
+import { formatLocal, stamp } from "./schedule.ts";
+import type { RunRecord, RunRequester } from "./store.ts";
 
 /** A new name on purpose: a 0.22 pi-loops talks to `host.sock`, and only to its own kind of host. */
 export const HOST_SOCKET = "host-service.sock";
@@ -91,6 +92,29 @@ function ownedSocket(socketPath: string): boolean {
 	}
 }
 
+/** One of the last few runs. `stopped`: a person, a quit or a restart stopped it; `byPerson`: a person did. */
+export interface RecentRun {
+	job: string;
+	at: string;
+	ok: boolean;
+	stopped?: true;
+	byPerson?: true;
+	error?: string;
+	cost?: number;
+}
+
+/** A run record as the snapshot's recent runs carry it: a stopped run is neither ok nor a failure. */
+export function recentRun(r: RunRecord): RecentRun {
+	const stopped = r.stoppedBy === "person" || r.aborted === true;
+	return {
+		job: r.jobName ?? r.jobId,
+		at: r.finishedAt,
+		ok: r.ok,
+		...(stopped ? { stopped: true as const, ...(r.stoppedBy === "person" ? { byPerson: true as const } : {}) } : { error: r.error ? previewRedacted(r.error, 100) : undefined }),
+		cost: r.usage?.cost,
+	};
+}
+
 export interface HostSnapshot {
 	pid: number;
 	host: string;
@@ -114,7 +138,7 @@ export interface HostSnapshot {
 	inboxNew: number;
 	mcp: Array<{ name: string; state: string; lastError?: string }>;
 	/** The last few runs, newest first: a host that has been failing for hours must not look idle. */
-	recent?: Array<{ job: string; at: string; ok: boolean; stopped?: boolean; error?: string; cost?: number }>;
+	recent?: RecentRun[];
 	/** Jobs currently carrying an error, and when anything is next due. */
 	failing?: Array<{ job: string; error: string }>;
 	nextDue?: string;
@@ -182,7 +206,7 @@ export function requestLines(queues: readonly RequestQueue[], now: number, opts:
 	const undelivered = (n: number) => `${n} could not be delivered`;
 	const where = (q: RequestQueue) => (q.holder.kind === "terminal" ? `open in pid ${line(q.holder.pid)}` : q.holder.kind === "host" ? "in the background" : "closed");
 	const head = `  ${total} message${total === 1 ? "" : "s"} waiting for ${queues.length} conversation${queues.length === 1 ? "" : "s"}${dead ? `, ${undelivered(dead)}` : ""}`;
-	return [head, ...queues.map((q) => `    ${line(q.sessionId).slice(0, 8)}: ${line(q.count)} waiting · oldest ${formatWait(now - Date.parse(q.oldest))}${q.dead ? ` · ${undelivered(q.dead)}` : ""}${opts.where === false ? "" : ` · ${where(q)}`}`)];
+	return [head, ...queues.map((q) => `    ${shortSessionId(line(q.sessionId))}: ${line(q.count)} waiting · oldest ${formatWait(now - Date.parse(q.oldest))}${q.dead ? ` · ${undelivered(q.dead)}` : ""}${opts.where === false ? "" : ` · ${where(q)}`}`)];
 }
 
 /** A warning from the background process: a job disabled or parked, a state write that failed, the budget reached. */
@@ -594,6 +618,11 @@ export function ringHost(dir: string, note: string): Promise<void> {
 function line(text: unknown): string {
 	return String(text ?? "").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
 }
+/** A stamp in the one local format every terminal line uses; the text itself when it is not a time. */
+function localTime(text: unknown): string {
+	const ms = Date.parse(String(text ?? ""));
+	return Number.isNaN(ms) ? line(text) : formatLocal(ms);
+}
 function money(n: unknown, digits: number): string {
 	return Number.isFinite(Number(n)) ? Number(n).toFixed(digits) : "?";
 }
@@ -605,7 +634,7 @@ export function openConversations(n: number): string {
 /** The lines `/cron host` shows for a live host. `now` is for the ages of the queued requests. */
 export function renderHostSnapshot(s: HostSnapshot, now = Date.now()): string[] {
 	const lines = [
-		`  pid ${line(s.pid)} on ${line(s.host)}, started ${line(s.startedAt)}${s.model ? `, model ${line(s.model)}` : ""}`,
+		`  pid ${line(s.pid)} on ${line(s.host)}, started ${localTime(s.startedAt)}${s.model ? `, model ${line(s.model)}` : ""}`,
 		`  ${s.version ? `pi-loops ${line(s.version)} · ` : ""}${line(s.jobs?.enabled)}/${line(s.jobs?.total)} loops, ${line(s.rules?.enabled)}/${line(s.rules?.total)} rules enabled · inbox: ${line(s.inboxNew)} new`,
 		...(s.startedBy ? [`  started by ${line(s.startedBy)}`] : []),
 	];
@@ -614,16 +643,16 @@ export function renderHostSnapshot(s: HostSnapshot, now = Date.now()): string[] 
 		if (h.page) lines.push(`  conversation ${which} open in the page (pid ${line(h.pid)}, ${line(h.page.tabs)} ${Number(h.page.tabs) === 1 ? "tab" : "tabs"}, idle ${formatWait(Number(h.page.idleMs))})`);
 		else lines.push(`  conversation ${which} open in pid ${line(h.pid)}${h.mode ? ` (${line(h.mode)})` : ""}`);
 	}
-	for (const r of s.runs ?? []) lines.push(`  running ${line(r.label)} (${line(r.runId).slice(0, 12)}) since ${line(r.startedAt)}: ${line(r.promptPreview)}`);
+	for (const r of s.runs ?? []) lines.push(`  running ${line(r.label)} (${line(r.runId).slice(0, 12)}) since ${localTime(r.startedAt)}: ${line(r.promptPreview)}`);
 	for (const c of s.checks ?? []) lines.push(`  checking ${line(c.sourceLabel)}/${line(c.eventLabel)} (${line(c.traceId).slice(0, 8)}) in ${line(c.cwd)}`);
 	for (const m of s.mcp ?? []) lines.push(`  mcp ${line(m.name)}: ${line(m.state)}${m.lastError ? ` — ${line(m.lastError)}` : ""}`);
-	if (!s.runs?.length && !s.checks?.length) lines.push(`  nothing running right now${s.nextDue ? ` · next due ${line(s.nextDue)}` : ""}`);
+	if (!s.runs?.length && !s.checks?.length) lines.push(`  nothing running right now${s.nextDue ? ` · next due ${localTime(s.nextDue)}` : ""}`);
 	if (s.budget && Number(s.budget.cap) > 0) lines.push(`  spent today: $${money(s.budget.spent, 2)} of $${money(s.budget.cap, 2)}${Number(s.budget.spent) >= Number(s.budget.cap) ? " — dispatching is paused" : ""}`);
-	for (const f of s.failing ?? []) lines.push(`  ! ${line(f.job)}: ${line(f.error)}`);
+	for (const f of s.failing ?? []) lines.push(`  ! ${line(snapshotLoopLabel(String(f.job ?? "")))}: ${line(f.error)}`);
 	if (s.page) lines.push(`  page: ${line(s.page)}${s.pageOpen === undefined ? "" : ` · ${openConversations(Number(s.pageOpen) || 0)}`}`);
 	else if (s.pageWaiting) lines.push(`  page: ${line(s.pageWaiting)}`);
-	// A run a person stopped is neither ok nor a failure.
-	for (const r of s.recent ?? []) lines.push(`  ${r.ok ? "ok  " : r.stopped ? "stop" : "FAIL"} ${line(r.at)}  ${line(r.job)}${r.cost ? ` · $${money(r.cost, 3)}` : ""}${r.stopped && !r.ok ? " — stopped by you" : r.error ? ` — ${line(r.error)}` : ""}`);
+	// A stopped run is neither ok nor a failure.
+	for (const r of s.recent ?? []) lines.push(`  ${r.ok ? "ok  " : r.stopped ? "stop" : "FAIL"} ${localTime(r.at)}  ${line(snapshotLoopLabel(String(r.job ?? "")))}${r.cost ? ` · $${money(r.cost, 3)}` : ""}${r.byPerson ? " — stopped by you" : r.error ? ` — ${line(r.error)}` : ""}`);
 	lines.push(...requestLines(s.requests ?? [], now));
 	return lines;
 }

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { automationBadge, previewText, readSessionHead, sessionTitle } from "../src/session-head.ts";
+import { automationBadge, conversationLabel, previewText, readSessionHead, sessionTitle, shortSessionId } from "../src/session-head.ts";
 
 test("the head of a session file: id, when, name, the first thing said, how many messages", () => {
 	const dir = tmp("pi-loops-head-");
@@ -78,4 +78,15 @@ test("the automation badge counts what the session has", () => {
 	assert.equal(automationBadge("s1", [job({ sessionId: "s1" }), job({ sessionId: "s1" }), job({ sessionId: "s2" })], [rule({ createdBy: { sessionId: "s1" } })]), "2 cron, 1 trigger");
 	assert.equal(automationBadge("s1", [job({ sessionId: "s1", enabled: false })], []), "automation off");
 	assert.equal(automationBadge("s1", [job({ createdBy: { sessionId: "s1" }, stateful: true })], []), "1 cron", "a loop this session created counts too");
+});
+
+test("a conversation's short form is its id's first 13 characters, a prefix --session accepts", () => {
+	// Two uuidv7s started a second apart share their first 8 characters; 12 hex digits hold the whole millisecond stamp.
+	const a = "01a1c183-7467-7abc-8def-0123456789ab";
+	const b = "01a1c183-74a2-7abc-8def-0123456789ab";
+	assert.equal(shortSessionId(a), "01a1c183-7467");
+	assert.notEqual(shortSessionId(a), shortSessionId(b));
+	assert.ok(a.startsWith(shortSessionId(a)));
+	assert.equal(conversationLabel(a), "01a1c183-7467");
+	assert.equal(conversationLabel(a, "fix the flaky test"), '01a1c183-7467 "fix the flaky test"');
 });

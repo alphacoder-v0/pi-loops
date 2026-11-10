@@ -91,9 +91,18 @@ export function sessionTitle(file: string): string | undefined {
 	return title ? previewText(title, 40) : undefined;
 }
 
-/** A conversation in a listing: its id's first 8 characters, and its title when one is known. */
+/**
+ * A conversation's short form on every surface: its id's first 13 characters (`01a1c183-7467`).
+ * The 12 hex digits hold a uuidv7's whole millisecond stamp, so two collide only when they start in
+ * the same millisecond; the first 8 collided about every 65 s. A prefix, so `--session` takes it.
+ */
+export function shortSessionId(sessionId: string): string {
+	return sessionId.slice(0, 13);
+}
+
+/** A conversation in a listing: its short form, and its title when one is known. */
 export function conversationLabel(sessionId: string, title?: string): string {
-	return title ? `${sessionId.slice(0, 8)} "${title}"` : sessionId.slice(0, 8);
+	return title ? `${shortSessionId(sessionId)} "${title}"` : shortSessionId(sessionId);
 }
 
 /**

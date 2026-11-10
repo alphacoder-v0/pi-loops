@@ -1,13 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
+import { formatLocal } from "../src/schedule.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as net from "node:net";
 import { execFile } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { ALREADY_LEAVING, API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, HOST_SOCKET, type HostRequest, type HostSnapshot, askHost, hostSocketPath, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, stopRun, type Notice } from "../src/host-control-channel.ts";
+import { ALREADY_LEAVING, API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, HOST_SOCKET, type HostRequest, type HostSnapshot, askHost, hostSocketPath, recentRun, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, stopRun, type Notice } from "../src/host-control-channel.ts";
 
 const snapshot = (): HostSnapshot => ({
 	pid: 4242,
@@ -202,7 +203,7 @@ test("the page line counts its open conversations, says why it waits, and a page
 	assert.deepEqual(line({ pageWaiting: "waiting for 127.0.0.1:4173 (an older pi-loops page holds it)" }), ["  page: waiting for 127.0.0.1:4173 (an older pi-loops page holds it)"]);
 	assert.deepEqual(line({}), [], "no page and no reason: no line");
 	const held = renderHostSnapshot({ ...snapshot(), sessions: [{ sessionId: "abcdef12-0000", pid: 77, mode: "rpc", page: { tabs: 2, idleMs: 5 * 60_000 } }] });
-	assert.ok(held.includes("  conversation abcdef12 open in the page (pid 77, 2 tabs, idle 5m)"), held.join("\n"));
+	assert.ok(held.includes("  conversation abcdef12-0000 open in the page (pid 77, 2 tabs, idle 5m)"), held.join("\n"));
 });
 
 test("pi-loops status tells conversations apart by their title or first message", () => {
@@ -214,9 +215,9 @@ test("pi-loops status tells conversations apart by their title or first message"
 			{ sessionId: "01a19f66-0000", pid: 12, mode: "tui" },
 		],
 	});
-	assert.ok(lines.includes('  conversation 01a19f65 "fix the login bug" open in pid 10 (tui)'), lines.join("\n"));
-	assert.ok(lines.includes('  conversation 01a19f65 "write  the docs" open in the page (pid 11, 1 tab, idle 5m)'), "a control character in a title reaches no terminal");
-	assert.ok(lines.includes("  conversation 01a19f66 open in pid 12 (tui)"), "no title known: the id alone, as before");
+	assert.ok(lines.includes('  conversation 01a19f65-9e05 "fix the login bug" open in pid 10 (tui)'), lines.join("\n"));
+	assert.ok(lines.includes('  conversation 01a19f65-aaaa "write  the docs" open in the page (pid 11, 1 tab, idle 5m)'), "a control character in a title reaches no terminal");
+	assert.ok(lines.includes("  conversation 01a19f66-0000 open in pid 12 (tui)"), "no title known: the id alone, as before");
 });
 
 test("asking a directory with no host answers nothing rather than hanging", async () => {
@@ -231,12 +232,22 @@ test("the snapshot renders the lines a watcher needs", () => {
 	const lines = renderHostSnapshot(snapshot()).join("\n");
 	assert.match(lines, /pid 4242 on the-box/);
 	assert.match(lines, /pi-loops 0\.23\.0 · 2\/3 loops, 1\/1 rules enabled · inbox: 4 new/);
-	assert.match(lines, /conversation 424aba43 open in pid 939915 \(tui\)/, "which windows hold which conversations");
+	assert.match(lines, /conversation 424aba43-0000 open in pid 939915 \(tui\)/, "which windows hold which conversations");
 	assert.match(lines, /running nightly \(run-abcdef01\)/);
 	assert.match(lines, /checking local:dynamic\/check/);
 	assert.match(lines, /mcp hub: connected/);
 	const idle = renderHostSnapshot({ ...snapshot(), runs: [], checks: [] }).join("\n");
 	assert.match(idle, /nothing running right now/);
+});
+
+test("pi-loops status says every time in the one local format, and keeps a stamp it cannot read as it is", () => {
+	const local = (iso: string) => formatLocal(Date.parse(iso));
+	const lines = renderHostSnapshot(snapshot()).join("\n");
+	assert.match(lines, new RegExp(`started ${local("2026-09-09T05:00:00.000Z")},`), "the start");
+	assert.match(lines, new RegExp(`since ${local("2026-09-09T05:01:00.000Z")}: check the repo`), "a running run");
+	assert.match(renderHostSnapshot({ ...snapshot(), runs: [], checks: [], nextDue: "2026-09-09T06:00:00.000Z" }).join("\n"), new RegExp(`next due ${local("2026-09-09T06:00:00.000Z")}`));
+	assert.doesNotMatch(lines, /\d{4}-\d{2}-\d{2}T\d{2}:/, "no ISO stamp");
+	assert.match(renderHostSnapshot({ ...snapshot(), startedAt: "whenever" }).join("\n"), /started whenever,/);
 });
 
 test("a deeply nested loops directory still gets a control channel", async () => {
@@ -382,13 +393,13 @@ test("the snapshot says in plain words what waits for each conversation: how man
 		{ sessionId: "9e1f0000-0000", count: 1, oldest: "2026-09-09T05:59:30.000Z", dead: 0, holder: { kind: "nobody" as const } },
 	];
 	const lines = renderHostSnapshot({ ...snapshot(), requests }, now);
-	assert.deepEqual(lines.slice(-4), ["  4 messages waiting for 3 conversations, 1 could not be delivered", "    424aba43: 2 waiting · oldest 5m · 1 could not be delivered · open in pid 939915", "    7a1c0000: 1 waiting · oldest 3h · in the background", "    9e1f0000: 1 waiting · oldest 30s · closed"]);
+	assert.deepEqual(lines.slice(-4), ["  4 messages waiting for 3 conversations, 1 could not be delivered", "    424aba43-0000: 2 waiting · oldest 5m · 1 could not be delivered · open in pid 939915", "    7a1c0000-0000: 1 waiting · oldest 3h · in the background", "    9e1f0000-0000: 1 waiting · oldest 30s · closed"]);
 	assert.doesNotMatch(renderHostSnapshot(snapshot(), now).join("\n"), /waiting for/, "nothing queued, nothing said");
 	assert.doesNotMatch(renderHostSnapshot({ ...snapshot(), requests: [] }, now).join("\n"), /waiting for/);
-	assert.deepEqual(renderHostSnapshot({ ...snapshot(), requests: [requests[1]] }, now).slice(-2), ["  1 message waiting for 1 conversation", "    7a1c0000: 1 waiting · oldest 3h · in the background"], "one of each, and nothing undelivered");
+	assert.deepEqual(renderHostSnapshot({ ...snapshot(), requests: [requests[1]] }, now).slice(-2), ["  1 message waiting for 1 conversation", "    7a1c0000-0000: 1 waiting · oldest 3h · in the background"], "one of each, and nothing undelivered");
 	assert.doesNotMatch(lines.join("\n"), /request|queued|dead|holds/, "the plain words, not the plumbing's");
 	// A row the validator let through with a stamp that does not parse is a `?`, not `NaNs`.
-	assert.equal(renderHostSnapshot({ ...snapshot(), requests: [{ ...requests[2], oldest: "garbage" }] }, now).at(-1), "    9e1f0000: 1 waiting · oldest ? · closed");
+	assert.equal(renderHostSnapshot({ ...snapshot(), requests: [{ ...requests[2], oldest: "garbage" }] }, now).at(-1), "    9e1f0000-0000: 1 waiting · oldest ? · closed");
 });
 
 test("stopRun: a held turn stops through its conversation's queue, a loop run is aborted, nothing running is finished", async () => {
@@ -424,7 +435,25 @@ test("the socket's abort answers through stopRun when the process has one, and s
 });
 
 test("pi-loops status says a run a person stopped was stopped by you, not FAIL", () => {
-	const lines = renderHostSnapshot({ ...snapshot(), recent: [{ job: "pr-watch", at: "2026-11-05T10:00:00Z", ok: false, stopped: true }, { job: "nightly", at: "2026-11-05T09:00:00Z", ok: false, error: "provider 500" }] });
-	assert.ok(lines.includes("  stop 2026-11-05T10:00:00Z  pr-watch — stopped by you"), lines.join("\n"));
-	assert.ok(lines.includes("  FAIL 2026-11-05T09:00:00Z  nightly — provider 500"));
+	const lines = renderHostSnapshot({ ...snapshot(), recent: [{ job: "pr-watch", at: "2026-11-05T10:00:00Z", ok: false, stopped: true, byPerson: true }, { job: "nightly", at: "2026-11-05T09:00:00Z", ok: false, error: "provider 500" }] });
+	assert.ok(lines.includes(`  stop ${formatLocal(Date.parse("2026-11-05T10:00:00Z"))}  pr-watch — stopped by you`), lines.join("\n"));
+	assert.ok(lines.includes(`  FAIL ${formatLocal(Date.parse("2026-11-05T09:00:00Z"))}  nightly — provider 500`));
+});
+
+test("pi-loops status says a run a quit or restart stopped was stopped, with no stopped by you", () => {
+	const run = { runId: "run-1", jobId: "cron-a", jobName: "check-issues", stateful: true, cwd: "/p", pid: 1, startedAt: "2026-11-05T09:59:00Z", finishedAt: "2026-11-05T10:00:00Z", ok: false, findings: 0, droppedFindings: 0, stateUpdated: false, error: "aborted", aborted: true as const };
+	const lines = renderHostSnapshot({ ...snapshot(), recent: [recentRun(run)] });
+	assert.ok(lines.includes(`  stop ${formatLocal(Date.parse("2026-11-05T10:00:00Z"))}  check-issues`), lines.join("\n"));
+	assert.ok(lines.includes(`  stop ${formatLocal(Date.parse("2026-11-05T10:00:00Z"))}  check-issues — stopped by you`) === false);
+	const mine = renderHostSnapshot({ ...snapshot(), recent: [recentRun({ ...run, stoppedBy: "person" })] });
+	assert.ok(mine.includes(`  stop ${formatLocal(Date.parse("2026-11-05T10:00:00Z"))}  check-issues — stopped by you`), mine.join("\n"));
+});
+
+test("pi-loops status names an unnamed loop by its label, as every other surface does", () => {
+	const id = "cron-0123456789abcdef0123456789abcdef";
+	const lines = renderHostSnapshot({ ...snapshot(), recent: [{ job: id, at: "2026-11-05T10:00:00Z", ok: true }], failing: [{ job: id, error: "boom" }] }).join("\n");
+	assert.doesNotMatch(lines, /0123456789abcdef0123456789abcdef/, "never the whole id");
+	assert.match(lines, /  cron-01234567\b/, "a recent run");
+	assert.match(lines, /! cron-01234567: boom/, "a failing loop");
+	assert.match(renderHostSnapshot({ ...snapshot(), failing: [{ job: "pr-watch", error: "boom" }] }).join("\n"), /! pr-watch: boom/, "a name stays a name");
 });

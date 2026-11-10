@@ -120,7 +120,8 @@ export function parseTriggerRule(spec: string): ParsedTriggerRule {
 	return { condition, action };
 }
 
-function cleanCondition(raw: string): string {
+/** A condition as the store keeps it: no leading "when" or "if", so a row that says `when …` says it once. */
+export function cleanCondition(raw: string): string {
 	let s = raw.trim();
 	if (s.startsWith(ZH_WHEN)) s = s.slice(ZH_WHEN.length).trim();
 	if (s.startsWith(ZH_IF)) s = s.slice(ZH_IF.length).trim();
@@ -469,8 +470,8 @@ export function auditArgs(rest: string): { limit: number; all: boolean } | { usa
 export function controlPlanePreflight(proc: { hop: number; hasUI: boolean; held?: boolean }, reason: string): string | undefined {
 	// A plain job's turn in a closed conversation: the person's own turn, run where they were not.
 	if (proc.held) return `${reason} requires user confirmation; this turn ran in the background with nobody to ask (fail-closed deny): report what you would have done, so it can be approved when the conversation is open`;
-	if (proc.hop > 0) return `${reason} requires user confirmation; sub-agents have no control-plane prompt channel (fail-closed deny)`;
-	if (!proc.hasUI) return `${reason} requires interactive confirmation; use the slash command instead`;
+	if (proc.hop > 0) return `${reason} requires user confirmation; sub-agents have no control-plane prompt channel (fail-closed deny): report what you would have done, so a person can do it`;
+	if (!proc.hasUI) return `${reason} requires interactive confirmation; a person can do it with the slash command`;
 	return undefined;
 }
 

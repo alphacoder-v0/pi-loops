@@ -56,9 +56,11 @@ weaker, and worth converting whenever one of them breaks.
       the line then says so: answered here, beside the terminal. A conversation opened from the list
       starts with the pi arguments its project's latest conversation was opened with, so a launch
       that loads pi-loops with `-e` loads it there too; they are never taken from the request. A
-      row's `terminal` tag says whether that terminal answers what is sent to it.
+      row's `terminal` tag has a title only when that terminal answers nothing sent to it: the one
+      holder tag with a title, because its label cannot say that.
       `test/web-page.test.ts`: *a terminal's conversation in a page whose pi has no pi-loops says it
-      is answered here, not there*, *a terminal that answers nothing is not said to answer*;
+      is answered here, not there*, *a terminal that answers nothing is not said to answer, and that
+      is the one holder tag with a title*;
       `test/page-server.test.ts`: */state says whether this page's pi has pi-loops, which is what
       sends a message to the terminal*, *a conversation opened with no arguments of its own starts
       with those of its project's latest conversation*.
@@ -238,9 +240,10 @@ weaker, and worth converting whenever one of them breaks.
 - [x] **What this project has is what this project has, and the rest is counted rather than
       dropped.** The store is machine-wide and this list is not, so a job made in another directory
       says so as a count — without it, a job somewhere else is indistinguishable from a job that is
-      gone. Loops and rules are counted and labelled apart, each line naming the command that lists
-      them (`/cron all`, `/triggers rules --all`): one number covering both agrees with neither
-      command, and the line exists to send you to the command.
+      gone. Loops and rules are counted and labelled apart, each line counted as its command counts
+      it: one number covering both agrees with neither command. The project switcher above is the
+      way there; the terminal's `/cron all` and `/triggers rules --all` list them. The inbox counts
+      other projects' new findings the same way, with no command.
       What counts as "this project" is what the extension says it is — symlinks resolved, `$HOME`
       too broad to be one — because a panel that disagrees with the command is worse than either.
       `test/web.test.ts`: *the panel and /cron agree about what this project is*.
@@ -349,8 +352,8 @@ weaker, and worth converting whenever one of them breaks.
 - [x] A finding whose conversation is gone is claimed into the one open here, when it is in the
       finding's project (**Yes, do it here**). `test/page-server.test.ts`: *a claim whose
       conversation is gone runs in the page's own when it is in the project, and is refused
-      otherwise*. Listed for another project, it says "its conversation is gone; Yes runs it in a
-      new conversation in <project>", and **Yes, do it** starts that conversation (as + New does
+      otherwise*. Listed for another project, it says "its conversation is gone; runs in a new
+      conversation in <project>", and **Yes, do it** starts that conversation (as + New does
       there), claims the finding into it and goes to it; one that cannot start claims nothing and
       says why. `test/web-page.test.ts`: *a card whose conversation is gone runs in this one in its
       own project, and in a new conversation there in another project*.
@@ -359,14 +362,15 @@ weaker, and worth converting whenever one of them breaks.
       to it, as a gone one does; in the open conversation's project it stays as above.
       `test/web-page.test.ts`: *a project-owned card listed for another project runs in a new
       conversation there: started, claimed into, and opened*.
-- [x] The Loops pane lists loops and rules and nothing else; the list's cards, its tab counts and
-      the tab title count the inbox. The desktop rail and the phone's tab bar call the list
+- [x] The Loops pane lists loops and rules and nothing else; the list's cards and the tab title
+      count the inbox. The desktop rail and the phone's tab bar call the list
       **Inbox**. `test/web-page.test.ts`: *the Loops pane lists loops: no inbox count and no summary
       line, and its rail button says Inbox for the list*.
 - [x] Every loop row is ▸, its name and schedule, and **run** on its first line; a long name moves
-      the schedule under it, never ▸ or run onto a line of their own. `runs N` shows once it has run.
-      `test/web-page.test.ts`: *a loop row is its name, schedule and run on one line; runs and the
-      30-day line only when they are not zero*.
+      the schedule under it, never ▸ or run onto a line of their own. In a pane of loops, the plain
+      job is the one marked: its schedule ends `· in its conversation`.
+      `test/web-page.test.ts`: *a loop row is its name, schedule and run on one line; the 30-day
+      line only when it is not zero*.
 - [x] **No…** and **Dismiss…** take a reason chip (`Not a bug`, `Already fixed`, `Duplicate`, `Too
       noisy`, `Not now`), a typed reason of at most 500 characters, or none; the card then says
       whether the loop's next run hears it. `test/web-page.test.ts`: *No then Not a bug posts that
@@ -374,7 +378,7 @@ weaker, and worth converting whenever one of them breaks.
       field holds at most 500 characters*. `test/page-server.test.ts`: *a dismiss from the page
       stores the reason for the loop's next run and says so; past 500 characters it is refused*.
 - [x] What was found while you were away, above the cards: "Since yesterday 23:10 · 3 findings, 1
-      from this conversation · 1 needs you · $0.41", counted per project by the function the
+      from this conversation · $0.41", counted per project by the function the
       terminal's session-start line uses, each part kept whole when the line wraps; "N from this
       conversation" only when that is not every finding (`test/web-page.test.ts`: *the away card
       names the findings from this conversation only when they are not all of them, as src/seen.ts
@@ -489,8 +493,9 @@ weaker, and worth converting whenever one of them breaks.
       age and version. Whether pi-loops is running is the status bar's.
 - [x] A count leads to the list behind it — "24 tools" answers the wrong question on its own.
       `test/web-page.test.ts`: *a count in the panel leads to the list behind it*.
-- [x] Goal state and the session's own metadata: the loops rail's Goal and This conversation, and
-      pi-loops for the runtime, each one click open.
+- [x] Goal state when a goal is set, and pi-loops for the runtime, each one click open.
+      `test/web-page.test.ts`: *the Loops pane shows Goal only while a goal is set, and has no This
+      conversation section*.
 - [x] A malformed job in a store file does not blank the panel. `test/web-page.test.ts`: *a job
       with the wrong types in it does not blank the sidebar*.
 - [x] The panel is the loops rail, and it never disappears: what a loop is doing is the reason to
@@ -520,14 +525,12 @@ weaker, and worth converting whenever one of them breaks.
       card, and nothing is sent*.
 - [x] The question is a card, in the box and in the transcript, drawn from the select's title rows
       and options alone: the kind (*On a schedule* / *When something happens*), when it runs or
-      waits for, how often the background looks for a rule (and *Model: only once the path exists*
-      when it checks the path first), what it does, for a schedule whose result goes to the inbox
-      what it remembers and whether a checker reviews each finding, the policy's reason when the
-      action is one the unattended guard would refuse, the terminal line that would do the same, and
-      the choices: Result (this conversation or the inbox; a rule's inbox chip reads *Put it in my
-      inbox*, since a matched rule's result reaches the inbox and the loop activity strip), for a
-      rule Repeats (once or every time), and for a schedule in the inbox Checks (none or each
-      finding). The chips start on the first option, which is the model's own choice. A select that
+      waits for, how often the background looks for a rule, what it does, for a schedule whose
+      result goes to the inbox what it remembers and whether a checker reviews each finding, the
+      policy's reason when the action is one the unattended guard would refuse, and the choices:
+      Result (this conversation or the inbox; a rule's inbox chip reads *Put it in my inbox*, since
+      a matched rule's result reaches the inbox and the loop activity strip), for a rule Repeats
+      (once or every time), and for a schedule in the inbox Checks (none or each finding). The chips start on the first option, which is the model's own choice. A select that
       is not a watch question stays a dialog. Nothing is written until the person answers.
       `test/web-page.test.ts`: *a watch question draws the card from its title and options, in the
       box and in the transcript, and no dialog*, *a select that is not a watch question stays a
@@ -691,26 +694,28 @@ weaker, and worth converting whenever one of them breaks.
 - [x] **This project's conversations are listed beside the conversation, and reading the list starts
       no pi.** Each row is the conversation's title (its `/name`, else the first thing said), when it
       last changed, and who holds it: `terminal`, `open` (the page), `pi-loops` (in the background), or
-      no tag; `· open here` when the page also has it. Grouped Today and Earlier, the open one marked.
+      no tag; `· open here` when the page also has it. Grouped Today and Earlier when both are there,
+      the open one marked.
       A row loads that conversation's own page, so Back, a new tab and a bookmark work as links do.
       Conversations from before 0.23, or from a pi without pi-loops, are listed and open too: pi's
       own session files are what is read. `test/web-page.test.ts`: *the list shows this project's
-      conversations, grouped Today and Earlier, with the open one marked, and each row is its
-      address*, *a row says who holds it: terminal, open, pi-loops, or nothing at all*, *showing the
+      conversations, grouped Today and Earlier when both are there, with the open one marked, and
+      each row is its address*, *a row says who holds it: terminal, open, pi-loops, or nothing at all*, *showing the
       list asks for no other conversation, and rides on the page's own poll at most every fifteen
       seconds*, *a title cannot carry markup or reorder its line*; `test/page-server.test.ts`: *GET
       /conversations lists a project's conversations from pi's files, behind the token, and starts no
       pi*, *a conversation no lease names opens from pi's own session file, and a made-up id is still
       404*; `test/conversation-rows.test.ts`.
-- [x] All, Needs you (a loop it made is waiting on a decision) and Unread (changed since this browser
-      last looked; a terminal's conversation never is), each counted. The conversation on the screen
-      is read as of each poll, so the one you watched never comes back Unread.
-      `test/web-page.test.ts`: *Needs you and Unread filter the list and count it; a terminal's
-      conversation is never unread*, *the conversation on the screen is read as of now, not as of
+- [x] A row says what needs you (`⚑ N`, a loop it made is waiting on a decision) and has a dot when
+      it changed since this browser last looked; a terminal's conversation never has the dot. The
+      conversation on the screen is read as of each poll, so the one you watched never gets it back.
+      `test/web-page.test.ts`: *the list has no tabs: every row is shown, the dot marks what changed
+      since this browser last looked*, *the conversation on the screen is read as of now, not as of
       the list's last draw*.
 - [x] Another project is one choice away: the switcher lists every project pi has conversations in,
-      and those with only a loop or a lease. `test/web-page.test.ts`: *choosing another project asks
-      for that project's list by its cwd*.
+      and those with only a loop or a lease, each by its folder's name with the whole path as its
+      title. It is the one place the page names the project. `test/web-page.test.ts`: *choosing
+      another project asks for that project's list by its cwd*.
 - [x] + New starts the conversation in the project the list shows. In the open conversation's
       project it is a new session of this page's pi, as before; in another project the server starts
       a pi there (`POST /conversations/new`, a project the list offers and nothing else) and the
@@ -731,12 +736,10 @@ weaker, and worth converting whenever one of them breaks.
       `test/web-page.test.ts`: *on a phone one pane shows at a time, picked by the Inbox, Chat and
       Loops tabs, and a row opens on Chat*.
 - [x] The status bar says whether pi-loops is running in the background (or why loops and checks
-      are paused), how many loops this project has when it has any, and how many conversations are open in a
-      terminal ("1 conversation open in a terminal"). It is the one place that says pi-loops runs,
-      and its link to the Background view. `test/web-page.test.ts`: *the status bar follows the host
-      file the server reads, not the snapshot the session last wrote, and the Loops pane does not
-      repeat it*. `test/web-page.test.ts`: *the status
-      bar says whether pi-loops runs, how many loops, and how many conversations a terminal holds*.
+      are paused). It is the one place that says pi-loops runs, and its link to the Background view.
+      `test/web-page.test.ts`: *the status bar follows the host file the server reads, not the
+      snapshot the session last wrote, and the Loops pane does not repeat it*, *the status bar says
+      whether pi-loops runs*.
 - [x] **Starting over does not mean going back to a terminal.** The context is finished with far
       more often than the window is: a new session and going back to an earlier one are both here,
       by button (the list's + New is the header's clear) and by `/clear`, `/new` and `/resume` typed
@@ -867,10 +870,25 @@ weaker, and worth converting whenever one of them breaks.
   says it and is the link to the Background view, on a phone under the Loops pane; a paused reason
   is said there too.
 - **The Loops pane's summary line ("inbox 3 new (1 decision) · 2 job(s) · 0 rule(s)") and its "last
-  run" line.** The inbox's cards, its tab counts and the tab title count the inbox; the pane lists
-  the loops; the activity strip lists every run.
+  run" line.** The inbox's cards and the tab title count the inbox; the pane lists the loops; the
+  activity strip lists every run.
 - **The away card's run count and its Show what needs me button.** The activity strip counts runs
-  and their failures; the **Needs you** tab and the **Needs you** heading lead to the decisions.
+  and their failures; the **Needs you** heading leads to the decisions.
+- **The Loops pane's This conversation section (its name, message count and model), and Goal's
+  `none`.** The conversation is on screen; the model is in the header. Goal shows only while a goal
+  is set.
+- **A loop row's `runs N`.** The activity strip counts runs.
+- **The status bar's loop count ("2 loops") and its terminal count ("1 conversation open in a
+  terminal").** The pane lists them; the row's `terminal` tag says it.
+- **The All, Needs you and Unread tabs above the list, and their counts.** They counted and filtered
+  the conversation rows only, yet sat above the finding cards and shared their **Needs you**
+  heading. The cards are the view of what needs you, and each row keeps its `⚑ N` and its unread
+  dot (*the list has no tabs: every row is shown, the dot marks what changed since this browser last
+  looked*).
+- **The Watch card's terminal line (`/new-trigger …`, `/cron add …`), its *Model: only once the path
+  exists* row, and the `WATCH` tag over it in the transcript.** The rows are the plan; the
+  terminal's question keeps the line. Which model runs, and when, is a cost detail the person does
+  not choose. The card's heading says what the card is.
 - **The Watch for… box's label, its "For example" caption, its project in the title, and the plan
   card's "Not right?" line.** The title and the placeholder say what the box takes, the examples
   are examples, and *Read it* reads the edited sentence again. The project is the one the list

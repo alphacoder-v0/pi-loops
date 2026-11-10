@@ -449,7 +449,7 @@ machine. Everything here follows from that, and each one has a price.
     (hop 0, `ctx.hasUI`, not a scheduled turn), `cron_create` and `new_trigger` run every check a
     create would, then ask through pi's own `ctx.ui.select` and wait for the answer in the same
     call. The title is `Set up this watch?` and then the card's rows as `Label: value` lines
-    (`Runs` or `Waits for`, `Looks`, `Model`, `Does` or `Then`, `Careful`, `Command`; a value's
+    (`Runs` or `Waits for`, `Looks`, `Does` or `Then`, `Careful`, `Command`; a value's
     further lines are indented two spaces). The options are a fixed vocabulary, one string per
     combination of the card's choices, the plan's defaults first: for a schedule
     `Set it up · inbox`, `Set it up · inbox · with checks`, `Set it up · this conversation`; for a

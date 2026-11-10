@@ -21,20 +21,20 @@ test("a second window on the same conversation is a viewer: the job runs in the 
 });
 
 test("what the lists say about a plain job that does not run here", () => {
-	assert.equal(asleepNote({ stateful: false, sessionId: "01a09f6d-1111" }, holding("01a09fef-2222")), "session 01a09f6d — resume it to run");
-	assert.equal(asleepNote({ stateful: false, sessionId: "01a09f6d-1111" }, holding("01a09fef-2222", { "01a09f6d-1111": 4242 })), "session 01a09f6d — open in a terminal");
-	assert.equal(asleepNote({ stateful: false, sessionId: "01a09f6d-1111" }, { ...holding("01a09fef-2222", { "01a09f6d-1111": 4242 }), holderKind: () => "page" as const }), "session 01a09f6d — in the page");
+	assert.equal(asleepNote({ stateful: false, sessionId: "01a09f6d-1111" }, holding("01a09fef-2222")), "session 01a09f6d-1111 — resume it to run");
+	assert.equal(asleepNote({ stateful: false, sessionId: "01a09f6d-1111" }, holding("01a09fef-2222", { "01a09f6d-1111": 4242 })), "session 01a09f6d-1111 — open in a terminal");
+	assert.equal(asleepNote({ stateful: false, sessionId: "01a09f6d-1111" }, { ...holding("01a09fef-2222", { "01a09f6d-1111": 4242 }), holderKind: () => "page" as const }), "session 01a09f6d-1111 — in the page");
 	assert.equal(asleepNote({ stateful: false, sessionId: "01a09f6d-1111" }, holding("01a09f6d-1111")), undefined);
 	assert.equal(asleepNote({ stateful: true }, holding("x")), undefined, "a loop is never asleep");
 	assert.equal(ownerSession({ stateful: true }), undefined);
-	assert.equal(ownerSession({ stateful: false, sessionId: "abcdefghij" }), "abcdefgh");
+	assert.equal(ownerSession({ stateful: false, sessionId: "01a1c183-7467-7abc-8def-0123456789ab" }), "01a1c183-7467", "the first 13 characters: the whole millisecond stamp of a uuidv7");
 	assert.equal(ownerSession({ stateful: false }), "?");
 });
 
 test("a closed conversation's plain job runs in the background when the host can hold it, else it is asleep", () => {
 	const view = { sessionId: "b", holdsOwn: true, holderOf: () => undefined, hostRuns: (id: string) => id === "known" };
 	assert.deepEqual(whereRuns({ stateful: false, sessionId: "known" }, view), { kind: "host" });
-	assert.equal(asleepNote({ stateful: false, sessionId: "known-1234" }, { ...view, hostRuns: () => true }), "session known-12 — in the background");
+	assert.equal(asleepNote({ stateful: false, sessionId: "known-1234" }, { ...view, hostRuns: () => true }), "session known-1234 — in the background");
 	assert.deepEqual(whereRuns({ stateful: false, sessionId: "never-seen" }, view), { kind: "asleep" }, "no file pi-loops knows: asleep");
 	assert.deepEqual(whereRuns({ stateful: false, sessionId: "known" }, { ...view, holderOf: () => 7 }), { kind: "terminal", pid: 7 }, "a window holding it comes first");
 	assert.equal(runsHere({ stateful: false, sessionId: "known" }, view), false, "not this window's to fire");

@@ -23,7 +23,7 @@ import { heldTurnFor, stopRow } from "./engine.ts";
 import { LeaseStore, procStart, sessionFileName } from "./lease.ts";
 import { RequestStore } from "./requests.ts";
 import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
-import { cardLine, inboxCard } from "./inbox-card.ts";
+import { cardLine, cardOrigin, inboxCard } from "./inbox-card.ts";
 import { sameProject } from "./paths.ts";
 import { redact } from "./redact.ts";
 import { crashPaused, crashPauseText, ensureHost, HOST_LOG, hostCommand, hostServiceAlive, LEAVE_WAIT_MS, readHostService, RESTART_WAIT_LINE, readSpawnLog, removeHostService, type EnsureHostOptions, type HostServiceRecord } from "./host-control.ts";
@@ -31,11 +31,11 @@ import { loadConfig, pageBindPort } from "./config.ts";
 import { writeUiPref } from "./ui-prefs.ts";
 import { type UiPrefs, clearUiPref, readUiPrefs } from "./ui-prefs.ts";
 import { JobStore, defaultLoopsDir, homeLoopsDir } from "./store.ts";
-import { automationBadge, previewText, readSessionHead } from "./session-head.ts";
+import { automationBadge, previewText, readSessionHead, shortSessionId } from "./session-head.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, TRACKER_FILE, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, listRecipes, loadRecipe, planInstall, playbookFiles, readRecord, resolveRecipeRef } from "./recipe.ts";
 import { TriggerStore } from "./triggers.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
-import { stamp } from "./schedule.ts";
+import { formatLocal, stamp } from "./schedule.ts";
 import { canonicalDir } from "./trust.ts";
 
 /**
@@ -107,7 +107,10 @@ export function splitLaunchArgs(argv: string[]): { ours: string[]; pi: string[];
 	return { ours, pi: argv.slice(dashdash + 1), misplaced: rest };
 }
 
-export const CLI_USAGE = [
+/** A command typed wrong: the entry point prints the message and that command's usage, and exits 2. */
+export class UsageError extends Error {}
+
+const CLI_USAGE = [
 	"pi-loops [--web | --tui] [--no-open] [--loops-dir <dir>] [<pi flags>] [-- <pi flags>]",
 	"    Open a conversation: the browser page on a local terminal, pi itself over ssh (pi-loops web and pi-loops tui say which).",
 	"",
@@ -287,6 +290,9 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		return 0;
 	}
 	const { command, positional, flags } = parseCliArgs(argv);
+	// `host` is the 0.22.8 spelling of the service verbs; `stop help` asks how stop works.
+	const [verb, words] = command === "host" ? [positional[0] ?? "status", positional.slice(1)] : [command, positional];
+	if (!(SERVICE_VERBS.has(verb) && words.includes("help"))) refuseUnread(verb, words, flags);
 	const str = (name: string): string | undefined => {
 		const v = flags.get(name);
 		return typeof v === "string" ? v : undefined;
@@ -306,7 +312,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		// negative offset or a fraction, and change what is listed without ever saying so.
 		const limitFlag = flags.get("limit");
 		if (limitFlag !== undefined && (typeof limitFlag !== "string" || !/^\d+$/.test(limitFlag) || Number(limitFlag) < 1))
-			throw new Error(`--limit takes a whole number of sessions ≥ 1; got ${limitFlag === true ? "nothing" : JSON.stringify(limitFlag)}`);
+			throw new UsageError(`--limit takes a whole number of sessions ≥ 1; got ${limitFlag === true ? "nothing" : JSON.stringify(limitFlag)}`);
 		const limit = limitFlag === undefined ? 20 : Number(limitFlag);
 		// `pickSession` refuses an unknown id, and there was no way to discover one.
 		const sessions = listSessions(path.join(agentDir, "sessions"));
@@ -329,7 +335,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	if (command === "inspect") {
 		// What is in this archive, without writing anything.
 		const file = positional[0];
-		if (!file) throw new Error("inspect needs an archive path");
+		if (!file) throw new UsageError("inspect needs an archive path");
 		const info = inspectArchive(path.resolve(file));
 		out(`${plain(info.schema)}  exported ${plain(info.createdAt)}  from ${plain(info.sourceCwd)}`);
 		// The counts come out of the same manifest and are only numbers if it says so.
@@ -360,7 +366,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 
 	if (command === "import") {
 		const file = positional[0];
-		if (!file) throw new Error("import needs an archive path");
+		if (!file) throw new UsageError("import needs an archive path");
 		const mode = parseActivateMode(str("activate-triggers"));
 		const jobStore = new JobStore(loopsDir);
 		const triggerStore = new TriggerStore(loopsDir);
@@ -391,11 +397,10 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 
 	// 0.22.8 shipped `pi-loops host status|abort|stop`: they stay spellings of the same commands.
 	if (SERVICE_VERBS.has(command) || command === "host") {
-		const [verb, rest] = command === "host" ? [positional[0] ?? "status", positional.slice(1)] : [command, positional];
-		const code = await serviceCommand(verb, rest, flags, loopsDir, out);
+		const code = await serviceCommand(verb, words, flags, loopsDir, out);
 		// In 0.22.8 this spelling stopped the running process and recorded nothing; a script written then
 		// should learn that it now pauses everything.
-		if (command === "host" && verb === "stop" && code === 0 && !flags.has("help") && !rest.includes("help")) out("pi-loops host stop: stopped; nothing runs until `pi-loops start` (every loop, every rule, and the plain jobs of closed conversations)");
+		if (command === "host" && verb === "stop" && code === 0 && !flags.has("help") && !words.includes("help")) out("pi-loops host stop: stopped; nothing runs until `pi-loops start` (every loop, every rule, and the plain jobs of closed conversations)");
 		return code;
 	}
 
@@ -411,9 +416,11 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		const spec = upgradeSpec(packageRoot(), manifest().name ?? "", agentDir, "<newer release>", configuredNpmSource(packageRoot(), manifest().name ?? ""));
 		out(`if you expected it, the copy you are running may be older than the command: ${spec ? `pi install ${spec}` : checkoutUpgradeHint()}`);
 		out("");
+		out("pi-loops --help lists the commands");
+		return 2;
 	}
 	out(CLI_USAGE);
-	return asked ? 2 : 0;
+	return 0;
 }
 
 /** What runs loops while no pi is open, started, stopped and looked at by name. */
@@ -452,10 +459,11 @@ async function inboxCommandBody(positional: string[], opts: { all: boolean; json
 			return 0;
 		}
 		if (!entries.length) out(opts.all ? "inbox: nothing new on this machine" : `inbox: nothing new in ${cwd} (--all lists every project)`);
-		const ctx = { loopName: () => undefined };
+		const names = new Map(new JobStore(loopsDir).load().map((j) => [j.id, j.name]));
+		const ctx = { loopName: (id: string) => names.get(id) };
 		for (const e of entries) {
 			const card = inboxCard(e, ctx);
-			if (card) out(plain(cardLine(card, `${e.id}  `, `  (${path.basename(e.cwd) || e.cwd || "—"}, ${e.source}, ${e.created_at})`)));
+			if (card) out(plain(cardLine(card, `${e.id}  `, `  (${path.basename(e.cwd) || e.cwd || "—"}, ${cardOrigin(card)}, ${formatLocal(Date.parse(e.created_at))})`)));
 		}
 		return 0;
 	}
@@ -508,7 +516,7 @@ async function recipeCommand(positional: string[], opts: { level?: string; overw
 		for (const r of packaged) {
 			const rec = installed.get(r.manifest.name);
 			const n = jobs.filter((j) => j.recipe === r.manifest.name).length;
-			out(`${r.manifest.name.padEnd(17)} ${(rec ? `installed: ${rec.level}, ${n} ${n === 1 ? "loop" : "loops"}` : "—").padEnd(28)} ${r.manifest.summary}`);
+			out(`${r.manifest.name.padEnd(17)} ${rec ? `[installed: ${rec.level}, ${plural(n, "loop")}] ` : ""}${r.manifest.line ?? r.manifest.summary}`);
 		}
 		for (const rec of installed.values()) if (!packaged.some((r) => r.manifest.name === rec.recipe)) out(`${rec.recipe.padEnd(17)} installed from ${rec.source} (${rec.level})`);
 		if (!packaged.length && !installed.size) out("no recipes packaged, none installed here");
@@ -516,7 +524,7 @@ async function recipeCommand(positional: string[], opts: { level?: string; overw
 	}
 	if (sub === "show" || sub === "add") {
 		const ref = positional[1];
-		if (!ref) throw new Error(`recipe ${sub} needs a recipe name or a directory`);
+		if (!ref) throw new UsageError(`recipe ${sub} needs a recipe name or a directory`);
 		const resolved = resolveRecipeRef(ref, { cwd });
 		const recipe = loadRecipe(resolved.dir);
 		const m = recipe.manifest;
@@ -781,6 +789,34 @@ const USAGE_SECTIONS: Record<string, string> = {
 	start: "pi-loops start | stop", stop: "pi-loops start | stop", restart: "pi-loops start | stop", status: "pi-loops start | stop",
 	abort: "pi-loops start | stop", host: "pi-loops start | stop", pair: "pi-loops pair", recipe: "pi-loops recipe", inbox: "pi-loops inbox",
 };
+
+/** The flags every subcommand reads. */
+const GLOBAL_FLAGS = new Set(["cwd", "help"]);
+
+/** The flags each subcommand reads beside the global ones; any other is refused, not ignored. */
+const VERB_FLAGS: Record<string, readonly string[]> = {
+	upgrade: ["check"], "install-launcher": ["dir"], import: ["activate-triggers"], export: ["session", "output", "exclude-triggers"],
+	sessions: ["limit", "all"], recipe: ["level", "overwrite"], inbox: ["all", "json", "reason"], start: ["foreground"], status: ["url"],
+	inspect: [], stop: [], restart: [], abort: [], pair: [],
+};
+
+/** How many words each subcommand reads after its name. */
+const VERB_POSITIONALS: Record<string, number> = {
+	upgrade: 0, "install-launcher": 0, export: 0, sessions: 0, start: 0, stop: 0, restart: 0, status: 0, pair: 0,
+	import: 1, inspect: 1, abort: 1, recipe: 2, inbox: 2,
+};
+
+/**
+ * Refuses what `verb` does not read. Ignoring it did what nobody asked: `export <path>` wrote into
+ * the project, and `status --json` printed prose to a program.
+ */
+function refuseUnread(verb: string, positional: readonly string[], flags: ReadonlyMap<string, unknown>): void {
+	const known = VERB_FLAGS[verb];
+	if (!known) return;
+	for (const flag of flags.keys()) if (!GLOBAL_FLAGS.has(flag) && !known.includes(flag)) throw new UsageError(`${verb} does not take --${flag}`);
+	const extra = positional[VERB_POSITIONALS[verb]];
+	if (extra !== undefined) throw new UsageError(`${verb}: unexpected argument ${JSON.stringify(extra)}`);
+}
 
 /** The usage for `command`: its own section of `CLI_USAGE`, or all of it. */
 export function usageFor(command: string | undefined): string {
@@ -1357,7 +1393,7 @@ export const SESSION_PREFIX_MIN = 8;
  * so a new one is never read as queued.
  */
 export function stopReport(state: string | undefined, sessionId: string): { line: string; code: number } {
-	const id8 = sessionId.slice(0, 8);
+	const id8 = shortSessionId(sessionId);
 	switch (state) {
 		case "done":
 			return { line: `stopped the turn in session ${id8}`, code: 0 };
@@ -1491,7 +1527,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 			// record. Fall back to it, so the person gets a pid and a log to look at.
 			const rec = live();
 			if (rec) {
-				out(`pi-loops (pid ${rec.pid}) is not answering (started ${rec.startedAt})`);
+				out(`pi-loops (pid ${rec.pid}) is not answering (started ${formatLocal(Date.parse(rec.startedAt))})`);
 				out(`  log: ${path.join(loopsDir, HOST_LOG)}`);
 				out("  stop it with: pi-loops stop");
 				for (const l of queues()) out(l);
@@ -1499,7 +1535,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 			}
 			// Why, when something keeps it from starting: each of these pauses every loop and check.
 			const spawns = readSpawnLog(loopsDir);
-			const why = readUiPrefs(loopsDir).host === "stopped" ? "it was stopped by hand; pi-loops start, or pi-loops opening the page, starts it" : process.env.PI_LOOPS_HOST?.toLowerCase() === "off" ? "PI_LOOPS_HOST=off is set" : !loadConfig(loopsDir).hostAuto ? "[host] auto = false in config.toml; pi-loops start starts it" : crashPaused(spawns, Date.now()) ? `${crashPauseText(spawns).replace("/pi-loops start", "pi-loops start")} (last: ${spawns.lastError ?? "?"})` : spawns.notBefore && Date.now() < Date.parse(spawns.notBefore) ? `it could not start (${spawns.lastError ?? `see ${HOST_LOG}`}); retrying after ${spawns.notBefore}` : undefined;
+			const why = readUiPrefs(loopsDir).host === "stopped" ? "it was stopped by hand; pi-loops start, or pi-loops opening the page, starts it" : process.env.PI_LOOPS_HOST?.toLowerCase() === "off" ? "PI_LOOPS_HOST=off is set" : !loadConfig(loopsDir).hostAuto ? "[host] auto = false in config.toml; pi-loops start starts it" : crashPaused(spawns, Date.now()) ? `${crashPauseText(spawns).replace("/pi-loops start", "pi-loops start")} (last: ${spawns.lastError ?? "?"})` : spawns.notBefore && Date.now() < Date.parse(spawns.notBefore) ? `it could not start (${spawns.lastError ?? `see ${HOST_LOG}`}); retrying after ${formatLocal(Date.parse(spawns.notBefore))}` : undefined;
 			out(why ? `pi-loops is not running: ${why}` : "pi-loops is not running (a pi window starts it when there is work to run)");
 			for (const l of queues()) out(l);
 			return 1;
@@ -1516,7 +1552,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 	}
 	if (verb === "abort") {
 		const ref = args[0];
-		if (!ref) throw new Error("abort needs a run id, a trigger trace id or a session id");
+		if (!ref) throw new UsageError("abort needs a run id, a trigger trace id or a session id");
 		const leases = new LeaseStore(loopsDir);
 		let target: AbortTarget;
 		try {

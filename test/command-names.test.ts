@@ -138,7 +138,7 @@ const COMMANDS = [
 		help: "TRIGGERS_HELP",
 		completionsAfter: 'registerCommand("triggers"',
 		aliases: ["", "resume", "pause", "rm", "delete"],
-		helpSpellsDifferently: { status: "the first line of the help shows it as the bare `/triggers`", help: "it is the text being read" },
+		helpSpellsDifferently: { help: "it is the text being read" },
 		alsoCompleted: [],
 	},
 ];

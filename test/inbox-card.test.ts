@@ -88,7 +88,8 @@ test("the terminal names what filed a finding as every surface does: a loop by i
 test("a dismiss tells the loop's next run, nobody, or says nothing", () => {
 	const loop = { id: "cron-0123", name: "issue-triage" };
 	assert.deepEqual(dismissOutcome({ job_id: "cron-0123" }, loop, "Not a bug"), { told: "loop", loop: "issue-triage" });
-	assert.deepEqual(dismissOutcome({ job_id: "cron-0123" }, { id: "cron-0123" }, "x"), { told: "loop", loop: "cron-0123" }, "a loop with no name is told by its id");
+	assert.deepEqual(dismissOutcome({ job_id: "cron-0123" }, { id: "cron-0123" }, "x"), { told: "loop", loop: "cron-0123" }, "a loop with no name is told by its label");
+	assert.deepEqual(dismissOutcome({ job_id: "cron-0123456789abcdef0123456789abcdef" }, { id: "cron-0123456789abcdef0123456789abcdef" }, "x"), { told: "loop", loop: "cron-01234567" }, "the label, not the whole id");
 	assert.deepEqual(dismissOutcome({ job_id: "cron-gone" }, undefined, "x"), { told: "nobody", why: "loop-gone" });
 	assert.deepEqual(dismissOutcome({ job_id: "deploy" }, undefined, "x"), { told: "nobody", why: "rule" });
 	assert.deepEqual(dismissOutcome({ job_id: "cron-0123" }, loop, "  "), { told: "silent" });

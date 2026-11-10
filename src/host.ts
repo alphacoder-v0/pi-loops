@@ -18,7 +18,7 @@ import { ModelRuntime, ProjectTrustStore, SettingsManager, VERSION as PI_VERSION
 import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig, pageBindPort } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
-import { hostSocketPath, requestQueues, serveHostChannel, stopRunFrom } from "./host-control-channel.ts";
+import { hostSocketPath, recentRun, requestQueues, serveHostChannel, stopRunFrom } from "./host-control-channel.ts";
 import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, leavesWithWindows, openWindows, stopWaitsForPage, waitForPageTurns, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
 import { ChildPool, piCommand } from "./page-children.ts";
 import { type HostStatus, lanAddresses, openForLaunch, type PageServer, ring as ringChild, sessionRows, startPageServer, unsentPersonRows, webToken } from "./page-server.ts";
@@ -26,13 +26,15 @@ import { piPackage } from "./pi-resolver.mjs";
 import { RequestStore } from "./requests.ts";
 import { awayFor, pruneSeen, readSeen, sinceCounts } from "./seen.ts";
 import { LeaseStore, holderAlive, openWindowPids, procStart } from "./lease.ts";
-import { sessionTitle } from "./session-head.ts";
+import { sessionTitle, shortSessionId } from "./session-head.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { THINKING_LEVELS, thinkingLevelOrUndefined } from "./thinking.ts";
 import { rotateInPlace } from "./log.ts";
 import { createHostRuntime } from "./host-runtime.ts";
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv, type McpNotification, type McpServerConfig } from "./mcp.ts";
+import { failingJobs } from "./job-health.ts";
+import { loopLabel } from "./job-lines.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { parentRuntimeFlags, type RunnerResult, type SubagentRunner } from "./runner.ts";
 import type { SessionSnapshot } from "./scheduler.ts";
@@ -186,7 +188,7 @@ const pool = new ChildPool({
 	log,
 	ring: (child) => ringChild(child),
 	unsent: (child) => unsentPersonRows(requests, child),
-	onExit: (child, code, signal) => log(`page: conversation ${child.sessionId?.slice(0, 8) ?? `not yet named (pid ${child.pid})`} pi exited (${signal ?? code})`),
+	onExit: (child, code, signal) => log(`page: conversation ${(child.sessionId ? shortSessionId(child.sessionId) : undefined) ?? `not yet named (pid ${child.pid})`} pi exited (${signal ?? code})`),
 });
 /** Project-level MCP servers, connected on demand: the host itself has no project. */
 const mcpPool = new McpPool({ isTrusted: (cwd) => isExactlyTrusted(agentDir, cwd), resolveToken: resolveMcpToken, log: (msg) => log(`mcp pool: ${msg}`), onNotification: (cwd, cfg, n, source) => onPush(cfg, n, source, cwd) });
@@ -566,8 +568,9 @@ function snapshot(): HostSnapshot {
 		recent: host.scheduler.store
 			.listRuns(undefined, 5)
 			.reverse()
-			.map((r) => ({ job: r.jobName ?? r.jobId, at: r.finishedAt, ok: r.ok, ...(r.stoppedBy === "person" ? { stopped: true } : { error: r.error ? previewRedacted(r.error, 100) : undefined }), cost: r.usage?.cost })),
-		failing: jobs.filter((j) => j.enabled && j.lastError).map((j) => ({ job: j.name ?? j.id, error: previewRedacted(j.lastError ?? "", 120) })),
+			.map(recentRun),
+		// The three-in-a-row rule `/cron` and the badge use: one missed run is not a failing loop.
+		failing: failingJobs(jobs).map((j) => ({ job: loopLabel(j), error: previewRedacted(j.lastError ?? "", 120) })),
 		nextDue: (() => {
 			const next = jobs
 				.filter((j) => j.enabled && j.stateful)
@@ -810,7 +813,7 @@ const channel = serveHostChannelSafely(
 		pageOpen,
 		pageKey: (sessionId) => {
 			if (!page) return { error: "the page is not served" };
-			if (!pool.has(sessionId) && !leases.read(sessionId)) return { error: `pi-loops knows no conversation ${sessionId.slice(0, 8)}` };
+			if (!pool.has(sessionId) && !leases.read(sessionId)) return { error: `pi-loops knows no conversation ${shortSessionId(sessionId)}` };
 			return { openKey: page.openKeyFor(sessionId) };
 		},
 		pair: () => (page ? { code: page.newPairCode(), addresses: pageOnLoopback ? [] : lanAddresses(page.port()).map((a) => a.url) } : { error: "the page is not served" }),

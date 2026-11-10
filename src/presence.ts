@@ -6,7 +6,6 @@
  * sweep does not park a plain job whose session is open only there. Deleted with the 0.22 bridge.
  */
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { pidAlive, writeFileAtomic } from "./lock.ts";
 import { withinProject } from "./paths.ts";
@@ -95,8 +94,4 @@ export function olderPiOnSession(entries: PresenceEntry[], sessionId: string | u
 
 export function isSelf(entry: PresenceEntry | undefined, self: PresenceSelf): boolean {
 	return !!entry && entry.pid === self.pid && entry.host === self.host && entry.instance === self.instance;
-}
-
-export function localHost(): string {
-	return os.hostname();
 }

@@ -8,12 +8,13 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
 import { readUiPrefs, writeUiPref } from "../src/ui-prefs.ts";
-import { abortTarget, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, openFileUrl, pageAddress, pageFlagRefusal, pageLaunchHost, pageLaunchLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { UsageError, abortTarget, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, openFileUrl, pageAddress, pageFlagRefusal, pageLaunchHost, pageLaunchLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
 import { TriggerStore } from "../src/triggers.ts";
-import { stamp } from "../src/schedule.ts";
+import { formatLocal, stamp } from "../src/schedule.ts";
+import { JobStore } from "../src/store.ts";
 import { API_KEY_REFUSAL, type HostChannelHandlers, type PageOpenRequest, serveHostChannel } from "../src/host-control-channel.ts";
 import { decideEnsure, HOST_SERVICE_FILE, hostCommand, leavesWithWindows, openWindows, type HostServiceRecord, recordSpawn, RESTART_WAIT_LINE, WINDOWS_GRACE_MS } from "../src/host-control.ts";
 import { PI_LOOPS_VERSION } from "../src/version.ts";
@@ -154,12 +155,70 @@ test("every subcommand in docs/cli.md prints its usage for --help, exits 0 and w
 	assert.deepEqual(tree(root), before);
 });
 
+test("an error prints its message; only a mistyped command also prints that command's usage", () => {
+	const root = tmp("pi-loops-errors-");
+	const env = { ...process.env, HOME: root, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_DIR: path.join(root, "loops"), PI_LOOPS_HOST: "off" };
+	const cli = path.join(process.cwd(), "src", "cli-entry.mjs");
+	const run = (...args: string[]) => spawnSync(process.execPath, [cli, ...args], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+	const typo = run("import");
+	assert.equal(typo.status, 2, "a usage mistake exits 2");
+	assert.equal(typo.stderr, "pi-loops: import needs an archive path\n\npi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]\n    Restore an archive into a project.\n", "the message, then that command's usage and no other");
+	const bare = run("abort");
+	assert.equal(bare.status, 2, "abort with no id is typed wrong, as every other missing argument");
+	assert.match(bare.stderr, /^pi-loops: abort needs a run id, a trigger trace id or a session id\n\npi-loops .*abort/, "the message, then that command's usage");
+	const missing = run("inspect", path.join(root, "nonexistent.pisession"));
+	assert.equal(missing.status, 1, "a failure that is not a usage mistake exits 1");
+	assert.match(missing.stderr, /^pi-loops: .*ENOENT.*\n$/, "one line, with no usage under it");
+	const unknown = run("frob");
+	assert.equal(unknown.status, 2);
+	assert.doesNotMatch(unknown.stdout, /pi-loops export/, "an unknown command does not print the whole usage");
+	assert.match(unknown.stdout, /^unknown command "frob"/);
+	assert.match(unknown.stdout, /\npi-loops --help lists the commands\n$/);
+});
+
+test("a flag or a word a command does not read is refused, not ignored", async () => {
+	const root = tmp("pi-loops-unread-");
+	await withEnv({ PI_LOOPS_DIR: path.join(root, "loops"), PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: "off" }, async () => {
+		const refused = async (argv: string[], message: string) => {
+			const lines: string[] = [];
+			await assert.rejects(runCli(argv, (l) => lines.push(l)), (err: unknown) => err instanceof UsageError && err.message === message, argv.join(" "));
+			assert.deepEqual(lines, [], `${argv.join(" ")} did nothing before refusing`);
+		};
+		await refused(["status", "--bogus"], "status does not take --bogus");
+		await refused(["status", "--json"], "status does not take --json");
+		await refused(["export", path.join(root, "out.pisession")], `export: unexpected argument "${path.join(root, "out.pisession")}"`);
+		await refused(["sessions", "--json"], "sessions does not take --json");
+		await refused(["inspect", "a.pisession", "b.pisession"], 'inspect: unexpected argument "b.pisession"');
+		await refused(["recipe", "show", "issue-loop", "extra"], 'recipe: unexpected argument "extra"');
+		await refused(["upgrade", "--dir", "x"], "upgrade does not take --dir");
+		await refused(["stop", "now"], 'stop: unexpected argument "now"');
+		await refused(["pair", "--url"], "pair does not take --url");
+		await refused(["abort", "run-1", "run-2"], 'abort: unexpected argument "run-2"');
+		await refused(["host", "status", "--bogus"], "status does not take --bogus");
+	});
+	// What each command reads still gets through, the global --cwd included.
+	const lines: string[] = [];
+	await withEnv({ PI_LOOPS_DIR: path.join(root, "loops"), PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: "off" }, async () => {
+		assert.equal(await runCli(["recipe", "list", "--cwd", root], (l) => lines.push(l)), 0);
+		assert.equal(await runCli(["inbox", "list", "--all", "--json", "--cwd", root], (l) => lines.push(l)), 0);
+		assert.equal(await runCli(["status"], (l) => lines.push(l)), 1, "down is exit 1, not a refusal");
+		assert.equal(await runCli(["stop", "help"], (l) => lines.push(l)), 0, "`stop help` still asks how stop works");
+	});
+});
+
+test("a usage mistake is a UsageError, so the entry point knows to show the usage", async () => {
+	for (const argv of [["import"], ["inspect"], ["recipe", "show"], ["sessions", "--limit", "0"], ["abort"]])
+		await assert.rejects(runCli(argv, () => undefined), (err: unknown) => err instanceof UsageError, argv.join(" "));
+});
+
 test("pi-loops inbox: list, claim and dismiss with no pi open, as JSON a program can read", async () => {
 	const root = tmp("pi-loops-inbox-cli-");
 	const project = path.join(root, "project");
 	fs.mkdirSync(project);
 	const loops = path.join(root, "loops");
 	const inbox = new Inbox(loops);
+	// The loop that filed them is named, so every line names it as `/inbox` and the page do.
+	await new JobStore(loops).add({ id: "cron-1", name: "watch", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: project, enabled: true, catchUp: true, createdAt: stamp() });
 	const news = await inbox.append({ source: "cron:watch", text: "a TODO went stale", run_id: "run-1", job_id: "cron-1", cwd: project });
 	const decision = await inbox.append({ source: "cron:watch", text: "#4 brief posted · waits: your label", run_id: "run-1", job_id: "cron-1", cwd: project, kind: "checkpoint", verified: true });
 	await inbox.append({ source: "cron:other", text: "in another project", run_id: "run-2", job_id: "cron-2", cwd: path.join(root, "other") });
@@ -180,9 +239,9 @@ test("pi-loops inbox: list, claim and dismiss with no pi open, as JSON a program
 		const before = lines.length;
 		assert.equal(await runCli(["inbox", "list", "--cwd", project], out), 0);
 		assert.deepEqual(lines.slice(before), [
-			`${decision.id}  ⚑ ✓ #4 brief posted · waiting on: your label  (project, cron:watch, ${decision.created_at})`,
-			`${news.id}  a TODO went stale  (project, cron:watch, ${news.created_at})`,
-		], "one line per finding, the id first, as docs/cli.md says: a script reads the ids with awk");
+			`${decision.id}  ⚑ ✓ #4 brief posted · waiting on: your label  (project, watch, ${formatLocal(Date.parse(decision.created_at))})`,
+			`${news.id}  a TODO went stale  (project, watch, ${formatLocal(Date.parse(news.created_at))})`,
+		], "one line per finding, the id first, as docs/cli.md says: a script reads the ids with awk; the loop by its label, the time in local time");
 		// `--json` before the id: the id is still the id, and a prefix will do.
 		assert.equal(await runCli(["inbox", "claim", "--json", decision.id.slice(0, 12)], out), 0);
 		assert.equal(last().finding.status, "claimed");
@@ -753,7 +812,7 @@ test("pi-loops recipe: list, show, and an add that copies but creates no job", a
 	const out = (l: string) => lines.push(l);
 	await withEnv({ PI_LOOPS_DIR: path.join(root, "loops"), PI_CODING_AGENT_DIR: path.join(root, "agent") }, async () => {
 		assert.equal(await runCli(["recipe", "list", "--cwd", project], out), 0);
-		assert.match(lines.join("\n"), /^issue-loop\s+—\s+/m, "packaged, not installed");
+		assert.match(lines.join("\n"), /^issue-loop {8}Turns new issues/m, "packaged, not installed");
 		assert.match(lines.join("\n"), /^changelog-draft\s/m);
 		lines.length = 0;
 		assert.equal(await runCli(["recipe", "show", "issue-loop", "--cwd", project], out), 0);
@@ -772,7 +831,8 @@ test("pi-loops recipe: list, show, and an add that copies but creates no job", a
 		assert.ok(!fs.existsSync(path.join(root, "loops", "jobs.json")), "nothing scheduled from the shell");
 		lines.length = 0;
 		assert.equal(await runCli(["recipe", "list", "--cwd", project], out), 0);
-		assert.match(lines.join("\n"), /^issue-loop\s+installed: propose, 0 loops/m);
+		assert.match(lines.join("\n"), /^issue-loop {8}\[installed: propose, 0 loops\] \S/m);
+		assert.ok(lines.includes("pr-watch          Reports what changed on open pull requests: red checks, conflicts, unanswered reviews."), "a recipe not installed is its name and its one line, with no filler column");
 		await assert.rejects(runCli(["recipe", "add", "issue-loop", "--cwd", project, "--level", "report"], out), /supports propose, act, not "report"/);
 		lines.length = 0;
 		assert.equal(await runCli(["recipe", "nope", "--cwd", project], out), 2);
@@ -855,7 +915,7 @@ test("sessions and recipe jobs are found when the command runs from a subdirecto
 	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: agent }, async () => {
 		assert.equal(await runCli(["recipe", "list", "--cwd", sub], (l) => lines.push(l)), 0);
 	});
-	assert.match(lines.join("\n"), /^issue-loop\s+installed: propose, 1 loop/m);
+	assert.match(lines.join("\n"), /^issue-loop {8}\[installed: propose, 1 loop\] \S/m);
 });
 
 test("pi-loops export carries what the picked session created, not everything in the project", async () => {
@@ -918,6 +978,34 @@ test("pi-loops start --foreground leaves cleanly on SIGHUP: exit 0, its record g
 	assert.equal(fs.existsSync(record), false, "and took its record with it, so nobody counts a crash");
 });
 
+test("pi-loops status lists a loop as failing only after three failures in a row, as /cron and the badge do", { timeout: 60_000, skip: process.platform === "win32" ? "POSIX signals" : false }, async () => {
+	const dir = tmp("pi-loops-failing-");
+	const agent = tmp("pi-loops-failing-agent-");
+	const now = new Date().toISOString();
+	const job = (id: string, name: string | undefined, consecutiveFailures: number) => ({ id, ...(name ? { name } : {}), schedule: { kind: "every", ms: 86_400_000 }, stateful: true, prompt: "p", cwd: dir, enabled: true, catchUp: false, createdAt: now, lastFiredAt: now, lastError: "provider 500", consecutiveFailures });
+	fs.writeFileSync(path.join(dir, "jobs.json"), JSON.stringify({ version: 2, jobs: [job("cron-0123456789abcdef0123456789abcdef", undefined, 3), job("cron-fedcba9876543210fedcba9876543210", "missed-once", 1)] }));
+	const child = spawn(process.execPath, [path.join(process.cwd(), "src", "cli-entry.mjs"), "start", "--foreground"], {
+		env: { ...process.env, PI_LOOPS_DIR: dir, PI_CODING_AGENT_DIR: agent, PI_LOOPS_HOST_MODEL: "fake/fake-model", PI_LOOPS_HOST: "" },
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	let said = "";
+	child.stdout!.on("data", (d) => (said += d));
+	child.stderr!.on("data", (d) => (said += d));
+	const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+	try {
+		const record = path.join(dir, "host-service.json");
+		for (const deadline = Date.now() + 40_000; !fs.existsSync(record) && Date.now() < deadline; ) await new Promise((r) => setTimeout(r, 100));
+		const { askHost } = await import("../src/host-control-channel.ts");
+		let answer = await askHost(dir, { op: "status" });
+		for (const deadline = Date.now() + 20_000; !answer?.ok && Date.now() < deadline; answer = await askHost(dir, { op: "status" })) await new Promise((r) => setTimeout(r, 200));
+		assert.ok(answer?.ok, `it answered; said:\n${said}`);
+		assert.deepEqual(answer!.snapshot!.failing, [{ job: "cron-01234567", error: "provider 500" }], "one error is not a failing loop; three in a row is, by its label");
+	} finally {
+		child.kill("SIGHUP");
+		await exited;
+	}
+});
+
 test("pi-loops start, stop and restart with --help print the usage and do nothing else", async () => {
 	// `pi-loops stop --help` stopped pi-loops: the service verbs ignored every flag they did not know.
 	const root = tmp("pi-loops-help-cli-");
@@ -974,12 +1062,12 @@ test("pi-loops abort of a session takes effect with the socket closed", { timeou
 		const lines: string[] = [];
 		await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent") }, async () => {
 			assert.equal(await runCli(["abort", "01aa0000"], (l) => void lines.push(l)), 0, "a unique prefix names the session");
-			assert.deepEqual(lines, [`stopped the turn in session ${sessionId.slice(0, 8)}`]);
+			assert.deepEqual(lines, [`stopped the turn in session ${sessionId.slice(0, 13)}`]);
 			assert.equal(aborted, 1, "the holder stopped its turn");
 			running = undefined;
 			lines.length = 0;
 			assert.equal(await runCli(["abort", sessionId], (l) => void lines.push(l)), 1);
-			assert.deepEqual(lines, [`nothing was running in session ${sessionId.slice(0, 8)}`]);
+			assert.deepEqual(lines, [`nothing was running in session ${sessionId.slice(0, 13)}`]);
 			assert.equal(aborted, 1, "nothing ran, nothing was stopped");
 		});
 		assert.deepEqual(requests.list(sessionId), [], "both stop rows were read and removed");
@@ -1026,10 +1114,10 @@ test("a session prefix shorter than 8 characters is a trace id, not a session", 
 
 test("stopReport names every state a stop row can end in", () => {
 	const id = "01dd0000-0000-4000-8000-000000000001";
-	assert.deepEqual(stopReport("done", id), { line: "stopped the turn in session 01dd0000", code: 0 });
-	assert.deepEqual(stopReport("stale", id), { line: "nothing was running in session 01dd0000", code: 1 });
+	assert.deepEqual(stopReport("done", id), { line: "stopped the turn in session 01dd0000-0000", code: 0 });
+	assert.deepEqual(stopReport("stale", id), { line: "nothing was running in session 01dd0000-0000", code: 1 });
 	assert.deepEqual(stopReport(undefined, id).code, 0, "still queued");
-	assert.deepEqual(stopReport("dead", id), { line: "the stop for session 01dd0000 ended as dead; see /triggers audit", code: 1 }, "never read as queued");
+	assert.deepEqual(stopReport("dead", id), { line: "the stop for session 01dd0000-0000 ended as dead; see /triggers audit", code: 1 }, "never read as queued");
 });
 
 test("pi-loops status lists the request queues with pi-loops down", async () => {
@@ -1049,12 +1137,25 @@ test("pi-loops status lists the request queues with pi-loops down", async () => 
 		assert.equal(await runCli(["status"], (l) => void lines.push(l)), 1, "down is still exit 1");
 	});
 	assert.match(lines[0], /^pi-loops is not running/);
-	assert.deepEqual(lines.slice(1), ["  3 messages waiting for 2 conversations, 1 could not be delivered", `    01cc0001: 2 waiting · oldest 5m · 1 could not be delivered · open in pid ${process.pid}`, "    01cc0002: 1 waiting · oldest 30s · closed"]);
+	assert.deepEqual(lines.slice(1), ["  3 messages waiting for 2 conversations, 1 could not be delivered", `    01cc0001-0000: 2 waiting · oldest 5m · 1 could not be delivered · open in pid ${process.pid}`, "    01cc0002-0000: 1 waiting · oldest 30s · closed"]);
 	// With nothing queued the command says what it always said, and no more.
 	fs.rmSync(path.join(loops, "requests"), { recursive: true });
 	lines.length = 0;
 	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: undefined }, () => runCli(["status"], (l) => void lines.push(l)));
 	assert.equal(lines.length, 1, lines.join("\n"));
+});
+
+test("pi-loops status says when pi-loops tries again in local time, as every other stamp it prints", async () => {
+	const root = tmp("pi-loops-status-");
+	const loops = path.join(root, "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	recordSpawn(loops, { kind: "attempt", by: 1 });
+	const log = recordSpawn(loops, { kind: "outcome", by: 1, outcome: "died", error: "boom" });
+	const lines: string[] = [];
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: undefined }, async () => {
+		assert.equal(await runCli(["status"], (l) => void lines.push(l)), 1);
+	});
+	assert.equal(lines[0], `pi-loops is not running: it could not start (boom); retrying after ${formatLocal(Date.parse(log.notBefore!))}`);
 });
 
 test("a FIFO in requests/ or leases/ does not hang a reader", { timeout: 10_000 }, () => {

@@ -15,9 +15,11 @@ import { computeNext, formatLocal, formatSchedule, parseSchedule, stamp } from "
 import type { LoopScheduler, SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
 import { asleepNote, ownerSession, runsSomewhere, whereRuns, type OwnerView } from "./job-owner.ts";
+import { inProject } from "./inbox.ts";
+import { plural } from "./job-lines.ts";
 import type { TriggerRuntime } from "./trigger-runtime.ts";
 import { sameProject, withinProject } from "./paths.ts";
-import { type TriggerStore, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
+import { type TriggerStore, cleanCondition, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { WATCH_ASK_MS, type WatchChoice, type WatchPlan, askTitle, planCard, watchChoice, watchOptions } from "./watch-plan.ts";
 
@@ -193,7 +195,7 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 
 const deny = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: { id: undefined as string | undefined } });
 
-/** Both create tools say it at hop 0, where a person's message can arrive: the page's Watch box sends `Watch for: <sentence>` as a chat message, and only the question these tools ask may answer it. */
+/** `cron_create` says it at hop 0, where a person's message can arrive: the page's Watch box sends `Watch for: <sentence>` as a chat message, and only the question the create tools ask may answer it. Said once: both tools are in the same list. */
 const WATCH_SENTENCE = " A message that starts with `Watch for:` comes from the page's Watch box: answer it with one of these two tools (new_trigger or cron_create); if it names no time and nothing to wait for, call neither, do nothing, and say it reads like something to do now. Never do the action of a `Watch for:` message yourself.";
 
 /** The create tools ask first: hop 0, a person present, and the person's own turn, on every surface pi has a dialog. */
@@ -336,20 +338,20 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		name: "new_trigger",
 		label: "Create trigger",
 		description:
-			"Create an event/condition-based dynamic trigger rule. Use this for future events such as a browser tab, file, MCP notification, webhook, or other condition becoming true. Do not use this for fixed time, recurring, scheduled, hourly, daily, weekly, cron, crontab, 定时任务, 每小时, or similar time-based jobs; use cron_create instead." + watchSentence,
+			"Create an event/condition-based dynamic trigger rule. Use this for future events such as a browser tab, file, MCP notification, webhook, or other condition becoming true. Do not use this for fixed time, recurring, scheduled, hourly, daily, weekly, cron, crontab, 定时任务, 每小时, or similar time-based jobs; use cron_create instead.",
 		parameters: Type.Object(
 			{
 				condition: Type.String({ description: "The natural-language condition that should be evaluated against future trigger events." }),
 				action: Type.String({ description: "The action to perform when the condition matches. This may be a shell command or a natural-language instruction." }),
 				spec: Type.Optional(Type.String({ description: "Fallback complete trigger rule text when condition and action cannot be supplied separately." })),
 				fire_once: Type.Optional(Type.Boolean({ description: "Whether to disable the rule after the first successful match. Defaults to true unless the user explicitly asks for a repeating trigger." })),
-				promote_to_chat: Type.Optional(Type.Boolean({ description: "Whether successful trigger output should be inserted into the parent chat context so future turns can see it. Defaults to false unless the user explicitly asks for that behavior." })),
+				promote_to_chat: Type.Optional(Type.Boolean({ description: "Whether a match's result goes into this conversation (true) or the inbox (false). With a person present the question starts at this conversation whatever this says; with nobody to ask, the default is false." })),
 			},
 			{ additionalProperties: false },
 		),
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			if ([params.condition, params.action, params.spec].some((t) => t && looksLikeFixedScheduleRequest(t))) return deny("fixed scheduled jobs must use cron_create, not new_trigger");
-			let condition = params.condition?.trim() ?? "";
+			let condition = cleanCondition(params.condition ?? "");
 			let action = params.action?.trim() ?? "";
 			const fromSpec = !condition || !action;
 			if (fromSpec) {
@@ -414,7 +416,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			}
 			if (!params.id) return err("missing required arg: id");
 			const rule = resolveRuleRefScoped(host.triggers.store.load(), params.id, host.session().cwd);
-			if (!rule) return err(`no dynamic trigger rule with id '${params.id}'`);
+			if (!rule) return err(`no dynamic trigger rule with id '${params.id}'; list_triggers shows the ids`);
 			const denied = await host.confirmTool(ctx, { label: `remove dynamic trigger ${rule.id}`, tool: "remove_trigger", reason: "remove a dynamic trigger rule by `id`", preview: `when ${previewRedacted(rule.condition, 120)}`, args: params }, scope.hop);
 			if (denied) return err(denied);
 			await host.triggers.store.remove(rule.id);
@@ -432,7 +434,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const ruleCwd = host.session().cwd;
 			const rule = resolveRuleRefScoped(host.triggers.store.load(), params.id, ruleCwd);
-			if (!rule) return deny(`no dynamic trigger rule with id '${params.id}'`);
+			if (!rule) return deny(`no dynamic trigger rule with id '${params.id}'; list_triggers shows the ids`);
 			// Re-enabling is gated; pausing another project's rule is just as much a surprise, so it
 			// is gated too (a sub-agent is refused outright, having nobody to ask).
 			if (params.enabled || rule.cwd !== ruleCwd) {
@@ -457,7 +459,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 				description: 'Local-time schedule: 5-field cron ("0 9 * * *", "*/30 * * * 1-5"), "@daily", "every 30m", "in 10m", or "at 2026-09-08T18:00".',
 			}),
 			action: Type.String({ description: "Natural-language instruction to run when the schedule is due. For stateful jobs, write it for a fresh agent whose only memory is its own notes." }),
-			stateful: Type.Optional(Type.Boolean({ description: "Loop mode: sub-agent + notes between runs + findings to /inbox (default false)." })),
+			stateful: Type.Optional(Type.Boolean({ description: "Loop mode: sub-agent + notes between runs + findings to the inbox. With a person present the question starts at the inbox unless this is false; with nobody to ask, the default is false." })),
 			verify: Type.Optional(Type.Boolean({ description: "Maker/checker: a second adversarial sub-agent verifies each finding before it enters the inbox (stateful jobs only, default false). Use when the user asks for verified, double-checked, or high-precision findings." })),
 			name: Type.Optional(Type.String({ description: "Short unique label (letters, digits, . _ -)." })),
 			cwd: Type.Optional(Type.String({ description: "Directory a stateful job's sub-agent runs in. Default: current project." })),
@@ -505,7 +507,8 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const listCwd = host.session().cwd;
 			const everywhere = params.all_projects === true && scope.hop === 0;
 			const jobs = everywhere ? host.scheduler.store.load() : host.scheduler.store.load().filter((j) => sameProject(j.cwd, listCwd));
-			const text = `${renderCronJobsForTool(jobs, host)}\ninbox: ${host.scheduler.inbox.newCount()} new finding(s)`;
+			const newFindings = everywhere ? host.scheduler.inbox.newCount() : inProject(host.scheduler.inbox.listNew(), listCwd, sameProject).length;
+			const text = `${renderCronJobsForTool(jobs, host)}\ninbox: ${plural(newFindings, "new finding")}`;
 			const nowMs = Date.now();
 			const view = host.scheduler.ownerView();
 			const nextRun = (j: LoopJob) => nextRunForTool(j, nowMs, view);
@@ -525,7 +528,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const job = resolveJobRefScoped(host.scheduler.store.load(), params.ref, host.session().cwd);
-			if (!job) return { content: [{ type: "text", text: `no cron job with id '${params.ref}'` }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, confirmation_required: false, audit_entry_id: undefined as string | undefined } };
+			if (!job) return { content: [{ type: "text", text: `no cron job matching '${params.ref}' in this project; cron_list shows the ids and names` }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, confirmation_required: false, audit_entry_id: undefined as string | undefined } };
 			const label = `${job.id}${job.name ? ` "${job.name}"` : ""}`;
 			if (!params.confirm) {
 				return {
@@ -565,10 +568,10 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const jobCwd = host.session().cwd;
 			const job = resolveJobRefScoped(host.scheduler.store.load(), params.ref, jobCwd);
-			if (!job) return deny(`no cron job with id '${params.ref}'`);
+			if (!job) return deny(`no cron job matching '${params.ref}' in this project; cron_list shows the ids and names`);
 			if (params.enabled || job.cwd !== jobCwd) {
 				const denied = await host.confirmTool(ctx, { label: `${params.enabled ? "enable" : "disable"} cron job ${job.name ?? job.id}`, tool: "set_cron_job_state", reason: params.enabled ? "enable a cron job from a model-facing tool (`enabled` = true)" : "disable a cron job of another project", preview: `${formatSchedule(job.schedule)}: ${previewRedacted(job.prompt, 120)}`, args: params }, scope.hop);
-				if (denied) return deny(`${denied}; use /cron enable <id>`);
+				if (denied) return deny(denied);
 			}
 			const updated = (await host.scheduler.store.update(job.id, (j) => {
 				j.enabled = params.enabled;

@@ -216,7 +216,7 @@ export type DismissOutcome = { told: "loop"; loop: string } | { told: "nobody"; 
  */
 export function dismissOutcome(entry: Pick<InboxEntry, "job_id">, loop: { id: string; name?: string } | undefined, reason?: string): DismissOutcome {
 	if (!reason?.trim()) return { told: "silent" };
-	if (loop) return { told: "loop", loop: loop.name ?? loop.id };
+	if (loop) return { told: "loop", loop: loopLabel(loop) };
 	return { told: "nobody", why: entry.job_id?.startsWith("cron-") ? "loop-gone" : "rule" };
 }
 

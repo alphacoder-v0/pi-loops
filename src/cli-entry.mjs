@@ -21,9 +21,12 @@ try {
 	process.stderr.write(`pi-loops: ${err?.message ?? err}\n`);
 	process.exit(1);
 }
+const argv = process.argv.slice(2);
 try {
-	process.exitCode = await cli.runCli(process.argv.slice(2));
+	process.exitCode = await cli.runCli(argv);
 } catch (err) {
-	process.stderr.write(`pi-loops: ${err?.message ?? err}\n\n${cli.CLI_USAGE}\n`);
-	process.exitCode = 1;
+	// Only a command typed wrong is answered with its usage; a missing file or a lock is not fixed by reading one.
+	const usage = err instanceof cli.UsageError;
+	process.stderr.write(`pi-loops: ${err?.message ?? err}\n${usage ? `\n${cli.usageFor(argv[0])}\n` : ""}`);
+	process.exitCode = usage ? 2 : 1;
 }

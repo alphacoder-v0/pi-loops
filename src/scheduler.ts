@@ -17,6 +17,7 @@ import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import { backoffWaitMs, computeDue, computeNext, formatLocal, formatLocalZoned, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
 import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, type RunRequester, newId } from "./store.ts";
 import { openWhere, ownerSession, runsHere, whereRuns, type OwnerView } from "./job-owner.ts";
+import { shortSessionId } from "./session-head.ts";
 import { DEAD_AFTER_ATTEMPTS, backoffFor, plainCollapseKey, plainJobRow, plainRunId, sessionFileHas } from "./engine.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
@@ -503,9 +504,9 @@ export class LoopScheduler {
 		for (const job of dead) {
 			await this.store.update(job.id, (j) => {
 				j.enabled = false;
-				j.lastError = `disabled: session ${job.sessionId!.slice(0, 8)} ${DEAD_SESSION_MARKER}`;
+				j.lastError = `disabled: session ${shortSessionId(job.sessionId!)} ${DEAD_SESSION_MARKER}`;
 			});
-			this.log(`cron ${job.name ?? job.id}: disabled, its session ${job.sessionId!.slice(0, 8)} no longer exists`, undefined, job);
+			this.log(`cron ${job.name ?? job.id}: disabled, its session ${shortSessionId(job.sessionId!)} no longer exists`, undefined, job);
 		}
 	}
 
@@ -1011,7 +1012,7 @@ export class LoopScheduler {
 				this.log(`cron ${job.id}: could not update its requests after its turn (${err?.message ?? err})`, undefined, job);
 			}
 			if (handedBack) {
-				this.log(`cron ${job.name ?? job.id}: ${outcome.preempted ? `a window opened session ${sessionId.slice(0, 8)} during its turn; that window runs it` : `turn stopped (${record.error}); ${landed ? "a fresh prompt is queued for it" : "the slot is owed"}`}`, "info");
+				this.log(`cron ${job.name ?? job.id}: ${outcome.preempted ? `a window opened session ${shortSessionId(sessionId)} during its turn; that window runs it` : `turn stopped (${record.error}); ${landed ? "a fresh prompt is queued for it" : "the slot is owed"}`}`, "info");
 				return;
 			}
 			if (stopped) this.log(`cron ${job.name ?? job.id}: turn stopped; it is done`, "info");

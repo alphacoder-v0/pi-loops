@@ -294,6 +294,10 @@ pi-loops inbox list [--all] [--cwd <dir>] | claim <id> | dismiss <id> [--reason 
 
 `-h` or `--help` anywhere in a subcommand's arguments before a `--` prints that subcommand's usage
 and exits 0 without doing anything else; `pi-loops -h` is `pi-loops --help`. After `--` they are pi's.
+A command typed wrong, such as a missing archive path, a flag the command does not read
+(`status does not take --json`) or a word it does not read (`export: unexpected argument "out.pisession"`),
+prints `pi-loops: <what is wrong>` and that command's usage, and exits 2. Any other error prints only its line and exits 1. An unknown command
+names itself and the version you run, and exits 2.
 
 The command line reads, triages one finding at a time and moves sessions. It never creates or
 removes: there is no `cron remove`, no `recipe remove` and no `inbox clear`. Creating and removing
@@ -322,7 +326,7 @@ taken. `--session` accepts a full id or a unique prefix. `--exclude-triggers` dr
 sidecar.
 
 ```
-pi-loops export --session 01a084a0 --output ~/backups/api.pisession
+pi-loops export --session 01a084a0-1c2d --output ~/backups/api.pisession
 ```
 
 ## import
@@ -345,14 +349,14 @@ spellings `pi-loops host status|abort|stop|start` and `/cron host` still work.
 ```
 $ pi-loops status
 pi-loops
-  pid 2949521 on box, started 2026-09-09T13:33:16.652+08:00, model openai-codex/gpt-5.5
+  pid 2949521 on box, started 2026-09-09 13:33, model openai-codex/gpt-5.5
   pi-loops 0.24.0 · 1/1 loops, 0/0 rules enabled · inbox: 0 new
   started by the shell that ran pi-loops
-  conversation 424aba43 "fix the flaky login test" open in pid 939915 (tui)
-  running nightly (run-97ffb250) since 2026-09-09T13:34:16.676+08:00: check the repo issues
+  conversation 424aba43-0c1f "fix the flaky login test" open in pid 939915 (tui)
+  running nightly (run-97ffb250) since 2026-09-09 13:34: check the repo issues
   3 messages waiting for 2 conversations, 1 could not be delivered
-    424aba43: 2 waiting · oldest 5m · 1 could not be delivered · open in pid 939915
-    9e1f3b07: 1 waiting · oldest 30s · closed
+    424aba43-0c1f: 2 waiting · oldest 5m · 1 could not be delivered · open in pid 939915
+    9e1f3b07-77a0: 1 waiting · oldest 30s · closed
 ```
 
 The waiting lines appear when something waits to be delivered to a conversation (in
@@ -391,8 +395,8 @@ and ends with one of three lines: `stopped the turn in session <id>`; `nothing w
 pi-loops reads it`. A prefix shorter than 8 characters is read as a trace id. A prefix that fits more
 than one session, or a run id prefix that fits more than one running turn, lists them and exits 1.
 
-The stamps carry the offset of the machine pi-loops runs on ([loops.md](loops.md#time-and-which-clock-it-is));
-these are a `+08:00` machine's.
+The times are the local time of the machine pi-loops runs on, with no offset
+([loops.md](loops.md#time-and-which-clock-it-is)).
 
 ### The Background view
 
@@ -409,16 +413,17 @@ http://127.0.0.1:4173/?token=3f9c…
 The view lists every conversation that is open somewhere or has a plain job, a rule or something
 waiting, with where it is (`a terminal`, `this page`, `the background`, `a pi-loops 0.22 window`,
 `closed`), then what is running, what waits in the words `pi-loops status` uses, the budget, failing
-jobs, recent runs and MCP servers, every time in the browser's own format and no pid. It refreshes
+loops (three failures in a row, as `/cron` marks them), recent runs and MCP servers, every time in the browser's own format and no pid. It refreshes
 every 15 seconds. `/background.json` is the same as JSON, every field as before.
 It is behind the page's token, like every other address of the page.
 
 `pi-loops status` has a `page:` line for it: `  page: http://127.0.0.1:4173/ · 2 open conversations`,
 or why there is none (`  page: waiting for 127.0.0.1:4173 (an older pi-loops page holds it)`). A
-conversation open in the page reads `  conversation 424aba43 open in the page (pid 939915, 1 tab,
-idle 3m)`. A conversation is named by the first 8 characters of its id, which conversations started
-in the same minute share, followed by its name or first message (at most 40 characters) when its
-session file has one; the Background view names it the same way.
+conversation open in the page reads `  conversation 424aba43-0c1f open in the page (pid 939915, 1 tab,
+idle 3m)`. A conversation is named by the first 13 characters of its id, which only conversations
+started in the same millisecond share, followed by its name or first message (at most 40 characters)
+when its session file has one. The terminal, the page and the Background view name it the same way,
+and `--session` takes it.
 
 The token is kept in `web-token` (0600) in the loops directory, so a bookmarked address and a paired
 phone keep working after pi-loops restarts. A stolen token reaches every conversation for as long as

@@ -436,6 +436,60 @@ decisions of 2026-11-02); none of these had shipped either.
   tick after that, as before. A window that writes a row for a conversation it does not hold also rings pi-loops over
   the control socket (`ring`, `request:<session>` or `lease:<session>`). The 30-second tick stays as
   the floor: a ring that is lost delays a row by at most one tick and never loses or repeats one.
+- **The agent's tools say each thing once, and say it truly.**
+  - Only `cron_create` explains a `Watch for:` message; `new_trigger` and the skill no longer repeat it.
+  - `promote_to_chat` and `stateful` state their real defaults: with a person present the question
+    starts at this conversation (a rule) or the inbox (a schedule); with nobody to ask, both are false.
+  - Each refusal and each id a tool cannot find ends with the next step: `cron_list shows the ids and
+    names`, `list_triggers shows the ids`, `report what you would have done, so a person can do it`
+    (a sub-agent) and `a person can do it with the slash command` (no UI). `set_cron_job_state` no
+    longer ends every refusal, a disable's included, with `; use /cron enable <id>`.
+  - `cron_list` counts this project's new findings (`inbox: 1 new finding`); `all_projects` counts the
+    machine's.
+- **The page says each thing in one place.**
+  - The list has no All / Needs you / Unread tabs: the cards are what needs you, and each row keeps
+    its `⚑ N` and unread dot. The `Today` heading shows only when an `Earlier` group does too.
+  - The away card no longer says `· N needs you`; the terminal's sentence still does.
+  - The status bar says only whether pi-loops runs: no loop count, no terminal count.
+  - The status chip is empty while idle (no `ready`).
+  - A loop row has no `runs N` and no ` · loop`; a plain job's schedule ends ` · in its conversation`.
+  - The project switcher names a project by its folder, with the whole path as its title; the
+    header has no path chip.
+  - The Loops pane shows Goal only while a goal is set, and has no This conversation section.
+  - Controls whose title repeated their label lose the title; the theme and notifications are
+    `theme: system|light|dark` and `notifications: on|off`. A row's holder tag has no title, with
+    one exception: a `terminal` tag whose terminal answers nothing sent to it keeps a title that
+    says so.
+  - The door is one heading, one line and the code field.
+  - A card whose conversation is gone says `its conversation is gone; runs here` (or `runs in a new
+    conversation in <project>`), not which button to press.
+  - Other projects' loops, rules and findings are counted (`+ 2 loops in other projects`) with no
+    terminal command; more new findings than the cards show is `+ N more`.
+  - The Watch card has no command box, no `Model` row and no `WATCH` tag; the terminal's question
+    keeps its `Command` line.
+  - An untitled conversation is named by its id's first 13 characters (`01a1c183-7467`), as
+    elsewhere.
+- **The terminal and the command line say each thing once, in one form.**
+  - A conversation is named by its id's first 13 characters on every surface; the first 8 were
+    shared by conversations started about a minute apart. `pi-loops sessions` keeps 16.
+  - `pi-loops status` and the Background view list a loop as failing only after three failures in
+    a row, as `/cron` and the badge do, and name it by its label, never its whole id.
+  - The widget lists Rules (`condition → action`, marked only `[disabled]` or `[every time]`),
+    Loops, Runs and MCP; the inbox count is the footer's, and a check is shown only when it went
+    wrong.
+  - `/cron` says `disabled` but not `enabled`, marks catch-up only where it differs from the
+    default, prints the last fired time in local time, and the path only in `/cron all`.
+  - Bare `/triggers` lists the rules; `/triggers status` says in plain words what checks them.
+    A rule row has no `fire_once` or `promote_to_chat`.
+  - `pi-loops inbox list` names the loop by its label in local time, and a dismiss tells the loop
+    by its label. `pi-loops status` prints the start once, and every time in local time.
+  - `/pi-loops`, `/recipe` and `/goal` drop their taglines; both recipe lists show each recipe's
+    one line, with no `—` column.
+  - `/cron runs` says `stopped` for a run that a quit or restart ended, not `FAILED: ?`.
+  - An error prints `pi-loops: <message>`, and the usage of that command only when it was typed
+    wrong (exit 2); an unknown command points at `pi-loops --help`. A flag or a word a command
+    does not read is refused (`status does not take --json`) instead of being ignored.
+  - With HOME `/home/al`, `/home/alice/x` is no longer written `~ice/x`.
 
 ## [0.23.0] - 2026-10-30
 

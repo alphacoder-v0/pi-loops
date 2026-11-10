@@ -182,8 +182,8 @@ A 5-minute dedup window collapses repeated events with the same idempotency key 
 rule evaluation, per window for injected pushes).
 
 ```text
-/triggers status      rule counts, checker ownership, last check, push sources
-/triggers rules       this project's rules  (--all for every project)
+/triggers             this project's rules; the same as /triggers rules  (--all for every project)
+/triggers status      rule counts, what checks them, the last check, push sources
 /triggers sources     local checker + each MCP server: state, queued/dropped/deduped, tools
                       (/triggers hooks is the same view)
 /triggers enable <id> /triggers disable <id> /triggers remove <id>   also --all | --all-projects
@@ -211,8 +211,9 @@ Cycles are bounded by a hop count: sub-agents run at hop 1 and still have the
 cron/trigger tools, so a trigger action can schedule a job; they never run the trigger runtime, so
 nothing nests. Prompt-class operations — creating or removing a trigger,
 re-enabling a trigger or a cron job — are denied fail-closed in sub-agents (no control-plane
-prompt channel there); `cron_create` and `cron_remove` work and the control-plane audit records
-`actor: sub-agent`. Sub-agents never handle triggers themselves: they ignore MCP pushes, and the
+prompt channel there). `cron_create` works there, and so does disabling a job of the sub-agent's own
+project; the control-plane audit records `actor: sub-agent`. `cron_remove`, re-enabling a job and
+touching another project's job are denied there like the other prompt-class operations. Sub-agents never handle triggers themselves: they ignore MCP pushes, and the
 runtime audits anything reaching hop ≥ 1 as `cycle_suppressed` (hops are counted per trace, but the
 bound that matters is structural: a sub-agent session never acts on a trigger at all).
 
@@ -220,8 +221,8 @@ bound that matters is structural: a sub-agent session never acts on a trigger at
 
 `/triggers enable|disable <id>` prints the rule's state, condition and action (and the
 fire-once note); `/triggers sources` lists MCP servers, the cron hook and the dynamic
-checker in registration order with a `sources: N total, M connected, K require
-attention` summary in `/triggers status`. Errors are worded once and kept that way (`unknown /triggers command:
+checker in registration order with a `Sources: N, M connected, K need attention` summary in
+`/triggers status` (the last part only when K is not 0). Errors are worded once and kept that way (`unknown /triggers command:
 …`, `usage: /triggers remove <id>|--all`, `/new-trigger` parse messages). `/triggers remove --all`
 clears this project's rules; `--all-projects` is the explicit machine-wide sweep.
 

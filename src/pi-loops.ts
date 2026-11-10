@@ -47,7 +47,7 @@ import { jobLines as cronJobLines } from "./job-lines.ts";
 import { openWhere, runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, type TurnMarks, closedConversation, markTurnEvent, openWindowPids, procStart, turnSinceOf } from "./lease.ts";
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
-import { heldJobsNotice, leftConversationLine, loopLabel, pickQueued, plural, queueLines, toolsCapNotice } from "./job-lines.ts";
+import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, plural, queueLines, toolsCapNotice } from "./job-lines.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
@@ -77,6 +77,9 @@ const GOAL_STATUS_KEY = "pi-loops-goal";
 const GOAL_EVALUATOR_TIMEOUT_MS = 120_000;
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { pidAlive } from "./lock.ts";
+import { shortSessionId } from "./session-head.ts";
+import { ruleLines as listRules, triggerStatusLines } from "./rule-lines.ts";
+import { projectLabel } from "./conversation-rows.ts";
 
 interface ViewData {
 	title: string;
@@ -583,8 +586,6 @@ export default function piLoops(pi: ExtensionAPI) {
 	/* ------------------------------------------------------------ panel */
 
 	const PANEL_KEY = "pi-loops-panel";
-	const PANEL_RULE_LIMIT = 5; // more than five rules is a list, not a panel
-	const PANEL_RUN_LIMIT = 3; // the latest runs; `/cron runs` has the rest
 	/** This project's latest finished runs, oldest first, as showFinishedRuns last read them. */
 	let recentRuns: RunRecord[] = [];
 	let panelOn = panelEnabled(readUiPrefs(dir));
@@ -599,7 +600,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * The panel (Triggers / Polling / Inbox / Cron / Runs / sources), rendered as a widget
+	 * The panel (Rules / Last check / Loops / Runs / MCP / Hooks; src/job-lines.ts panelLines), rendered as a widget
 	 * above the editor. Hidden when there is nothing to show. A run that writes no card into the
 	 * conversation is seen here, in the Runs block.
 	 */
@@ -617,64 +618,22 @@ export default function piLoops(pi: ExtensionAPI) {
 			lastCtx.ui.setWidget(PANEL_KEY, undefined);
 			return;
 		}
-		const rules = triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd));
-		const jobs = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd));
-		const inboxNew = scheduler.inbox.newCount();
-		const poll = lastPoll();
-		const sources = mcpSources.map((src) => ({ name: src.config.name, state: src.status.state, tools: (mcpToolNames.get(src.config.name) ?? []).length }));
-		const runs = recentRuns;
-		if (!rules.length && !jobs.length && !inboxNew && !sources.length && !runs.length) {
+		const lines = panelLines({
+			rules: triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd)).map((r) => ({ ...r, failureMark: ruleFailureMark(r) })),
+			poll: lastPoll(),
+			jobs: scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd)),
+			runs: recentRuns,
+			runText: runLine,
+			sources: mcpSources.map((src) => ({ name: src.config.name, state: src.status.state, tools: (mcpToolNames.get(src.config.name) ?? []).length })),
+			hookEvents: hookRunner?.hooks.map((h) => h.event) ?? [],
+		});
+		if (!lines.length) {
 			lastCtx.ui.setWidget(PANEL_KEY, undefined);
 			return;
 		}
-		const clip = (x: string, n: number) => previewRedacted(x, n);
 		lastCtx.ui.setWidget(PANEL_KEY, (_tui, theme) => {
-			const dim = (x: string) => theme.fg("dim", x);
-			const head = (x: string) => theme.fg("accent", x);
-			const ok = (x: string) => theme.fg("success", x);
-			const warn = (x: string) => theme.fg("warning", x);
-			const lines: string[] = [];
-			if (rules.length) {
-				lines.push(head("Triggers"));
-				for (const r of rules.slice(0, PANEL_RULE_LIMIT)) {
-					lines.push((r.enabled ? ok : dim)(`${r.id.slice(0, 12)} [${r.enabled ? "enabled" : "disabled"}, ${r.fireOnce ? "once" : "repeat"}]`) + (ruleFailureMark(r) ? warn(` ${ruleFailureMark(r)}`) : "") + dim(`  when ${clip(r.condition, 40)}  do ${clip(r.action, 40)}`));
-				}
-				if (rules.length > PANEL_RULE_LIMIT) lines.push(dim(`… ${rules.length - PANEL_RULE_LIMIT} more`));
-			}
-			if (poll) {
-				// Polling: checked_at · outcome, source / event, trace, summary.
-				lines.push(head("Polling") + warn(`  ${formatLocal(Date.parse(poll.at))} · ${poll.outcome}`));
-				lines.push(dim(`  ${poll.sourceLabel} / ${poll.eventLabel}  trace ${poll.traceId.slice(0, 8)}`));
-				lines.push(dim(`    ${clip(poll.summary, 80)}`));
-			}
-			if (inboxNew > 0) lines.push(warn(`Inbox  ${inboxNew} new — /inbox`));
-			if (jobs.length) {
-				const enabled = jobs.filter((j) => j.enabled).length;
-				lines.push(head("Cron") + (enabled === jobs.length ? ok : warn)(`  enabled ${enabled} · disabled ${jobs.length - enabled}`));
-				for (const j of jobs.slice(0, PANEL_RULE_LIMIT)) {
-					const label = loopLabel(j);
-					lines.push((j.enabled ? ok : dim)(`${label} [${j.enabled ? "enabled" : "disabled"}${j.stateful ? ", stateful" : ""}] ${formatSchedule(j.schedule)}`) + dim(`  do ${clip(j.prompt, 48)}`) + (j.skippedOverlap ? warn(`  skipped overlaps ${j.skippedOverlap}`) : ""));
-				}
-				if (jobs.length > PANEL_RULE_LIMIT) lines.push(dim(`… ${jobs.length - PANEL_RULE_LIMIT} more`));
-			}
-			if (runs.length) {
-				lines.push(head("Runs"));
-				const names = new Map(jobs.map((j) => [j.id, j.name]));
-				for (const r of runs.slice(-PANEL_RUN_LIMIT).reverse()) {
-					const line = `${formatLocal(Date.parse(r.finishedAt)).slice(11)} ${runLine(r, names.get(r.jobId))}`;
-					lines.push(r.ok ? ok(line) : r.aborted ? dim(line) : warn(line));
-				}
-				if (runs.length > PANEL_RUN_LIMIT) lines.push(dim("… /cron runs"));
-			}
-			if (sources.length) {
-				const tools = sources.reduce((n, s) => n + s.tools, 0);
-				lines.push(head("MCP") + dim(`  servers ${sources.length} · tools ${tools} · notification hooks ${sources.length}`));
-				lines.push(sources.map((src) => (src.state === "connected" ? ok : src.state === "disabled" ? dim : warn)(`  ${src.name} ${src.state}${src.tools ? ` · ${src.tools} tool${src.tools === 1 ? "" : "s"}` : ""}`)).join(""));
-			}
-			const hookCount = hookRunner?.hooks.length ?? 0;
-			if (hookCount) lines.push(head("Hooks") + dim(`  cli_hooks ${hookCount} rule${hookCount === 1 ? "" : "s"} (${[...new Set(hookRunner!.hooks.map((h) => h.event))].join(", ")})`));
-			const text = new Text(lines.join("\n"), 0, 0);
-			return text;
+			const colour = { head: "accent", ok: "success", dim: "dim", warn: "warning" } as const;
+			return new Text(lines.map((l) => theme.fg(colour[l.tone], l.text)).join("\n"), 0, 0);
 		});
 	}
 
@@ -711,7 +670,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	function noteBinding(outcome: AcquireOutcome): void {
-		if (outcome.outcome === "acquired" && outcome.tookFromPid) log.info(`took session ${outcome.lease.sessionId.slice(0, 8)} from dead pid ${outcome.tookFromPid}`);
+		if (outcome.outcome === "acquired" && outcome.tookFromPid) log.info(`took session ${shortSessionId(outcome.lease.sessionId)} from dead pid ${outcome.tookFromPid}`);
 		if (outcome.outcome === "acquired" && outcome.tookFromPage) sayInfo("[cron] this conversation was open in the page; it is yours now, and the page shows it is answered here");
 		if (outcome.outcome === "acquired") noteUnseenEntries(outcome.lease.sessionFile, !!outcome.tookFromHost?.runId);
 		const holder = outcome.outcome === "viewer" ? outcome.holderPid : undefined;
@@ -742,7 +701,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			return;
 		}
 		binding.standAside();
-		log.info(`session ${binding.here().sessionId?.slice(0, 8)} is ahead on disk; standing aside until it is resumed`);
+		log.info(`session ${shortSessionId(binding.here().sessionId ?? "?")} is ahead on disk; standing aside until it is resumed`);
 		if (ctx.hasUI) afterHistory(ctx, () => ctx.ui.notify("[cron] this window shows an older copy of this conversation: it changed after this window read it. /resume this session to see it; until then its scheduled messages and rule results wait", "warning"));
 	}
 
@@ -772,7 +731,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const sessionId = binding.here().sessionId;
 		if (!sessionId) return;
 		const left = releaseLocalRows(requests, sessionId, self, (id) => executor.delivered(id));
-		if (left.length) log.info(`left ${left.length} queued request(s) of session ${sessionId.slice(0, 8)} to its holder`);
+		if (left.length) log.info(`left ${left.length} queued request(s) of session ${shortSessionId(sessionId)} to its holder`);
 	}
 
 	/** A request written for this conversation lands without waiting for the tick; the tick drains as well, because fs.watch can miss events. */
@@ -1213,18 +1172,15 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	const short = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-	const homeRel = (p: string) => {
-		const home = process.env.HOME ?? "";
-		return home && p.startsWith(home) ? `~${p.slice(home.length)}` : p;
-	};
+	const homeRel = (p: string) => projectLabel(p, process.env.HOME ?? "");
 
-	function jobLines(jobs: LoopJob[]): string[] {
+	function jobLines(jobs: LoopJob[], showCwd = false): string[] {
 		// Read once for the whole listing: the run log and the inbox are each one file, and a
 		// project with a dozen loops would otherwise parse them a dozen times per `/cron`. The shape
 		// of the lines is src/job-lines.ts, where a test can see a marker go.
 		const runs = jobs.some((j) => j.stateful) ? scheduler.store.allRuns() : [];
 		const inbox = jobs.some((j) => j.stateful) ? scheduler.inbox.list() : [];
-		return cronJobLines(jobs, { runs, inbox, requests: (sessionId) => requests.list(sessionId), view: scheduler.ownerView(), now: Date.now(), home: process.env.HOME ?? "", cwdExists: (cwd) => fs.existsSync(cwd) });
+		return cronJobLines(jobs, { runs, inbox, requests: (sessionId) => requests.list(sessionId), view: scheduler.ownerView(), now: Date.now(), home: process.env.HOME ?? "", cwdExists: (cwd) => fs.existsSync(cwd), showCwd });
 	}
 
 	/* --------------------------------------------------------- creation */
@@ -1318,18 +1274,18 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "all": {
 						const all = jobs();
 						if (!all.length) {
-							show(ctx, "Cron jobs: none", ['/cron add [--stateful] "0 9 * * *" <prompt>   (/cron help for more)']);
+							show(ctx, "Loops: none", ['/cron add [--stateful] "0 9 * * *" <prompt>   (/cron help for more)']);
 							return;
 						}
 						if (sub === "all") {
-							show(ctx, `Cron jobs (this machine, ${all.length}, times ${localOffset(Date.now())}):`, jobLines(all));
+							show(ctx, `Loops (this machine, ${all.length}, times ${localOffset(Date.now())}):`, jobLines(all, true));
 							return;
 						}
 						const here = all.filter((j) => sameProject(j.cwd, session.cwd));
 						const elsewhere = all.length - here.length;
 						const lines = here.length ? jobLines(here) : ["(none in this project)"];
-						if (elsewhere) lines.push(`+ ${elsewhere} job${elsewhere === 1 ? "" : "s"} in other projects — /cron all`);
-						show(ctx, `Cron jobs (${homeRel(session.cwd)}, ${here.length}, times ${localOffset(Date.now())}):`, lines);
+						if (elsewhere) lines.push(`+ ${plural(elsewhere, "loop")} in other projects — /cron all`);
+						show(ctx, `Loops (${homeRel(session.cwd)}, ${here.length}, times ${localOffset(Date.now())}):`, lines);
 						return;
 					}
 					case "help":
@@ -1372,7 +1328,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "panel": {
 						const on = rest.trim() === "on" ? true : rest.trim() === "off" ? false : !panelOn;
 						setPanelEnabled(on);
-						ctx.ui.notify(`panel ${on ? "on" : "off"} (Triggers / Inbox / Cron / MCP widget above the editor)`, "info");
+						ctx.ui.notify(`panel ${on ? "on" : "off"} (Rules / Loops / Runs / MCP above the editor)`, "info");
 						return;
 					}
 					case "snapshot": {
@@ -1581,7 +1537,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const purge = /(^|\s)--purge(\s|$)/.test(rest);
 						if (purge && orphans.length) for (const o of orphans) scheduler.store.purgeState(o.id);
 						show(ctx, `removed ${plural(removed.length, "plain job")} whose session no longer exists${all ? " (every project)" : " in this project"}`, [
-							...removed.map((j) => `  - ${j.id}${j.name ? ` "${j.name}"` : ""}  (session ${(j.sessionId ?? "?").slice(0, 8)})`),
+							...removed.map((j) => `  - ${j.id}${j.name ? ` "${j.name}"` : ""}  (session ${shortSessionId(j.sessionId ?? "?")})`),
 							...(orphans.length && !purge ? [`  ${plural(orphans.length, "loop")} that ${orphans.length === 1 ? "is" : "are"} gone left loop state or transcripts behind (${Math.round(orphans.reduce((n, o) => n + o.bytes, 0) / 1024)} KB) — /cron gc --purge deletes them`] : []),
 							...(all ? [] : ["  --all also collects other projects' dead plain jobs"]),
 							...(purge && orphans.length ? [`  deleted the loop state and transcripts of ${plural(orphans.length, "loop")} that ${orphans.length === 1 ? "is" : "are"} gone`] : []),
@@ -1661,7 +1617,7 @@ export default function piLoops(pi: ExtensionAPI) {
 								const who = job ? "" : `${r.jobName ?? r.jobId} `;
 								const cost = r.usage?.cost ? ` $${r.usage.cost.toFixed(3)}` : "";
 								const chk = r.checker ? (r.checker.ok ? `, checker kept ${r.checker.kept}/${r.checker.kept + r.checker.dropped.length + r.checker.unreviewed}` : ", checker FAILED") : "";
-								const tail = r.ok ? `${r.findings} finding${r.findings === 1 ? "" : "s"}${chk}${r.stateUpdated ? ", state updated" : ""}` : r.stoppedBy === "person" ? `stopped by you ${r.stoppedFrom === "page" ? "from the page" : "from a terminal"}` : `FAILED: ${previewRedacted(r.error ?? "?", 80)}`;
+								const tail = r.ok ? `${r.findings} finding${r.findings === 1 ? "" : "s"}${chk}${r.stateUpdated ? ", state updated" : ""}` : r.stoppedBy === "person" ? `stopped by you ${r.stoppedFrom === "page" ? "from the page" : "from a terminal"}` : r.aborted ? "stopped" : `FAILED: ${previewRedacted(r.error ?? "?", 80)}`;
 								return `${String(i + 1).padStart(2)}. ${formatLocal(Date.parse(r.startedAt))} ${who}${secs}s${cost} · ${tail}${r.sessionFile ? "" : " (no transcript)"}`;
 							}),
 							job ? `transcript: /cron trace ${job.name ?? job.id} <k>` : "transcript: /cron trace <job> <k>",
@@ -1712,7 +1668,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const live = liveHostRecord();
 						const here = binding.here();
 						show(ctx, `Cron scheduler (pi-loops ${PI_LOOPS_VERSION} on pi ${PI_VERSION})`, [
-							`this window: pid ${process.pid}, ${schedulerStarted ? "firing the plain jobs of its conversation" : "not scheduling (non-interactive)"}${here.sessionId ? ` · conversation ${here.sessionId.slice(0, 8)} ${here.holds ? "runs here" : binding.viewerOf !== undefined ? "open in another window" : binding.standingAside ? "does not run here: this window's copy is older than the file, /resume it" : "does not run here"}` : ""}`,
+							`this window: pid ${process.pid}, ${schedulerStarted ? "firing the plain jobs of its conversation" : "not scheduling (non-interactive)"}${here.sessionId ? ` · conversation ${shortSessionId(here.sessionId)} ${here.holds ? "runs here" : binding.viewerOf !== undefined ? "open in another window" : binding.standingAside ? "does not run here: this window's copy is older than the file, /resume it" : "does not run here"}` : ""}`,
 							`pi-loops: ${live ? `pid ${live.pid}, version ${live.version}, since ${formatLocal(Date.parse(live.startedAt))} (runs every loop and check in the background)` : `not running${hostPauseReason() ? ` — ${hostPauseReason()}` : hostState ? ` — ${hostProblemText()}` : ""}`}`,
 							...machineRuns().filter((r) => r.inHost).map((r) => `  running: ${r.label} since ${formatLocal(Date.parse(r.startedAt))}`),
 							`store: ${homeRel(dir)}`,
@@ -1771,11 +1727,11 @@ export default function piLoops(pi: ExtensionAPI) {
 		const live = liveHostRecord();
 		const answer = live ? await askHost(dir, { op: "status" }) : undefined;
 		const snapshot = answer?.ok ? answer.snapshot : undefined;
+		// A snapshot that answered says the pid, the version and the start itself.
 		show(ctx, "pi-loops in the background", [
-			live
-				? `  running: pid ${live.pid}, pi-loops ${live.version}, since ${formatLocal(Date.parse(live.startedAt))}${snapshot ? "" : " — not answering on its socket"}`
-				: `  not running${hostPauseReason() ? ` — ${hostPauseReason()}` : hostState ? ` — ${hostProblemText()}` : " (it starts when there is work to run)"}`,
-			...(snapshot ? renderHostSnapshot(snapshot) : []),
+			...(snapshot
+				? renderHostSnapshot(snapshot)
+				: [live ? `  running: pid ${live.pid}, pi-loops ${live.version}, since ${formatLocal(Date.parse(live.startedAt))} — not answering on its socket` : `  not running${hostPauseReason() ? ` — ${hostPauseReason()}` : hostState ? ` — ${hostProblemText()}` : " (it starts when there is work to run)"}`]),
 			`  log: ${homeRel(path.join(dir, HOST_LOG))}`,
 			"  /pi-loops start | stop | restart",
 		]);
@@ -2022,7 +1978,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			const sub = /^(pause|resume|clear|help|start)$/.test(text) ? text : "";
 			if (sub === "help") return show(ctx, "Goal", GOAL_HELP);
 			if (!text) {
-				if (!goal) return show(ctx, "Goal: none", ["  /goal <condition> — e.g. /goal the test suite passes and the changes are committed"]);
+				if (!goal) return show(ctx, "Goal: none", ["  /goal <condition>"]);
 				return show(ctx, `Goal: ${goal.status}`, [`  condition: ${previewRedacted(goal.condition, 200)}`, `  ${goal.iterations}/${MAX_CONTINUATIONS} continuations`, ...(goal.lastReason ? [`  evaluator: ${previewRedacted(goal.lastReason, 300)}`] : []), `  updated ${formatLocal(Date.parse(goal.updatedAt))}`]);
 			}
 			if (sub === "start") return ctx.ui.notify("usage: /goal start <prompt> — set a goal with /goal <condition>, then send the prompt to begin", "warning");
@@ -2191,8 +2147,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	const TRIGGERS_USAGE = "[status|rules|sources|hooks|enable|disable|remove|set|run|running|audit|abort|panel|help] — /triggers help for the arguments";
 
 	const TRIGGERS_HELP = [
-		"/triggers                      rule counts, where checks run (in the background), its last check, push sources",
-		"/triggers rules [--all]        this project's dynamic rules        (--all: every project on this machine)",
+		"/triggers rules [--all]        this project's rules, as bare /triggers lists them   (--all: every project on this machine)",
+		"/triggers status               rule counts, what checks them, the last check, push sources",
 		"/triggers sources              MCP push sources, the local crontab, the dynamic checker — and what each has seen (/triggers hooks is the same view)",
 		"/triggers enable <n|id>        /triggers disable <n|id>            also --all (this project) | --all-projects (the machine)",
 		"/triggers remove <n|id>        also remove --all | remove --all-projects; /new-trigger creates one",
@@ -2201,23 +2157,12 @@ export default function piLoops(pi: ExtensionAPI) {
 		"/triggers running              actions in flight (dynamic checks and cron runs), and the sub-agent slots in use",
 		"/triggers audit [N] [--all]    recent decisions, with each run's transcript path (default 10)",
 		"/triggers abort <trace_id>     stop one running action             /triggers abort --all   stop every one",
-		"/triggers panel on|off         side panel above the editor (Triggers / Inbox / Cron / MCP)",
+		"/triggers panel on|off         side panel above the editor (Rules / Loops / Runs / MCP)",
 		"create one: /new-trigger when ~/build.done exists, run cargo test and show me the result",
 		"config: ~/.pi/agent/loops/config.toml [triggers] poll_interval_secs, mcp.toml for push sources, hooks.toml for lifecycle hooks",
 	];
 
-	function ruleLines(rules: ReturnType<TriggerStore["load"]>, numbered: boolean): string[] {
-		return rules.map((r, i) => {
-			const state = r.enabled ? "enabled" : "disabled";
-			const fire = r.fireOnce ? "fire_once" : "repeat";
-			const out = r.promoteToChat ? "promote_to_chat" : "audit_only";
-			const fired = r.firedAt ? `, fired_at=${r.firedAt}` : "";
-			const head = numbered ? `${String(i + 1).padStart(2)}. ` : "  - ";
-			const other = r.createdBy?.sessionId && r.createdBy.sessionId !== session.sessionId ? `  (session ${r.createdBy.sessionId.slice(0, 8)})` : "";
-				const failing = ruleFailureMark(r);
-				return `${head}${r.id} [${state}, ${fire}, ${out}${fired}]${failing ? ` ${failing}` : ""} when ${previewRedacted(r.condition, 80)} -> ${previewRedacted(r.action, 80)}${!sameProject(r.cwd, session.cwd) ? `  (${homeRel(r.cwd)})` : ""}${other}`;
-		});
-	}
+	const ruleLines = (rules: ReturnType<TriggerStore["load"]>, numbered: boolean) => listRules(rules, { numbered, sessionId: session.sessionId, cwd: session.cwd, home: process.env.HOME ?? "", sameProject });
 
 	pi.registerCommand("triggers", {
 		description: "Show trigger sources, rules, running actions, and recent audit — /triggers help",
@@ -2238,25 +2183,27 @@ export default function piLoops(pi: ExtensionAPI) {
 			};
 			try {
 				switch (sub) {
-					case "":
 					case "status": {
-						const rules = store.load();
-						const enabled = rules.filter((r) => r.enabled).length;
-						const fireOnce = rules.filter((r) => r.fireOnce).length;
-						const promote = rules.filter((r) => r.promoteToChat).length;
-						const hostRec = liveHostRecord();
-						show(ctx, "Trigger status:", [
-							`  dynamic rules: ${rules.length} total, ${enabled} enabled, ${rules.length - enabled} disabled (${fireOnce} fire_once, ${rules.length - fireOnce} repeat, ${promote} promote_to_chat)`,
-							`  dynamic checker: ${hostRec ? "pi-loops in the background" : "pi-loops in the background, which is not running"}, polls every ${triggers.pollIntervalSecs}s while enabled rules exist; a result goes to the conversation that created the rule`,
-							`  last check: ${lastPoll() ? `${formatLocal(Date.parse(lastPoll()!.at))} in ${homeRel(lastPoll()!.cwd)} — ${lastPoll()!.outcome}` : "none yet"}`,
-							`  push trigger sources: ${plural(mcpConfigs.length, "configured MCP server")} ${mcpConfigs.length === 1 ? "feeds" : "feed"} server-pushed events into the same trigger runtime (deduplicated machine-wide, hop ${hop})${mcpConfigError ? ` (config error: ${mcpConfigError})` : ""}`,
-							`  sources: ${mcpSources.length + LOCAL_SOURCES} total, ${mcpSources.filter((s) => s.status.state === "connected").length + (localSourcesConnected() ? LOCAL_SOURCES : 0)} connected, ${mcpSources.filter((s) => s.status.requiresAttention).length} require attention`,
-							`  running: ${machineRuns().length} · deduped: ${triggers.dedupedCount} · cycle_suppressed: ${triggers.cycleSuppressedCount} · storage: ${homeRel(store.rulesFile)}`,
-							...(store.lastPersistenceError ? [`  ! ${store.lastPersistenceError}`] : []),
-							`  audit: ${homeRel(store.auditFile)} (/triggers audit [N])`,
-						]);
+						const [first, ...lines] = triggerStatusLines({
+							rules: store.load(),
+							pollIntervalSecs: triggers.pollIntervalSecs,
+							running: !!liveHostRecord(),
+							lastCheck: lastPoll(),
+							home: process.env.HOME ?? "",
+							pushSources: mcpConfigs.length,
+							configError: mcpConfigError,
+							sources: { total: mcpSources.length + LOCAL_SOURCES, connected: mcpSources.filter((s) => s.status.state === "connected").length + (localSourcesConnected() ? LOCAL_SOURCES : 0), attention: mcpSources.filter((s) => s.status.requiresAttention).length },
+							runningCount: machineRuns().length,
+							deduplicated: triggers.dedupedCount,
+							cyclesStopped: triggers.cycleSuppressedCount,
+							rulesFile: store.rulesFile,
+							auditFile: store.auditFile,
+							persistenceError: store.lastPersistenceError,
+						});
+						show(ctx, first, lines);
 						return;
 					}
+					case "":
 					case "rules": {
 						const all = store.load();
 						const here = all.filter((r) => sameProject(r.cwd, session.cwd));
@@ -2472,7 +2419,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							if (held) {
 								requests.append(stopRow(held.sessionId, { id: held.runId }, "window", createdBy()));
 								void ringHost(dir, `request:${held.sessionId}`).catch(() => undefined);
-								ctx.ui.notify(`requested stop for ${held.runId} (session ${held.sessionId.slice(0, 8)})`, "info");
+								ctx.ui.notify(`requested stop for ${held.runId} (session ${shortSessionId(held.sessionId)})`, "info");
 								return;
 							}
 							const host = await refreshHostSnapshot();
@@ -2562,9 +2509,9 @@ export default function piLoops(pi: ExtensionAPI) {
 				`  loops directory: ${homeRel(dir)}`,
 				`  package: ${homeRel(PACKAGE_DIR)}`,
 				"",
-				"  /pi-loops start | stop | restart | status   what runs loops and checks while no pi is open",
+				"  /pi-loops start | stop | restart | status",
 				"  /pi-loops install-launcher [--dir <dir>]   put the `pi-loops` command on your PATH",
-				"  /cron · /triggers · /inbox · /goal   the automation itself",
+				"  /cron · /triggers · /inbox · /goal",
 			]);
 		},
 	});
@@ -2807,7 +2754,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const line = (r: Recipe) => {
 							const rec = installed.get(r.manifest.name);
 							const n = jobs.filter((j) => j.recipe === r.manifest.name).length;
-							return `  ${r.manifest.name.padEnd(17)} ${(rec ? `installed: ${rec.level}, ${plural(n, "loop")}` : "—").padEnd(28)} ${r.manifest.summary}`;
+							return `  ${r.manifest.name.padEnd(17)} ${rec ? `[installed: ${rec.level}, ${plural(n, "loop")}] ` : ""}${r.manifest.line ?? r.manifest.summary}`;
 						};
 						// Starters first: they read and file findings, and are the ones to install before
 						// anything that writes to a tracker or opens a pull request.
@@ -2815,7 +2762,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						for (const tier of RECIPE_TIERS) {
 							const group = packaged.filter((r) => r.manifest.tier === tier);
 							if (!group.length) continue;
-							lines.push(tier === "starter" ? "  starter — reads, and files findings; install one of these first:" : "  advanced — writes to a worktree, a tracker or a pull request; read the playbooks first:");
+							lines.push(tier === "starter" ? "  starter" : "  advanced — writes to a worktree, a tracker or a pull request");
 							lines.push(...group.map(line));
 						}
 						for (const rec of installed.values()) {
@@ -3131,7 +3078,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				return;
 			}
 			const prompt =
-				"The user asked pi to create a dynamic trigger. Extract the trigger condition and action from the request, then call new_trigger with structured condition and action fields. Dynamic triggers fire once by default; set fire_once=false only when the user explicitly asks for a repeating trigger. Trigger output is shown in the TUI and audit by default; set promote_to_chat=true only when the user explicitly asks for trigger results to enter the main chat context or be visible to future turns. Do not require a fixed syntax. If either the condition or action is missing, ask one concise clarification question instead of calling tools.\n\nUser request:\n" +
+				"The user asked pi to create a dynamic trigger. Extract the trigger condition and action from the request, then call new_trigger with structured condition and action fields. Dynamic triggers fire once by default; set fire_once=false only when the user explicitly asks for a repeating trigger. Do not require a fixed syntax. If either the condition or action is missing, ask one concise clarification question instead of calling tools.\n\nUser request:\n" +
 				args.trim();
 			await handOver(newTriggerRow(prompt, rowAddress()));
 		},

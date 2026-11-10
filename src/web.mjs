@@ -11,12 +11,7 @@ export const DOOR = `<!doctype html><meta charset="utf-8"><title>pi-loops</title
 <meta name="color-scheme" content="light dark">
 <body style="font:15px/1.6 system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem;background:Canvas;color:CanvasText">
 <h2 style="font-weight:600">This browser has not been here before.</h2>
-<p>Start the session from a terminal on this machine and it will open a window that works from
-then on:</p>
-<pre style="background:#8881;padding:.7rem 1rem;border-radius:6px;overflow:auto">pi-loops</pre>
-<p style="opacity:.7">On a browser that is already signed in, press <b>add device</b> — it shows a
-QR to point this camera at, and the same six digits to type if you would rather. Either way, this
-device stays signed in afterwards.</p>
+<p>Run <code>pi-loops</code> in a terminal on this machine, or type the code from <b>add device</b> on a browser that is signed in:</p>
 <form method="get" style="display:flex;gap:.5rem">
   <input name="pair" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6"
          placeholder="000000" style="font:inherit;letter-spacing:.3em;padding:.55rem .7rem;flex:1;min-width:0;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit">
@@ -107,17 +102,11 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 
 #list{grid-column:2;grid-row:1;background:var(--panel);display:flex;flex-direction:column;min-width:0;min-height:0}
 .lhead{padding:12px 12px 10px;display:grid;gap:10px}
-.lrow{display:flex;gap:8px;align-items:center;min-width:0}
-#project{flex:1;min-width:0;border:0;border-radius:8px;padding:6px 10px;font-weight:600;background:var(--panel2);color:var(--fg)}
+.lrow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;min-width:0}
+.lrow>button{flex:1}
+#project{flex:1 1 100%;min-width:0;border:0;border-radius:8px;padding:6px 10px;font-weight:600;background:var(--panel2);color:var(--fg)}
 #project option{background:Canvas;color:CanvasText}
 #newConv{white-space:nowrap}
-.seg{display:flex;background:var(--panel2);border-radius:8px;padding:3px;gap:2px}
-.seg button{flex:1;border:0;background:transparent;border-radius:6px;padding:5px 2px;min-height:0;font-size:12.5px;color:var(--dim);display:flex;justify-content:center;gap:5px;align-items:center;white-space:nowrap}
-.seg button:hover{background:transparent;color:var(--fg)}
-.seg button.on{background:var(--panel);color:var(--fg);box-shadow:0 1px 2px var(--shadow)}
-.pill{font-size:10.5px;line-height:1.5;border-radius:9px;padding:0 6px;background:var(--hover);color:var(--fg);font-weight:600}
-.pill:empty{display:none}
-.pill.hot{background:var(--brand);color:var(--brand-ink)}
 .lscroll{overflow-y:auto;min-height:0;flex:1;padding:0 10px 16px;display:flex;flex-direction:column;gap:2px}
 #awaySlot:empty,#startersSlot:empty,#cardsSlot:empty,#activitySlot:empty{display:none}
 /* Loop activity: one line between the conversation and the composer, a list under it when opened.
@@ -182,7 +171,6 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .held[hidden]{display:none}
 
 .sbar{grid-column:1/-1;grid-row:2;background:var(--nav);display:flex;align-items:center;gap:14px;padding:0 12px;font-size:12px;color:var(--dim);overflow:hidden;white-space:nowrap}
-.sbar .grow{flex:1}
 .sbar #sbHost{color:inherit;text-decoration:none}
 .sbar #sbHost:hover{color:var(--fg)}
 .sbar .st{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;background:var(--quiet);vertical-align:middle}
@@ -193,7 +181,6 @@ header{display:flex;gap:10px;align-items:center;padding:9px 14px;flex-wrap:wrap;
 header b{font-weight:650}
 /* The conversation's title: as much of it as leaves the pickers on the same row. */
 header>b{flex:0 1 auto;min-width:0;max-width:24rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-header .cwd{color:var(--muted);font-size:12px;border:1px solid var(--line);border-radius:999px;padding:1px 9px;background:var(--field);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:min(34vw,26rem)}
 header .grow{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
 select,button,textarea,input{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:6px;padding:5px 9px}
 /* A select's dropdown is drawn by the platform, not by the page. With a transparent background the
@@ -212,6 +199,7 @@ button:hover{color:var(--ink);background:var(--hover)}
 button.primary{background:var(--brand);border-color:var(--brand);color:var(--brand-ink);font-weight:600}
 button.primary:hover{background:var(--brand);color:var(--brand-ink);filter:brightness(1.08)}
 .badge{border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:12px;color:var(--muted);white-space:nowrap}
+#status:empty{display:none}
 #queued{border-top:1px solid var(--line);padding:4px 16px;font-size:13px;display:flex;flex-direction:column;gap:2px}
 #queued[hidden]{display:none}
 #queued .qrow{display:flex;gap:8px;align-items:baseline;min-width:0}
@@ -461,7 +449,6 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 .plan .chips button small{display:block;font-size:11px;color:var(--dim)}
 .plan .chips button.on{border-color:var(--brand);background:var(--brand-soft);color:var(--brand)}
 .plan .chips button.on small{color:var(--brand)}
-.plan pre.preview{margin:0;padding:8px 10px;background:var(--code);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--font-mono);font-size:12px;color:var(--dim)}
 .plan .cstat{font-size:12.5px}
 .plan .cstat:empty{display:none}
 .plan .acts{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
@@ -548,7 +535,6 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   .composer-row button{flex:1 1 0}
   /* The path is in the switcher. Here it was costing a whole header row, on a screen where the
      header was already taking an eighth of the height. */
-  header .cwd{display:none}
   /* The title gets a row of its own, first: on a phone the list is another pane, and the header is
      the one place that says which conversation this is. */
   header>b{flex:1 1 100%;max-width:none;order:-1}
@@ -568,7 +554,6 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   body:not([data-pane=loops]) .sbar{display:none}
   body[data-pane=loops]{grid-template-rows:minmax(0,1fr) 34px calc(52px + env(safe-area-inset-bottom))}
   body[data-pane=loops] .sbar{grid-row:2}
-  .sbar #sbHeld{display:none}
   body[data-pane=loops] .tabs{grid-row:3}
   #list,main,#loops{grid-column:1;grid-row:1}
   body:not([data-pane=inbox]) #list{display:none}
@@ -578,7 +563,6 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   .tabs{display:flex;grid-column:1;grid-row:2;background:var(--nav);padding-bottom:env(safe-area-inset-bottom)}
   .tabs a{flex:1;display:grid;justify-items:center;align-content:center;gap:2px;color:var(--dim);text-decoration:none;font-size:11px}
   .tabs a.on{color:var(--brand)}
-  .seg button{min-height:32px}
   #activitySlot ul{max-height:50vh}
 }
 @media (pointer:coarse){button,select,.icard button{min-height:40px}}
@@ -586,16 +570,11 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 <nav id="rail" aria-label="Views">
   <span class="logo" aria-hidden="true">pl</span>
   <button type="button" id="railList" class="on" title="Inbox" aria-label="Inbox"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg></button>
-  <button type="button" id="drawer" title="Loops: this project's loops, goal and pi-loops" aria-label="Show or hide the loops" aria-expanded="true"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2l3 3-3 3"/><path d="M4 11V9a4 4 0 0 1 4-4h12"/><path d="M7 22l-3-3 3-3"/><path d="M20 13v2a4 4 0 0 1-4 4H4"/></svg></button>
+  <button type="button" id="drawer" title="Loops" aria-label="Show or hide the loops" aria-expanded="true"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2l3 3-3 3"/><path d="M4 11V9a4 4 0 0 1 4-4h12"/><path d="M7 22l-3-3 3-3"/><path d="M20 13v2a4 4 0 0 1-4 4H4"/></svg></button>
 </nav>
 <nav id="list" aria-label="Inbox">
   <div class="lhead">
-    <div class="lrow"><select id="project" title="Project" aria-label="Project"></select><button type="button" id="watchFor" title="Set up a watch from one sentence">+ Watch for…</button><button type="button" id="newConv" class="primary" title="Start a new conversation — this one stays on disk">+ New</button></div>
-    <div class="seg" role="tablist" aria-label="Show">
-      <button type="button" role="tab" id="segAll">All <span class="pill" id="nAll"></span></button>
-      <button type="button" role="tab" id="segNeeds">Needs you <span class="pill" id="nNeeds"></span></button>
-      <button type="button" role="tab" id="segUnread">Unread <span class="pill" id="nUnread"></span></button>
-    </div>
+    <div class="lrow"><select id="project" title="Project" aria-label="Project"></select><button type="button" id="watchFor">+ Watch for…</button><button type="button" id="newConv" class="primary">+ New</button></div>
   </div>
   <div class="lscroll" id="lscroll">
     <div id="awaySlot"></div>
@@ -607,27 +586,26 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 <main>
   <header>
     <b id="title">pi web</b>
-    <span class="cwd" id="cwd"></span>
-    <select id="model" title="Model"></select>
+    <select id="model" aria-label="Model"></select>
     <select id="thinking" title="Thinking level">
       <option>off</option><option>minimal</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option>
     </select>
     <span class="grow">
       <span class="badge" id="queue" hidden></span>
       <span class="badge" id="cost" title="Session tokens and cost"></span>
-      <button id="expand" title="Expand every step">▸ steps</button>
+      <button id="expand">▸ steps</button>
       <span id="actions">
-        <button id="reload" title="Load this page again from the server">reload</button>
-        <button id="find" title="Search the whole session, including abandoned branches" aria-label="Search this session">find</button>
-        <button id="undo" title="Fork from your last message and put it back in the composer">undo</button>
+        <button id="reload">reload</button>
+        <button id="find" aria-label="Search this session">find</button>
+        <button id="undo">undo</button>
         <button id="save" title="Export this session as HTML">save</button>
-        <button id="share" title="Upload a redacted transcript as a GitHub gist (asks first)">share</button>
-        <button id="compact" title="Summarise the context so far and carry on (/compact &lt;instructions&gt; steers it)">compact</button>
-        <button id="clear" title="Start a new session — this one stays on disk">clear</button>
-        <button id="resume" title="Go back to an earlier session in this project">resume</button>
-        <button id="adddev" title="Show a code and a QR for signing in another device" aria-label="Add a device">add device</button>
-        <button id="theme" title="Theme: system, light, dark" aria-label="Change theme">◐</button>
-        <button id="notifyMe" title="A notification while this tab is hidden: a decision, a loop failing three times in a row, the daily budget">notifications</button>
+        <button id="share">share</button>
+        <button id="compact">compact</button>
+        <button id="clear">clear</button>
+        <button id="resume">resume</button>
+        <button id="adddev" aria-label="Add a device">add device</button>
+        <button id="theme" aria-label="Change theme">theme: system</button>
+        <button id="notifyMe">notifications</button>
       </span>
       <span class="badge" id="status">connecting</span>
       <button id="more" title="Session actions" aria-label="Session actions">⋯</button>
@@ -654,11 +632,10 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 </main>
 <aside id="loops" aria-label="Loops">
   <div><h2>Loops</h2><div id="auto"></div></div>
-  <details><summary>Goal</summary><div id="goal" class="notice">none</div></details>
-  <details><summary>This conversation</summary><div id="meta" class="notice"></div></details>
+  <details id="goalBox" hidden><summary>Goal</summary><div id="goal" class="notice"></div></details>
   <details><summary>pi-loops</summary><div id="runtime" class="notice">—</div></details>
 </aside>
-<footer class="sbar" aria-label="Status"><a id="sbHost" href="/background"></a><span id="sbLoops"></span><span class="grow"></span><span id="sbHeld"></span></footer>
+<footer class="sbar" aria-label="Status"><a id="sbHost" href="/background"></a></footer>
 <nav class="tabs" aria-label="Panes">
   <a href="#inbox" id="tabInbox"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13h5l2 3h4l2-3h5"/><path d="M5 5h14l2 8v6H3v-6z"/></svg><span>Inbox</span></a>
   <a href="#chat" id="tabChat"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg><span>Chat</span></a>
@@ -1494,7 +1471,6 @@ function setAllWork(open) {
   for (const d of feed.querySelectorAll?.("details.work") ?? []) d.open = open;
   const b = $("expand");
   b.textContent = open ? "▾ steps" : "▸ steps";
-  b.title = open ? "Collapse every step" : "Expand every step";
 }
 
 /**
@@ -1809,7 +1785,7 @@ function setStatus() {
   qe.hidden = !q;
   qe.textContent = "queued " + q + " ✕";
   qe.onclick = () => api("/queue/clear", {}).then(refresh);
-  statusEl.textContent = busy ? "working…" : "ready";
+  statusEl.textContent = busy ? "working…" : "";
   drawQueue();
 }
 
@@ -2039,9 +2015,9 @@ function drawLoopRow(slot, j) {
   }
 }
 
-/** A loop's running, runs and next run, each only when there is one; nothing at all when none is. */
+/** A loop's running and next run, each only when there is one; nothing at all when neither is. The activity strip counts runs. */
 function runsLine(j) {
-  const said = [j.running && !j.run ? "running" : "", num(j.runCount) ? "runs " + num(j.runCount) : "", nextOf(j) ? "next " + safeText(clock(nextOf(j))) : ""].filter(Boolean).join(" · ");
+  const said = [j.running && !j.run ? "running" : "", nextOf(j) ? "next " + safeText(clock(nextOf(j))) : ""].filter(Boolean).join(" · ");
   return said ? '<span class="m">' + said + "</span>" : "";
 }
 
@@ -2058,7 +2034,7 @@ function renderSidebar(s) {
       const prompt = safeText(j.prompt);
       html += '<details class="card job' + (j.enabled ? "" : " off") + '" data-key="job:' + safeText(j.id) + '">' +
         '<summary><span class="t"><span class="nm"><b>' + safeText(j.label || j.name || j.id) + "</b>" +
-        '<span class="m">' + safeText(j.schedule) + (j.stateful ? " · loop" : "") + (j.enabled ? "" : " · disabled") + "</span></span>" +
+        '<span class="m">' + safeText(j.schedule) + (j.stateful ? "" : " · in its conversation") + (j.enabled ? "" : " · disabled") + "</span></span>" +
         '<button data-run="' + safeText(j.id) + '">run</button></span>' +
         '<span class="m peek">' + prompt + "</span>" +
         // A run pi-loops holds has its own line, with Stop this run, under the card's name.
@@ -2093,12 +2069,12 @@ function renderSidebar(s) {
     }
     // The store is machine-wide and this list is not: without these lines, a job made in another
     // directory is indistinguishable from a job that is gone. Counted and labelled apart, because
-    // /cron counts jobs and /triggers counts rules: one number covering both agrees with neither
-    // command, and the line exists to send someone to the command.
+    // /cron counts jobs and /triggers counts rules: one number covering both agrees with neither.
+    // The project switcher above the list is the way to the other project.
     const jobsAway = num(a.elsewhere?.jobs);
     const rulesAway = num(a.elsewhere?.rules);
-    if (jobsAway) html += '<div class="notice">+ ' + jobsAway + " loop" + (jobsAway === 1 ? "" : "s") + " in other projects — /cron all</div>";
-    if (rulesAway) html += '<div class="notice">+ ' + rulesAway + " rule" + (rulesAway === 1 ? "" : "s") + " elsewhere — /triggers rules --all</div>";
+    if (jobsAway) html += '<div class="notice">+ ' + jobsAway + " loop" + (jobsAway === 1 ? "" : "s") + " in other projects</div>";
+    if (rulesAway) html += '<div class="notice">+ ' + rulesAway + " rule" + (rulesAway === 1 ? "" : "s") + " in other projects</div>";
     const check = s.lastPoll || a.lastCheck;
     if (check) html += '<div class="notice">last check: ' + safeText(check.state || "") + " · " + esc(clock(check.at)) + "</div>";
     // The open state survives the redraw by being read out before the panel is rebuilt and put back
@@ -2162,8 +2138,8 @@ function renderSidebar(s) {
     });
   }
   renderRuntime(s.runtime, s.automation);
-  $("goal").textContent = s.goal ? plain((s.goal.condition || "") + " — " + (s.goal.status || "") + " (" + (s.goal.iterations ?? 0) + ")") : "none";
-  $("meta").textContent = plain([s.sessionName, s.messageCount + " messages", s.model?.label].filter(Boolean).join(" · "));
+  $("goalBox").hidden = !s.goal;
+  $("goal").textContent = s.goal ? plain((s.goal.condition || "") + " — " + (s.goal.status || "") + " (" + (s.goal.iterations ?? 0) + ")") : "";
 }
 
 // What only the pi process knows: which servers connected, what they exposed, whether pi-loops runs.
@@ -2335,8 +2311,6 @@ async function refresh() {
   checkStream?.(state);
   checkAge(state);
   cwd = state.cwd || "";
-  $("cwd").textContent = cwd;
-  $("cwd").title = cwd;
   $("sid").textContent = state.sessionId || "";
   drawModels(state.modelCatalog || [], state.model?.label);
   if (state.model) $("model").value = state.model.label;
@@ -2533,7 +2507,7 @@ $("composer").onsubmit = async (e) => {
     r = await api("/prompt", payload);
   } finally {
     clearTimeout(slow);
-    if (statusEl.textContent.startsWith("still sending")) statusEl.textContent = busy ? "working…" : "ready";
+    if (statusEl.textContent.startsWith("still sending")) statusEl.textContent = busy ? "working…" : "";
   }
   if (!r.success) row("err", "error", r.error || JSON.stringify(r));
   // The session is open in a terminal, which holds it: that terminal answers (owner decision O2).
@@ -2935,8 +2909,7 @@ function applyTheme(theme) {
   const root = document.documentElement;
   if (theme === "system") root.removeAttribute("data-theme");
   else root.setAttribute("data-theme", theme);
-  $("theme").textContent = theme === "system" ? "◐" : theme === "light" ? "☀" : "☾";
-  $("theme").title = "Theme: " + theme + " (click to change)";
+  $("theme").textContent = "theme: " + theme;
 }
 let theme = remembered("theme", "system");
 applyTheme(THEMES.includes(theme) ? theme : "system");
@@ -3238,10 +3211,9 @@ function applyEvent(ev) {
 const LIST_EVERY_MS = 15000;
 /** The last answer, when the list was last asked for, and a project chosen in the switcher (else the open conversation's). */
 let listAnswer, listAt = 0, listCwd;
-let segment = remembered("pi-loops-segment", "all");
 /**
  * The rows on the screen, in order. Kept here rather than asked of the DOM, so the keys that move
- * through them and the filters that pick them never depend on a selector query.
+ * through them never depend on a selector query.
  */
 const convRows = [];
 let focusAt = 0;
@@ -3313,15 +3285,15 @@ function ago(iso) {
 }
 
 /** Who has it, in a word: a terminal, the page (open), pi-loops in the background, or no tag at all. */
-const HOLDER_TAGS = { terminal: ["terminal", "A terminal has this conversation open and answers what is sent to it"], page: ["open", "Open in the page"], background: ["pi-loops", "pi-loops is working in it in the background"] };
+const HOLDER_TAGS = { terminal: "terminal", page: "open", background: "pi-loops" };
 function holderTag(r) {
-  const known = HOLDER_TAGS[r.holder];
-  let text = known ? known[0] : "";
+  let text = HOLDER_TAGS[r.holder] ?? "";
   if (r.open && r.holder !== "page") text = text ? text + " · open here" : "open here";
   if (!text) return undefined;
   const tag = spanOf("who", text);
-  // A one-shot run, or a window whose copy is behind the file, holds it and answers nothing.
-  tag.title = r.holder === "terminal" && r.delivers === false ? "A terminal has this conversation open but answers nothing sent to it (a one-shot run, or a window behind the file)" : known ? known[1] : "Open in the page";
+  // The one title a tag keeps: the label cannot say that this terminal (a one-shot run, or a window
+  // whose copy is behind the file) answers nothing.
+  if (r.holder === "terminal" && r.delivers === false) tag.title = "A terminal has this conversation open but answers nothing sent to it (a one-shot run, or a window behind the file)";
   return tag;
 }
 
@@ -3344,7 +3316,7 @@ function convRow(r) {
   // What people typed: plain() takes out what textContent does not stop (a bidi override reorders
   // the line drawn around it).
   const title = plain(str(r.title)).trim();
-  top.append(Object.assign(document.createElement("b"), { textContent: title || id.slice(-8) }));
+  top.append(Object.assign(document.createElement("b"), { textContent: title || id.slice(0, 13) }));
   const tag = holderTag(r);
   if (tag) top.append(tag);
   const when = spanOf("when", ago(r.lastActivityAt));
@@ -3362,9 +3334,6 @@ function convRow(r) {
   return a;
 }
 
-const SEGMENTS = [["all", "segAll", "nAll"], ["needs", "segNeeds", "nNeeds"], ["unread", "segUnread", "nUnread"]];
-const inSegment = (r, k) => (k === "needs" ? num(r.needsYou) > 0 : k === "unread" ? isUnread(r) : true);
-
 function drawProjects(projects, current) {
   const picker = $("project");
   const key = projects.map((p) => str(p.cwd)).join("\n") + "|" + str(current);
@@ -3372,7 +3341,7 @@ function drawProjects(projects, current) {
   picker.dataset.n = key;
   picker.innerHTML = "";
   for (const p of projects) {
-    const o = new Option(plain(str(p.label || p.cwd)), str(p.cwd));
+    const o = new Option(plain(str(p.cwd).split("/").filter(Boolean).pop() || str(p.cwd)), str(p.cwd));
     o.title = plain(str(p.cwd));
     picker.append(o);
   }
@@ -3385,15 +3354,6 @@ function drawList() {
   if (!a) return;
   drawProjects(Array.isArray(a.projects) ? a.projects : [], a.cwd);
   const rows = a.rows.filter((r) => r && typeof r === "object");
-  for (const [k, id, n] of SEGMENTS) {
-    const b = $(id);
-    b.className = segment === k ? "on" : "";
-    b.setAttribute("aria-selected", String(segment === k));
-    b.tabIndex = segment === k ? 0 : -1;
-    const count = rows.filter((r) => inSegment(r, k)).length;
-    $(n).textContent = count ? String(count) : "";
-    $(n).className = "pill" + (k === "needs" && count ? " hot" : "");
-  }
   const box = $("convs");
   const scroller = $("lscroll");
   const top = scroller.scrollTop;
@@ -3401,10 +3361,13 @@ function drawList() {
   box.innerHTML = "";
   convRows.length = 0;
   const today = new Date().toDateString();
+  const groupOf = (r) => (new Date(r.lastActivityAt).toDateString() === today ? "Today" : "Earlier");
+  // A heading over the only group says nothing.
+  const grouped = new Set(rows.map(groupOf)).size > 1;
   let group;
-  for (const r of rows.filter((r) => inSegment(r, segment))) {
-    const g = new Date(r.lastActivityAt).toDateString() === today ? "Today" : "Earlier";
-    if (g !== group) {
+  for (const r of rows) {
+    const g = groupOf(r);
+    if (grouped && g !== group) {
       group = g;
       box.append(Object.assign(document.createElement("div"), { className: "grp", textContent: g }));
     }
@@ -3412,7 +3375,6 @@ function drawList() {
     box.append(el);
     convRows.push(el);
   }
-  if (!convRows.length) box.append(Object.assign(document.createElement("div"), { className: "lnote", textContent: segment === "needs" ? "Nothing needs you. Loops keep running." : segment === "unread" ? "Nothing unread." : "No conversations in this project yet." }));
   if (num(a.more)) box.append(Object.assign(document.createElement("div"), { className: "lnote", textContent: "+ " + num(a.more) + " older" }));
   // One row is in the Tab order, the open one or else the first; the arrow keys move between them.
   const at = convRows.findIndex((el) => el.dataset.conv === (focused ?? SESSION));
@@ -3429,8 +3391,6 @@ function drawList() {
   }
   const mine = rows.find((r) => r.sessionId === SESSION);
   if (mine && mine.title) openTitle = mine.title;
-  const held = rows.filter((r) => r.holder === "terminal").length;
-  $("sbHeld").textContent = held ? held + " conversation" + (held === 1 ? "" : "s") + " open in a terminal" : "";
   drawTitle();
 }
 
@@ -3512,7 +3472,7 @@ function restoreForms() {
     }
   }
 }
-const OWNER_HINTS = { page: (t) => "runs in " + (t ? "“" + t + "”" : "its conversation"), terminal: () => "runs in your terminal", "terminal-quiet": () => "its terminal is not taking messages", background: () => "runs after pi-loops finishes its scheduled run there", none: () => "starts its conversation", gone: () => "its conversation is gone; Yes runs it in this one", project: () => "runs in the conversation you claim it from" };
+const OWNER_HINTS = { page: (t) => "runs in " + (t ? "“" + t + "”" : "its conversation"), terminal: () => "runs in your terminal", "terminal-quiet": () => "its terminal is not taking messages", background: () => "runs after pi-loops finishes its scheduled run there", none: () => "starts its conversation", gone: () => "its conversation is gone; runs here", project: () => "runs in the conversation you claim it from" };
 
 async function refreshInbox() {
   if (!TOKEN) await tokenReady;
@@ -3599,7 +3559,7 @@ function inboxCardEl(c, done) {
   const away = startsElsewhere(c);
   // Where a claim runs, said only when that is not the conversation on screen.
   const elsewhere = away || owner.holder === "terminal-quiet" || (!c.fromThisConversation && owner.holder !== "project");
-  const hint = !elsewhere ? undefined : away ? () => (owner.holder === "gone" ? "its conversation is gone; Yes runs it" : "runs") + " in a new conversation in " + projectName(inboxAnswer.cwd) : OWNER_HINTS[owner.holder];
+  const hint = !elsewhere ? undefined : away ? () => (owner.holder === "gone" ? "its conversation is gone; runs" : "runs") + " in a new conversation in " + projectName(inboxAnswer.cwd) : OWNER_HINTS[owner.holder];
   const meta = [manyOrigins() ? originLabel(c) : "", hint ? hint(plain(str(owner.title))) : ""].filter(Boolean).join(" · ");
   if (meta) card.append(textEl("div", "im", meta));
   const stat = textEl("div", "cstat", done || c.line || "");
@@ -3701,7 +3661,7 @@ function drawInbox() {
     };
     slot.append(more);
   }
-  if (num(a.more)) slot.append(textEl("div", "lnote", "+ " + num(a.more) + " more · /inbox lists them all"));
+  if (num(a.more)) slot.append(textEl("div", "lnote", "+ " + num(a.more) + " more"));
   const handled = (Array.isArray(a.handled) ? a.handled : []).filter((c) => c && typeof c.id === "string" && !shown.has(c.id));
   const doneHere = [...inboxDone.entries()].filter(([id]) => !shown.has(id) && !handled.some((c) => c.id === id));
   if (handled.length || doneHere.length) group("Handled");
@@ -3715,7 +3675,7 @@ function drawInbox() {
   // The row goes once its message is in the conversation, not when the turn ends.
   // A row cancelled from this page's queue ran nothing, and its finding stays claimed.
   for (const [id, d] of doneHere) slot.append(inboxCardEl(d.card, d.claim ? (cancelledClaims.has(id) ? "Cancelled; nothing was sent. The finding stays claimed." : "Handed to that conversation.") : d.line));
-  if (num(a.elsewhere)) slot.append(textEl("div", "lnote", num(a.elsewhere) + " new in other projects · /inbox --all"));
+  if (num(a.elsewhere)) slot.append(textEl("div", "lnote", num(a.elsewhere) + " new in other projects"));
   restoreForms();
 }
 
@@ -3815,7 +3775,7 @@ function clock(iso) {
 /** A Mark all seen on its way, its refusal, the asOf it cleared, and the card's last fingerprint: module state, so a redraw keeps them. */
 let awayMarking = false, awayError = "", awayCleared, awayDrawn, awayScrolled = false;
 
-/** The sentence, part by part: each part stays whole on a narrow screen. Runs are the activity strip's to count. */
+/** The sentence, part by part: each part stays whole on a narrow screen. Runs are the activity strip's to count, decisions the cards'. */
 function awayParts(s) {
   const n = (k) => num(s[k]);
   const plural = (k, one) => n(k) + " " + one + (n(k) === 1 ? "" : "s");
@@ -3824,7 +3784,6 @@ function awayParts(s) {
   // Said only when it is not every finding: "4 findings, 4 from this conversation" says nothing.
   const here = n("fromThisConversation") !== n("findings") ? n("fromThisConversation") : 0;
   if (n("findings")) parts.push([{ text: plural("findings", "finding") + (here ? ", " + here + " from this conversation" : "") }]);
-  if (n("decisions")) parts.push([{ text: n("decisions") + " need" + (n("decisions") === 1 ? "s" : "") + " you" }]);
   if (n("costUsd") > 0) parts.push([{ text: "$" + n("costUsd").toFixed(2) }]);
   return parts;
 }
@@ -3999,24 +3958,6 @@ $("convs").addEventListener("keydown", (e) => {
   else return;
   e.preventDefault();
 });
-for (const [k, id] of SEGMENTS) {
-  $(id).onclick = () => {
-    segment = k;
-    remember("pi-loops-segment", k);
-    drawList();
-  };
-}
-$("segAll").parentElement.addEventListener("keydown", (e) => {
-  const at = SEGMENTS.findIndex(([k]) => k === segment);
-  const to = e.key === "ArrowRight" ? at + 1 : e.key === "ArrowLeft" ? at - 1 : undefined;
-  if (to === undefined) return;
-  e.preventDefault();
-  const [k, id] = SEGMENTS[(to + SEGMENTS.length) % SEGMENTS.length];
-  segment = k;
-  remember("pi-loops-segment", k);
-  drawList();
-  $(id).focus();
-});
 $("project").onchange = () => {
   listCwd = $("project").value;
   refreshList().catch(() => {});
@@ -4055,7 +3996,7 @@ let openTitle = "";
 let shownOpen = false;
 function drawTitle() {
   const title = plain(str(state.sessionName || openTitle)).trim();
-  $("title").textContent = title || (state.messageCount ? SESSION.slice(-8) : "New conversation");
+  $("title").textContent = title || (state.messageCount ? SESSION.slice(0, 13) : "New conversation");
   $("title").title = SESSION;
 }
 
@@ -4083,8 +4024,6 @@ function drawFrame(s) {
   const host = $("sbHost");
   host.innerHTML = "";
   host.append(spanOf("st " + (up ? "up" : "down")), spanOf("", up ? "pi-loops running in the background" : a.paused ? "loops and checks are paused: " + plain(str(a.paused)) : "pi-loops is not running"));
-  const loops = Array.isArray(a.jobs) ? a.jobs.length : 0;
-  $("sbLoops").textContent = a.installed && loops ? loops + " loop" + (loops === 1 ? "" : "s") : "";
   drawTitle();
   // Who holds the conversation decides whether a starter's Add runs here or names the terminal command.
   drawStarters();
@@ -4290,7 +4229,7 @@ function drawNotifyToggle() {
     return;
   }
   b.disabled = false;
-  b.textContent = "tell me when something needs me: " + (notifyOn && Notification.permission === "granted" ? "on" : "off");
+  b.textContent = "notifications: " + (notifyOn && Notification.permission === "granted" ? "on" : "off");
 }
 $("notifyMe").addEventListener("click", async () => {
   if (!window.isSecureContext || typeof Notification !== "function") return;
@@ -4541,9 +4480,9 @@ function watchCardEl(rec, inModal) {
     return [dt, dd];
   };
   const textOf = (text, cls) => { const s = document.createElement(cls === "pre" ? "pre" : "span"); if (cls && cls !== "pre") s.className = cls; s.textContent = plain(String(text ?? "")); return s; };
-  let command = "";
+  // The rows are the plan: the terminal's question keeps the Command line, the card does not repeat it.
   for (const [label, value] of ask.rows) {
-    if (label === "Command") { command = value; continue; }
+    if (label === "Command") continue;
     rowOf(label, textOf(value, label === "Then" || label === "Does" ? "pre" : label === "Careful" ? "bad" : undefined));
   }
   /** The rows that hold only for a result in the inbox: a stateful loop's notes, and its checker. */
@@ -4562,9 +4501,6 @@ function watchCardEl(rec, inModal) {
     showInboxRows();
   }
   if (rule) rowOf("Repeats", chipRow([["once", "Once, then turn itself off"], ["every", "Every time it happens"]], choice.once ? "once" : "every", (k) => { choice.once = k === "once"; }));
-  const cmd = document.createElement("pre");
-  cmd.className = "preview";
-  cmd.textContent = plain(command);
   const status = document.createElement("div");
   status.className = "cstat";
   const acts = document.createElement("div");
@@ -4584,7 +4520,7 @@ function watchCardEl(rec, inModal) {
   const foot = document.createElement("div");
   foot.className = "foot";
   foot.append(status, acts);
-  card.append(head, dl, cmd, foot);
+  card.append(head, dl, foot);
   card.pending = true;
   card.wait = (text) => { cancel.disabled = set.disabled = true; status.textContent = text; };
   card.settle = (line) => {
@@ -4616,7 +4552,7 @@ function watchAsked(ask) {
   if (rec.done) return;
   if (!rec.feed) {
     rec.feed = watchCardEl(rec, false);
-    const line = row("plan", "watch", "");
+    const line = row("plan", "", "");
     line.parentElement.append(rec.feed);
     rec.cards.push(rec.feed);
   }

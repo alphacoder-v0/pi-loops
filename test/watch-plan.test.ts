@@ -24,9 +24,8 @@ test("planCard says a schedule in words with its next run, and a rule with how o
 	assert.equal(rule.when, "~/build.done appears");
 	assert.equal(rule.looksEverySecs, 600);
 	assert.equal(rule.next, undefined);
-	assert.equal(rule.command, "/new-trigger when ~/build.done appears, run cargo test and show me the result");	assert.equal(rule.precheck, true, "a path-only condition is pre-checked");
+	assert.equal(rule.command, "/new-trigger when ~/build.done appears, run cargo test and show me the result");
 	const model = planCard(rulePlan({ rule: { condition: "when a PR of mine gets a review", action: "tell me", cwd: "/p" } }), { now: NOW, pollSecs: 600 });
-	assert.equal(model.precheck, undefined);
 	assert.equal(model.command, "/new-trigger when a PR of mine gets a review, tell me", "one when, not two");
 });
 
@@ -63,7 +62,7 @@ test("a dangerous action is named on the card, in the action and in a code span"
 
 test("askTitle is the card as one line per row: what pi shows in a terminal, and what the page draws the card from", () => {
 	const rule = planCard(rulePlan(), { now: NOW, pollSecs: 600 });
-	assert.equal(askTitle(rule), ["Set up this watch?", "Waits for: ~/build.done appears", "Looks: every 10 minutes", "Model: only once the path exists", "Then: run cargo test and show me the result", "Command: /new-trigger when ~/build.done appears, run cargo test and show me the result"].join("\n"));
+	assert.equal(askTitle(rule), ["Set up this watch?", "Waits for: ~/build.done appears", "Looks: every 10 minutes", "Then: run cargo test and show me the result", "Command: /new-trigger when ~/build.done appears, run cargo test and show me the result"].join("\n"));
 	const daily = planCard(schedulePlan(), { now: NOW, pollSecs: 600 });
 	assert.equal(askTitle(daily), ["Set up this watch?", `Runs: every day at 09:00 · next ${daily.next}`, "Does: read TODO.md and tell me about new unchecked items", 'Command: /cron add --stateful "0 9 * * *" read TODO.md and tell me about new unchecked items'].join("\n"));
 	const careful = planCard(rulePlan({ rule: { condition: "the build lands", action: "rm -rf ~/build", cwd: "/p" } }), { now: NOW, pollSecs: 60, home: "/home/me" });

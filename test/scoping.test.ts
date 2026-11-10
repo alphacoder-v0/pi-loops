@@ -4,7 +4,8 @@ import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { LoopScheduler } from "../src/scheduler.ts";
-import { TriggerStore } from "../src/triggers.ts";
+import { TriggerStore, parseTriggerRule } from "../src/triggers.ts";
+import { ruleLines } from "../src/rule-lines.ts";
 import { TriggerRuntime } from "../src/trigger-runtime.ts";
 import { plainJobRow } from "../src/engine.ts";
 import { type ToolHost, automationTools, checkJobInput, createLoopJob, toolsDropped } from "../src/tools.ts";
@@ -266,6 +267,47 @@ test("a sub-agent cannot ask for the machine-wide view, and cannot disable anoth
 	}
 });
 
+test("an id the tools cannot find, or a step they refuse, ends with what to do next", async () => {
+	const f = fixture();
+	try {
+		const tools = automationTools({ hop: 0, actor: "tool" }, f.host);
+		const text = async (name: string, args: object) => {
+			const out = await tools.find((t) => t.name === name)!.execute("i", args, undefined, undefined, ctx);
+			assert.equal(out.isError, true, name);
+			return String(out.content[0].text);
+		};
+		assert.equal(await text("cron_remove", { ref: "nightly", confirm: true }), "no cron job matching 'nightly' in this project; cron_list shows the ids and names");
+		assert.equal(await text("set_cron_job_state", { ref: "nightly", enabled: false }), "no cron job matching 'nightly' in this project; cron_list shows the ids and names");
+		assert.equal(await text("remove_trigger", { id: "dyn-x" }), "no dynamic trigger rule with id 'dyn-x'; list_triggers shows the ids");
+		assert.equal(await text("set_trigger_state", { id: "dyn-x", enabled: false }), "no dynamic trigger rule with id 'dyn-x'; list_triggers shows the ids");
+
+		// A refusal is the gate's own sentence: no slash command after it, and none for a disable.
+		const job = await createLoopJob(f.host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, cwd: f.other });
+		const sub = automationTools({ hop: 1, actor: "sub-agent" }, { ...f.host, confirmTool: async () => "denied: nobody can approve this" });
+		for (const enabled of [true, false]) {
+			const out = await sub.find((t) => t.name === "set_cron_job_state")!.execute("i", { ref: job.id, enabled }, undefined, undefined, ctx);
+			assert.equal(String(out.content[0].text), "denied: nobody can approve this", `enabled: ${enabled}`);
+		}
+	} finally {
+		await f.scheduler.stop();
+	}
+});
+
+test("cron_list counts this project's new findings, and the machine's only with all_projects", async () => {
+	const f = fixture();
+	try {
+		await f.scheduler.inbox.append({ source: "cron:a", text: "mine", run_id: "r1", job_id: "a", cwd: f.mine });
+		await f.scheduler.inbox.append({ source: "cron:b", text: "other", run_id: "r2", job_id: "b", cwd: f.other });
+		await f.scheduler.inbox.append({ source: "cron:c", text: "other again", run_id: "r3", job_id: "c", cwd: f.other });
+		const cronList = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_list")!;
+		const last = async (args: object) => String((await cronList.execute("i", args, undefined, undefined, ctx)).content[0].text).split("\n").at(-1);
+		assert.equal(await last({}), "inbox: 1 new finding");
+		assert.equal(await last({ all_projects: true }), "inbox: 3 new findings");
+	} finally {
+		await f.scheduler.stop();
+	}
+});
+
 test("cron_list says how many runs in a row a loop has failed, so a playbook need not read the store", async () => {
 	const f = fixture();
 	try {
@@ -288,7 +330,7 @@ test("cron_list promises no next run for a plain job of a session that is not op
 	const f = fixture();
 	try {
 		const base = { schedule: { kind: "cron", expr: "0 9 * * *" } as const, stateful: false, prompt: "p", cwd: f.mine, enabled: true, catchUp: false, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 };
-		await f.scheduler.store.add({ ...base, id: "cron-asleep", name: "theirs", sessionId: "01a09f6d-other" });
+		await f.scheduler.store.add({ ...base, id: "cron-asleep", name: "theirs", sessionId: "01a09f6d-0e1e-7000-8000-000000000001" });
 		await f.scheduler.store.add({ ...base, id: "cron-mine", name: "mine", sessionId: "s" });
 		await f.scheduler.store.add({ ...base, id: "cron-loop", name: "loop", stateful: true });
 		const cronList = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_list")!;
@@ -296,12 +338,12 @@ test("cron_list promises no next run for a plain job of a session that is not op
 		const byId = new Map(listed.details.jobs.map((j: any) => [j.id, j]));
 		assert.equal(byId.get("cron-asleep").next_run, undefined, "dispatch would skip it, so the list does not promise it");
 		assert.equal(byId.get("cron-asleep").asleep, true);
-		assert.equal(byId.get("cron-asleep").owner_session, "01a09f6d");
+		assert.equal(byId.get("cron-asleep").owner_session, "01a09f6d-0e1e");
 		assert.ok(byId.get("cron-mine").next_run, "this session's plain job has one");
 		assert.equal(byId.get("cron-mine").asleep, undefined);
 		assert.ok(byId.get("cron-loop").next_run, "a loop runs wherever the clock is");
 		const text = String(listed.content[0].text);
-		assert.match(text, /session 01a09f6d — resume it to run \(no next run here\)/, "and the model is told what would wake it");
+		assert.match(text, /session 01a09f6d-0e1e — resume it to run \(no next run here\)/, "and the model is told what would wake it");
 		assert.doesNotMatch(text.split("cron-asleep")[1].split("\n- ")[0], /next_run/, "no next_run line under the asleep job");
 	} finally {
 		await f.scheduler.stop();
@@ -461,6 +503,25 @@ test("with a person in their own turn, new_trigger asks through pi's select and 
 	}
 });
 
+test("new_trigger stores a condition the model wrote as \"when …\" the way /new-trigger does, so /triggers says when once", async () => {
+	for (const [label, f, ctxOf] of [
+		["the Watch card", askFixture(), (p: any) => p],
+		["the confirm", askFixture(), () => ctx],
+	] as const) {
+		try {
+			await f.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "when the build finishes", action: "tell me the build is ready" }, undefined, undefined, ctxOf(f.person));
+			const rules = f.triggers.store.load();
+			assert.equal(rules[0].condition, parseTriggerRule("when the build finishes, run tell me the build is ready").condition, label);
+			assert.equal(rules[0].condition, "the build finishes", label);
+			const [row] = ruleLines(rules, { numbered: true, cwd: f.mine, home: "/nowhere", sameProject: () => true });
+			assert.match(row, /^ 1\. dyn-\w+(?: \[[^\]]*\])? when the build finishes -> tell me the build is ready/, `${label}: ${row}`);
+			if (label === "the Watch card") assert.match(f.selects[0].title, /\nWaits for: the build finishes\n/, label);
+		} finally {
+			await f.scheduler.stop();
+		}
+	}
+});
+
 test("Cancel, Esc, a timeout and an abort all return cancelled in the same call and leave jobs.json and triggers.json as they were", async () => {
 	for (const [answer, reason, abort] of [["Cancel", "Cancel", false], [undefined, "Cancel", false], ["Set it up · nowhere", "Cancel", false], [undefined, "aborted", true]] as const) {
 		const f = askFixture(() => answer);
@@ -583,15 +644,15 @@ test("a sub-agent, a scheduled turn and a pi with no dialog keep today's gate: n
 	}
 });
 
-test("both create tools tell the model what a `Watch for:` message is, and what never to do with it, at hop 0 on every surface", async () => {
+test("the create tools tell the model what a `Watch for:` message is, and what never to do with it, at hop 0 on every surface", async () => {
 	const f = askFixture();
 	try {
-		for (const name of ["new_trigger", "cron_create"]) {
-			const d = f.tools.find((t) => t.name === name)!.description;
-			assert.match(d, /A message that starts with `Watch for:` comes from the page's Watch box/, name);
-			assert.match(d, /call neither, do nothing, and say it reads like something to do now/, name);
-			assert.match(d, /Never do the action of a `Watch for:` message yourself/, name);
-		}
+		const d = f.tools.find((t) => t.name === "cron_create")!.description;
+		assert.match(d, /A message that starts with `Watch for:` comes from the page's Watch box/);
+		assert.match(d, /answer it with one of these two tools \(new_trigger or cron_create\)/);
+		assert.match(d, /call neither, do nothing, and say it reads like something to do now/);
+		assert.match(d, /Never do the action of a `Watch for:` message yourself/);
+		assert.doesNotMatch(f.tools.find((t) => t.name === "new_trigger")!.description, /Watch for:/, "the model is told once, in the tool list both tools share");
 		const sub = automationTools({ hop: 1, actor: "sub-agent" }, f.host);
 		for (const name of ["new_trigger", "cron_create"]) assert.doesNotMatch(sub.find((t) => t.name === name)!.description, /Watch for:/, `a sub-agent never sees such a message: ${name}`);
 	} finally {

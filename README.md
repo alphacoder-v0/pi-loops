@@ -312,7 +312,7 @@ pi-loops stays stopped until `pi-loops start`, or until `pi-loops` opens the bro
 | `/pi-loops start\|stop\|restart\|status` | Start, stop, restart or show pi-loops |
 | `/cron clear <ref>` | Release a run marker left behind by a process that is gone |
 | `/cron gc` | Remove plain jobs whose session was deleted (they are parked as disabled first) |
-| `/cron panel on\|off` | The side panel above the editor: Triggers, Inbox, Cron, MCP |
+| `/cron panel on\|off` | The side panel above the editor: Rules, Loops, Runs, MCP |
 | `/cron snapshot` | Write what only this process knows — connected MCP servers and their tools, active tools, hooks, whether pi-loops is running and its pid — into the session as a `pi_loops_snapshot` entry, for a front end that is not a terminal |
 | `/inbox [list\|all\|claim <n>\|dismiss <n> [reason]\|clear] [--all]` | Triage findings from stateful loops. This project's by default, `--all` for every project — the same scoping `/cron` and `/triggers` use. A reason given with `dismiss` is shown to the loop's next run |
 | `/goal [<condition>]`, `/goal pause\|resume\|clear` | Hold the session to a stop condition: after every turn an evaluator with no tools decides whether it is met, and sends the agent back to work if not (max 8 continuations). Bare `/goal` shows the one in force |

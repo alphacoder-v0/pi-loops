@@ -371,16 +371,18 @@ test("an orphan cwd disables the job once it has been gone a while; a stale run 
 test("plain jobs whose session was deleted are disabled by the host and removed by gc", async () => {
 	const dir = tmp("pi-loops-sched-");
 	const live = new Set(["alive"]);
-	const sched = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), sessionExists: (id) => live.has(id) });
+	const notices: string[] = [];
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), sessionExists: (id) => live.has(id), hooks: { log: (m) => void notices.push(m) } });
 	try {
 		const ok = await sched.store.add(makeJob({ stateful: false, sessionId: "alive", schedule: { kind: "cron", expr: "0 9 * * *" }, name: "mine" }));
-		const dead = await sched.store.add(makeJob({ stateful: false, sessionId: "gone", schedule: { kind: "cron", expr: "0 9 * * *" }, name: "dead" }));
+		const dead = await sched.store.add(makeJob({ stateful: false, sessionId: "01a1c183-7467-7000-8000-000000000000", schedule: { kind: "cron", expr: "0 9 * * *" }, name: "dead" }));
 		await sched.tick();
 		const jobs = sched.store.load();
 		assert.equal(jobs.find((j) => j.id === ok.id)?.enabled, true);
 		const d = jobs.find((j) => j.id === dead.id)!;
 		assert.equal(d.enabled, false, "session gone → disabled");
-		assert.match(d.lastError ?? "", /session .* no longer exists/);
+		assert.match(d.lastError ?? "", /^disabled: session 01a1c183-7467 no longer exists/, "the same short id every surface uses");
+		assert.ok(notices.includes("cron dead: disabled, its session 01a1c183-7467 no longer exists"), notices.join("\n"));
 		const removed = await sched.gc();
 		assert.deepEqual(removed.map((j) => j.name), ["dead"]);
 		assert.deepEqual(sched.store.load().map((j) => j.name).sort(), ["mine"]);
@@ -1243,9 +1245,9 @@ test("/cron run queues a plain one-shot's prompt and writes the same bookkeeping
 test("/cron run refuses a plain job of a session that is not open here, the way it refuses a disabled one", async () => {
 	const dir = tmp("pi-loops-sched-");
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "here", cwd: dir }) });
-	const theirs = await sched.store.add(makeJob({ stateful: false, sessionId: "01a09f6d-elsewhere", cwd: dir, name: "theirs" }));
+	const theirs = await sched.store.add(makeJob({ stateful: false, sessionId: "01a09f6d-e15e-7000-8000-000000000001", cwd: dir, name: "theirs" }));
 	const answer = await sched.runNow(theirs.id);
-	assert.equal(answer, "belongs to session 01a09f6d, which is not open here — resume it, or /cron add the job again in this chat");
+	assert.equal(answer, "belongs to session 01a09f6d-e15e, which is not open here — resume it, or /cron add the job again in this chat");
 	assert.equal(sched.store.load()[0].runCount, 0, "and nothing was injected anywhere");
 	await sched.stop();
 });

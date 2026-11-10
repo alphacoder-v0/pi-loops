@@ -6,7 +6,9 @@
  * was importable no test could see one go. Everything it reads is a parameter, so a test can hand it
  * a job, a run log and an inbox and read the lines a person reads.
  */
+import { projectLabel } from "./conversation-rows.ts";
 import { formatWait, queueOrder, queuedPrompt } from "./engine.ts";
+import { shortSessionId } from "./session-head.ts";
 import type { InboxEntry } from "./inbox.ts";
 import { asleepNote, runsSomewhere, type OwnerView } from "./job-owner.ts";
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal, signalSummary } from "./job-signal.ts";
@@ -14,6 +16,7 @@ import { previewRedacted } from "./redact.ts";
 import type { SessionRequest } from "./requests.ts";
 import { computeNext, formatLocal, formatSchedule } from "./schedule.ts";
 import type { LoopJob, RunRecord } from "./store.ts";
+import type { DynamicTriggerRule } from "./triggers.ts";
 
 export interface JobLinesInput {
 	/** The whole run log, read once by the caller; only this listing's loops are filtered out of it. */
@@ -29,6 +32,8 @@ export interface JobLinesInput {
 	home: string;
 	/** Injected because the answer decides `[orphan: cwd missing]`, and a test should not make directories. */
 	cwdExists: (cwd: string) => boolean;
+	/** Whether each job's path is printed: only `/cron all` lists more than one project. */
+	showCwd: boolean;
 }
 
 /**
@@ -39,8 +44,14 @@ export function loopLabel(job: { id: string; name?: string }): string {
 	return job.name || job.id.slice(0, 13);
 }
 
-/** The caller's `homeRel`, with `home` passed in: this module has no `process.env`. */
-const homeRel = (p: string, home: string) => (home && p.startsWith(home) ? `~${p.slice(home.length)}` : p);
+/** A loop's generated id (`src/store.ts` newId): what the snapshot carries for a loop with no name. */
+const LOOP_ID = /^cron-[0-9a-f]{32}$/;
+
+/** A snapshot's `job` field (its name, else its id) as every surface labels the loop. */
+export function snapshotLoopLabel(job: string): string {
+	return LOOP_ID.test(job) ? loopLabel({ id: job }) : job;
+}
+
 
 /** What a queued row's source is called in `/cron queue`, the words the browser page uses for the same row. */
 export function queueSourceLabel(source: SessionRequest["source"], jobName: (id: string) => string | undefined): string {
@@ -134,11 +145,17 @@ export function leftConversationLine(sessionId: string, plainJobs: number, hostA
 	if (!plainJobs) return undefined;
 	const run = plainJobs === 1 ? "runs" : "run";
 	const where = hostAuto ? `${run} in the background now, each run a model turn` : `${run} in the background while a pi window is open ([host] auto = false), each run a model turn`;
-	return `[cron] the conversation you left (${sessionId.slice(0, 8)}) has ${plural(plainJobs, "plain job")} that ${where} — /cron all lists them, /cron disable <ref> stops one`;
+	return `[cron] the conversation you left (${shortSessionId(sessionId)}) has ${plural(plainJobs, "plain job")} that ${where} — /cron all lists them, /cron disable <ref> stops one`;
+}
+
+/** A catch-up setting that differs from the default (loops catch up, plain jobs do not), in the flag's own spelling. */
+function catchUpMark(job: Pick<LoopJob, "stateful" | "catchUp">): string | undefined {
+	if (job.stateful) return job.catchUp ? undefined : "[no-catchup]";
+	return job.catchUp ? "[catchup]" : undefined;
 }
 
 export function jobLines(jobs: LoopJob[], opts: JobLinesInput): string[] {
-	const { runs, inbox, requests, view, now, home, cwdExists } = opts;
+	const { runs, inbox, requests, view, now, home, cwdExists, showCwd } = opts;
 	return jobs
 		.map((job, i) => {
 			// A next run is shown when it will happen somewhere: a plain job of a session nobody holds has none.
@@ -165,15 +182,75 @@ export function jobLines(jobs: LoopJob[], opts: JobLinesInput): string[] {
 			// behind another turn): without this mark it looked exactly like one that is not queued.
 			const waiting = !job.stateful && job.sessionId ? queuedPrompt(job, requests(job.sessionId), now) : undefined;
 			const queued = waiting ? `[queued ${formatWait(now - Date.parse(waiting.since))}${waiting.reason ? ` — ${waiting.reason}` : ""}]` : undefined;
-			const marks = [job.stateful ? "[stateful]" : undefined, job.verify ? "[verify]" : undefined, dormant, orphan, quiet, queued, job.running ? `running ${job.running.runId}` : undefined, job.catchUp ? undefined : "[no-catchup]"]
+			const marks = [job.stateful ? "[stateful]" : undefined, job.verify ? "[verify]" : undefined, dormant, orphan, quiet, queued, job.running ? `running ${job.running.runId}` : undefined, catchUpMark(job)]
 				.filter(Boolean)
 				.join("  ");
-			const head = `${String(i + 1).padStart(2)}. ${job.id}${job.name ? ` "${job.name}"` : ""}  ${job.enabled ? "enabled" : "disabled"}  ${formatSchedule(job.schedule)}${marks ? `  ${marks}` : ""}`;
+			const head = `${String(i + 1).padStart(2)}. ${job.id}${job.name ? ` "${job.name}"` : ""}${job.enabled ? "" : "  disabled"}  ${formatSchedule(job.schedule)}${marks ? `  ${marks}` : ""}`;
 			const action = `    action: ${previewRedacted(job.prompt, 120)}`;
 			const worth = signal ? signalSummary(signal) : undefined;
-			const meta = `    next ${next ? formatLocal(next) : "—"} · runs ${job.runCount}${job.skippedOverlap ? ` · skipped overlaps ${job.skippedOverlap}` : ""}${worth ? ` · 30d: ${worth}` : ""} · ${homeRel(job.cwd, home)}`;
-			const err = job.lastError ? `    last error: ${previewRedacted(job.lastError, 100)}` : job.lastFiredAt ? `    last fired: ${job.lastFiredAt}` : undefined;
+			const meta = `    next ${next ? formatLocal(next) : "—"} · runs ${job.runCount}${job.skippedOverlap ? ` · skipped overlaps ${job.skippedOverlap}` : ""}${worth ? ` · 30d: ${worth}` : ""}${showCwd ? ` · ${projectLabel(job.cwd, home)}` : ""}`;
+			const err = job.lastError ? `    last error: ${previewRedacted(job.lastError, 100)}` : job.lastFiredAt ? `    last fired: ${formatLocal(Date.parse(job.lastFiredAt))}` : undefined;
 			return [head, action, meta, err].filter((l): l is string => !!l);
 		})
 		.flat();
+}
+
+/** More than five rules or loops is a list, not a panel: `/triggers` and `/cron` have the rest. */
+const PANEL_ROW_LIMIT = 5;
+/** The latest runs; `/cron runs` has the rest. */
+export const PANEL_RUN_LIMIT = 3;
+
+export type PanelTone = "head" | "ok" | "dim" | "warn";
+
+/** What the widget shows for one project. The run line and a rule's failure mark come in made, as the run card and `/triggers` make them. */
+export interface PanelInput {
+	rules: (Pick<DynamicTriggerRule, "condition" | "action" | "enabled" | "fireOnce"> & { failureMark?: string })[];
+	/** The last rule check here; only an outcome other than `no match` or `matched N` is shown. */
+	poll?: { at: string; outcome: string };
+	jobs: LoopJob[];
+	runs: RunRecord[];
+	runText: (r: RunRecord, name?: string) => string;
+	sources: { name: string; state: string; tools: number }[];
+	hookEvents: string[];
+}
+
+/**
+ * The widget's lines, each with the tone the theme colours it in; none when there is nothing to
+ * show. A row carries a mark only where it differs (`[disabled]`, `[every time]`): the inbox count
+ * is the footer badge's, and the trace of a check is `/triggers audit`'s.
+ */
+export function panelLines(i: PanelInput): { text: string; tone: PanelTone }[] {
+	if (!i.rules.length && !i.jobs.length && !i.sources.length && !i.runs.length) return [];
+	const clip = (x: string, n: number) => previewRedacted(x, n);
+	const lines: { text: string; tone: PanelTone }[] = [];
+	const more = (n: number) => n > PANEL_ROW_LIMIT && lines.push({ text: `… ${n - PANEL_ROW_LIMIT} more`, tone: "dim" });
+	if (i.rules.length) {
+		lines.push({ text: "Rules", tone: "head" });
+		for (const r of i.rules.slice(0, PANEL_ROW_LIMIT)) {
+			const marks = [r.enabled ? "" : "[disabled]", r.fireOnce ? "" : "[every time]", r.failureMark ?? ""].filter(Boolean);
+			lines.push({ text: `${clip(r.condition, 40)} → ${clip(r.action, 40)}${marks.map((m) => `  ${m}`).join("")}`, tone: r.failureMark ? "warn" : r.enabled ? "ok" : "dim" });
+		}
+		more(i.rules.length);
+	}
+	if (i.poll && i.poll.outcome !== "no match" && !/^matched \d+$/.test(i.poll.outcome)) lines.push({ text: `Last check  ${formatLocal(Date.parse(i.poll.at)).slice(11)} · ${i.poll.outcome}`, tone: "warn" });
+	if (i.jobs.length) {
+		const disabled = i.jobs.filter((j) => !j.enabled).length;
+		lines.push({ text: `Loops  ${i.jobs.length}${disabled ? ` · ${disabled} disabled` : ""}`, tone: "head" });
+		for (const j of i.jobs.slice(0, PANEL_ROW_LIMIT))
+			lines.push({ text: `${loopLabel(j)}  ${formatSchedule(j.schedule)}  ${clip(j.prompt, 48)}${j.enabled ? "" : "  [disabled]"}${j.skippedOverlap ? `  skipped overlaps ${j.skippedOverlap}` : ""}`, tone: j.skippedOverlap ? "warn" : j.enabled ? "ok" : "dim" });
+		more(i.jobs.length);
+	}
+	if (i.runs.length) {
+		lines.push({ text: "Runs", tone: "head" });
+		const names = new Map(i.jobs.map((j) => [j.id, j.name]));
+		for (const r of i.runs.slice(-PANEL_RUN_LIMIT).reverse()) lines.push({ text: `${formatLocal(Date.parse(r.finishedAt)).slice(11)} ${i.runText(r, names.get(r.jobId))}`, tone: r.ok ? "ok" : r.aborted ? "dim" : "warn" });
+		if (i.runs.length > PANEL_RUN_LIMIT) lines.push({ text: "… /cron runs", tone: "dim" });
+	}
+	if (i.sources.length) {
+		lines.push({ text: `MCP  servers ${i.sources.length} · tools ${i.sources.reduce((n, s) => n + s.tools, 0)}`, tone: "head" });
+		const tone: PanelTone = i.sources.some((s) => s.state !== "connected" && s.state !== "disabled") ? "warn" : i.sources.some((s) => s.state === "connected") ? "ok" : "dim";
+		lines.push({ text: `  ${i.sources.map((s) => `${s.name} ${s.state}${s.tools ? ` · ${plural(s.tools, "tool")}` : ""}`).join("  ")}`, tone });
+	}
+	if (i.hookEvents.length) lines.push({ text: `Hooks  cli_hooks ${plural(i.hookEvents.length, "rule")} (${[...new Set(i.hookEvents)].join(", ")})`, tone: "head" });
+	return lines;
 }

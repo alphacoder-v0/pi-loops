@@ -5,9 +5,7 @@
  * and the one place an answer becomes the stores' fields (`watchChoice`). Pure, beside tools.ts,
  * the job-edit.ts pattern: the tool asks, maps the answer and creates.
  */
-import * as os from "node:os";
 import { dangerousCommandReason } from "./danger.ts";
-import { pathOnlyCondition } from "./path-precheck.ts";
 import { redact } from "./redact.ts";
 import { computeNext, formatDuration, formatLocal, formatSchedule, stamp } from "./schedule.ts";
 import type { LoopJob } from "./store.ts";
@@ -37,8 +35,6 @@ export interface WatchCard {
 	next?: string;
 	/** A rule: how often the background looks (`[triggers] poll_interval_secs`). */
 	looksEverySecs?: number;
-	/** A rule whose condition is only a path: each look is a `stat`, and no model is asked until the path exists. */
-	precheck?: true;
 	/** The action, whole, redacted: the card is the consent, so it shows all of what would run. */
 	does: string;
 	/** A loop that asks for a checker: each finding is reviewed before it enters the inbox. */
@@ -102,7 +98,6 @@ export function planCard(plan: WatchPlan, ctx: { now: number; pollSecs: number; 
 		kind: "rule",
 		when: redact(plan.rule.condition),
 		looksEverySecs: ctx.pollSecs,
-		...("watch" in pathOnlyCondition(plan.rule.condition, { cwd: plan.rule.cwd, home: ctx.home ?? os.homedir() }) ? { precheck: true as const } : {}),
 		does: redact(plan.rule.action),
 		danger: actionDanger(plan.rule.action, ctx.home),
 		// A condition the model wrote as "when …" already has its word.
@@ -130,7 +125,6 @@ export function askTitle(card: WatchCard): string {
 	const rows: [string, string][] = [];
 	if (card.kind === "rule") {
 		rows.push(["Waits for", card.when], ["Looks", looksWords(card.looksEverySecs ?? 600)]);
-		if (card.precheck) rows.push(["Model", "only once the path exists"]);
 		rows.push(["Then", card.does]);
 	} else {
 		rows.push(["Runs", `${card.when}${card.next ? ` · next ${card.next}` : ""}`], ["Does", card.does]);

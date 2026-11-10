@@ -26,6 +26,7 @@ import { type LoopJob, newId } from "./store.ts";
 import { type ToolHost, automationTools, createLoopJob } from "./tools.ts";
 import { TriggerRuntime, promotionToInbox } from "./trigger-runtime.ts";
 import { auditCronFinish, auditCronStart, TriggerStore, controlPlanePreflight } from "./triggers.ts";
+import { shortSessionId } from "./session-head.ts";
 
 export interface HostRuntimeDeps {
 	dir: string;
@@ -155,7 +156,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				// And said in the project's open windows: the person is likely in another conversation of
 				// it now, where a rule's result used to land (0.22), and would not know to look there.
 				// Once an hour per conversation (keepNotice keeps one of each text an hour).
-				notice(`a rule's result was added to conversation ${held.sessionId.slice(0, 8)}, which is closed: pi --session ${held.sessionFile} shows it`, row.payload?.cwd);
+				notice(`a rule's result was added to conversation ${shortSessionId(held.sessionId)}, which is closed: pi --session ${held.sessionFile} shows it`, row.payload?.cwd);
 			},
 			turn: () => {
 				throw new Error("the background process does not run turn requests yet");
