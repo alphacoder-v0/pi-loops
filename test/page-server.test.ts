@@ -105,6 +105,12 @@ test("a conversation the page does not have and no lease names is 404, and start
 		assert.equal(unknown.status, 404);
 		assert.deepEqual(unknown.body, { error: "no such conversation" });
 		assert.equal((await page.get("state")).status, 404, "and nothing answers outside /c/<id>/");
+		// A person who opens that address gets a page with a way back, not JSON.
+		const opened = await fetch(`${page.url}c/01a0-nobody/`, { headers: { "x-pi-web-token": TEST_TOKEN } });
+		assert.equal(opened.status, 404);
+		assert.match(opened.headers.get("content-type") ?? "", /^text\/html/);
+		const html = await opened.text();
+		assert.ok(html.includes("<p>No such conversation.</p>") && html.includes('<a href="/">Back</a>'), html);
 		assert.deepEqual(page.pool.list(), [], "no pi was started for it");
 	} finally {
 		await page.stop();

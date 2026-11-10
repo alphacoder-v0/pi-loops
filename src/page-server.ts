@@ -2387,7 +2387,9 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			secret = device.secret;
 			res.appendHeader("set-cookie", deviceCookie(device.id));
 		}
-		if (pathId === null) return void json(res, NO_SUCH, 404);
+		// A person opened this address: the answer is a page with a way back, never JSON.
+		const noSuch = () => plainPage(res, 404, '<p>No such conversation.</p><p><a href="/">Back</a></p>', { secret });
+		if (pathId === null) return void noSuch();
 
 		let sessionId = pathId ?? keyed;
 		if (sessionId === undefined) {
@@ -2417,8 +2419,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				return void plainPage(res, 503, `<p>${escapeHtml(crashLine)}.</p>${words ? `<pre>${escapeHtml(words)}</pre>` : ""}<p><a href="/c/${encodeURIComponent(sessionId)}/?again=1">Start again</a></p>`, { secret });
 			}
 			// pi could not be started: every one of the page's six is busy, say. A person reads this.
-			if (opened.status === 503) return void plainPage(res, 503, `<p>${escapeHtml(opened.body.error)}.</p><p><a href="/">Back</a></p>`, { secret });
-			return void json(res, opened.body, opened.status);
+			if (opened.status === 404) return void noSuch();
+			return void plainPage(res, opened.status, `<p>${escapeHtml(opened.body.error)}.</p><p><a href="/">Back</a></p>`, { secret });
 		}
 		pool.touch(sessionId);
 		opts.rememberPage?.(sessionId);

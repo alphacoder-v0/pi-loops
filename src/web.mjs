@@ -2738,7 +2738,6 @@ function qrSvg(q) {
 $("adddev").onclick = async () => {
   const r = await api("/pair", {});
   if (!r.success) { row("err", "error", r.error || "could not make a pairing code"); return; }
-  $("pairCode").textContent = r.code;
 
   // The address this browser reached, first: under tailscale serve that is the tailnet name, and
   // it is the only one anybody had to configure. Then whatever else the machine can see — which is
@@ -2746,6 +2745,10 @@ $("adddev").onclick = async () => {
   const thisWindow = location.origin + "/";
   const loopback = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/)/.test(thisWindow);
   const candidates = (loopback ? [] : [{ url: thisWindow, via: "this window" }]).concat(r.addresses || []);
+  // No device but this one can reach the page: a code would be a grant nobody can use, so it is
+  // retired at once and the dialog says only how to make the page reachable.
+  if (candidates.length) $("pairCode").textContent = r.code;
+  else { $("pairCode").textContent = ""; api("/pair", { cancel: true }); }
 
   const pick = $("pairPick");
   pick.innerHTML = "";
