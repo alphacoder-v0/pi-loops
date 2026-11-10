@@ -36,7 +36,8 @@ paste. The last line says what happened:
 - `  opened in your browser`: an opener took the page. On macOS that is `open`, on Windows
   `rundll32 url.dll,FileProtocolHandler`, on WSL `rundll32.exe url.dll,FileProtocolHandler`, then
   `cmd.exe /c start` when `rundll32.exe` cannot start, and on other Linux `xdg-open`. It counts as
-  opened when the opener exits with success, or is still running after 1.5 s.
+  opened when the opener exits with success, or is still running after 1.5 s; `xdg-open` has 10 s,
+  because it takes about 5 s to exit 3 when it finds no browser.
 - `  could not open a browser here; open the link above (it works once, for 10 minutes)`: every
   opener failed, or Linux has no `DISPLAY` or `WAYLAND_DISPLAY`.
 - `  open the link above in a browser on this machine`: over ssh or mosh, where nothing is opened.

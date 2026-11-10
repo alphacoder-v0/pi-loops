@@ -10,8 +10,16 @@ import { spawn } from "node:child_process";
 import * as os from "node:os";
 import { pathToFileURL } from "node:url";
 
-/** One command to try: what to run, from where, and which exit codes mean the browser got it. */
-export type Opener = { cmd: string; args: string[]; cwd?: string; okExit: number[] };
+/**
+ * One command to try: what to run, from where, which exit codes mean the browser got it, and how
+ * long it may run before still running counts as opened.
+ */
+export type Opener = { cmd: string; args: string[]; cwd?: string; okExit: number[]; waitMs: number };
+
+/** For an opener that exits as soon as it has handed the address on. */
+const QUICK_MS = 1_500;
+/** xdg-open that finds no browser exits 3 after about five seconds. */
+const XDG_OPEN_MS = 10_000;
 
 /** What the choice depends on, passed in so a test can be any machine. */
 export type OpenEnv = { platform: NodeJS.Platform; release: string; env: NodeJS.ProcessEnv };
@@ -29,21 +37,21 @@ function isWsl(e: Pick<OpenEnv, "platform" | "release" | "env">): boolean {
 export function openerFor(e: OpenEnv & { target: string }): Opener[] | "no-display" | "remote" {
 	if (isRemoteTty(e.env)) return "remote";
 	const t = e.target;
-	if (e.platform === "darwin") return [{ cmd: "open", args: [t], okExit: [0] }];
+	if (e.platform === "darwin") return [{ cmd: "open", args: [t], okExit: [0], waitMs: QUICK_MS }];
 	// No shell: cmd would read `&` in the address as the end of the command.
-	if (e.platform === "win32") return [{ cmd: "rundll32", args: ["url.dll,FileProtocolHandler", t], okExit: [0] }];
+	if (e.platform === "win32") return [{ cmd: "rundll32", args: ["url.dll,FileProtocolHandler", t], okExit: [0], waitMs: QUICK_MS }];
 	// Both start from a Windows drive: a long \\wsl.localhost cwd breaks them. Not wslview: wslu 3.2.3
 	// reads a wsl.localhost address as a relative Linux path and exits 0 without opening anything. Not
 	// explorer.exe: it exits 1 whether or not anything opened. rundll32 exits 0 even for a missing
 	// file, so cmd.exe is reached only when rundll32.exe cannot start.
 	if (isWsl(e))
 		return [
-			{ cmd: "rundll32.exe", args: ["url.dll,FileProtocolHandler", t], cwd: "/mnt/c", okExit: [0] },
+			{ cmd: "rundll32.exe", args: ["url.dll,FileProtocolHandler", t], cwd: "/mnt/c", okExit: [0], waitMs: QUICK_MS },
 			// cmd re-reads its line: `^` escapes the characters it would act on.
-			{ cmd: "cmd.exe", args: ["/c", "start", "", t.replace(/[\^&|]/g, "^$&")], cwd: "/mnt/c", okExit: [0] },
+			{ cmd: "cmd.exe", args: ["/c", "start", "", t.replace(/[\^&|]/g, "^$&")], cwd: "/mnt/c", okExit: [0], waitMs: QUICK_MS },
 		];
 	if (!e.env.DISPLAY && !e.env.WAYLAND_DISPLAY) return "no-display";
-	return [{ cmd: "xdg-open", args: [t], okExit: [0] }];
+	return [{ cmd: "xdg-open", args: [t], okExit: [0], waitMs: XDG_OPEN_MS }];
 }
 
 /**
@@ -68,13 +76,13 @@ export function thisMachine(): OpenEnv {
 
 /**
  * Hand `target` to each opener in turn until one takes it: true when one exits with a code it
- * counts as success, or is still running after `waitMs`, which is how a browser started straight
- * from the opener looks.
+ * counts as success, or is still running at its own deadline, which is how a browser started
+ * straight from the opener looks. `waitMs` replaces every deadline, for a test.
  */
-export async function openUrl(target: string, e: OpenEnv = thisMachine(), waitMs = 1_500): Promise<boolean> {
+export async function openUrl(target: string, e: OpenEnv = thisMachine(), waitMs?: number): Promise<boolean> {
 	const openers = openerFor({ ...e, target });
 	if (typeof openers === "string") return false;
-	for (const opener of openers) if (await tryOpener(opener, e.env, waitMs)) return true;
+	for (const opener of openers) if (await tryOpener(opener, e.env, waitMs ?? opener.waitMs)) return true;
 	return false;
 }
 

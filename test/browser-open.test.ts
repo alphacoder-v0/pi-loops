@@ -14,15 +14,15 @@ const linux = { platform: "linux" as const, release: "6.8.0-45-generic" };
 const wsl = { platform: "linux" as const, release: "6.18.54.1-microsoft-standard-WSL2" };
 
 test("macOS opens with open, Windows with rundll32, as pi does", () => {
-	assert.deepEqual(openerFor({ platform: "darwin", release: "24.0.0", env: {}, target: URL_WITH_AMP }), [{ cmd: "open", args: [URL_WITH_AMP], okExit: [0] }]);
+	assert.deepEqual(openerFor({ platform: "darwin", release: "24.0.0", env: {}, target: URL_WITH_AMP }), [{ cmd: "open", args: [URL_WITH_AMP], okExit: [0], waitMs: 1_500 }]);
 	assert.deepEqual(openerFor({ platform: "win32", release: "10.0.26100", env: {}, target: URL_WITH_AMP }), [
-		{ cmd: "rundll32", args: ["url.dll,FileProtocolHandler", URL_WITH_AMP], okExit: [0] },
+		{ cmd: "rundll32", args: ["url.dll,FileProtocolHandler", URL_WITH_AMP], okExit: [0], waitMs: 1_500 },
 	]);
 });
 
 test("WSL tries rundll32.exe from /mnt/c, then cmd.exe with & escaped, and never wslview", () => {
-	const rundll = { cmd: "rundll32.exe", args: ["url.dll,FileProtocolHandler", URL_WITH_AMP], cwd: "/mnt/c", okExit: [0] };
-	const cmd = { cmd: "cmd.exe", args: ["/c", "start", "", "http://127.0.0.1:4173/c/s/?a=1^&b=2"], cwd: "/mnt/c", okExit: [0] };
+	const rundll = { cmd: "rundll32.exe", args: ["url.dll,FileProtocolHandler", URL_WITH_AMP], cwd: "/mnt/c", okExit: [0], waitMs: 1_500 };
+	const cmd = { cmd: "cmd.exe", args: ["/c", "start", "", "http://127.0.0.1:4173/c/s/?a=1^&b=2"], cwd: "/mnt/c", okExit: [0], waitMs: 1_500 };
 	assert.deepEqual(openerFor({ ...wsl, env: { WSL_DISTRO_NAME: "Ubuntu" }, target: URL_WITH_AMP }), [rundll, cmd]);
 	assert.deepEqual(openerFor({ ...wsl, env: {}, target: URL_WITH_AMP }), [rundll, cmd], "release names microsoft");
 	assert.deepEqual(openerFor({ ...linux, env: { WSL_DISTRO_NAME: "Ubuntu" }, target: URL_WITH_AMP }), [rundll, cmd], "WSL_DISTRO_NAME alone is WSL");
@@ -33,8 +33,8 @@ test("WSL tries rundll32.exe from /mnt/c, then cmd.exe with & escaped, and never
 
 test("other Linux opens with xdg-open only when there is a display", () => {
 	assert.equal(openerFor({ ...linux, env: {}, target: URL_WITH_AMP }), "no-display");
-	assert.deepEqual(openerFor({ ...linux, env: { DISPLAY: ":0" }, target: URL_WITH_AMP }), [{ cmd: "xdg-open", args: [URL_WITH_AMP], okExit: [0] }]);
-	assert.deepEqual(openerFor({ ...linux, env: { WAYLAND_DISPLAY: "wayland-0" }, target: URL_WITH_AMP }), [{ cmd: "xdg-open", args: [URL_WITH_AMP], okExit: [0] }]);
+	assert.deepEqual(openerFor({ ...linux, env: { DISPLAY: ":0" }, target: URL_WITH_AMP }), [{ cmd: "xdg-open", args: [URL_WITH_AMP], okExit: [0], waitMs: 10_000 }]);
+	assert.deepEqual(openerFor({ ...linux, env: { WAYLAND_DISPLAY: "wayland-0" }, target: URL_WITH_AMP }), [{ cmd: "xdg-open", args: [URL_WITH_AMP], okExit: [0], waitMs: 10_000 }]);
 });
 
 test("over ssh or mosh nothing is opened, on any platform", () => {
@@ -71,6 +71,12 @@ test("opened means the opener exited with a success code or is still running; a 
 	assert.equal(await run(fakeOpener(`exec ${SLEEP} 5`)), true, "still running after the wait");
 	assert.equal(await run({ PATH: tmp("pi-loops-empty-"), DISPLAY: ":0" }), false, "no opener on PATH");
 	assert.equal(await run({ PATH: tmp("pi-loops-empty-") }), false, "no display");
+});
+
+test("xdg-open that finds no browser after five seconds is not opened: it has ten", async () => {
+	const started = Date.now();
+	assert.equal(await openUrl(URL_WITH_AMP, { ...linux, env: fakeOpener(`${SLEEP} 5; exit 3`) }), false);
+	assert.ok(Date.now() - started >= 5_000, "it waited for the exit");
 });
 
 // rundll32.exe and cmd.exe run from /mnt/c, which only a WSL machine has.
