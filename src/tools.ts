@@ -3,6 +3,7 @@
  * SetCronJobState and NewTrigger / ListTriggers / RemoveTrigger / SetTriggerState — as pi tool
  * definitions. One factory serves the interactive session (hop 0, registered with pi), every
  * in-process sub-session (hop 1, passed as customTools) and the headless host (hop 1, no UI).
+ * Hop 1 does not get `new_trigger` or `remove_trigger`: nobody can approve either there.
  */
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal } from "./job-signal.ts";
 import { formatWait, queuedPrompt, type QueuedPrompt } from "./engine.ts";
@@ -328,6 +329,8 @@ export interface ToolScope {
  * and bounds cycles with a hop count. The same definitions serve the interactive session
  * (hop 0, registered with pi) and every in-process sub-session (hop 1, passed as customTools).
  */
+const HOP0_ONLY = new Set(["new_trigger", "remove_trigger"]);
+
 export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinition<any, any>[] {
 	const defs: ToolDefinition<any, any>[] = [];
 	// Only where a person's message can arrive: a sub-agent is told nothing about it.
@@ -521,29 +524,22 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		name: "cron_remove",
 		label: "Remove cron job",
 		description:
-			"Preview or confirm removal of a scheduled job by id or name. Use confirm=false first when the user asks to delete, remove, or clear a scheduled job, cron job, crontab entry, or 定时任务. Call confirm=true only after the user explicitly confirms removal. Removal deletes the job itself; a loop's saved notes and run transcripts are kept on disk, and `/cron gc --purge` is what clears them.",
+			"Remove a scheduled job by id or name. Use when the user asks to delete, remove, or clear a scheduled job, cron job, crontab entry, or 定时任务; the user is asked to confirm in the same call. Removal deletes the job itself; a loop's saved notes and run transcripts are kept on disk, and `/cron gc --purge` is what clears them.",
 		parameters: Type.Object({
 			ref: Type.String({ description: "Job id (for example cron-abc123), unique id prefix, or name." }),
-			confirm: Type.Optional(Type.Boolean({ description: "false to preview the removal; true only after explicit user confirmation." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const job = resolveJobRefScoped(host.scheduler.store.load(), params.ref, host.session().cwd);
-			if (!job) return { content: [{ type: "text", text: `no cron job matching '${params.ref}' in this project; cron_list shows the ids and names` }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, confirmation_required: false, audit_entry_id: undefined as string | undefined } };
+			if (!job) return { content: [{ type: "text", text: `no cron job matching '${params.ref}' in this project; cron_list shows the ids and names` }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, audit_entry_id: undefined as string | undefined } };
 			const label = `${job.id}${job.name ? ` "${job.name}"` : ""}`;
-			if (!params.confirm) {
-				return {
-					content: [{ type: "text", text: `remove cron job ${label} requires confirmation\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}\ncall cron_remove again with confirm=true only after the user confirms` }],
-					details: { id: job.id as string | undefined, removed_count: 0, confirmation_required: true, audit_entry_id: undefined as string | undefined },
-				};
-			}
 			// The only control-plane tool that used to skip this gate, so a sub-agent (hop > 0) could
 			// delete any project's job unapproved — and what that costs is the automation itself: the
 			// loop stops running and its id is gone from jobs.json. Its notes and transcripts stay
 			// behind (under an id nothing schedules any more; `/cron gc --purge` clears those), which
-			// is why the gate is about what stops, not about data destroyed. The preview above stays
-			// free: it is what the user is shown before deciding.
+			// is why the gate is about what stops, not about data destroyed. The dialog shows the
+			// schedule and the action: one question, where a preview call used to make it two.
 			const denied = await host.confirmTool(ctx, { label: `remove cron job ${label}`, tool: "cron_remove", reason: "remove a scheduled job", preview: `${formatSchedule(job.schedule)} · ${previewRedacted(job.prompt, 120)}`, args: params }, scope.hop);
-			if (denied) return { content: [{ type: "text", text: denied }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, confirmation_required: false, audit_entry_id: undefined as string | undefined } };
+			if (denied) return { content: [{ type: "text", text: denied }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, audit_entry_id: undefined as string | undefined } };
 			const { aborted } = await host.scheduler.removeJob(job.id);
 			const auditEntryId = host.cronControlAudit("remove", scope.actor, job, undefined);
 			// The slash command says where a loop's notes went; a tool-driven removal has to say it too,
@@ -553,7 +549,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const kept = job.stateful ? "\nits loop state and run transcripts are kept; /cron gc --purge clears them" : "";
 			const abortedNote = aborted > 0 ? "\naborted its running run" : "";
 			const statePath = job.stateful ? host.scheduler.store.statePath(job.id) : undefined;
-			return { content: [{ type: "text", text: `removed cron job ${label}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}${kept}${abortedNote}` }], details: { id: job.id as string | undefined, removed_count: 1, confirmation_required: false, audit_entry_id: auditEntryId, state_path: statePath } };
+			return { content: [{ type: "text", text: `removed cron job ${label}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}${kept}${abortedNote}` }], details: { id: job.id as string | undefined, removed_count: 1, audit_entry_id: auditEntryId, state_path: statePath } };
 		},
 	});
 
@@ -587,5 +583,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			};
 		},
 	});
-	return defs;
+	// Every call of these is a prompt-class operation, denied at hop > 0 (controlPlanePreflight): a
+	// tool that can only fail is one an agent tries first.
+	return scope.hop === 0 ? defs : defs.filter((d) => !HOP0_ONLY.has(d.name));
 }

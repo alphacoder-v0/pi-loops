@@ -345,9 +345,8 @@ unambiguous prefix of it, or the `--name` you gave it — and `/crontab` and `/l
 
 Tools for the model: `cron_create`, `cron_list`, `cron_remove`, `set_cron_job_state`,
 `new_trigger`, `list_triggers`, `remove_trigger`, `set_trigger_state`, plus every tool of every
-configured MCP server. Five of them stop and ask you: creating or removing a trigger, removing a
-cron job — `cron_remove` twice over, a preview the model must show you before the approval itself —
-and any state change that turns automation *on*, or touches another project's. They are the
+configured MCP server. Five of them stop and ask you, once each: creating or removing a trigger,
+removing a cron job, and any state change that turns automation *on*, or touches another project's. They are the
 operations that decide what runs while nobody is watching.
 
 ## Documentation

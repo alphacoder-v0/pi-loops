@@ -211,10 +211,11 @@ poll interval is unaffected: the next scheduled check happens when it would have
 ## Cycle safety
 
 Cycles are bounded by a hop count: sub-agents run at hop 1 and still have the
-cron/trigger tools, so a trigger action can schedule a job; they never run the trigger runtime, so
-nothing nests. Prompt-class operations — creating or removing a trigger,
-re-enabling a trigger or a cron job — are denied fail-closed in sub-agents (no control-plane
-prompt channel there). `cron_create` works there, and so does disabling a job of the sub-agent's own
+cron tools, `list_triggers` and `set_trigger_state`, so a trigger action can schedule a job; they
+never run the trigger runtime, so nothing nests. `new_trigger` and `remove_trigger` are not offered
+at hop 1: every call of either needs a person, and a sub-agent has nobody to ask. The other
+prompt-class operations — re-enabling a trigger or a cron job — are denied fail-closed in
+sub-agents (no control-plane prompt channel there). `cron_create` works there, and so does disabling a job of the sub-agent's own
 project; the control-plane audit records `actor: sub-agent`. `cron_remove`, re-enabling a job and
 touching another project's job are denied there like the other prompt-class operations. Sub-agents never handle triggers themselves: they ignore MCP pushes, and the
 runtime audits anything reaching hop ≥ 1 as `cycle_suppressed` (hops are counted per trace, but the

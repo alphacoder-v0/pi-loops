@@ -591,8 +591,8 @@ weaker, and worth converting whenever one of them breaks.
       first; it replaces `new_trigger`'s confirm, so there is one question, never two. A scheduled
       turn, a sub-agent and pi-loops in the background ask nobody. `test/scoping.test.ts`: *the answer
       is promote_to_chat and fire_once for a rule, and stateful and verify for a schedule*, *a
-      sub-agent, a scheduled turn and a pi with no dialog keep today's gate: new_trigger asks the
-      host's confirm once and cron_create creates*; J8 in `test/journey/journeys/j08-watch.mjs`
+      sub-agent has no new_trigger; a scheduled turn and a pi with no dialog keep today's gate:
+      new_trigger asks the host's confirm once and cron_create creates*; J8 in `test/journey/journeys/j08-watch.mjs`
       drives the selector in tmux.
 - [x] At 390 px the box and the card fit: nothing scrolls sideways, the chips and buttons wrap, and
       every button is at least 32 px tall (J8 in `test/journey/journeys/j08-watch.mjs`).

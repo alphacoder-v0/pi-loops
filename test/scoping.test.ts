@@ -175,14 +175,14 @@ test("a sub-agent cannot remove a cron job, and another project's job needs its 
 		// hop 0 (a user is present): a name that belongs to another project still resolves, but only
 		// because the tool falls back to an exact-id match — a bare name of another project does not.
 		const atHop0 = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_remove")!;
-		const byName = await atHop0.execute("i", { ref: "nightly", confirm: true }, undefined, undefined, ctx);
+		const byName = await atHop0.execute("i", { ref: "nightly" }, undefined, undefined, ctx);
 		assert.equal(byName.isError, true, "another project's job is not reachable by name");
 		assert.equal(f.scheduler.store.load().length, 1);
 
 		// A sub-agent is denied outright: nobody can approve a removal in an unattended run.
 		const subHost: ToolHost = { ...f.host, confirmTool: async () => "denied: no user to approve this" };
 		const atHop1 = automationTools({ hop: 1, actor: "sub-agent" }, subHost).find((t) => t.name === "cron_remove")!;
-		const denied = await atHop1.execute("i", { ref: "cron-other", confirm: true }, undefined, undefined, ctx);
+		const denied = await atHop1.execute("i", { ref: "cron-other" }, undefined, undefined, ctx);
 		assert.equal(denied.isError, true);
 		assert.equal(f.scheduler.store.load().length, 1, "the job is still there");
 	} finally {
@@ -198,9 +198,13 @@ test("cron_remove's description promises only the deletion the store performs", 
 		const transcript = path.join(f.scheduler.store.sessionDirFor(job.id), "run-1.jsonl");
 		fs.writeFileSync(transcript, "{}\n");
 
-		const remove = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_remove")!;
-		await remove.execute("i", { ref: job.id, confirm: true }, undefined, undefined, ctx);
+		// One call, one question: the dialog is the confirmation, not a preview call before it.
+		const asked: string[] = [];
+		const remove = automationTools({ hop: 0, actor: "tool" }, { ...f.host, confirmTool: async (c, req, hop) => (asked.push(req.label), f.host.confirmTool(c, req, hop)) }).find((t) => t.name === "cron_remove")!;
+		await remove.execute("i", { ref: job.id }, undefined, undefined, ctx);
 		assert.equal(f.scheduler.store.load().length, 0, "the job is gone");
+		assert.deepEqual(asked, [`remove cron job ${job.id}`], "after one question");
+		assert.equal("confirm" in (remove.parameters as any).properties, false, "and there is no preview step to call first");
 		// The tool passes no `purge`, so both of these outlive it — `/cron gc --purge` is what clears them.
 		assert.ok(fs.existsSync(f.scheduler.store.statePath(job.id)), "the loop's notes are still on disk");
 		assert.ok(fs.existsSync(transcript), "and so is its transcript");
@@ -214,16 +218,16 @@ test("cron_remove's description promises only the deletion the store performs", 
 
 		// And the answer the user actually reads says the same, with the path in `details` where a tool
 		// puts a path — the slash command has always said this, and the tool used to leave it out.
-		const answer = await remove.execute("i", { ref: job.id, confirm: true }, undefined, undefined, ctx);
+		const answer = await remove.execute("i", { ref: job.id }, undefined, undefined, ctx);
 		assert.equal((answer.details as any)?.removed_count, 0, "the job is already gone by now");
 		const second = await createLoopJob(f.host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, cwd: f.mine });
-		const out = await remove.execute("i", { ref: second.id, confirm: true }, undefined, undefined, ctx);
+		const out = await remove.execute("i", { ref: second.id }, undefined, undefined, ctx);
 		assert.match(out.content[0].text, /its loop state and run transcripts are kept; \/cron gc --purge clears them/);
 		assert.equal((out.details as any).state_path, f.scheduler.store.statePath(second.id));
 
 		// A plain job has neither, so it is not told about notes it never had.
 		const plain = await createLoopJob(f.host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: false, cwd: f.mine });
-		const plainOut = await remove.execute("i", { ref: plain.id, confirm: true }, undefined, undefined, ctx);
+		const plainOut = await remove.execute("i", { ref: plain.id }, undefined, undefined, ctx);
 		assert.doesNotMatch(plainOut.content[0].text, /loop state/);
 		assert.equal((plainOut.details as any).state_path, undefined);
 	} finally {
@@ -259,7 +263,7 @@ test("a sub-agent cannot ask for the machine-wide view, and cannot disable anoth
 		await f.scheduler.store.add({ id: "cron-mine", schedule: { kind: "every", ms: 60_000 }, stateful: false, prompt: "p", cwd: f.mine, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
 		const mineRule = await f.triggers.store.add({ condition: "this project condition", action: "a", cwd: f.mine });
 		const atHop0 = automationTools({ hop: 0, actor: "tool" }, f.host);
-		assert.equal((await atHop0.find((t) => t.name === "cron_remove")!.execute("i", { ref: "1", confirm: true }, undefined, undefined, ctx)).isError, true);
+		assert.equal((await atHop0.find((t) => t.name === "cron_remove")!.execute("i", { ref: "1" }, undefined, undefined, ctx)).isError, true);
 		assert.equal((await atHop0.find((t) => t.name === "remove_trigger")!.execute("i", { id: "1" }, undefined, undefined, ctx)).isError, true);
 		assert.ok(f.scheduler.store.load().some((j) => j.id === "cron-mine"), "the job at position 1 is still there");
 		assert.ok(f.triggers.store.load().some((r) => r.id === mineRule.id), "and so is the rule at position 1");
@@ -277,7 +281,7 @@ test("an id the tools cannot find, or a step they refuse, ends with what to do n
 			assert.equal(out.isError, true, name);
 			return String(out.content[0].text);
 		};
-		assert.equal(await text("cron_remove", { ref: "nightly", confirm: true }), "no cron job matching 'nightly' in this project; cron_list shows the ids and names");
+		assert.equal(await text("cron_remove", { ref: "nightly" }), "no cron job matching 'nightly' in this project; cron_list shows the ids and names");
 		assert.equal(await text("set_cron_job_state", { ref: "nightly", enabled: false }), "no cron job matching 'nightly' in this project; cron_list shows the ids and names");
 		assert.equal(await text("remove_trigger", { id: "dyn-x" }), "no dynamic trigger rule with id 'dyn-x'; list_triggers shows the ids");
 		assert.equal(await text("set_trigger_state", { id: "dyn-x", enabled: false }), "no dynamic trigger rule with id 'dyn-x'; list_triggers shows the ids");
@@ -618,12 +622,13 @@ test("a schedule that cannot be parsed, or a job that would be refused, gives an
 	}
 });
 
-test("a sub-agent, a scheduled turn and a pi with no dialog keep today's gate: new_trigger asks the host's confirm once and cron_create creates", async () => {
+test("a sub-agent has no new_trigger; a scheduled turn and a pi with no dialog keep today's gate: new_trigger asks the host's confirm once and cron_create creates", async () => {
 	const sub = askFixture();
 	try {
-		const subHost: ToolHost = { ...sub.host, confirmTool: async () => "denied: sub-agents have no control-plane prompt channel" };
-		const denied = await automationTools({ hop: 1, actor: "sub-agent" }, subHost).find((t) => t.name === "new_trigger")!.execute("i", { condition: "c", action: "a" }, undefined, undefined, sub.person);
-		assert.equal(denied.isError, true, "hop 1: the fail-closed deny a sub-agent gets");
+		// Hop 1: a call nobody can approve is not offered at all, so the agent does not try it first.
+		const names = automationTools({ hop: 1, actor: "sub-agent" }, sub.host).map((t) => t.name).sort();
+		assert.deepEqual(names, ["cron_create", "cron_list", "cron_remove", "list_triggers", "set_cron_job_state", "set_trigger_state"]);
+		assert.deepEqual(automationTools({ hop: 0, actor: "tool" }, sub.host).map((t) => t.name).sort(), ["cron_create", "cron_list", "cron_remove", "list_triggers", "new_trigger", "remove_trigger", "set_cron_job_state", "set_trigger_state"]);
 		assert.equal(sub.selects.length, 0);
 	} finally {
 		await sub.scheduler.stop();
@@ -655,7 +660,7 @@ test("the create tools tell the model what a `Watch for:` message is, and what n
 		assert.match(d, /Never do the action of a `Watch for:` message yourself/);
 		assert.doesNotMatch(f.tools.find((t) => t.name === "new_trigger")!.description, /Watch for:/, "the model is told once, in the tool list both tools share");
 		const sub = automationTools({ hop: 1, actor: "sub-agent" }, f.host);
-		for (const name of ["new_trigger", "cron_create"]) assert.doesNotMatch(sub.find((t) => t.name === name)!.description, /Watch for:/, `a sub-agent never sees such a message: ${name}`);
+		assert.doesNotMatch(sub.find((t) => t.name === "cron_create")!.description, /Watch for:/, "a sub-agent never sees such a message");
 	} finally {
 		await f.scheduler.stop();
 	}
