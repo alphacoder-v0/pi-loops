@@ -139,8 +139,10 @@ for (const journey of selected) {
 					}
 					await new Promise((resolve) => setTimeout(resolve, 100));
 				}
+				// The end of it: a terminal probe returns the whole screen, which captureFailure saves whole.
 				const detail = typeof last === "string" ? last : JSON.stringify(last) ?? String(last);
-				throw new Error(`timed out waiting for ${what}; last value: ${detail}`);
+				const tail = detail.length > 200 ? `…${detail.slice(-200)}` : detail;
+				throw new Error(`timed out waiting for ${what}; last value: ${tail}`);
 			},
 			term: {
 				send: (...keys) => tmux(current, ["send-keys", "-t", current.tmux.session, ...keys]),

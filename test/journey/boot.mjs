@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
+import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -98,7 +99,35 @@ export async function sweep(root, runId, browserSession) {
 	return { survivors: [...found], diagnostic: [...diagnostic].map(([pid, cmd]) => ({ pid, cmd })) };
 }
 
+function pidAlive(pid) {
+	try { process.kill(pid, 0); return true; } catch (error) { return error?.code === "EPERM"; }
+}
+
+/** Where tmux keeps `-L` sockets for this user. */
+function tmuxSocketDir() {
+	return path.join(process.env.TMUX_TMPDIR || "/tmp", `tmux-${process.getuid?.() ?? 0}`);
+}
+
+/**
+ * What journey runs whose harness process is gone left behind, named `journey-<pid>-<run>`: tmux
+ * sockets, and agent-browser's per-session files. A run cut short leaves both.
+ */
+function removeStaleSessionFiles() {
+	const tmuxBin = commandPath("tmux");
+	for (const [dir, isTmux] of [[tmuxSocketDir(), true], [path.join(os.homedir(), ".agent-browser"), false]]) {
+		let names = [];
+		try { names = fs.readdirSync(dir); } catch { continue; /* the tool was never run here */ }
+		for (const name of names) {
+			const pid = Number(/^journey-(\d+)-/.exec(name)?.[1]);
+			if (!pid || pidAlive(pid)) continue; // a harness that is still running owns its files
+			if (isTmux && tmuxBin) spawnSync(tmuxBin, ["-L", name, "kill-server"], { stdio: "ignore", timeout: 10000 });
+			fs.rmSync(path.join(dir, name), { force: true });
+		}
+	}
+}
+
 export async function reapStale(outRoot) {
+	removeStaleSessionFiles();
 	if (!fs.existsSync(outRoot)) return;
 	for (const sha of fs.readdirSync(outRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory())) {
 		const shaDir = path.join(outRoot, sha.name);
@@ -205,7 +234,8 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 		const result = await sweep(root, runId, browserSession);
 		const report = tmuxFailed ? { ...result, survivors: [...result.survivors, "tmux session"] } : result;
 		printSurvivors(report.survivors, root);
-		closeBrowser(browserSession);
+		// Its server is gone, but `kill-server` leaves the socket file: 180 of them had piled up.
+		if (tmux && !report.survivors.length) fs.rmSync(path.join(tmuxSocketDir(), tmux.socket), { force: true });
 		fs.writeFileSync(recordFile, JSON.stringify({ ...record, stopped: true }));
 		return report;
 	})();
