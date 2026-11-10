@@ -279,7 +279,8 @@ pi-loops uninstall-launcher                       # add --dir <dir> if install-l
 pi remove npm:@alphacoder-v0/pi-loops             # or git:github.com/alphacoder-v0/pi-loops, or the checkout path — whatever you installed
 ```
 
-State stays in `~/.pi/agent/loops` until you delete it.
+State stays in `~/.pi/agent/loops` until you delete it. After a reinstall, `/pi-loops install-launcher`
+in pi puts the command back, because a removed launcher is not written again by itself.
 
 To go back to 0.22.8, stop pi-loops while this version is still installed, then install 0.22.8:
 

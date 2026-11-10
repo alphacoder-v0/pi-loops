@@ -173,7 +173,7 @@ pi -e /path/to/pi-loops                            # 或者：只在这次启动
 pi update --extensions                             # 对齐已安装的包
 ```
 
-数据留在 `~/.pi/agent/loops`，想清就删目录。
+数据留在 `~/.pi/agent/loops`，想清就删目录。以后重新安装时，在 pi 里运行 `/pi-loops install-launcher` 把命令放回来：删掉的启动器不会再自动写回。
 
 要退回 0.22.8：趁 0.23 还装着，先停止 pi-loops，再安装 0.22.8：
 
