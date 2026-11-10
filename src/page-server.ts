@@ -33,7 +33,7 @@ import { readSessionHead } from "./session-head.ts";
 import { JobStore, type LoopJob, MAX_PROMPT_BYTES } from "./store.ts";
 import { summarizeSessionFile } from "./transcript.ts";
 import { conversationLabel } from "./session-head.ts";
-import { pidAlive } from "./lock.ts";
+import { pidAlive, withFileLockSync } from "./lock.ts";
 import { asleepNote, type OwnerView, runsSomewhere, whereRuns } from "./job-owner.ts";
 import { loopLabel, snapshotLoopLabel } from "./job-lines.ts";
 import {
@@ -124,12 +124,40 @@ export interface PageServer {
  * to do). You will not have to type it: a browser is remembered after its first visit.
  */
 export function webToken(dir: string, fail: (message: string) => never): string {
+	fs.mkdirSync(dir, { recursive: true });
+	// Two windows opening together may both start pi-loops, and both get here before either claims
+	// the service: under the lock, the second reads the token the first wrote instead of replacing it.
+	// `fail` is called after the lock is released: the host's `fail` exits, and a lock left behind
+	// would hold the next start for its whole stale window.
+	try {
+		return withFileLockSync(path.join(dir, "web-token.lock"), () =>
+			readOrMakeToken(dir, (message) => {
+				throw new TokenRefused(message);
+			}),
+		);
+	} catch (err: any) {
+		return fail(err instanceof TokenRefused ? err.message : `pi-loops web: ${err?.message ?? err}`);
+	}
+}
+
+class TokenRefused extends Error {}
+
+function readOrMakeToken(dir: string, fail: (message: string) => never): string {
 	const file = path.join(dir, "web-token");
 	// 0.22.8 kept its token in a cookie that every port on 127.0.0.1 receives for a year, so the
 	// first 0.24 start replaces a token it finds without this marker, once. A token written after
 	// the marker is the person's own and is kept.
 	const marker = path.join(dir, "web-token.v024");
-	const rotated = fs.existsSync(marker);
+	// lstat, as for the token file: a dangling symlink here is not "not rotated yet", and reading
+	// it as that rotated the token on every start and then failed on the marker.
+	let markerStat: fs.Stats | undefined;
+	try {
+		markerStat = fs.lstatSync(marker);
+	} catch (err: any) {
+		if (err?.code !== "ENOENT") fail(`pi-loops web: ${err?.message ?? err}`);
+	}
+	if (markerStat && !markerStat.isFile()) fail(`pi-loops web: ${marker} is not a regular file`);
+	const rotated = !!markerStat;
 	try {
 		// lstat, not stat: a symlink here is not a token file, it is someone else choosing where
 		// this process reads and writes. LOOPS_DIR can be pointed anywhere with --loops-dir.
@@ -149,7 +177,6 @@ export function webToken(dir: string, fail: (message: string) => never): string 
 		}
 	}
 	const made = randomBytes(16).toString("hex");
-	fs.mkdirSync(dir, { recursive: true });
 	fs.writeFileSync(file, `${made}\n`, { mode: 0o600, flag: "w" });
 	fs.chmodSync(file, 0o600);
 	if (!rotated) {

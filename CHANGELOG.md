@@ -12,6 +12,10 @@ All notable changes to pi-loops are documented here. The format follows
   every poll before the path existed cost a model call. One trailing parenthetical after the verb is
   now an aside: the watch waits on the path alone, and the model reads the whole condition once the
   path exists (#147).
+- **The page token is made once, even by two first starts at once.** Two windows that started
+  pi-loops together could each write a token, and one then exited. The token and its marker are
+  now written under a lock. A `web-token.v024` that is a symlink is refused before the token is
+  touched; before, it changed the token on every start and then failed (#144).
 - **A loop's finding can no longer pass for an undelivered prompt.** A prompt that never reached its
   conversation was told from a loop's finding by its text alone, so a loop that wrote
   `could not be delivered (…): <text>` had its text carried out on Yes. The engine now marks a dead
