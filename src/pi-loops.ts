@@ -2499,7 +2499,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				const lines: string[] = [];
 				const host = { ...pageLaunchHost(dir), packageDir: PACKAGE_DIR, piPackage: piPackageDir(), startedBy: `the pi window pid ${process.pid}`, myPiVersion: PI_VERSION };
 				const req = webPageRequest({ cwd: session.cwd, sessionId: binding.here().sessionId ?? session.sessionId, sessionFile: ctx.sessionManager.getSessionFile() });
-				const opened = await openPage(dir, req, { tty: true, browser: isRemoteTty() ? "remote" : "yes", host }, (l) => lines.push(l));
+				const opened = await openPage(dir, req, { key: true, browser: isRemoteTty() ? "remote" : "yes", host }, (l) => lines.push(l));
 				// Said only when a clipboard command took the link. pi's copy can still get there through
 				// OSC 52, which no terminal confirms, so that try says nothing either way.
 				if (opened.link && (await copyText(opened.link))) lines.push("  copied to the clipboard");
