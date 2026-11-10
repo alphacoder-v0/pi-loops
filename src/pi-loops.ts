@@ -2499,12 +2499,17 @@ export default function piLoops(pi: ExtensionAPI) {
 				const lines: string[] = [];
 				const host = { ...pageLaunchHost(dir), packageDir: PACKAGE_DIR, piPackage: piPackageDir(), startedBy: `the pi window pid ${process.pid}`, myPiVersion: PI_VERSION };
 				const req = webPageRequest({ cwd: session.cwd, sessionId: binding.here().sessionId ?? session.sessionId, sessionFile: ctx.sessionManager.getSessionFile() });
-				const opened = await openPage(dir, req, { key: true, browser: isRemoteTty() ? "remote" : "yes", host }, (l) => lines.push(l));
-				// Said only when a clipboard command took the link. pi's copy can still get there through
-				// OSC 52, which no terminal confirms, so that try says nothing either way.
-				if (opened.link && (await copyText(opened.link))) lines.push("  copied to the clipboard");
-				else if (opened.link) await copyToClipboard(opened.link).catch((err: any) => log.info(`/pi-loops web: copy: ${err?.message ?? err}`));
-				ctx.ui.notify(lines.join("\n"), opened.code === 0 ? "info" : "warning");
+				// The link is shown and copied before the browser is tried: the wait for a browser to spend
+				// the key can take seconds, and the person may paste the link sooner.
+				const onLink = async (link: string) => {
+					// Said only when a clipboard command took the link. pi's copy can still get there through
+					// OSC 52, which no terminal confirms, so that try says nothing either way.
+					if (await copyText(link)) lines.push("  copied to the clipboard");
+					else await copyToClipboard(link).catch((err: any) => log.info(`/pi-loops web: copy: ${err?.message ?? err}`));
+					ctx.ui.notify(lines.splice(0).join("\n"), "info");
+				};
+				const opened = await openPage(dir, req, { key: true, browser: isRemoteTty() ? "remote" : "yes", host }, (l) => lines.push(l), undefined, onLink);
+				if (lines.length) ctx.ui.notify(lines.join("\n"), opened.code === 0 ? "info" : "warning");
 				refreshBadge();
 				return;
 			}

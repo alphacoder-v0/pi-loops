@@ -8,7 +8,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
 import { readUiPrefs, writeUiPref } from "../src/ui-prefs.ts";
-import { UsageError, abortTarget, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, pageAddress, pageFlagRefusal, pageLaunchHost, pageLink, pageOutcomeLines, pageTarget, parseCliArgs, webPageRequest, cliRoute, isNewerVersion, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { UsageError, abortTarget, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, pageAddress, pageFlagRefusal, pageLaunchHost, pageLink, pageOutcomeLines, openOutcome, pageTarget, parseCliArgs, webPageRequest, cliRoute, isNewerVersion, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
@@ -1604,4 +1604,16 @@ test("pi-loops pair prints a code and the addresses another device can open", { 
 	} finally {
 		await bg.close();
 	}
+});
+
+test("a launch says opened only when a browser spent the key, and does not wait on a slow opener to say so", async () => {
+	const dir = tmp("pi-loops-outcome-");
+	const file = () => { const f = path.join(dir, `${Math.random()}.html`); fs.writeFileSync(f, "x"); return f; };
+	const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+	const a = file();
+	const t0 = Date.now();
+	assert.equal(await openOutcome("t", a, async () => { setTimeout(() => fs.rmSync(a), 50); await sleep(3000); return true; }, 2000), "opened", "the key is spent while the opener still runs");
+	assert.ok(Date.now() - t0 < 1000, "opened is said as soon as the key is spent");
+	assert.equal(await openOutcome("t", file(), async () => true, 300), "unconfirmed", "an opener that exits 0 and loads nothing, as rundll32 does");
+	assert.equal(await openOutcome("t", file(), async () => false, 300), "failed", "every opener failed");
 });

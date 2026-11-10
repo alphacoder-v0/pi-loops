@@ -33,10 +33,12 @@ works for 10 minutes, never the token, because what a terminal prints stays in i
 printed before the browser is tried, so a browser on this machine that did not open gets in with a
 paste. The last line says what happened:
 
-- `  opened in your browser`: a browser loaded the page and spent the launch key within 8 s. The
-  opener is `open` on macOS, `rundll32 url.dll,FileProtocolHandler` on Windows,
-  `rundll32.exe url.dll,FileProtocolHandler` on WSL (then `cmd.exe /c start` when `rundll32.exe`
-  cannot start), and `xdg-open` on other Linux. An opener's exit code is not enough: `rundll32`
+- `  opened in your browser`: a browser loaded the page and spent the launch key within 8 s,
+  watched while the opener runs. The opener is `open` on macOS,
+  `rundll32 url.dll,FileProtocolHandler` on Windows, `rundll32.exe url.dll,FileProtocolHandler` on
+  WSL (`WSL_DISTRO_NAME` set, or a kernel release that names Microsoft; then `cmd.exe /c start`
+  when `rundll32.exe` cannot start), and `xdg-open` on other Linux, which gets 10 s because it takes
+  about 5 s to give up when there is no browser. An opener's exit code is not enough: `rundll32`
   exits 0 for a target it cannot open.
 - `  if no browser opened, open the link above (it works once, for 10 minutes)`: the opener ran, but
   no browser spent the key within 8 s.

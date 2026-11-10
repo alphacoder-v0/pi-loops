@@ -1133,6 +1133,7 @@ export async function openPage(
 	how: { key: boolean; browser: PageBrowser; host: EnsureHostOptions },
 	out: (line: string) => void,
 	slowNote: () => void = () => {},
+	onLink: (link: string) => void | Promise<void> = () => {},
 ): Promise<{ code: number; link?: string }> {
 	// Asking for the page is asking for pi-loops: a stop by hand ends here, or the process it starts
 	// would find the mark and leave again. Every loop and rule resumes with it, which is said once
@@ -1173,9 +1174,10 @@ export async function openPage(
 	const link = pageLink({ url: res.url!, copyKey: res.copyKey, key: how.key });
 	if (ensured.up && ensured.pid === rec.pid) out("started pi-loops in the background");
 	out(`pi-loops: ${link}`);
+	if (how.key) await onLink(link);
 	// The browser opens on a file only this user can read, which holds the key: an argv is anyone's.
 	const openTarget = wantOpen && res.openFile ? openFileTarget(res.openFile, thisMachine()) : undefined;
-	const outcome: OpenOutcome = how.browser === "remote" ? "remote" : how.browser === "no" ? "not-asked" : openTarget && (await openUrl(openTarget)) ? ((await keySpent(res.openFile!)) ? "opened" : "unconfirmed") : "failed";
+	const outcome: OpenOutcome = how.browser === "remote" ? "remote" : how.browser === "no" ? "not-asked" : openTarget ? await openOutcome(openTarget, res.openFile!) : "failed";
 	for (const line of pageOutcomeLines({ outcome, key: how.key, ignoredArgs: res.ignoredArgs })) out(line);
 	return { code: 0, ...(how.key ? { link } : {}) };
 }
@@ -1348,13 +1350,27 @@ export function pageLink(i: { url: string; copyKey?: string; key: boolean }): st
  * The background process removes the launch file when the browser spends its key, so the file
  * going away is the one sign that a browser got in.
  */
-async function keySpent(file: string, waitMs = OPEN_CONFIRM_MS): Promise<boolean> {
+export async function keySpent(file: string, waitMs = OPEN_CONFIRM_MS): Promise<boolean> {
 	const until = Date.now() + waitMs;
 	while (Date.now() < until) {
 		if (!fs.existsSync(file)) return true;
 		await new Promise((r) => setTimeout(r, 100));
 	}
 	return !fs.existsSync(file);
+}
+
+/**
+ * The opener and the key watch run side by side: a browser that spends the key is "opened" at once,
+ * even while `xdg-open` is still running; an opener that fails before the key is spent is "failed".
+ */
+export async function openOutcome(target: string, file: string, open: (t: string) => Promise<boolean> = openUrl, waitMs = OPEN_CONFIRM_MS): Promise<OpenOutcome> {
+	const spent = keySpent(file, waitMs);
+	const opener = open(target);
+	const first = await Promise.race([spent.then((s) => (s ? "spent" : "not-spent")), opener.then((ok) => (ok ? "ran" : "failed"))]);
+	if (first === "spent") return "opened";
+	if (first === "failed") return "failed";
+	if (first === "ran") return (await spent) ? "opened" : "unconfirmed";
+	return (await opener) ? "unconfirmed" : "failed";
 }
 
 /** How long a launch waits for the browser to spend the key before it says it cannot tell. */
