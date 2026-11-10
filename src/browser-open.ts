@@ -40,7 +40,8 @@ export function openerFor(e: OpenEnv & { target: string }): Opener[] | "no-displ
 			// explorer.exe exits 1 when it has handed the address on. A long \\wsl.localhost cwd
 			// breaks it, so it starts from a Windows drive.
 			{ cmd: "explorer.exe", args: [t], cwd: "/mnt/c", okExit: [0, 1] },
-			{ cmd: "cmd.exe", args: ["/c", "start", "", t.replace(/&/g, "^&")], cwd: "/mnt/c", okExit: [0] },
+			// cmd re-reads its line: `^` escapes the characters it would act on.
+			{ cmd: "cmd.exe", args: ["/c", "start", "", t.replace(/[\^&|]/g, "^$&")], cwd: "/mnt/c", okExit: [0] },
 		];
 	if (!e.env.DISPLAY && !e.env.WAYLAND_DISPLAY) return "no-display";
 	return [{ cmd: "xdg-open", args: [t], okExit: [0] }];

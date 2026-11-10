@@ -27,6 +27,8 @@ test("WSL tries wslview when it is there, then explorer.exe from /mnt/c, then cm
 	assert.deepEqual(openerFor({ ...wsl, env: { WSL_DISTRO_NAME: "Ubuntu" }, target: URL_WITH_AMP }), [explorer, cmd], "no wslview on PATH");
 	assert.deepEqual(openerFor({ ...wsl, env: {}, onPath: (c) => c === "wslview", target: URL_WITH_AMP }), [{ cmd: "wslview", args: [URL_WITH_AMP], okExit: [0] }, explorer, cmd], "release names microsoft");
 	assert.deepEqual(openerFor({ ...linux, env: { WSL_DISTRO_NAME: "Ubuntu" }, target: URL_WITH_AMP })[0], explorer, "WSL_DISTRO_NAME alone is WSL");
+	const odd = openerFor({ ...wsl, env: { WSL_DISTRO_NAME: "U" }, target: "file://wsl.localhost/U/home/a^b|c&d/x.html" });
+	assert.deepEqual(Array.isArray(odd) && odd.at(-1)!.args.at(-1), "file://wsl.localhost/U/home/a^^b^|c^&d/x.html", "cmd.exe reads ^ and | as well as &");
 });
 
 test("other Linux opens with xdg-open only when there is a display", () => {
