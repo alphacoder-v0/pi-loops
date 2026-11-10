@@ -53,6 +53,8 @@ const invocation = new Date().toISOString();
 const appendResult = (row) => fs.appendFileSync(resultFile, `${JSON.stringify({ invocation, ...row })}\n`);
 fs.writeFileSync(resultFile, "", { flag: "a" });
 let interruptPromise;
+/** Every journey has run and the exit code is set: an interrupt now cuts nothing short. */
+let finished = false;
 const interrupt = () => interruptPromise ??= (async () => {
 	interrupting = true;
 	if (activeRun) activeRun.controller.abort(new Error("interrupted"));
@@ -75,7 +77,7 @@ const interrupt = () => interruptPromise ??= (async () => {
 		appendResult(row);
 		console.log(`INTERRUPTED ${activeJourney.id}`);
 	}
-	process.exit(130);
+	process.exit(activeJourney || !finished ? 130 : (process.exitCode ?? 0));
 })();
 process.once("SIGINT", interrupt);
 process.once("SIGTERM", interrupt);
@@ -101,6 +103,9 @@ for (const journey of selected) {
 	}
 	const dir = path.join(runRoot, journey.id);
 	fs.mkdirSync(dir, { recursive: true });
+	// This run's evidence only: an earlier run's screenshots beside it read as this one's. A sandbox
+	// reapStale kept (a survivor still in it) stays for its SURVIVOR line.
+	for (const entry of fs.readdirSync(dir)) if (entry !== "sandbox") fs.rmSync(path.join(dir, entry), { recursive: true, force: true });
 	const sandbox = path.join(dir, "sandbox");
 	fs.mkdirSync(sandbox, { recursive: true });
 	const runId = randomUUID();
@@ -201,6 +206,7 @@ for (const journey of selected) {
 }
 if (options.receipt) writeReceipt(options.receipt, { results, resultFile, all, failed, missing, explicitlyPending, against: options.against, producedBy: options.producedBy, sha, repo });
 process.exitCode = missing || explicitlyPending ? 3 : failed ? 1 : 0;
+finished = true;
 
 function valueAt(index) {
 	const value = process.argv[index + 2];
