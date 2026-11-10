@@ -73,3 +73,16 @@ test("a server that answers initialize and then dies is not respawned forever", 
 		await source.stop();
 	}
 });
+
+test("a stopped source delivers no push it had buffered: stopping means nothing more reaches the host", async () => {
+	const pushes: string[] = [];
+	const source = new McpSource({ name: "buffered", kind: "stdio", command: "true", args: [] } as any, { onNotification: (n) => void pushes.push(n.method) });
+	const frame = JSON.stringify({ jsonrpc: "2.0", method: "notifications/custom/thing", params: {} });
+	source.handleFrame(frame, () => undefined);
+	assert.deepEqual(pushes, ["notifications/custom/thing"]);
+	await source.stop();
+	// A line read from the pipe before the stop, parsed after it: the pool that owned this source is
+	// gone, and its trust check would read a project directory that may be gone too.
+	source.handleFrame(frame, () => undefined);
+	assert.deepEqual(pushes, ["notifications/custom/thing"], "nothing after the stop");
+});

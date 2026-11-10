@@ -7,6 +7,9 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Fixed
 
+- **A stopped MCP connection pushes nothing more.** A push read from the server just before the
+  connection stopped could still reach the host after it, and its trust check then read a project
+  directory that might be gone (#188).
 - **A path watch survives an aside in parentheses.** A condition a model rewrote to `<path> exists
   (a build finished)` was read as an extra clause, so the local `stat` pre-check never engaged and
   every poll before the path existed cost a model call. One trailing parenthetical after the verb is

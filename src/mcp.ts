@@ -769,6 +769,8 @@ export class McpSource {
 				if (f.method === "ping") send({ jsonrpc: "2.0", id: f.id, result: {} });
 				else send({ jsonrpc: "2.0", id: f.id, error: { code: -32601, message: `pi-loops is a notification-only client; ${f.method} is not supported` } });
 			} else if (typeof f.method === "string") {
+				// A line read before the stop and parsed after it: whoever owned this source has let it go.
+				if (this.stopped) continue;
 				this.status.lastEventAt = stamp();
 				this.status.queuedCount++;
 				this.status.lastError = undefined; // A successful push clears the last error
