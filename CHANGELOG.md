@@ -48,6 +48,11 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Changed
 
+- **The Loops pane says each thing once.** A named loop shows no prompt peek (the body has the
+  prompt), a failing loop no `quiet ×N` under its error, and the open row no id or cwd. Common cron
+  schedules read in words (`daily 09:00`, `weekdays 18:30`, `weekly Mon 09:00`, `every hour`). A
+  rule row is titled by its condition. The activity strip's "in chat" follows where a run's card
+  went: the conversation that asked for the run, not the one that made its loop (#154).
 - **The page header and composer say less.** The header's clear button did what + New does in
   this project, so it is gone (`/clear` and `/new` still work). The page says "conversation" where
   it said "session". The cost badge appears once there is a cost. The composer says "Message pi".
