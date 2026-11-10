@@ -1117,9 +1117,9 @@ export type PageBrowser = "yes" | "no" | "remote";
 
 /**
  * Open the page on a conversation and say so in `out`: start pi-loops in the background as `host`
- * says when it is not running, ask it for `page-open`, print the one-use link, then try the browser and say what
- * happened. `pi-loops`, `pi-loops open` and `/pi-loops web` all come here. `link` is the printed
- * address with its key, for a caller that also copies it.
+ * says when it is not running, ask it for `page-open`, print the one-use link, then try the browser
+ * and say what happened. `pi-loops`, `pi-loops open` and `/pi-loops web` all come here. `link` is
+ * the printed address with its key, for a caller that also copies it.
  */
 export async function openPage(
 	dir: string,
