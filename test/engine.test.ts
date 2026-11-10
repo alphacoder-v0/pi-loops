@@ -1518,9 +1518,14 @@ test("a terminal holder hands a page's row over when the ring wait ends, with no
 	const out = await drain("s", store, w.executor, now, sinks);
 	assert.deepEqual([w.sent, out.waiting, out.retryAt], [[], ["p1"], now + PERSON_RING_WAIT_MS], "waiting, and says until when");
 	let fired = 0;
+	// What the retried drain came to: it failed on a loaded runner once and the reason was dropped here.
+	const results: string[] = [];
 	const again = () => {
 		fired++;
-		void drain("s", store, w.executor, Date.now(), sinks).catch(() => undefined);
+		drain("s", store, w.executor, Date.now(), sinks).then(
+			(r) => void results.push(`drained at +${Date.now() - now} ms: ${JSON.stringify(r)}`),
+			(err) => void results.push(`threw at +${Date.now() - now} ms: ${err?.stack ?? err}`),
+		);
 	};
 	armRetry(timers, "s", 10, again);
 	// The margin src/pi-loops.ts gives it: a timer may fire a millisecond before Date.now() reaches
@@ -1529,7 +1534,7 @@ test("a terminal holder hands a page's row over when the ring wait ends, with no
 	assert.equal(timers.size, 1, "one timer per session");
 	const deadline = now + PERSON_RING_WAIT_MS + 8_000; // a loaded CI runner's timers, not a tick: there is none here
 	while (!w.sent.length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
-	assert.deepEqual(w.sent.map((s) => s.text), ["from the page"], "handed over within the ring wait plus a margin, with no tick");
+	assert.deepEqual(w.sent.map((s) => s.text), ["from the page"], `handed over within the ring wait plus a margin, with no tick; fired ${fired}, ${results.join("; ") || "no drain finished"}`);
 	assert.deepEqual([fired, timers.size], [1, 0], "the second arm replaced the first, which never fired; the timer is gone");
 });
 
