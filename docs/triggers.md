@@ -53,7 +53,10 @@ quoted path that may hold spaces. The verb is one of `exists`, `appears`, `is cr
 noun only when a space sets it apart from the path: `~/备份文件 存在` waits for `~/备份文件`), with an optional leading `when`, `if`,
 `once`, `当`, `如果` or `一旦` and an optional trailing `的时候`, `时` or `后`. `~` and `$HOME` are
 resolved in the process that creates the rule, so they are your home even when pi-loops in the
-background was started with another one; a relative path is resolved against the rule's project.
+background was started with another one; a relative path is resolved against the rule's project. A
+single trailing parenthetical after the verb is an aside, not a second clause:
+`~/build.done exists (a build finished)` is path-only too — the watch waits on the path alone,
+and once the path exists the model reads the whole condition.
 
 Anything else is refused as path-only and checked by the model, as before: a glob, a second clause
 (`~/x appears and it contains ERROR`, `~/a exists or ~/b exists`), another verb, a bare word with no

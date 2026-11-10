@@ -5,6 +5,14 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A path watch survives an aside in parentheses.** A condition a model rewrote to `<path> exists
+  (a build finished)` was read as an extra clause, so the local `stat` pre-check never engaged and
+  every poll before the path existed cost a model call. One trailing parenthetical after the verb is
+  now an aside: the watch waits on the path alone, and the model reads the whole condition once the
+  path exists (#147).
+
 ## [0.24.1] - 2026-11-10
 
 Two first-run fixes: the `pi-loops` command exists after the first pi session with no question, and
