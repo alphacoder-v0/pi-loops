@@ -8,7 +8,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
 import { readUiPrefs, writeUiPref } from "../src/ui-prefs.ts";
-import { UsageError, abortTarget, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, openFileUrl, pageAddress, pageFlagRefusal, pageLaunchHost, pageLaunchLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { UsageError, abortTarget, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, pageAddress, pageFlagRefusal, pageLaunchHost, pageLaunchLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
@@ -382,11 +382,6 @@ test("with no terminal and no --web, pi-loops says why and what to run instead, 
 	}
 	assert.deepEqual(said, [line]);
 	assert.equal(fs.existsSync(marker), false, "pi was not started");
-});
-
-test("ssh and mosh are recognised from the environment they set", () => {
-	assert.equal(isRemoteTty({}), false);
-	for (const k of ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "MOSH_CONNECTION"]) assert.equal(isRemoteTty({ [k]: "x" }), true, k);
 });
 
 test("flags this command does not recognise belong to pi", () => {
@@ -1289,12 +1284,6 @@ test("a page launch under [host] auto = false starts pi-loops, which stays while
 	assert.equal(leaves({ terminalPids: [77] }), false, "a terminal window keeps it running");
 	assert.equal(leaves({}), true, "the last terminal window, page pi and tab are gone: it leaves");
 	assert.equal(openWindows({ terminalPids: [4242], pageChildPids: [4242], tabs: 0 }), 1, "a page pi that holds a lease is one window, not two");
-});
-
-test("the browser opens on the launch file's address, which carries no key", () => {
-	const url = openFileUrl("/home/me/.pi/agent/loops/pages/open/0123abcd.html");
-	assert.equal(url, "file:///home/me/.pi/agent/loops/pages/open/0123abcd.html");
-	assert.doesNotMatch(url, /open=/);
 });
 
 test("a stop by hand stays when opening the page cannot start pi-loops, and nothing says loops resume", { timeout: 30_000 }, async () => {

@@ -15,8 +15,9 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as readline from "node:readline";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { isRemoteTty, openFileTarget, openUrl, thisMachine } from "./browser-open.ts";
 import { applyImport, automationOf, exportSession, defaultExportPath, importSession, inspectArchive, offerToEnable, parseActivateMode } from "./archive.ts";
 import { API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, COPY_KEY_MS, askHost, hostSocketPath, openConversations, renderHostSnapshot, requestLines, requestQueues, ringHost } from "./host-control-channel.ts";
 import { heldTurnFor, stopRow } from "./engine.ts";
@@ -65,11 +66,6 @@ export function noTerminalRefusal(input: { web: boolean; tui: boolean; interacti
 	if (input.web || input.tui || input.interactiveTty) return undefined;
 	if (input.piArgs.some((a) => PI_NO_TERMINAL_FLAGS.has(a.split("=")[0]))) return undefined;
 	return `pi-loops: there is no terminal here to open pi in; run pi-loops --web to open the page, or pi-loops -- -p "<prompt>" for one answer`;
-}
-
-/** ssh and mosh set at least one of these; opening a browser on the far end helps nobody. */
-export function isRemoteTty(env: NodeJS.ProcessEnv = process.env): boolean {
-	return ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "MOSH_CONNECTION"].some((k) => !!env[k]);
 }
 
 /**
@@ -1140,8 +1136,8 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 		return 1;
 	}
 	// The browser opens on a file only this user can read, which holds the key: an argv is anyone's.
-	// "Opened" only when an opener started; whether the browser could read the file it cannot tell.
-	const opened = wantOpen && !!res.openFile && (await openBrowser(openFileUrl(res.openFile!)));
+	const openTarget = wantOpen && res.openFile ? openFileTarget(res.openFile, thisMachine()) : undefined;
+	const opened = !!openTarget && (await openUrl(openTarget));
 	const lines = pageLaunchLines({
 		startedPid: ensured.up && ensured.pid === rec.pid ? rec.pid : undefined,
 		url: res.url!,
@@ -1310,26 +1306,6 @@ export function pageLaunchLines(i: { startedPid?: number; url: string; copyKey?:
 		lines.push(`  this conversation was already open; ${named.join(" ")} ${named.length === 1 ? "was" : "were"} not applied`);
 	}
 	return lines;
-}
-
-/** What the opener is given for the launch file: a file: URL, which holds no key. */
-export function openFileUrl(file: string): string {
-	return pathToFileURL(file).href;
-}
-
-/** Hand `url` to the system's opener; true once it has started, false when there is none. */
-function openBrowser(url: string): Promise<boolean> {
-	const [cmd, args] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
-	return new Promise((resolve) => {
-		try {
-			const child = spawn(cmd, args, { stdio: "ignore", detached: true });
-			child.once("spawn", () => resolve(true));
-			child.once("error", () => resolve(false)); // no opener on this machine: the address is printed
-			child.unref();
-		} catch {
-			resolve(false); // a URL on stdout is enough
-		}
-	});
 }
 
 /**
