@@ -920,6 +920,7 @@ export async function installLauncher(dir: string | undefined, out: (line: strin
 	// Whatever a session start was told once, this is the answer now: a launcher exists because
 	// someone asked for it, so the offer is live again if the file ever goes.
 	clearUiPref(defaultLoopsDir(getAgentDir()), "launcher");
+	clearUiPref(defaultLoopsDir(getAgentDir()), "launcherFailedIn");
 	out(`wrote ${file}`);
 	out(`  it runs ${path.join(entryDir, "cli-entry.mjs")}`);
 	out("  `pi-loops` now starts a session; `pi-loops --tui` opens the terminal one instead");
@@ -994,6 +995,25 @@ export function launcherState(entryDir: string, node: string, agentDir: string, 
 	if (!found.includes(LAUNCHER_MARKER)) return { file, state: "foreign" };
 	if (found === launcherScript(entryDir, node, agentDir)) return { file, state: "current" };
 	return { file, state: oursToRewrite(found, entryDir) ? "stale" : "other" };
+}
+
+/**
+ * What a session start does about the launcher: write one with no question, rewrite one of ours,
+ * or nothing. pi's own installer links `pi` into a directory on PATH and says so, and one extra
+ * keystroke after `pi install` is a cost the owner counts (#180), so a write asks nothing.
+ *
+ * A write needs all of these: a directory on PATH (`target`), nothing named `pi-loops` there, a
+ * UI to say it in, a copy that `pi install` put there (a checkout is missing nothing), no earlier
+ * `uninstall-launcher` (`declined`), and no failed write into this same directory (`failedIn`).
+ * The last one is so that a directory nobody can write to is not tried, and warned about, in
+ * every window; a PATH that names another directory is a new attempt.
+ */
+export function launcherAction(o: { target: string | undefined; state: LauncherState | undefined; hasUI: boolean; declined: boolean; failedIn: string | undefined; installedByPi: boolean }): "write" | "refresh" | "none" {
+	if (!o.target) return "none";
+	if (o.state === "stale") return "refresh";
+	if (o.state !== "absent") return "none";
+	if (!o.hasUI || o.declined || !o.installedByPi || o.failedIn === o.target) return "none";
+	return "write";
 }
 
 /**

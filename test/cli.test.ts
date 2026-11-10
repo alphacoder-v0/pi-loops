@@ -8,7 +8,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
 import { readUiPrefs, writeUiPref } from "../src/ui-prefs.ts";
-import { UsageError, abortTarget, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, pageAddress, pageFlagRefusal, pageLaunchHost, pageLink, pageOutcomeLines, openOutcome, keySpent, pageTarget, parseCliArgs, webPageRequest, cliRoute, isNewerVersion, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { UsageError, abortTarget, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherAction, launcherScript, launcherState, launcherTarget, loopsDir, pageAddress, pageFlagRefusal, pageLaunchHost, pageLink, pageOutcomeLines, openOutcome, keySpent, pageTarget, parseCliArgs, webPageRequest, cliRoute, isNewerVersion, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
@@ -552,6 +552,26 @@ test("the launcher goes to the first of ~/.local/bin and /usr/local/bin on PATH,
 	// ~/.local/bin wins even when PATH lists it second: it needs no root, which is why it is first.
 	assert.equal(launcherTarget(undefined, ["/usr/local/bin", local].join(path.delimiter)), local);
 	assert.equal(launcherTarget(undefined, "/usr/bin"), undefined);
+});
+
+test("a session start writes the launcher with no question only where nothing is there and nobody said no", () => {
+	// Option A on #180: one extra keystroke after `pi install` is a real cost, so the first
+	// interactive session writes `pi-loops` and says so, the way pi's own installer links `pi`.
+	const bin = "/home/u/.local/bin";
+	const fresh = { target: bin, state: "absent", hasUI: true, declined: false, failedIn: undefined, installedByPi: true } as const;
+	assert.equal(launcherAction(fresh), "write", "on PATH with nothing there");
+	assert.equal(launcherAction({ ...fresh, state: "stale" }), "refresh", "our stale launcher is kept working");
+	assert.equal(launcherAction({ ...fresh, state: "stale", hasUI: false }), "refresh", "with no UI too: they asked for it once");
+	assert.equal(launcherAction({ ...fresh, state: "foreign" }), "none", "somebody's own wrapper is left alone");
+	assert.equal(launcherAction({ ...fresh, state: "other" }), "none", "another copy's launcher is that copy's");
+	assert.equal(launcherAction({ ...fresh, state: "current" }), "none");
+	assert.equal(launcherAction({ ...fresh, declined: true }), "none", "removed before with uninstall-launcher");
+	assert.equal(launcherAction({ ...fresh, target: undefined, state: undefined }), "none", "nothing on PATH to write into");
+	assert.equal(launcherAction({ ...fresh, hasUI: false }), "none", "no UI to say it in");
+	assert.equal(launcherAction({ ...fresh, installedByPi: false }), "none", "a checkout pi install did not install");
+	// A write that failed is not tried in every window: only once PATH names another directory.
+	assert.equal(launcherAction({ ...fresh, failedIn: bin }), "none", "it failed in this directory before");
+	assert.equal(launcherAction({ ...fresh, failedIn: "/usr/local/bin" }), "write", "and the target has changed since");
 });
 
 /** The paths a launcher tries, in order, read back out of the script it is written as. */

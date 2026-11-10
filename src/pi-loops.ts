@@ -38,7 +38,7 @@ import { cardLines, cardOrigin, claimPrompt, dismissOutcome, dismissTail, inboxC
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { FRESH_RUNS_READ, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardLines, runCardsHere, runLine } from "./run-card.ts";
 import { type ShareMessage, renderShare, shareSummary, shareableMessages } from "./share.ts";
-import { installLauncherWithConfirm, installedByPi, launcherSource, launcherState, launcherTarget, openPage, pageLaunchHost, refreshLauncher, stopAndWait, stopService, webPageRequest } from "./cli.ts";
+import { installLauncher, installLauncherWithConfirm, installedByPi, launcherAction, launcherSource, launcherState, launcherTarget, openPage, pageLaunchHost, refreshLauncher, stopAndWait, stopService, webPageRequest } from "./cli.ts";
 import { copyText, isRemoteTty } from "./browser-open.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -3184,7 +3184,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	/* -------------------------------------------------------- lifecycle */
 
 	/**
-	 * The `pi-loops` command, kept on the PATH of whoever asked for it there.
+	 * The `pi-loops` command, put on the PATH and kept working there.
 	 *
 	 * `pi install` puts this package under pi's directory and nothing on the PATH, so until 0.22.1
 	 * the first thing a new user had to do was type a bare `node …/cli-entry.mjs install-launcher`
@@ -3193,40 +3193,43 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * it runs and where a launcher would go, so the step belongs here.
 	 *
 	 * This is the extension's only write outside the loops directory (AGENTS.md). Its limit is one
-	 * file, `pi-loops` in a directory already on the PATH, and only where a launcher of ours already
-	 * is or after a yes. A file with no marker of ours is somebody's own wrapper and is left alone;
-	 * one naming another copy of this package that is still on disk is that copy's to keep current,
-	 * so an install and a checkout both being opened never trade the file back and forth; a no is
-	 * remembered in `ui.json`, so it is asked once rather than in every window; and a checkout is
-	 * never asked for a launcher that is not there at all — nobody ran `pi install`, so nothing is
-	 * missing from their PATH — though one written from a checkout is still kept working.
+	 * file, `pi-loops` in a directory already on the PATH. With nothing there, the first interactive
+	 * session of a copy `pi install` put in place writes it with no question and says so in one line,
+	 * as pi's own installer does for `pi` (#180); after that only a launcher of ours is rewritten. A
+	 * file with no marker of ours is somebody's own wrapper and is left alone; one naming another
+	 * copy of this package that is still on disk is that copy's to keep current, so an install and a
+	 * checkout both being opened never trade the file back and forth; `uninstall-launcher` is
+	 * remembered in `ui.json`, so no later session writes it again; a write that failed is
+	 * remembered with its directory, so it is not tried in every window; and a checkout never writes
+	 * a launcher that is not there at all — nobody ran `pi install`, so nothing is missing from their
+	 * PATH — though one written from a checkout is still kept working. The decision is
+	 * `launcherAction` in src/cli.ts.
 	 */
 	async function keepLauncher(ctx: ExtensionContext): Promise<void> {
 		const { entryDir, node, agentDir } = launcherSource();
 		const target = launcherTarget(undefined);
-		// Nothing on the PATH to write into. `/pi-loops install-launcher`, run by hand, is where that
-		// is explained; a session start saying it unprompted would be a warning about nothing.
-		if (!target) return;
-		const { state } = launcherState(entryDir, node, agentDir, target);
-		if (state === "stale") {
+		const prefs = readUiPrefs(dir);
+		const state = target ? launcherState(entryDir, node, agentDir, target).state : undefined;
+		const action = launcherAction({ target, state, hasUI: ctx.hasUI, declined: prefs.launcher === "declined", failedIn: prefs.launcher === "failed" ? prefs.launcherFailedIn : undefined, installedByPi: state === "absent" && installedByPi() });
+		if (!target || action === "none") return;
+		if (action === "refresh") {
 			const done = refreshLauncher(entryDir, node, agentDir, target);
 			if (!done) return;
 			log.info(`launcher: ${done.message}`);
-			// No question: they asked for a launcher once, and keeping that one working is what they
-			// asked for. The line is so that a file changing under them is never a silent change.
+			// They have a launcher of ours, and keeping that one working is what it is for. The line is
+			// so that a file changing under them is never a silent change.
 			if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${done.message}`, done.ok ? "info" : "warning");
 			return;
 		}
-		if (state !== "absent") return; // ours and current, another copy's, or somebody else's entirely
-		if (!ctx.hasUI || readUiPrefs(dir).launcher === "declined" || !installedByPi()) return;
 		const lines: string[] = [];
-		const code = await installLauncherWithConfirm([], (title, body) => ctx.ui.confirm(title, body), (l) => lines.push(l));
-		if (code === undefined) {
-			writeUiPref(dir, "launcher", "declined");
-			ctx.ui.notify("[pi-loops] not installed — `/pi-loops install-launcher` writes one whenever you want it", "info");
+		if ((await installLauncher(target, (l) => lines.push(l))) === 0) {
+			log.info(`launcher: wrote ${target}/pi-loops`);
+			ctx.ui.notify(`[pi-loops] added pi-loops to ${homeRel(target)}; /pi-loops uninstall-launcher removes it`, "info");
 			return;
 		}
-		ctx.ui.notify(`[pi-loops] ${lines.map((l) => l.trim()).join(" · ")}`, code === 0 ? "info" : "warning");
+		writeUiPref(dir, "launcher", "failed");
+		writeUiPref(dir, "launcherFailedIn", target);
+		ctx.ui.notify(`[pi-loops] ${lines[0] ?? `could not write ${target}/pi-loops`}; /pi-loops install-launcher --dir <dir> writes it elsewhere`, "warning");
 	}
 
 	/**
