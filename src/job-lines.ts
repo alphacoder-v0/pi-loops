@@ -196,7 +196,7 @@ export function jobLines(jobs: LoopJob[], opts: JobLinesInput): string[] {
 }
 
 /** More than five rules or loops is a list, not a panel: `/triggers` and `/cron` have the rest. */
-export const PANEL_ROW_LIMIT = 5;
+const PANEL_ROW_LIMIT = 5;
 /** The latest runs; `/cron runs` has the rest. */
 export const PANEL_RUN_LIMIT = 3;
 

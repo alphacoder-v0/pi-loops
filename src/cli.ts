@@ -110,7 +110,7 @@ export function splitLaunchArgs(argv: string[]): { ours: string[]; pi: string[];
 /** A command typed wrong: the entry point prints the message and that command's usage, and exits 2. */
 export class UsageError extends Error {}
 
-export const CLI_USAGE = [
+const CLI_USAGE = [
 	"pi-loops [--web | --tui] [--no-open] [--loops-dir <dir>] [<pi flags>] [-- <pi flags>]",
 	"    Open a conversation: the browser page on a local terminal, pi itself over ssh (pi-loops web and pi-loops tui say which).",
 	"",
@@ -1552,7 +1552,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 	}
 	if (verb === "abort") {
 		const ref = args[0];
-		if (!ref) throw new Error("abort needs a run id, a trigger trace id or a session id");
+		if (!ref) throw new UsageError("abort needs a run id, a trigger trace id or a session id");
 		const leases = new LeaseStore(loopsDir);
 		let target: AbortTarget;
 		try {

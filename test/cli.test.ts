@@ -163,6 +163,9 @@ test("an error prints its message; only a mistyped command also prints that comm
 	const typo = run("import");
 	assert.equal(typo.status, 2, "a usage mistake exits 2");
 	assert.equal(typo.stderr, "pi-loops: import needs an archive path\n\npi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]\n    Restore an archive into a project.\n", "the message, then that command's usage and no other");
+	const bare = run("abort");
+	assert.equal(bare.status, 2, "abort with no id is typed wrong, as every other missing argument");
+	assert.match(bare.stderr, /^pi-loops: abort needs a run id, a trigger trace id or a session id\n\npi-loops .*abort/, "the message, then that command's usage");
 	const missing = run("inspect", path.join(root, "nonexistent.pisession"));
 	assert.equal(missing.status, 1, "a failure that is not a usage mistake exits 1");
 	assert.match(missing.stderr, /^pi-loops: .*ENOENT.*\n$/, "one line, with no usage under it");
@@ -204,7 +207,7 @@ test("a flag or a word a command does not read is refused, not ignored", async (
 });
 
 test("a usage mistake is a UsageError, so the entry point knows to show the usage", async () => {
-	for (const argv of [["import"], ["inspect"], ["recipe", "show"], ["sessions", "--limit", "0"]])
+	for (const argv of [["import"], ["inspect"], ["recipe", "show"], ["sessions", "--limit", "0"], ["abort"]])
 		await assert.rejects(runCli(argv, () => undefined), (err: unknown) => err instanceof UsageError, argv.join(" "));
 });
 
