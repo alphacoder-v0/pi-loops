@@ -4884,3 +4884,19 @@ test("a Loops row says each thing once: no prompt peek for a named loop, no quie
 		unnamed.dispose();
 	}
 });
+
+test("a created watch read back from the transcript settles nothing and fetches nothing: only one that lands live does", { timeout: 20_000 }, async () => {
+	// A reload while a watch question is waiting replays the conversation, receipts of earlier watches
+	// included. Read as live, the old receipt answered the open card and fetched the panel and inbox.
+	const history: any = { messages: [] };
+	const { dom, ask, send, cards } = await watchPage({}, {}, history);
+	ask("ask-1", DAILY);
+	assert.equal(cardParts(cards("feed")[0]).status, "", "the question waits");
+	history.messages = [{ role: "toolResult", toolName: "cron_create", toolCallId: "c0", content: [{ type: "text", text: `created cron job cron-${"e".repeat(32)}` }], details: { id: `cron-${"e".repeat(32)}`, stateful: true } }];
+	const before = dom.calls.filter((c) => c.url.includes("/inbox")).length;
+	send({ type: "reread", why: "read again", seq: 99, epoch: "x" });
+	await new Promise((r) => setTimeout(r, 200));
+	assert.equal(dom.calls.filter((c) => c.url.includes("/inbox")).length, before, "no inbox fetch for a receipt read back");
+	assert.equal(cardParts(cards("feed").at(-1)).status, "", "and the waiting question is still waiting");
+	dom.dispose();
+});
