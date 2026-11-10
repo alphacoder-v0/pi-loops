@@ -11,7 +11,8 @@ export const DOOR = `<!doctype html><meta charset="utf-8"><title>pi-loops</title
 <meta name="color-scheme" content="light dark">
 <body style="font:15px/1.6 system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem;background:Canvas;color:CanvasText">
 <h2 style="font-weight:600">This browser has not been here before.</h2>
-<p>Run <code>pi-loops</code> in a terminal on this machine, or type the code from <b>add device</b> on a browser that is signed in:</p>
+<p>Run <code>pi-loops open</code> in a terminal on this machine for a link that signs this browser in.</p>
+<p>Pairing another device? <code>pi-loops pair</code> shows a code.</p>
 <form method="get" style="display:flex;gap:.5rem">
   <input name="pair" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6"
          placeholder="000000" style="font:inherit;letter-spacing:.3em;padding:.55rem .7rem;flex:1;min-width:0;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit">
