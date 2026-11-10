@@ -2506,10 +2506,11 @@ export default function piLoops(pi: ExtensionAPI) {
 					// OSC 52, which no terminal confirms, so that try says nothing either way.
 					if (await copyText(link)) lines.push("  copied to the clipboard");
 					else await copyToClipboard(link).catch((err: any) => log.info(`/pi-loops web: copy: ${err?.message ?? err}`));
-					ctx.ui.notify(lines.splice(0).join("\n"), "info");
+					ctx.ui.notify(lines.join("\n"), "info");
 				};
 				const opened = await openPage(dir, req, { key: true, browser: isRemoteTty() ? "remote" : "yes", host }, (l) => lines.push(l), undefined, onLink);
-				if (lines.length) ctx.ui.notify(lines.join("\n"), opened.code === 0 ? "info" : "warning");
+				// pi shows one notice at a time, so the last one repeats the link with the outcome.
+				ctx.ui.notify(lines.join("\n"), opened.code === 0 ? "info" : "warning");
 				refreshBadge();
 				return;
 			}

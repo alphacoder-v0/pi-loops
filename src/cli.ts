@@ -1350,9 +1350,9 @@ export function pageLink(i: { url: string; copyKey?: string; key: boolean }): st
  * The background process removes the launch file when the browser spends its key, so the file
  * going away is the one sign that a browser got in.
  */
-export async function keySpent(file: string, waitMs = OPEN_CONFIRM_MS): Promise<boolean> {
+export async function keySpent(file: string, waitMs = OPEN_CONFIRM_MS, stopped: () => boolean = () => false): Promise<boolean> {
 	const until = Date.now() + waitMs;
-	while (Date.now() < until) {
+	while (Date.now() < until && !stopped()) {
 		if (!fs.existsSync(file)) return true;
 		await new Promise((r) => setTimeout(r, 100));
 	}
@@ -1364,8 +1364,9 @@ export async function keySpent(file: string, waitMs = OPEN_CONFIRM_MS): Promise<
  * even while `xdg-open` is still running; an opener that fails before the key is spent is "failed".
  */
 export async function openOutcome(target: string, file: string, open: (t: string) => Promise<boolean> = openUrl, waitMs = OPEN_CONFIRM_MS): Promise<OpenOutcome> {
-	const spent = keySpent(file, waitMs);
-	const opener = open(target);
+	let openerFailed = false;
+	const spent = keySpent(file, waitMs, () => openerFailed);
+	const opener = open(target).then((ok) => ((openerFailed = !ok), ok));
 	const first = await Promise.race([spent.then((s) => (s ? "spent" : "not-spent")), opener.then((ok) => (ok ? "ran" : "failed"))]);
 	if (first === "spent") return "opened";
 	if (first === "failed") return "failed";
