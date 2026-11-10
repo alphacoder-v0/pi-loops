@@ -47,14 +47,14 @@ test("a launcher declined once is not asked about again, until one is written", 
 	const dir = tmp("pi-loops-ui-prefs-");
 	asWebWritesIt(dir, { model: "openai/gpt-5" });
 
-	// The first pi session after `pi install` offers to put `pi-loops` on the PATH. A no has to
-	// outlive the session, or every window asks again — which is the same nagging by another route.
+	// The first pi session after `pi install` puts `pi-loops` on the PATH. A removal has to outlive
+	// the session, or the next window writes it back.
 	writeUiPref(dir, "launcher", "declined");
 	assert.equal(readUiPrefs(dir).launcher, "declined");
 	assert.equal(readUiPrefs(dir).model, "openai/gpt-5", "and the rest of the file is still there");
 
 	// It was "not now", not "never": `/pi-loops install-launcher` writes one and takes the mark off,
-	// so a launcher deleted later is offered again rather than silently never mentioned.
+	// so a launcher deleted later by hand is written again at the next session.
 	const bin = tmp("pi-loops-bin-");
 	const saved = process.env.PI_LOOPS_DIR;
 	process.env.PI_LOOPS_DIR = dir;
