@@ -12,6 +12,10 @@ All notable changes to pi-loops are documented here. The format follows
   every poll before the path existed cost a model call. One trailing parenthetical after the verb is
   now an aside: the watch waits on the path alone, and the model reads the whole condition once the
   path exists (#147).
+- **An upgrade no longer holds a quit, or the page opening, in silence.** `pi-loops` opening the
+  page during an upgrade waited up to 180 s for the older process with nothing said; it now prints
+  `waiting up to 2 min for a turn in the browser page to finish…` when the wait passes 2 s. A pi
+  window that is quitting asks for the upgrade and leaves at once (#165).
 - **Two page edges no longer show something nobody can use.** An unknown conversation address
   answers with a page and a link back, not JSON. On a page only this machine can reach, Add a
   device no longer shows a pairing code: it says how to make the page reachable, and retires the

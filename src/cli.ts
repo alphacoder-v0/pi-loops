@@ -1275,7 +1275,7 @@ export async function openPage(
 	// pi-loops is up; if it does not come up, the stop stays as it was.
 	const liftedStop = readUiPrefs(dir).host === "stopped";
 	if (liftedStop) clearUiPref(dir, "host");
-	const ensured = await ensureHost(how.host);
+	const ensured = await ensureHost({ ...how.host, onLeaveWait: () => process.stderr.write(`${RESTART_WAIT_LINE}\n`) });
 	// Running, started, or being started by a window right now: each of these has a page coming.
 	const why = ensured.error ?? (ensured.action.kind === "none" && ensured.action.reason !== "running" && ensured.action.reason !== IN_PROGRESS ? ensured.action.reason : undefined);
 	const rec = await waitForSocket(dir, why ? 0 : PAGE_WAIT_MS);

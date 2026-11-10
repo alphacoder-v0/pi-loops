@@ -215,14 +215,24 @@ test("the side that asked waits longer than the page's turns may take, and repor
 		const off = process.env.PI_LOOPS_HOST;
 		delete process.env.PI_LOOPS_HOST;
 		let out: Awaited<ReturnType<typeof ensureHost>>;
+		let told = 0;
+		let quitting: Awaited<ReturnType<typeof ensureHost>>;
+		let quitMs = 0;
 		try {
-			out = await ensureHost({ dir, packageDir: "/nowhere", automation: { loops: 1, rules: 0, pushServers: 0 }, auto: true, stopped: false, myVersion: "1.0.0", leaveWaitMs: 600 });
+			out = await ensureHost({ dir, packageDir: "/nowhere", automation: { loops: 1, rules: 0, pushServers: 0 }, auto: true, stopped: false, myVersion: "1.0.0", leaveWaitMs: 600, leaveNoticeMs: 100, onLeaveWait: () => told++ });
+			// A window that is quitting asks and goes: it has nothing to do with the answer.
+			const t0 = Date.now();
+			quitting = await ensureHost({ dir, packageDir: "/nowhere", automation: { loops: 1, rules: 0, pushServers: 0 }, auto: true, stopped: false, myVersion: "1.0.0", leaveWaitMs: 600, wait: false });
+			quitMs = Date.now() - t0;
 		} finally {
 			if (off === undefined) delete process.env.PI_LOOPS_HOST;
 			else process.env.PI_LOOPS_HOST = off;
 		}
 		assert.ok(Date.now() - began >= 600, "it waited its whole bound");
 		assert.deepEqual(out, { action: { kind: "upgrade" } }, "no error while the old one is still leaving");
+		assert.equal(told, 1, "the wait is said once, after the old process did not leave at once");
+		assert.deepEqual(quitting, { action: { kind: "upgrade" } });
+		assert.ok(quitMs < 400, `a quitting window does not wait for the old process (${quitMs} ms)`);
 		assert.equal(readSpawnLog(dir).attempts.length, 0, "and it started nothing beside it");
 	} finally {
 		old.kill();
