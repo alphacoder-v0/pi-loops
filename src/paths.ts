@@ -58,3 +58,13 @@ export function withinProject(root: string, p: string): boolean {
 export function sameProject(a: string, b: string): boolean {
 	return withinProject(b, a) || withinProject(a, b);
 }
+
+/** pi's own normalisation: resolved, then through symlinks where the path exists. */
+export function canonicalDir(dir: string): string {
+	const resolved = path.resolve(dir);
+	try {
+		return fs.realpathSync(resolved);
+	} catch {
+		return resolved;
+	}
+}

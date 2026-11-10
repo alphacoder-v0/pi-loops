@@ -7,6 +7,10 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Fixed
 
+- **Every `pi-loops` command answers in a fraction of a second.** The command line loaded pi's SDK
+  on every call, about a second of each `status`, `stop` and `--help`; it now loads it only for
+  `import`, the one command that needs it. `pi-loops --version` went from about 1.2 s to 0.17 s here
+  (#168).
 - **The page's inbox matches each project once per request.** `GET /inbox` resolved a finding's
   directory on disk for every finding, in three passes; 2000 findings took about 24 ms a pass.
   Each distinct directory is now resolved once per request (#169).

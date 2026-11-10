@@ -1840,3 +1840,11 @@ test("the usage and docs/cli.md name sessions --cwd and pi-loops help", async ()
 	assert.match(docs, /`pi-loops help`/);
 	assert.match(docs, /`pi-loops --version`/);
 });
+
+test("the CLI loads without pi's SDK: only the verb that needs it imports it, so every command answers in a fraction of a second", () => {
+	// Run without the hook that resolves pi's packages: an import of the SDK anywhere on the CLI's
+	// load path fails here instead of costing every `pi-loops status` about a second.
+	const r = spawnSync(process.execPath, ["--input-type=module", "-e", 'const { runCli } = await import("./src/cli.ts"); process.exitCode = await runCli(["--version"]);'], { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "" } });
+	assert.equal(r.status, 0, r.stderr);
+	assert.equal(r.stdout.trim(), `pi-loops v${PI_LOOPS_VERSION}`);
+});

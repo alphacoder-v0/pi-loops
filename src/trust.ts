@@ -10,17 +10,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { ProjectTrustStore, hasTrustRequiringProjectResources } from "@earendil-works/pi-coding-agent";
-import { withinProject } from "./paths.ts";
-
-/** pi's own normalisation: resolved, then through symlinks where the path exists. */
-export function canonicalDir(dir: string): string {
-	const resolved = path.resolve(dir);
-	try {
-		return fs.realpathSync(resolved);
-	} catch {
-		return resolved;
-	}
-}
+import { canonicalDir, withinProject } from "./paths.ts";
 
 /**
  * pi's own saved decision for `cwd`: the nearest entry, this directory's or a parent's, so a

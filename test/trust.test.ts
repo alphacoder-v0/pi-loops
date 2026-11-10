@@ -5,7 +5,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
-import { canonicalDir, isExactlyTrusted, isTrustedByPi, projectNeedsTrust, sessionTrustCovers, windowTrusted } from "../src/trust.ts";
+import { isExactlyTrusted, isTrustedByPi, projectNeedsTrust, sessionTrustCovers, windowTrusted } from "../src/trust.ts";
+import { canonicalDir } from "../src/paths.ts";
 
 test("trusting a project does not trust everything under it", () => {
 	const agentDir = tmp("pi-loops-trust-");
