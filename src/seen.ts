@@ -5,6 +5,7 @@ import { Inbox, type InboxEntry } from "./inbox.ts";
 import { stamp } from "./schedule.ts";
 import { JobStore, type RunRecord } from "./store.ts";
 import { realpathish, sameProject } from "./paths.ts";
+import { plural } from "./job-lines.ts";
 
 /**
  * When `/inbox` was last looked at, per project: the terminal's `/inbox`, and the page's Mark all
@@ -232,7 +233,6 @@ export function sinceWords(sinceMs: number, nowMs: number): string {
 	return a.getFullYear() === b.getFullYear() ? `${date} ${time}` : `${date} ${a.getFullYear()} ${time}`;
 }
 
-const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** How many findings came from this conversation, worth saying only when that is not all of them. */
 const fromHere = (s: AwaySummary): number => (s.fromThisConversation !== s.findings ? s.fromThisConversation : 0);
