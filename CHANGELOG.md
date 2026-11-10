@@ -10,18 +10,22 @@ All notable changes to pi-loops are documented here. The format follows
 - The first page visit works on every platform. On WSL the browser never opened, the terminal said
   it had, and the printed address had no key, so Windows Chrome met a door that asked for a code
   nobody could find. `pi-loops` now prints one link with a one-use key, opens the browser with a
-  per-platform opener (`rundll32.exe`, then `cmd.exe`, on WSL), and says
-  `opened in your browser` only when the opener reports success. Otherwise it says it could not
-  open a browser and that the link works once, for 10 minutes (#179).
+  per-platform opener (`rundll32.exe`, then `cmd.exe`, on WSL), and says `opened in your browser`
+  only when the opener reports success (`xdg-open` gets 10 s to say so). Otherwise, and on WSL when
+  the loops directory's path holds a character Windows cannot name, it says it could not open a
+  browser and that the link works once, for 10 minutes (#179).
 - The door names the ways in that a first browser can take: `pi-loops open` on this machine, and
   `pi-loops pair` for another device.
 
 ### Added
 
-- `pi-loops open` prints a fresh link that signs a browser in, for the project's newest
-  conversation, and opens the browser on it.
-- `/pi-loops web` opens the conversation you are in from inside pi and copies the link to the
-  clipboard. It needs no `pi-loops` on your PATH.
+- `pi-loops open [--loops-dir <dir>]` prints a fresh link that signs a browser in, for the
+  project's newest conversation, and opens the browser on it. With no terminal it still prints the
+  link with its key, and opens no browser.
+- `/pi-loops web` opens the conversation you are in from inside pi (a new one in the project before
+  its first answer or under `--no-session`) and copies the link to the clipboard. It says
+  `copied to the clipboard` only when a clipboard command took the link. It needs no `pi-loops` on
+  your PATH.
 
 ## [0.24.0] - 2026-11-09
 
