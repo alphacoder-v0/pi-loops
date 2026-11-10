@@ -3,11 +3,12 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { isRemoteTty, openFileTarget, openUrl, openerFor } from "../src/browser-open.ts";
+import { copyCommandsFor, copyText, isRemoteTty, openFileTarget, openUrl, openerFor } from "../src/browser-open.ts";
 import { tmp } from "./tmp.ts";
 
 /** The fake openers run with a PATH of their own, so they name `sleep` in full. */
 const SLEEP = execFileSync("sh", ["-c", "command -v sleep"], { encoding: "utf8" }).trim();
+const CAT = execFileSync("sh", ["-c", "command -v cat"], { encoding: "utf8" }).trim();
 
 const URL_WITH_AMP = "http://127.0.0.1:4173/c/s/?a=1&b=2";
 const linux = { platform: "linux" as const, release: "6.8.0-45-generic" };
@@ -94,4 +95,33 @@ test("on WSL rundll32.exe gets the wsl.localhost address, and a failed one moves
 		"rundll32.exe url.dll,FileProtocolHandler file://wsl.localhost/U/home/me/.pi/agent/loops/pages/open/0123abcd.html",
 		"cmd.exe /c start  file://wsl.localhost/U/home/me/.pi/agent/loops/pages/open/0123abcd.html",
 	]);
+});
+
+test("the clipboard is written by a command that says whether it took the text, never OSC 52", () => {
+	const mac = { platform: "darwin" as const, release: "24.0.0" };
+	assert.deepEqual(copyCommandsFor({ ...mac, env: {} }), [{ cmd: "pbcopy", args: [] }]);
+	assert.deepEqual(copyCommandsFor({ platform: "win32", release: "10.0.26100", env: {} }), [{ cmd: "clip", args: [] }]);
+	assert.deepEqual(copyCommandsFor({ ...wsl, env: { WSL_DISTRO_NAME: "U", WT_SESSION: "x" } }), [{ cmd: "clip.exe", args: [], cwd: "/mnt/c" }], "the Windows clipboard, in Windows Terminal too");
+	assert.deepEqual(copyCommandsFor({ ...wsl, env: { WSL_DISTRO_NAME: "U", DISPLAY: ":0" } })[0], { cmd: "clip.exe", args: [], cwd: "/mnt/c" }, "WSLg: the Windows clipboard first");
+	assert.deepEqual(copyCommandsFor({ ...linux, env: { WAYLAND_DISPLAY: "wayland-0", DISPLAY: ":0" } }), [
+		{ cmd: "wl-copy", args: [] },
+		{ cmd: "xclip", args: ["-selection", "clipboard"] },
+		{ cmd: "xsel", args: ["--clipboard", "--input"] },
+	]);
+	assert.deepEqual(copyCommandsFor({ ...linux, env: {} }), [], "no display: only OSC 52, which nobody can check");
+	assert.deepEqual(copyCommandsFor({ ...mac, env: { SSH_TTY: "/dev/pts/1" } }), [], "over ssh this machine's clipboard is not yours");
+});
+
+test("copied means a clipboard command exited 0 with the text on its stdin", async () => {
+	const dir = tmp("pi-loops-clip-");
+	const got = path.join(dir, "got");
+	const env = (code: number) => {
+		fs.writeFileSync(path.join(dir, "xclip"), `#!/bin/sh\n${CAT} > '${got}'\nexit ${code}\n`, { mode: 0o755 });
+		return { ...linux, env: { PATH: dir, DISPLAY: ":0" } };
+	};
+	assert.equal(await copyText("http://127.0.0.1:4173/c/s/?open=k", env(0)), true);
+	assert.equal(fs.readFileSync(got, "utf8"), "http://127.0.0.1:4173/c/s/?open=k");
+	assert.equal(await copyText("x", env(1)), false, "a failed copy");
+	assert.equal(await copyText("x", { ...linux, env: { PATH: tmp("pi-loops-empty-"), DISPLAY: ":0" } }), false, "no command");
+	assert.equal(await copyText("x", { ...linux, env: { PATH: dir } }), false, "no display");
 });

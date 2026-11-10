@@ -109,3 +109,61 @@ function tryOpener(o: Opener, env: NodeJS.ProcessEnv, waitMs: number): Promise<b
 		});
 	});
 }
+
+/** One command that copies its stdin to the clipboard and exits 0 when it has. */
+export type CopyCommand = { cmd: string; args: string[]; cwd?: string };
+
+/**
+ * The clipboard commands to try in order, the ones pi's `copyToClipboard` runs. Not OSC 52, which
+ * pi also writes and which no terminal confirms: tmux in Windows Terminal drops it, so a terminal
+ * that said "copied" after it could be wrong. None over ssh or mosh, where this machine's clipboard
+ * is not the one in front of you.
+ */
+export function copyCommandsFor(e: OpenEnv): CopyCommand[] {
+	if (isRemoteTty(e.env)) return [];
+	if (e.platform === "darwin") return [{ cmd: "pbcopy", args: [] }];
+	if (e.platform === "win32") return [{ cmd: "clip", args: [] }];
+	if (e.platform !== "linux") return [];
+	// The link is ASCII, so clip.exe reading it in the console code page changes nothing.
+	const windows = isWsl(e) ? [{ cmd: "clip.exe", args: [], cwd: "/mnt/c" }] : [];
+	return [
+		...windows,
+		...(e.env.WAYLAND_DISPLAY ? [{ cmd: "wl-copy", args: [] }] : []),
+		...(e.env.DISPLAY ? [{ cmd: "xclip", args: ["-selection", "clipboard"] }, { cmd: "xsel", args: ["--clipboard", "--input"] }] : []),
+	];
+}
+
+/** Copy `text` with the first command that takes it: true only when one exited 0. */
+export async function copyText(text: string, e: OpenEnv = thisMachine()): Promise<boolean> {
+	for (const c of copyCommandsFor(e)) if (await runCopy(c, text, e.env)) return true;
+	return false;
+}
+
+const COPY_WAIT_MS = 5_000;
+
+function runCopy(c: CopyCommand, text: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+	return new Promise((resolve) => {
+		let child: ReturnType<typeof spawn>;
+		try {
+			// xclip and xsel stay behind to own the selection; "exit" is the command that answered.
+			child = spawn(c.cmd, c.args, { stdio: ["pipe", "ignore", "ignore"], cwd: c.cwd, env });
+		} catch {
+			resolve(false); // the next command
+			return;
+		}
+		const timer = setTimeout(() => {
+			child.kill();
+			resolve(false);
+		}, COPY_WAIT_MS);
+		child.once("error", () => {
+			clearTimeout(timer);
+			resolve(false);
+		});
+		child.once("exit", (code) => {
+			clearTimeout(timer);
+			resolve(code === 0);
+		});
+		child.stdin?.once("error", () => {}); // EPIPE from a command that exited first: its exit code decides
+		child.stdin?.end(text);
+	});
+}

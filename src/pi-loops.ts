@@ -39,7 +39,7 @@ import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { FRESH_RUNS_READ, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardLines, runCardsHere, runLine } from "./run-card.ts";
 import { type ShareMessage, renderShare, shareSummary, shareableMessages } from "./share.ts";
 import { installLauncherWithConfirm, installedByPi, launcherSource, launcherState, launcherTarget, openPage, pageLaunchHost, refreshLauncher, stopAndWait, stopService, webPageRequest } from "./cli.ts";
-import { isRemoteTty } from "./browser-open.ts";
+import { copyText, isRemoteTty } from "./browser-open.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
@@ -2500,14 +2500,10 @@ export default function piLoops(pi: ExtensionAPI) {
 				const host = { ...pageLaunchHost(dir), packageDir: PACKAGE_DIR, piPackage: piPackageDir(), startedBy: `the pi window pid ${process.pid}`, myPiVersion: PI_VERSION };
 				const req = webPageRequest({ cwd: session.cwd, sessionId: binding.here().sessionId ?? session.sessionId, sessionFile: ctx.sessionManager.getSessionFile() });
 				const opened = await openPage(dir, req, { tty: true, browser: isRemoteTty() ? "remote" : "yes", host }, (l) => lines.push(l));
-				if (opened.link) {
-					try {
-						await copyToClipboard(opened.link);
-						lines.push("  copied to the clipboard");
-					} catch (err: any) {
-						log.info(`/pi-loops web: copy: ${err?.message ?? err}`); // the link is on screen to copy by hand
-					}
-				}
+				// Said only when a clipboard command took the link. pi's copy can still get there through
+				// OSC 52, which no terminal confirms, so that try says nothing either way.
+				if (opened.link && (await copyText(opened.link))) lines.push("  copied to the clipboard");
+				else if (opened.link) await copyToClipboard(opened.link).catch((err: any) => log.info(`/pi-loops web: copy: ${err?.message ?? err}`));
 				ctx.ui.notify(lines.join("\n"), opened.code === 0 ? "info" : "warning");
 				refreshBadge();
 				return;

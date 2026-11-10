@@ -69,8 +69,10 @@ the same output as `pi-loops`. Run it when a browser shows the door ("This brows
 here before."), or when the printed link has been used or is older than 10 minutes. Inside pi,
 `/pi-loops web` does the same for the conversation you are in (a new one in the project when pi
 has saved nothing of it yet, before its first answer or under `--no-session`), shows the same
-lines, and copies the link to the clipboard (on WSL, the Windows clipboard), adding
-`  copied to the clipboard`. It needs no `pi-loops` on your PATH.
+lines, and copies the link to the clipboard (on WSL, the Windows clipboard). It adds
+`  copied to the clipboard` only when `pbcopy`, `clip`, `clip.exe`, `wl-copy`, `xclip` or `xsel`
+said it took the link; a copy through the terminal (OSC 52), which no terminal confirms, is tried
+without a line. It needs no `pi-loops` on your PATH.
 
 Both windows are complete pi sessions: each conversation in the page is a `pi --mode rpc` that
 pi-loops runs for it, so the session file, your models, tools and extensions are the same either
