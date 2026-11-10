@@ -19,7 +19,7 @@ import { inProject } from "./inbox.ts";
 import { plural } from "./job-lines.ts";
 import type { TriggerRuntime } from "./trigger-runtime.ts";
 import { sameProject, withinProject } from "./paths.ts";
-import { type TriggerStore, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
+import { type TriggerStore, cleanCondition, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { WATCH_ASK_MS, type WatchChoice, type WatchPlan, askTitle, planCard, watchChoice, watchOptions } from "./watch-plan.ts";
 
@@ -351,7 +351,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		),
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			if ([params.condition, params.action, params.spec].some((t) => t && looksLikeFixedScheduleRequest(t))) return deny("fixed scheduled jobs must use cron_create, not new_trigger");
-			let condition = params.condition?.trim() ?? "";
+			let condition = cleanCondition(params.condition ?? "");
 			let action = params.action?.trim() ?? "";
 			const fromSpec = !condition || !action;
 			if (fromSpec) {

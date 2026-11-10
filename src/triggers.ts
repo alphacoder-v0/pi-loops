@@ -120,7 +120,8 @@ export function parseTriggerRule(spec: string): ParsedTriggerRule {
 	return { condition, action };
 }
 
-function cleanCondition(raw: string): string {
+/** A condition as the store keeps it: no leading "when" or "if", so a row that says `when …` says it once. */
+export function cleanCondition(raw: string): string {
 	let s = raw.trim();
 	if (s.startsWith(ZH_WHEN)) s = s.slice(ZH_WHEN.length).trim();
 	if (s.startsWith(ZH_IF)) s = s.slice(ZH_IF.length).trim();

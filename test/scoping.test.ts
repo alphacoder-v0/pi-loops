@@ -4,7 +4,8 @@ import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { LoopScheduler } from "../src/scheduler.ts";
-import { TriggerStore } from "../src/triggers.ts";
+import { TriggerStore, parseTriggerRule } from "../src/triggers.ts";
+import { ruleLines } from "../src/rule-lines.ts";
 import { TriggerRuntime } from "../src/trigger-runtime.ts";
 import { plainJobRow } from "../src/engine.ts";
 import { type ToolHost, automationTools, checkJobInput, createLoopJob, toolsDropped } from "../src/tools.ts";
@@ -499,6 +500,25 @@ test("with a person in their own turn, new_trigger asks through pi's select and 
 		assert.equal(rules[0].condition, "~/build.done appears");
 	} finally {
 		await f.scheduler.stop();
+	}
+});
+
+test("new_trigger stores a condition the model wrote as \"when …\" the way /new-trigger does, so /triggers says when once", async () => {
+	for (const [label, f, ctxOf] of [
+		["the Watch card", askFixture(), (p: any) => p],
+		["the confirm", askFixture(), () => ctx],
+	] as const) {
+		try {
+			await f.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "when the build finishes", action: "tell me the build is ready" }, undefined, undefined, ctxOf(f.person));
+			const rules = f.triggers.store.load();
+			assert.equal(rules[0].condition, parseTriggerRule("when the build finishes, run tell me the build is ready").condition, label);
+			assert.equal(rules[0].condition, "the build finishes", label);
+			const [row] = ruleLines(rules, { numbered: true, cwd: f.mine, home: "/nowhere", sameProject: () => true });
+			assert.match(row, /^ 1\. dyn-\w+(?: \[[^\]]*\])? when the build finishes -> tell me the build is ready/, `${label}: ${row}`);
+			if (label === "the Watch card") assert.match(f.selects[0].title, /\nWaits for: the build finishes\n/, label);
+		} finally {
+			await f.scheduler.stop();
+		}
 	}
 });
 
