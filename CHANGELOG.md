@@ -5,6 +5,11 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.24.1] - 2026-11-10
+
+Two first-run fixes: the `pi-loops` command exists after the first pi session with no question, and
+the first browser gets into the page from one link on every platform, WSL included.
+
 ### Changed
 
 - **The first pi session after `pi install` puts `pi-loops` on your `PATH` without asking.** It
@@ -14,11 +19,12 @@ All notable changes to pi-loops are documented here. The format follows
   uninstall-launcher removes it`. It writes only where nothing named `pi-loops` is there, and a
   checkout never writes one. A link, even one that points nowhere, a directory, or a file it cannot
   read counts as something there, and the file is created only if it does not exist, so the write
-  never goes through a link or replaces a file. A `pi-loops` counts as one that pi-loops wrote only
-  when its first two lines are the ones pi-loops writes, so `uninstall-launcher` never removes a
-  script that only quotes them. It writes only into a directory that is already there, and never
-  makes `~/.local/bin`; `install-launcher`, run by hand, still makes it. When the write fails, one warning line says why, and no later session
-  tries that directory again (#180).
+  never goes through a link at that name or replaces a file; the directory itself may be a link to
+  a directory. A `pi-loops` counts as one that pi-loops wrote only when its first two lines are the
+  ones pi-loops writes, so `uninstall-launcher` never removes a script that only quotes them. It
+  writes only into a directory that is already there, and never makes `~/.local/bin`;
+  `install-launcher`, run by hand, still makes it. When the write fails, one warning line says why,
+  no half-written file is left, and no later session tries that directory again (#180).
 
   Upgrade note: if you said no to the dialog before, that answer still holds and nothing is
   written. If you never answered it, the next session writes the launcher.
@@ -34,9 +40,8 @@ All notable changes to pi-loops are documented here. The format follows
   per-platform opener (`rundll32.exe`, then `cmd.exe`, on WSL), and says `opened in your browser`
   only once a browser has spent the key, because `rundll32` exits 0 even when nothing opened. When
   the opener ran but no browser spent the key within 8 s, it says to open the link if no browser
-  opened. Otherwise, and on WSL when
-  the loops directory's path holds a character Windows cannot name, it says it could not open a
-  browser and that the link works once, for 10 minutes (#179).
+  opened. Otherwise, and on WSL when the loops directory's path holds a character Windows cannot
+  name, it says it could not open a browser and that the link works once, for 10 minutes (#179).
 - The door names the ways in that a first browser can take: `pi-loops open` on this machine, and
   `pi-loops pair` for another device.
 
@@ -45,7 +50,6 @@ All notable changes to pi-loops are documented here. The format follows
 - `pi-loops uninstall-launcher [--dir <dir>]` and `/pi-loops uninstall-launcher` remove the
   launcher when pi-loops wrote it, and leave any other file named `pi-loops` as it is. No later
   session writes the launcher again until `install-launcher` puts it back (#180).
-
 - `pi-loops open [--loops-dir <dir>]` prints a fresh link that signs a browser in, for the
   project's newest conversation, and opens the browser on it. With no terminal it still prints the
   link with its key, and opens no browser.
