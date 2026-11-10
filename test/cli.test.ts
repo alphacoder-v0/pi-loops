@@ -174,6 +174,11 @@ test("an error prints its message; only a mistyped command also prints that comm
 	assert.doesNotMatch(unknown.stdout, /pi-loops export/, "an unknown command does not print the whole usage");
 	assert.match(unknown.stdout, /^unknown command "frob"/);
 	assert.match(unknown.stdout, /\npi-loops --help lists the commands\n$/);
+	for (const name of ["constructor", "toString", "__proto__"]) {
+		const inherited = run(name, "--x");
+		assert.equal(inherited.status, 2, `${name} is an unknown command, not an object property`);
+		assert.match(inherited.stdout, new RegExp(`^unknown command "${name}"`));
+	}
 });
 
 test("a flag or a word a command does not read is refused, not ignored", async () => {

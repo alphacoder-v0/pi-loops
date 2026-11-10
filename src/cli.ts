@@ -811,7 +811,7 @@ const VERB_POSITIONALS: Record<string, number> = {
  * the project, and `status --json` printed prose to a program.
  */
 function refuseUnread(verb: string, positional: readonly string[], flags: ReadonlyMap<string, unknown>): void {
-	const known = VERB_FLAGS[verb];
+	const known = Object.hasOwn(VERB_FLAGS, verb) ? VERB_FLAGS[verb] : undefined;
 	if (!known) return;
 	for (const flag of flags.keys()) if (!GLOBAL_FLAGS.has(flag) && !known.includes(flag)) throw new UsageError(`${verb} does not take --${flag}`);
 	const extra = positional[VERB_POSITIONALS[verb]];
