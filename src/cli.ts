@@ -1106,7 +1106,7 @@ async function launch(argv: string[], out: (line: string) => void, cwd = process
 	}
 	const tty = !!process.stdout.isTTY;
 	const browser = !tty || has("no-open") ? "no" : isRemoteTty() ? "remote" : "yes";
-	const opened = await openPage(dir, { cwd, sessionId: target.sessionId, sessionFile: target.sessionFile, piArgs: target.piArgs }, { tty, browser, startedBy: "the shell that ran pi-loops" }, out, () =>
+	const opened = await openPage(dir, { cwd, sessionId: target.sessionId, sessionFile: target.sessionFile, piArgs: target.piArgs }, { tty, browser, host: pageLaunchHost(dir) }, out, () =>
 		process.stderr.write("waiting for pi-loops to open the conversation…\n"),
 	);
 	return opened.code;
@@ -1116,15 +1116,15 @@ async function launch(argv: string[], out: (line: string) => void, cwd = process
 export type PageBrowser = "yes" | "no" | "remote";
 
 /**
- * Open the page on a conversation and say so in `out`: start pi-loops in the background when it is
- * not running, ask it for `page-open`, print the one-use link, then try the browser and say what
+ * Open the page on a conversation and say so in `out`: start pi-loops in the background as `host`
+ * says when it is not running, ask it for `page-open`, print the one-use link, then try the browser and say what
  * happened. `pi-loops`, `pi-loops open` and `/pi-loops web` all come here. `link` is the printed
  * address with its key, for a caller that also copies it.
  */
 export async function openPage(
 	dir: string,
 	req: { cwd: string; sessionId?: string; sessionFile?: string; piArgs: string[] },
-	how: { tty: boolean; browser: PageBrowser; startedBy: string },
+	how: { tty: boolean; browser: PageBrowser; host: EnsureHostOptions },
 	out: (line: string) => void,
 	slowNote: () => void = () => {},
 ): Promise<{ code: number; link?: string }> {
@@ -1133,7 +1133,7 @@ export async function openPage(
 	// pi-loops is up; if it does not come up, the stop stays as it was.
 	const liftedStop = readUiPrefs(dir).host === "stopped";
 	if (liftedStop) clearUiPref(dir, "host");
-	const ensured = await ensureHost(pageLaunchHost(dir, how.startedBy));
+	const ensured = await ensureHost(how.host);
 	// Running, started, or being started by a window right now: each of these has a page coming.
 	const why = ensured.error ?? (ensured.action.kind === "none" && ensured.action.reason !== "running" && ensured.action.reason !== IN_PROGRESS ? ensured.action.reason : undefined);
 	const rec = await waitForSocket(dir, why ? 0 : PAGE_WAIT_MS);
@@ -1179,12 +1179,12 @@ export async function openPage(
  * Under `[host] auto = false` the page and its conversations count as windows, and the process
  * leaves with the last of them.
  */
-export function pageLaunchHost(dir: string, startedBy = "the shell that ran pi-loops"): EnsureHostOptions {
+export function pageLaunchHost(dir: string): EnsureHostOptions {
 	return {
 		dir,
 		packageDir: packageRoot(),
 		piPackage: process.env.PI_LOOPS_PI_PACKAGE,
-		startedBy,
+		startedBy: "the shell that ran pi-loops",
 		automation: { loops: 0, rules: 0, pushServers: 0 },
 		auto: true,
 		stopped: false,
