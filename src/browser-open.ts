@@ -49,14 +49,16 @@ export function openerFor(e: OpenEnv & { target: string }): Opener[] | "no-displ
 /**
  * The address the opener is given for the launch file, which holds the one-use key so no argv does.
  * On WSL the browser is a Windows one, which reads the file through `\\wsl.localhost`: measured on
- * WSL 2 with rundll32 and `cmd.exe /c start`, each loads the file and follows it to the
- * page. Undefined on WSL without `WSL_DISTRO_NAME`, which that address needs.
+ * WSL 2 with rundll32 and `cmd.exe /c start`, each loads the file and follows it to the page.
+ * Undefined on WSL without `WSL_DISTRO_NAME`, which that address needs, and for a path holding a
+ * character Windows does not allow in a name: `\\wsl.localhost` shows those under other names, so
+ * the browser cannot find the file while rundll32 still exits 0.
  */
 export function openFileTarget(file: string, e: Pick<OpenEnv, "platform" | "release" | "env">): string | undefined {
 	const href = pathToFileURL(file).href;
 	if (!isWsl(e)) return href;
 	const distro = e.env.WSL_DISTRO_NAME;
-	return distro ? `file://wsl.localhost/${encodeURIComponent(distro)}${href.slice("file://".length)}` : undefined;
+	return distro && !/[\\:*?"<>|]/.test(file) ? `file://wsl.localhost/${encodeURIComponent(distro)}${href.slice("file://".length)}` : undefined;
 }
 
 /** This machine, as `openerFor` reads it. */

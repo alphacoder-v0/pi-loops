@@ -51,6 +51,9 @@ test("a Windows browser reaches the launch file through wsl.localhost; elsewhere
 	assert.equal(openFileTarget(file, { ...linux, env: {} }), "file:///home/me/.pi/agent/loops/pages/open/0123abcd.html");
 	assert.equal(openFileTarget(file, { ...wsl, env: { WSL_DISTRO_NAME: "Ubuntu 24.04" } }), "file://wsl.localhost/Ubuntu%2024.04/home/me/.pi/agent/loops/pages/open/0123abcd.html");
 	assert.equal(openFileTarget(file, { ...wsl, env: {} }), undefined, "no distro name: no address a Windows browser can read");
+	for (const c of ["|", '"', ":", "*", "?", "<", ">", "\\"])
+		assert.equal(openFileTarget(`/home/me/a${c}b/pages/open/0123abcd.html`, { ...wsl, env: { WSL_DISTRO_NAME: "U" } }), undefined, `a Windows browser cannot read a name holding ${c}`);
+	assert.equal(openFileTarget("/home/me/a|b/pages/open/0123abcd.html", { ...linux, env: {} }), "file:///home/me/a%7Cb/pages/open/0123abcd.html", "a Linux browser can");
 	for (const t of [openFileTarget(file, { ...linux, env: {} }), openFileTarget(file, { ...wsl, env: { WSL_DISTRO_NAME: "U" } })]) assert.doesNotMatch(t!, /open=/);
 });
 

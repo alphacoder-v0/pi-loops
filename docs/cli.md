@@ -45,7 +45,9 @@ paste. The last line says what happened:
 The browser is opened on a file that only you can read, under the loops directory's `pages/open/`,
 which sends it to the conversation with a second one-use key; that key is in no command line, and
 the file is removed once the browser has used it, or after a minute. On WSL the Windows browser
-reads that file as `file://wsl.localhost/<distro>/…`. A browser confined by snap or flatpak
+reads that file as `file://wsl.localhost/<distro>/…`, which it cannot do when the loops directory's
+path holds a character Windows does not allow in a name (`\ : * ? " < > |`); then the last line says
+it could not open a browser. A browser confined by snap or flatpak
 (Ubuntu's default Firefox is one) cannot read a hidden directory such as `~/.pi`, so it shows an
 error instead: use the printed link. With no terminal (stdout piped or redirected), no key is
 printed, because a file would keep it: the link is the page's address, and the next line is
