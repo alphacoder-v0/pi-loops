@@ -61,7 +61,12 @@ export function pathOnlyCondition(condition: string, at: { cwd: string; home: st
 
 	const token = pathToken(s);
 	if ("why" in token) return token;
-	const rest = token.rest.trim();
+	let rest = token.rest.trim();
+	// "exists (a build finished)": a person or a model appends one aside in parentheses after the
+	// verb. Drop one trailing parenthetical before the verb check: while the path is absent the
+	// condition is false either way, and once it is present the model still reads the whole thing.
+	const aside = /^(.+) ?[(（](.*)[)）]$/.exec(rest);
+	if (aside) rest = aside[1].trim();
 	const verbWhy = verbOnly(rest);
 	if (verbWhy) return { why: verbWhy };
 	const bad = badPath(token.path);

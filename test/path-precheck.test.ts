@@ -39,6 +39,12 @@ test("path-only conditions: ~, $HOME, ${HOME}, absolute, relative, a quoted spac
 	assert.equal(watched("the file `/tmp/ready` is there").resolved, "/tmp/ready");
 	assert.equal(watched("/tmp/ready appears").raw, "/tmp/ready");
 	assert.equal(watched("如果 ~/a/b 出现").resolved, "/home/me/a/b");
+	// A trailing parenthetical after the verb is an aside: dropped before the verb check, the watch
+	// is on the path alone, and the model still reads the whole condition once the path exists.
+	assert.equal(watched("~/build.done exists (a build finished)").resolved, "/home/me/build.done");
+	assert.equal(watched("~/build.done exists (a build finished)").of, "~/build.done exists (a build finished)");
+	assert.equal(watched("when ~/build.done appears (the first line is ready)").resolved, "/home/me/build.done");
+	assert.equal(watched("~/x 存在（构建完成）").resolved, "/home/me/x");
 });
 
 test("refused as path-only, each with why: a glob, an extra clause, two paths, not exists, a bare word, other variables, ~user, a URL", () => {
@@ -62,6 +68,10 @@ test("refused as path-only, each with why: a glob, an extra clause, two paths, n
 	assert.match(refused(""), /empty/);
 	assert.match(refused(`/${"a".repeat(1100)} exists`), /longer than/);
 	assert.match(refused("a PR of mine gets a review asking for changes"), /not/);
+	// An aside is one trailing parenthetical: two, or one without its closing paren, is an extra clause.
+	assert.match(refused("~/x exists (a) (b)"), /extra clause/);
+	assert.match(refused("~/x exists (a build finished"), /extra clause/);
+	assert.match(refused("~/x 存在（构建完成）并且非空"), /extra clause/);
 });
 
 test("watchOf: only while the condition is the one the watch was read from", () => {
