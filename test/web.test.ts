@@ -14,6 +14,8 @@ import { ChildPool, type PageChild } from "../src/page-children.ts";
 import { type PageServerOptions, ring, startPageServer, unsentPersonRows, webToken } from "../src/page-server.ts";
 import { until } from "./page-harness.ts";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 /**
  * The page server in this process over a stand-in pi, with one conversation open the way pi-loops
@@ -222,14 +224,39 @@ test("a marker that is a symlink is not written through", () => {
 	fs.mkdirSync(loops, { recursive: true });
 	const target = path.join(tmp("pi-loops-web-token-"), "someone-elses-choice");
 	fs.symlinkSync(target, path.join(loops, "web-token.v024"));
-	assert.throws(
-		() =>
-			webToken(loops, (message) => {
-				throw new Error(message);
-			}),
-		/web-token\.v024/,
-	);
+	const token = path.join(loops, "web-token");
+	fs.writeFileSync(token, "0228aaaabbbbccccddddeeeeffff0000\n", { mode: 0o600 });
+	const fail = (message: string): never => {
+		throw new Error(message);
+	};
+	for (let i = 0; i < 2; i++) {
+		assert.throws(() => webToken(loops, fail), /web-token\.v024 is not a regular file/);
+		// It used to write a new token first and fail after, so every start changed the token.
+		assert.equal(fs.readFileSync(token, "utf8").trim(), "0228aaaabbbbccccddddeeeeffff0000", "the token is not rotated under a marker it cannot read");
+	}
+	assert.equal(fs.existsSync(path.join(loops, "web-token.lock")), false, "and the refusal leaves no lock to hold the next start");
 	assert.equal(fs.existsSync(target), false, "nothing was created where the link points");
+});
+
+test("two first starts at once both come up, on the one token the file holds", async () => {
+	const loops = path.join(tmp("pi-loops-web-token-"), "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	fs.writeFileSync(path.join(loops, "web-token"), "0228aaaabbbbccccddddeeeeffff0000\n", { mode: 0o600 });
+	const src = pathToFileURL(path.join(process.cwd(), "src", "page-server.ts")).href;
+	const script = `import { webToken } from ${JSON.stringify(src)}; process.stdout.write(webToken(${JSON.stringify(loops)}, (m) => { process.stderr.write(m); process.exit(1); }));`;
+	const run = () =>
+		new Promise<{ code: number | null; out: string }>((resolve) => {
+			const child = spawn(process.execPath, ["--import", path.join(process.cwd(), "src", "register-pi.mjs"), "--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "inherit"] });
+			let out = "";
+			child.stdout.on("data", (d) => (out += d));
+			child.on("exit", (code) => resolve({ code, out }));
+		});
+	const results = await Promise.all(Array.from({ length: 4 }, run));
+	assert.deepEqual(results.map((r) => r.code), [0, 0, 0, 0], "none exits on the marker");
+	const tokens = new Set(results.map((r) => r.out));
+	assert.equal(tokens.size, 1, `one token: ${[...tokens].join(", ")}`);
+	assert.equal(fs.readFileSync(path.join(loops, "web-token"), "utf8").trim(), [...tokens][0], "and it is the one in the file");
+	assert.notEqual([...tokens][0], "0228aaaabbbbccccddddeeeeffff0000");
 });
 
 test("a token file another user owns still fails, before and after the rotation", () => {
