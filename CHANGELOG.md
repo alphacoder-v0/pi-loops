@@ -7,6 +7,9 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Fixed
 
+- **The page's inbox matches each project once per request.** `GET /inbox` resolved a finding's
+  directory on disk for every finding, in three passes; 2000 findings took about 24 ms a pass.
+  Each distinct directory is now resolved once per request (#169).
 - **Logs name a conversation the way every screen does.** pi-loops' log lines cut a session id to
   8 characters while the page, the terminal and the CLI show 13, so an id copied from the page was
   not found in the log (#177).
