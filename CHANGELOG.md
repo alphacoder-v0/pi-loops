@@ -24,6 +24,9 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Fixed
 
+- `pi-loops install-launcher --dir`, and `/pi-loops install-launcher --dir`, with no directory after
+  `--dir` is a usage error (exit 2). It used to write into the default directory, as if no `--dir`
+  had been given. `uninstall-launcher` reads `--dir` the same way.
 - The first page visit works on every platform. On WSL the browser never opened, the terminal said
   it had, and the printed address had no key, so Windows Chrome met a door that asked for a code
   nobody could find. `pi-loops` now prints one link with a one-use key, opens the browser with a

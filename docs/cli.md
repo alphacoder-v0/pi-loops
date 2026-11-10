@@ -288,6 +288,9 @@ pi-loops uninstall-launcher
 pi-loops uninstall-launcher --dir ~/bin
 ```
 
+`--dir` needs a directory after it, here and on `install-launcher`: a `--dir` with nothing after it,
+or with a flag after it, is a usage error (exit 2), not the default directory.
+
 It removes only a launcher of ours that this copy keeps. For any other file named `pi-loops` it
 says whose file it is, leaves it as it is, and exits 1. Either way it remembers the choice in
 `ui.json`.

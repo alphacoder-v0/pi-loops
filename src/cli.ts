@@ -313,8 +313,8 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		return launch(["web", ...args], out, cwd, { key: true });
 	}
 	if (command === "upgrade") return upgrade(flags.has("check"), out);
-	if (command === "install-launcher") return installLauncher(str("dir"), out);
-	if (command === "uninstall-launcher") return uninstallLauncher(str("dir"), out);
+	if (command === "install-launcher") return installLauncher(launcherDirFlag(flags), out);
+	if (command === "uninstall-launcher") return uninstallLauncher(launcherDirFlag(flags), out);
 	if (command === "recipe") return recipeCommand(positional, { level: str("level"), overwrite: flags.has("overwrite") }, cwd, loopsDir, out);
 	if (command === "inbox") return inboxCommand(positional, { all: flags.has("all"), json: flags.has("json"), reason: flags.get("reason") }, cwd, loopsDir, out);
 
@@ -875,8 +875,19 @@ export async function installLauncherWithConfirm(args: string[], confirm: (title
  * `~` on the way here, so it is expanded now or becomes a directory named `~`.
  */
 export function slashDir(args: string[]): string | undefined {
-	const flag = parseCliArgs(["install-launcher", ...args]).flags.get("dir");
-	return typeof flag === "string" ? flag.replace(/^~(?=$|\/)/, os.homedir()) : undefined;
+	return launcherDirFlag(parseCliArgs(["install-launcher", ...args]).flags)?.replace(/^~(?=$|\/)/, os.homedir());
+}
+
+/**
+ * The directory `--dir` names. A `--dir` with nothing after it, or with a flag after it, is an
+ * error rather than no `--dir`: read as the default, `uninstall-launcher --dir` removed the
+ * launcher on PATH that nobody had named.
+ */
+function launcherDirFlag(flags: ReadonlyMap<string, string | true>): string | undefined {
+	const dir = flags.get("dir");
+	if (dir === undefined) return undefined;
+	if (dir === true || dir === "" || dir.startsWith("-")) throw new UsageError(`--dir takes a directory; got ${dir === true || dir === "" ? "nothing" : JSON.stringify(dir)}`);
+	return dir;
 }
 
 /**

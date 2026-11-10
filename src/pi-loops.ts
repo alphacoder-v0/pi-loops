@@ -38,7 +38,7 @@ import { cardLines, cardOrigin, claimPrompt, dismissOutcome, dismissTail, inboxC
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { FRESH_RUNS_READ, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardLines, runCardsHere, runLine } from "./run-card.ts";
 import { type ShareMessage, renderShare, shareSummary, shareableMessages } from "./share.ts";
-import { addLauncher, installLauncherWithConfirm, installedByPi, launcherAction, launcherSource, launcherState, launcherTarget, openPage, pageLaunchHost, refreshLauncher, slashDir, stopAndWait, stopService, uninstallLauncher, webPageRequest } from "./cli.ts";
+import { UsageError, addLauncher, installLauncherWithConfirm, installedByPi, launcherAction, launcherSource, launcherState, launcherTarget, openPage, pageLaunchHost, refreshLauncher, slashDir, stopAndWait, stopService, uninstallLauncher, webPageRequest } from "./cli.ts";
 import { copyText, isRemoteTty } from "./browser-open.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -2513,6 +2513,15 @@ export default function piLoops(pi: ExtensionAPI) {
 				ctx.ui.notify(lines.join("\n"), opened.code === 0 ? "info" : "warning");
 				refreshBadge();
 				return;
+			}
+			if (sub === "install-launcher" || sub === "uninstall-launcher") {
+				try {
+					slashDir(tokenize(splitCommand(args).rest).map((t) => t.value));
+				} catch (err: any) {
+					if (!(err instanceof UsageError)) throw err;
+					ctx.ui.notify(`${err.message}. usage: /pi-loops ${sub} [--dir <dir>]`, "warning");
+					return;
+				}
 			}
 			if (sub === "install-launcher") {
 				// The command line's own `install-launcher` cannot be reached until it has run once —

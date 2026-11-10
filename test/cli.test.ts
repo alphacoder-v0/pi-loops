@@ -9,7 +9,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
 import { readUiPrefs, writeUiPref } from "../src/ui-prefs.ts";
-import { UsageError, abortTarget, addLauncher, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherAction, launcherScript, launcherState, launcherTarget, loopsDir, pageAddress, pageFlagRefusal, pageLaunchHost, pageLink, pageOutcomeLines, openOutcome, keySpent, pageTarget, parseCliArgs, webPageRequest, cliRoute, isNewerVersion, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { UsageError, abortTarget, addLauncher, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherAction, launcherScript, launcherState, launcherTarget, loopsDir, pageAddress, pageFlagRefusal, pageLaunchHost, pageLink, pageOutcomeLines, openOutcome, keySpent, pageTarget, parseCliArgs, webPageRequest, cliRoute, isNewerVersion, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, slashDir, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
@@ -538,6 +538,30 @@ test("uninstall-launcher removes only a launcher of ours, and no session start w
 	assert.equal(await runCli(["--help"], (l) => void usage.push(l)), 0);
 	assert.match(usage.join("\n"), /pi-loops uninstall-launcher \[--dir <dir>\]/);
 	assert.match(fs.readFileSync(path.join(process.cwd(), "docs", "cli.md"), "utf8"), /uninstall-launcher/);
+});
+
+test("a --dir with no directory after it is a usage error, on the command line and in pi", async () => {
+	// `uninstall-launcher --dir` once read as no --dir at all, and removed the launcher on PATH.
+	const loops = tmp("pi-loops-ui-");
+	const bin = tmp("pi-loops-bin-");
+	const local = path.join(bin, ".local", "bin");
+	fs.mkdirSync(local, { recursive: true });
+	const file = path.join(local, "pi-loops");
+	await withEnv({ PI_LOOPS_DIR: loops, HOME: bin, PATH: local }, async () => {
+		assert.equal(await runCli(["install-launcher"], () => {}), 0);
+		const script = fs.readFileSync(file, "utf8");
+		for (const verb of ["install-launcher", "uninstall-launcher"]) {
+			for (const bad of [["--dir"], ["--dir="], ["--dir", "-x"], ["--dir=-x"]]) {
+				await assert.rejects(runCli([verb, ...bad], () => {}), UsageError, `${verb} ${bad.join(" ")}`);
+				assert.throws(() => slashDir(bad), UsageError, `/pi-loops ${verb} ${bad.join(" ")}`);
+			}
+		}
+		assert.equal(fs.readFileSync(file, "utf8"), script, "the launcher on PATH is still there");
+		assert.equal(readUiPrefs(loops).launcher, undefined, "and nothing was remembered as declined");
+		let asked = false;
+		await assert.rejects(installLauncherWithConfirm(["--dir"], async () => (asked = true), () => {}), UsageError);
+		assert.equal(asked, false, "refused before the question");
+	});
 });
 
 test("the launcher finds the package again when pi reinstalls it by the other route", async () => {
