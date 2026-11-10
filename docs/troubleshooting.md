@@ -43,8 +43,10 @@ longer loaded.
 
 **The browser window says "This browser has not been here before."** It has no cookie for this
 address, which is normal for a new device, a new browser, a private window, or after clearing site
-data. Press **add device** in a browser that is already signed in and scan the QR, or type the six
-digits into the box on that page. The terminal that started the session printed a code too.
+data. On this machine, run `pi-loops open` in a terminal (or `/pi-loops web` inside pi) for a link
+that signs this browser in. For another device, run `pi-loops pair`, or press **add device** in a
+browser that is already signed in and scan the QR, then type the six digits into the box on that
+page.
 
 **The phone cannot reach it at all.** The server binds loopback by default, and a phone has no
 route to that. Either `tailscale serve --bg 4173` (the server stays on loopback; the tailnet does

@@ -16,7 +16,7 @@
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { ProjectTrustStore, SessionManager, VERSION as PI_VERSION, getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
+import { ProjectTrustStore, SessionManager, VERSION as PI_VERSION, copyToClipboard, getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { ARCHIVE_EXT, type ActivateMode, applyImport, automationOf, defaultExportPath, exportSession, importSession, offerToEnable, parseActivateMode } from "./archive.ts";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -38,7 +38,8 @@ import { cardLines, cardOrigin, claimPrompt, dismissOutcome, dismissTail, inboxC
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { FRESH_RUNS_READ, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardLines, runCardsHere, runLine } from "./run-card.ts";
 import { type ShareMessage, renderShare, shareSummary, shareableMessages } from "./share.ts";
-import { installLauncherWithConfirm, installedByPi, launcherSource, launcherState, launcherTarget, refreshLauncher, stopAndWait, stopService } from "./cli.ts";
+import { installLauncherWithConfirm, installedByPi, launcherSource, launcherState, launcherTarget, openPage, pageLaunchHost, refreshLauncher, stopAndWait, stopService, webPageRequest } from "./cli.ts";
+import { copyText, isRemoteTty } from "./browser-open.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
@@ -2464,7 +2465,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	const ARCHIVE_WARNING = `warning: ${ARCHIVE_EXT} archives include transcript and tool history. They do not include separate auth stores, provider credentials, OAuth tokens, MCP config, or the inbox.`;
 
 	pi.registerCommand("pi-loops", {
-		description: "About this extension; start | stop | restart | status the part that runs loops while no pi is open; install-launcher puts the `pi-loops` command on your PATH",
+		description: "About this extension; start | stop | restart | status the part that runs loops while no pi is open; web opens this conversation in the browser page; install-launcher puts the `pi-loops` command on your PATH",
 		handler: async (args, ctx) => {
 			lastCtx = ctx;
 			const sub = args.trim().split(/\s+/)[0] ?? "";
@@ -2491,6 +2492,28 @@ export default function piLoops(pi: ExtensionAPI) {
 				await drainRequests({ tick: true });
 				return;
 			}
+			if (sub === "web") {
+				// The page on this conversation with no `pi-loops` on PATH: the same page-open and opener
+				// the command line uses. Shown as a notice, not written into the conversation: the link
+				// carries a one-use key.
+				const lines: string[] = [];
+				const host = { ...pageLaunchHost(dir), packageDir: PACKAGE_DIR, piPackage: piPackageDir(), startedBy: `the pi window pid ${process.pid}`, myPiVersion: PI_VERSION };
+				const req = webPageRequest({ cwd: session.cwd, sessionId: binding.here().sessionId ?? session.sessionId, sessionFile: ctx.sessionManager.getSessionFile() });
+				// The link is shown and copied before the browser is tried: the wait for a browser to spend
+				// the key can take seconds, and the person may paste the link sooner.
+				const onLink = async (link: string) => {
+					// Said only when a clipboard command took the link. pi's copy can still get there through
+					// OSC 52, which no terminal confirms, so that try says nothing either way.
+					if (await copyText(link)) lines.push("  copied to the clipboard");
+					else await copyToClipboard(link).catch((err: any) => log.info(`/pi-loops web: copy: ${err?.message ?? err}`));
+					ctx.ui.notify(lines.join("\n"), "info");
+				};
+				const opened = await openPage(dir, req, { key: true, browser: isRemoteTty() ? "remote" : "yes", host }, (l) => lines.push(l), undefined, onLink);
+				// pi shows one notice at a time, so the last one repeats the link with the outcome.
+				ctx.ui.notify(lines.join("\n"), opened.code === 0 ? "info" : "warning");
+				refreshBadge();
+				return;
+			}
 			if (sub === "install-launcher") {
 				// The command line's own `install-launcher` cannot be reached until it has run once —
 				// `pi install` does not put the package on your PATH. You are already inside pi with
@@ -2510,6 +2533,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				`  package: ${homeRel(PACKAGE_DIR)}`,
 				"",
 				"  /pi-loops start | stop | restart | status",
+				"  /pi-loops web                              open this conversation in the browser page",
 				"  /pi-loops install-launcher [--dir <dir>]   put the `pi-loops` command on your PATH",
 				"  /cron · /triggers · /inbox · /goal",
 			]);

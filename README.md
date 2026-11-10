@@ -227,8 +227,14 @@ deletes anything; the session you leave is a file that `resume` lists.
 The page is served by pi-loops in the background on **`http://127.0.0.1:4173/`**, so `pi-loops`
 opens it and exits, and the page stays open when that terminal closes. Its token lives in a file, so
 the address is the same one tomorrow and is worth bookmarking (`[page] port` in `config.toml` moves
-it if 4173 is spoken for). The first visit leaves a cookie and you never see the token again. There
-is no way to drop the token: the page is always on, so it is always behind it.
+it if 4173 is spoken for). `pi-loops` prints one link with a one-use key and opens your browser on
+it, on macOS, Windows, WSL and Linux; when no browser opens, paste that link. The first visit leaves
+a cookie and you never see the token again. There is no way to drop the token: the page is always
+on, so it is always behind it.
+
+A browser that shows "This browser has not been here before." needs a fresh link: run
+`pi-loops open` in a terminal, or `/pi-loops web` inside pi, which also copies the link to the
+clipboard and needs no `pi-loops` on your PATH.
 
 From a phone, the best route is `tailscale serve --bg 4173`: this server stays on loopback and the
 tailnet does TLS and identity. On the same wifi, `[page] host = "0.0.0.0"` in `config.toml` works
@@ -325,6 +331,7 @@ pi-loops stays stopped until `pi-loops start`, or until `pi-loops` opens the bro
 | `/session-export [path]`, `/session-import <path>` | Portable `.pisession` archive: transcript + jobs + rules + loop state (in the browser front end, `/session export` and `/session import` too; `/sessions` lists) |
 | `/session-share [--public]` | Upload a redacted transcript as a GitHub gist via `gh`, after showing you what it contains. (pi has its own `/share`, which sends the raw session elsewhere first — see [docs/session-archive.md](docs/session-archive.md)) |
 | `/recipe [list\|show\|add\|update\|remove <name>]` | Install a packaged way of running this project on loops — the issue tracker as a state machine, or one research experiment per run — with one question and one confirmation ([docs/recipes.md](docs/recipes.md)) |
+| `/pi-loops web` | Open this conversation in the browser page, and copy its one-use link |
 | `/pi-loops [install-launcher]` | Version and paths; `install-launcher` puts the `pi-loops` command on your `PATH` |
 
 A schedule is a 5-field cron expression, or one of `hourly` / `daily` / `weekly` (also `每天`), or

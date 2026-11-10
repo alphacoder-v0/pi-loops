@@ -15,8 +15,9 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as readline from "node:readline";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { isRemoteTty, openFileTarget, openUrl, thisMachine } from "./browser-open.ts";
 import { applyImport, automationOf, exportSession, defaultExportPath, importSession, inspectArchive, offerToEnable, parseActivateMode } from "./archive.ts";
 import { API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, COPY_KEY_MS, askHost, hostSocketPath, openConversations, renderHostSnapshot, requestLines, requestQueues, ringHost } from "./host-control-channel.ts";
 import { heldTurnFor, stopRow } from "./engine.ts";
@@ -67,11 +68,6 @@ export function noTerminalRefusal(input: { web: boolean; tui: boolean; interacti
 	return `pi-loops: there is no terminal here to open pi in; run pi-loops --web to open the page, or pi-loops -- -p "<prompt>" for one answer`;
 }
 
-/** ssh and mosh set at least one of these; opening a browser on the far end helps nobody. */
-export function isRemoteTty(env: NodeJS.ProcessEnv = process.env): boolean {
-	return ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "MOSH_CONNECTION"].some((k) => !!env[k]);
-}
-
 /**
  * Flags `pi-loops` reads for itself when launching; everything else is pi's. `port`, `host`,
  * `allow-host` and `no-auth` are claimed only to be refused: the page outlives the command now, so
@@ -113,6 +109,9 @@ export class UsageError extends Error {}
 const CLI_USAGE = [
 	"pi-loops [--web | --tui] [--no-open] [--loops-dir <dir>] [<pi flags>] [-- <pi flags>]",
 	"    Open a conversation: the browser page on a local terminal, pi itself over ssh (pi-loops web and pi-loops tui say which).",
+	"",
+	"pi-loops open [--cwd <dir>] [--loops-dir <dir>]",
+	"    Open the page on this project's newest conversation, with a one-use link that signs a browser in.",
 	"",
 	"pi-loops upgrade [--check]",
 	"    Install the newest release from the repository this copy came from.",
@@ -302,6 +301,14 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	const cwd = path.resolve(str("cwd") ?? process.cwd());
 
 	if (command === "web" || command === "tui") return launch(argv, out);
+	// What the door tells a browser with no way in to run: the project's newest conversation, so
+	// signing in adds none, or a new one where there is none yet. The keyed link is printed with no
+	// terminal too: printing it is what this command is for.
+	if (command === "open") {
+		const named = str("loops-dir");
+		const args = [...(named ? [`--loops-dir=${named}`] : []), ...(listSessions(path.join(agentDir, "sessions")).some((s) => sameProject(s.cwd, cwd)) ? ["--continue"] : [])];
+		return launch(["web", ...args], out, cwd, { key: true });
+	}
 	if (command === "upgrade") return upgrade(flags.has("check"), out);
 	if (command === "install-launcher") return installLauncher(str("dir"), out);
 	if (command === "recipe") return recipeCommand(positional, { level: str("level"), overwrite: flags.has("overwrite") }, cwd, loopsDir, out);
@@ -426,7 +433,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 /** What runs loops while no pi is open, started, stopped and looked at by name. */
 const SERVICE_VERBS = new Set(["start", "stop", "restart", "status", "abort", "pair"]);
 
-const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "host", "recipe", "inbox", "web", "upgrade", "install-launcher", "help"]);
+const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "host", "recipe", "inbox", "web", "open", "upgrade", "install-launcher", "help"]);
 
 /**
  * `pi-loops inbox`: `/inbox list|claim|dismiss` for a shell with no pi open, and — with `--json` —
@@ -784,7 +791,7 @@ export function cliRoute(argv: string[]): "launch" | "subcommand" | "help" {
 
 /** Each subcommand, and the line that starts its section of `CLI_USAGE`. */
 const USAGE_SECTIONS: Record<string, string> = {
-	web: "pi-loops [--web", tui: "pi-loops [--web", upgrade: "pi-loops upgrade", "install-launcher": "pi-loops install-launcher",
+	web: "pi-loops [--web", tui: "pi-loops [--web", open: "pi-loops open", upgrade: "pi-loops upgrade", "install-launcher": "pi-loops install-launcher",
 	export: "pi-loops export", import: "pi-loops import", sessions: "pi-loops sessions", inspect: "pi-loops inspect",
 	start: "pi-loops start | stop", stop: "pi-loops start | stop", restart: "pi-loops start | stop", status: "pi-loops start | stop",
 	abort: "pi-loops start | stop", host: "pi-loops start | stop", pair: "pi-loops pair", recipe: "pi-loops recipe", inbox: "pi-loops inbox",
@@ -797,12 +804,12 @@ const GLOBAL_FLAGS = new Set(["cwd", "help"]);
 const VERB_FLAGS: Record<string, readonly string[]> = {
 	upgrade: ["check"], "install-launcher": ["dir"], import: ["activate-triggers"], export: ["session", "output", "exclude-triggers"],
 	sessions: ["limit", "all"], recipe: ["level", "overwrite"], inbox: ["all", "json", "reason"], start: ["foreground"], status: ["url"],
-	inspect: [], stop: [], restart: [], abort: [], pair: [],
+	inspect: [], stop: [], restart: [], abort: [], pair: [], open: ["loops-dir"],
 };
 
 /** How many words each subcommand reads after its name. */
 const VERB_POSITIONALS: Record<string, number> = {
-	upgrade: 0, "install-launcher": 0, export: 0, sessions: 0, start: 0, stop: 0, restart: 0, status: 0, pair: 0,
+	upgrade: 0, "install-launcher": 0, export: 0, sessions: 0, start: 0, stop: 0, restart: 0, status: 0, pair: 0, open: 0,
 	import: 1, inspect: 1, abort: 1, recipe: 2, inbox: 2,
 };
 
@@ -1060,7 +1067,7 @@ function staleReason(old: string, entryDir: string, node: string): string {
  * `pi --mode rpc` that pi-loops runs in the background — so this is a choice of window, not of
  * product, and `--tui` is always there when the guess is wrong.
  */
-async function launch(argv: string[], out: (line: string) => void): Promise<number> {
+async function launch(argv: string[], out: (line: string) => void, cwd = process.cwd(), opts: { key?: boolean } = {}): Promise<number> {
 	const { ours, pi, misplaced } = splitLaunchArgs(argv[0] === "web" || argv[0] === "tui" ? argv.slice(1) : argv);
 	const has = (name: string) => ours.some((a) => a === `--${name}` || a.startsWith(`--${name}=`));
 	if (has("help")) {
@@ -1091,7 +1098,7 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 		out("pi-loops: --resume is pi's picker, which the page has as /resume; pi-loops --session <id> opens one by id");
 		return 2;
 	}
-	const target = pageTarget(withDefaults, process.cwd());
+	const target = pageTarget(withDefaults, cwd);
 	if ("error" in target) {
 		out(`pi-loops: ${target.error}`);
 		return 1;
@@ -1102,12 +1109,38 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 		out(`pi-loops: ${API_KEY_REFUSAL}`);
 		return 1;
 	}
+	const tty = !!process.stdout.isTTY;
+	const browser = !tty || has("no-open") ? "no" : isRemoteTty() ? "remote" : "yes";
+	const key = tty || !!opts.key;
+	const opened = await openPage(dir, { cwd, sessionId: target.sessionId, sessionFile: target.sessionFile, piArgs: target.piArgs }, { key, browser, host: pageLaunchHost(dir) }, out, () =>
+		process.stderr.write("waiting for pi-loops to open the conversation…\n"),
+	);
+	return opened.code;
+}
+
+/** Whether `openPage` tries a browser: `remote` is a terminal over ssh, where it never does. */
+export type PageBrowser = "yes" | "no" | "remote";
+
+/**
+ * Open the page on a conversation and say so in `out`: start pi-loops in the background as `host`
+ * says when it is not running, ask it for `page-open`, print the one-use link, then try the browser
+ * and say what happened. `pi-loops`, `pi-loops open` and `/pi-loops web` all come here. `link` is
+ * the printed address with its key, for a caller that also copies it.
+ */
+export async function openPage(
+	dir: string,
+	req: { cwd: string; sessionId?: string; sessionFile?: string; piArgs: string[] },
+	how: { key: boolean; browser: PageBrowser; host: EnsureHostOptions },
+	out: (line: string) => void,
+	slowNote: () => void = () => {},
+	onLink: (link: string) => void | Promise<void> = () => {},
+): Promise<{ code: number; link?: string }> {
 	// Asking for the page is asking for pi-loops: a stop by hand ends here, or the process it starts
 	// would find the mark and leave again. Every loop and rule resumes with it, which is said once
 	// pi-loops is up; if it does not come up, the stop stays as it was.
 	const liftedStop = readUiPrefs(dir).host === "stopped";
 	if (liftedStop) clearUiPref(dir, "host");
-	const ensured = await ensureHost(pageLaunchHost(dir));
+	const ensured = await ensureHost(how.host);
 	// Running, started, or being started by a window right now: each of these has a page coming.
 	const why = ensured.error ?? (ensured.action.kind === "none" && ensured.action.reason !== "running" && ensured.action.reason !== IN_PROGRESS ? ensured.action.reason : undefined);
 	const rec = await waitForSocket(dir, why ? 0 : PAGE_WAIT_MS);
@@ -1117,41 +1150,36 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 	}
 	if (!rec) {
 		out(why ? `pi-loops did not start: ${why}` : `pi-loops: the page did not come up within ${PAGE_WAIT_MS / 1000} s; see ${path.join(dir, HOST_LOG)}`);
-		return 1;
+		return { code: 1 };
 	}
 	const waiting = (r: HostServiceRecord | undefined) => (r && !r.url && r.pageWaiting ? pageWaitingLine(r.pageWaiting.reason, pageAddress(dir)) : undefined);
 	const held = waiting(rec);
 	if (held) {
 		out(held);
-		return 1;
+		return { code: 1 };
 	}
 	// Asked while the page may still be binding: pi starts beside the bind, and the answer brings the
 	// address. Opening may also wait for an older pi in that conversation to stop, up to 15 s.
-	const tty = !!process.stdout.isTTY;
-	const wantOpen = tty && !has("no-open") && !isRemoteTty();
-	const slow = setTimeout(() => process.stderr.write("waiting for pi-loops to open the conversation…\n"), PAGE_OPEN_SLOW_MS);
-	const res = await askHost(dir, { op: "page-open", cwd: process.cwd(), sessionId: target.sessionId, sessionFile: target.sessionFile, piArgs: target.piArgs, ...(wantOpen ? { openFile: true } : {}), ...(tty ? { copyKey: true } : {}) }, PAGE_OPEN_WAIT_MS).finally(() => clearTimeout(slow));
+	const wantOpen = how.browser === "yes";
+	const slow = setTimeout(slowNote, PAGE_OPEN_SLOW_MS);
+	const res = await askHost(dir, { op: "page-open", ...req, ...(wantOpen ? { openFile: true } : {}), ...(how.key ? { copyKey: true } : {}) }, PAGE_OPEN_WAIT_MS).finally(() => clearTimeout(slow));
 	if (!res) {
 		out(`pi-loops (pid ${rec.pid}) is not answering; see ${path.join(dir, HOST_LOG)}`);
-		return 1;
+		return { code: 1 };
 	}
 	if (!res.ok) {
 		out(waiting(readHostService(dir)) ?? `pi-loops: ${res.error}`);
-		return 1;
+		return { code: 1 };
 	}
+	const link = pageLink({ url: res.url!, copyKey: res.copyKey, key: how.key });
+	if (ensured.up && ensured.pid === rec.pid) out("started pi-loops in the background");
+	out(`pi-loops: ${link}`);
+	if (how.key) await onLink(link);
 	// The browser opens on a file only this user can read, which holds the key: an argv is anyone's.
-	// "Opened" only when an opener started; whether the browser could read the file it cannot tell.
-	const opened = wantOpen && !!res.openFile && (await openBrowser(openFileUrl(res.openFile!)));
-	const lines = pageLaunchLines({
-		startedPid: ensured.up && ensured.pid === rec.pid ? rec.pid : undefined,
-		url: res.url!,
-		copyKey: res.copyKey,
-		opened,
-		tty,
-		ignoredArgs: res.ignoredArgs,
-	});
-	for (const line of lines) out(line);
-	return 0;
+	const openTarget = wantOpen && res.openFile ? openFileTarget(res.openFile, thisMachine()) : undefined;
+	const outcome: OpenOutcome = how.browser === "remote" ? "remote" : how.browser === "no" ? "not-asked" : openTarget ? await openOutcome(openTarget, res.openFile!) : "failed";
+	for (const line of pageOutcomeLines({ outcome, key: how.key, ignoredArgs: res.ignoredArgs })) out(line);
+	return { code: 0, ...(how.key ? { link } : {}) };
 }
 
 /**
@@ -1292,44 +1320,85 @@ export function pageTarget(piArgs: string[], cwd: string, sessionsRoot = path.jo
 	}
 }
 
+/** What the browser did, as `openPage` says it on the second line. */
+export type OpenOutcome = "opened" | "unconfirmed" | "failed" | "remote" | "not-asked";
+
 /**
- * What `pi-loops` prints once the page has the conversation. The token is on a terminal only: it is
- * a way in, and stdout redirected to a file would keep it. No pairing code: one armed on every launch
- * is one any local process can burn; `pi-loops pair` arms one when somebody asks.
+ * What `/pi-loops web` asks `page-open` for: the conversation it is in once pi has saved it. Before
+ * the first answer (a path with no file) and under `--no-session` (no path) the page has nothing to
+ * show under that id, so it asks with no id, which opens a new conversation in the project.
  */
-export function pageLaunchLines(i: { startedPid?: number; url: string; copyKey?: string; opened: boolean; tty: boolean; ignoredArgs?: string[] }): string[] {
-	const lines: string[] = [];
-	if (i.startedPid !== undefined) lines.push("started pi-loops in the background");
-	lines.push(`pi-loops page: ${i.url} (${i.opened ? "opened in your browser" : "open it in a browser"})`);
-	// A one-use key, not the token: scrollback, recordings and shared screens keep what is printed,
-	// and the token is a shell for as long as pi-loops runs.
-	if (i.tty && i.copyKey) lines.push(`  ${i.opened ? "if it did not open, or" : "first visit"} from another browser: ${i.url}?open=${i.copyKey} (works once, for ${COPY_KEY_MS / 60_000} minutes)`);
+export function webPageRequest(here: { cwd: string; sessionId?: string; sessionFile?: string }): { cwd: string; sessionId?: string; sessionFile?: string; piArgs: string[] } {
+	const saved = here.sessionId && here.sessionFile && fs.existsSync(here.sessionFile);
+	return saved ? { cwd: here.cwd, sessionId: here.sessionId, sessionFile: here.sessionFile, piArgs: [] } : { cwd: here.cwd, piArgs: [] };
+}
+
+/**
+ * The address `pi-loops` prints: on a terminal, with a one-use key that works for `COPY_KEY_MS`.
+ * Never the token: scrollback, recordings and shared screens keep what is printed, and the token is
+ * a shell for as long as pi-loops runs. `key` is false when stdout is not a terminal, since a
+ * redirected stdout would keep the key, except for `pi-loops open`, which is asked for exactly that
+ * link. No pairing code: one armed on every launch is one any local
+ * process can burn; `pi-loops pair` arms one when somebody asks.
+ */
+export function pageLink(i: { url: string; copyKey?: string; key: boolean }): string {
+	return i.key && i.copyKey ? `${i.url}?open=${i.copyKey}` : i.url;
+}
+
+/**
+ * An opener's exit code does not say a page loaded: rundll32 exits 0 for a target it cannot open.
+ * The background process removes the launch file when the browser spends its key, so the file
+ * going away is the one sign that a browser got in.
+ */
+export async function keySpent(file: string, waitMs = OPEN_CONFIRM_MS, stopped: () => boolean = () => false): Promise<boolean> {
+	const until = Date.now() + waitMs;
+	while (Date.now() < until && !stopped()) {
+		if (!fs.existsSync(file)) return true;
+		await new Promise((r) => setTimeout(r, 100));
+	}
+	return !fs.existsSync(file);
+}
+
+/**
+ * The opener and the key watch run side by side: a browser that spends the key is "opened" at once,
+ * even while `xdg-open` is still running; an opener that fails before the key is spent is "failed".
+ */
+export async function openOutcome(target: string, file: string, open: (t: string) => Promise<boolean> = openUrl, waitMs = OPEN_CONFIRM_MS): Promise<OpenOutcome> {
+	let openerFailed = false;
+	const spent = keySpent(file, waitMs, () => openerFailed);
+	const opener = open(target).then((ok) => ((openerFailed = !ok), ok));
+	const first = await Promise.race([spent.then((s) => (s ? "spent" : "not-spent")), opener.then((ok) => (ok ? "ran" : "failed"))]);
+	if (first === "spent") return "opened";
+	if (first === "failed") return "failed";
+	if (first === "ran") return (await spent) ? "opened" : "unconfirmed";
+	return (await opener) ? "unconfirmed" : "failed";
+}
+
+/** How long a launch waits for the browser to spend the key before it says it cannot tell. */
+const OPEN_CONFIRM_MS = 8_000;
+
+/** The lines after the link: what the browser did, and the pi arguments an open conversation did not take. */
+export function pageOutcomeLines(i: { outcome: OpenOutcome; key: boolean; ignoredArgs?: string[] }): string[] {
+	const once = `it works once, for ${COPY_KEY_MS / 60_000} minutes`;
+	const lines = [
+		!i.key
+			? "  pi-loops open prints a link that signs a browser in"
+			: i.outcome === "opened"
+				? "  opened in your browser"
+				: i.outcome === "remote"
+					? "  open the link above in a browser on this machine"
+					: i.outcome === "unconfirmed"
+						? `  if no browser opened, open the link above (${once})`
+						: i.outcome === "failed"
+						? `  could not open a browser here; open the link above (${once})`
+						: `  open the link above in a browser (${once})`,
+	];
 	if (i.ignoredArgs?.length) {
 		const flags = i.ignoredArgs.filter((a) => a.startsWith("-"));
 		const named = flags.length ? flags : i.ignoredArgs;
 		lines.push(`  this conversation was already open; ${named.join(" ")} ${named.length === 1 ? "was" : "were"} not applied`);
 	}
 	return lines;
-}
-
-/** What the opener is given for the launch file: a file: URL, which holds no key. */
-export function openFileUrl(file: string): string {
-	return pathToFileURL(file).href;
-}
-
-/** Hand `url` to the system's opener; true once it has started, false when there is none. */
-function openBrowser(url: string): Promise<boolean> {
-	const [cmd, args] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
-	return new Promise((resolve) => {
-		try {
-			const child = spawn(cmd, args, { stdio: "ignore", detached: true });
-			child.once("spawn", () => resolve(true));
-			child.once("error", () => resolve(false)); // no opener on this machine: the address is printed
-			child.unref();
-		} catch {
-			resolve(false); // a URL on stdout is enough
-		}
-	});
 }
 
 /**

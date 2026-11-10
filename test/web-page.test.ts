@@ -1293,11 +1293,15 @@ test("the door page is readable on a phone and follows the system theme", () => 
 	assert.match(door, /background:Canvas;color:CanvasText/, "with surfaces that follow it too");
 });
 
-test("the door is a heading, one line for the two ways in, and the code field", () => {
+test("the door is a heading, one line per way in, and the code field: pi-loops open here, pi-loops pair for another device", () => {
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	const door = /const DOOR = `([\s\S]*?)`;/.exec(src)?.[1] ?? "";
 	assert.match(door, /<h2[^>]*>This browser has not been here before\.<\/h2>/, "docs/troubleshooting.md quotes it");
-	assert.deepEqual([...door.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map((m) => m[1]), ["Run <code>pi-loops</code> in a terminal on this machine, or type the code from <b>add device</b> on a browser that is signed in:"]);
+	// "Run pi-loops" was what the person had just done, and "add device" needs a browser already in.
+	assert.deepEqual([...door.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map((m) => m[1]), [
+		"Run <code>pi-loops open</code> in a terminal on this machine for a link that signs this browser in.",
+		"Pairing another device? <code>pi-loops pair</code> shows a code.",
+	]);
 	assert.doesNotMatch(door, /<pre\b/, "the command is in the line, not a box of its own");
 	assert.match(door, /<form method="get"[\s\S]*name="pair"/, "the form is as it was");
 });
@@ -4766,3 +4770,4 @@ test("a loop row's signal line and its note each take their own line, so the not
 	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(src)?.[1] ?? "";
 	assert.match(html, /\.loopx \.signal\{display:block[;}]/);
 });
+

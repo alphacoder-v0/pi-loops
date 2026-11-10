@@ -969,6 +969,17 @@ weaker, and worth converting whenever one of them breaks.
       otherwise reloading a bookmark with a stale code on it burns the budget the phone needs.
       `test/web.test.ts`: *a signed-in browser reloading a stale pairing code does not spend a
       guess*.
+- [x] The first browser on this machine gets in with one action. `pi-loops` prints one link with a
+      one-use key and opens the browser on it, or says it could not, so a paste of that link works
+      on the first try; on WSL the Windows browser is opened through `rundll32.exe`, then
+      `cmd.exe`, and "opened" is said only once a browser has spent the key. `pi-loops open` prints a fresh link, and the door names it.
+      `test/browser-open.test.ts`: *opened means the opener exited with a success code or is still
+      running*. `test/cli.test.ts`: *what pi-loops prints once the page has the conversation*,
+      *pi-loops open is a word of its own*. `test/web-page.test.ts`: *the door is a heading, one
+      line per way in, and the code field*.
+- [x] `/pi-loops web` opens the conversation you are in from inside pi, with no `pi-loops` on your
+      PATH: the same link and opener, and the link copied to the clipboard. Checked by reading
+      (`src/pi-loops.ts` cannot be imported by a test).
 - [x] Pairing survives an upgrade: the token and the paired devices are files outside the package,
       so a device stays signed in across restarts and new versions. A browser paired before 0.24.0
       pairs once more, because its cookie held the token, which no cookie may hold now.

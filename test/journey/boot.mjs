@@ -238,7 +238,7 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 		const address = output.match(resident ? READY_RESIDENT : READY_LEGACY);
 		if (!address) throw new Error(`page failed to start: ${output}`);
 		const url = address[1];
-		const pageUrl = resident ? address[0].slice("pi-loops page: ".length) : url;
+		const pageUrl = resident ? address[0].slice("pi-loops: ".length) : url;
 		const token = fs.readFileSync(path.join(dirs.loops, "web-token"), "utf8").trim();
 		await until(async () => await request(`${url}?token=${token}`) === 200, 45000, "page did not answer authenticated GET", signal);
 		const launcher = pageProcess;
@@ -260,8 +260,8 @@ function sessionIdFor(dirs) {
 	return undefined;
 }
 
-/** The `pi-loops page:` line a resident page prints before `pi-loops` exits; trees before it print `web on`. */
-const READY_RESIDENT = /pi-loops page: (http:\/\/127\.0\.0\.1:\d+\/)c\/[^/\s]+\//;
+/** The `pi-loops:` link line a resident page prints before `pi-loops` exits (`pi-loops page:` in 0.24.0); trees before it print `web on`. */
+const READY_RESIDENT = /pi-loops(?: page)?: (http:\/\/127\.0\.0\.1:\d+\/)c\/[^/\s?]+\//;
 const READY_LEGACY = /web on (http:\/\/127\.0\.0\.1:\d+\/)/;
 
 /** Whether the product under test serves the page from pi-loops in the background (0.24 on). */
