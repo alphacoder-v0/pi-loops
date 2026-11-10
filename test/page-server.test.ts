@@ -1182,9 +1182,14 @@ test("a new conversation in a project with no arguments of its own loads pi-loop
 			const live = path.join(dir, "live1");
 			fs.writeFileSync(live, JSON.stringify({ type: "session", version: 3, id: "live1", cwd: api }) + "\n");
 			await page.pool.open({ sessionId: "live1", sessionFile: live, cwd: api, piArgs: given });
+			// The fake pi writes its line when it starts, which can be after the POST returns: wait for
+			// the new conversation's own line rather than read live1's as if it were it.
+			const lines = () => (fs.existsSync(argv) ? fs.readFileSync(argv, "utf8").trim().split("\n").filter(Boolean) : []);
+			assert.ok(await until(() => lines().length === 1), `${what}: live1 has started`);
 			const r = await page.post("conversations/new", { cwd: web });
 			assert.equal(r.status, 200, `${what}: ${JSON.stringify(r.body)}`);
-			const started = fs.readFileSync(argv, "utf8").trim().split("\n").map((l) => JSON.parse(l)).at(-1);
+			assert.ok(await until(() => lines().length === 2), `${what}: the new conversation's pi has started`);
+			const started = JSON.parse(lines()[1]);
 			const own = started.slice(started.indexOf("rpc") + 1);
 			assert.deepEqual(own, wanted, what);
 		} finally {
