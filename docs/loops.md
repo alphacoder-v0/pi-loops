@@ -94,7 +94,9 @@ Schedules are local time: 5-field cron (`*/n`, ranges, lists, `mon-fri`, `jan`),
 (`hourly` / `every hour` / `once an hour` → `0 * * * *`; `daily` / `every day` → `0 9 * * *`;
 `weekly` → `0 9 * * 1`; `每小时`, `每天`, `每周`), and crontab's `@hourly` / `@daily` / `@weekly` /
 `@monthly`. `daily` means 09:00 local; `@daily` means midnight. Also `every 30m`, `in 10m` and
-`at 2026-09-08T18:00` (one-shot jobs are removed after they fire).
+`at 2026-09-08T18:00` (one-shot jobs are removed after they fire). The minimum `every <dur>` is
+`1m`: the tick is 30 s, and a sub-minute interval would run on every tick, so it is refused with
+the reason at creation rather than created and then disabled by the first tick.
 
 ## Stateful loops
 

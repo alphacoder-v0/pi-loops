@@ -23,6 +23,12 @@ test("parseSchedule forms", () => {
 	const now = local(2026, 9, 8, 10, 0);
 	assert.deepEqual(parseSchedule("in 10m", now), { kind: "once", at: now + 600_000 });
 	assert.equal(parseSchedule("at 2026-09-08T18:00").kind, "once");
+	// The minimum every interval is 1m: below it the job is refused at creation, not disabled by the first tick.
+	assert.throws(() => parseSchedule("every 30s"), /the minimum every interval is 1m/);
+	assert.throws(() => parseSchedule("every 59s"), /the minimum every interval is 1m/);
+	assert.deepEqual(parseSchedule("every 1m"), { kind: "every", ms: 60_000 });
+	// A one-shot is unbounded: `in 30s` still parses.
+	assert.deepEqual(parseSchedule("in 30s", now), { kind: "once", at: now + 30_000 });
 	assert.throws(() => parseSchedule("0 9 * *"), /invalid schedule/);
 	assert.throws(() => parseSchedule("61 9 * * *"), /invalid cron field `61`: value 61 out of range 0-59/);
 	assert.throws(() => parseCron("1 2 3 4"), /cron schedule must have 5 fields: minute hour day-of-month month day-of-week/);
