@@ -178,7 +178,8 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .sbar .st.up{background:var(--ok)}.sbar .st.down{background:var(--bad)}
 .tabs{display:none}
 
-header{display:flex;gap:10px;align-items:center;padding:9px 14px;flex-wrap:wrap;min-height:52px}
+/* The page's own paper, so the feed's top edge reads as the header's edge, not as text cut in half. */
+header{display:flex;gap:10px;align-items:center;padding:9px 14px;flex-wrap:wrap;min-height:52px;background:var(--bg);border-bottom:1px solid var(--line)}
 header b{font-weight:650}
 /* The conversation's title: as much of it as leaves the pickers on the same row. */
 header>b{flex:0 1 auto;min-width:0;max-width:24rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -508,7 +509,6 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   header .grow *{flex-shrink:0}
   header .grow button{padding:5px 7px}
   #cost{flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #cost:empty{display:none}
 }}
 /* The loops rail is not dropped when the window narrows, it is put behind the rail's Loops button: it
    slides over the conversation rather than taking a third of it, the way a drawer does elsewhere. */
@@ -537,11 +537,17 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   .composer-row button{flex:1 1 0}
   /* The path is in the switcher. Here it was costing a whole header row, on a screen where the
      header was already taking an eighth of the height. */
-  /* The title gets a row of its own, first: on a phone the list is another pane, and the header is
-     the one place that says which conversation this is. */
-  header>b{flex:1 1 100%;max-width:none;order:-1}
-  header select{max-width:8.5rem}
-  header{min-height:0}
+  /* One row: the title takes what the pickers and buttons leave, and the pickers give up width
+     before the buttons do. */
+  header{min-height:0;flex-wrap:nowrap}
+  header>b{flex:1 1 auto;max-width:none;min-width:4.5em}
+  #model{flex:0 1 auto;min-width:4.5rem;max-width:7rem}
+  #thinking{flex:none}
+  header .grow{flex:none;flex-wrap:nowrap;gap:6px}
+  header .grow button{padding:8px 9px}
+  /* No room beside the title: the cost is in the ⋯ sheet, with the actions, and while a turn runs
+     the stop button in send's place says what the status chip would. */
+  .grow>#cost,main:has(#stop:not([hidden])) #status{display:none}
   button{padding:8px 12px;min-height:40px}
   .card button,.role button{min-height:32px}
 }
@@ -595,7 +601,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
     </select>
     <span class="grow">
       <span class="badge" id="queue" hidden></span>
-      <span class="badge" id="cost" title="Session tokens and cost"></span>
+      <span class="badge" id="cost" title="Session tokens and cost" hidden></span>
       <button id="expand">▸ steps</button>
       <span id="actions">
         <button id="reload">reload</button>
@@ -626,7 +632,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
     <div class="composer-row">
       <textarea id="input" placeholder="Message pi"></textarea>
       <button type="button" id="attach">attach</button>
-      <button type="submit" class="primary">send</button>
+      <button type="submit" id="send" class="primary">send</button>
       <button type="button" id="stop">stop</button>
     </div>
     <input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" multiple hidden>
@@ -1789,6 +1795,12 @@ function setStatus() {
   qe.textContent = "queued " + q + " ✕";
   qe.onclick = () => api("/queue/clear", {}).then(refresh);
   statusEl.textContent = busy ? "working…" : "";
+  // One slot: stop while a turn runs, send otherwise. Enter still queues during a turn.
+  $("stop").hidden = !busy;
+  $("send").hidden = busy;
+  // Nothing to undo, compact or go back from in a conversation nothing was said in yet.
+  const empty = !busy && !state.messageCount;
+  for (const id of ["undo", "compact", "resume"]) $(id).hidden = empty;
   drawQueue();
 }
 
@@ -2342,6 +2354,7 @@ async function refresh() {
     const pct = st.contextUsage?.percent;
     // Nothing spent yet: no badge, rather than "$0.000 · 0k · ctx 0%".
     $("cost").textContent = !st.tokens?.total ? "" : "$" + (st.cost ?? 0).toFixed(3) + " · " + Math.round(st.tokens.total / 1000) + "k" + (pct == null ? "" : " · ctx " + Math.round(pct) + "%");
+    $("cost").hidden = !$("cost").textContent;
   });
   for (const ask of state.pendingAsks || []) onAsk(ask);
 }
@@ -2833,10 +2846,11 @@ for (const dlg of document.querySelectorAll("dialog")) {
  * they live in the header; on a narrow one they are behind ⋯, and this carries them there and back.
  */
 $("more").onclick = () => {
-  $("menuBody").append($("actions"));
+  $("menuBody").append($("cost"), $("actions"));
   $("menu").showModal();
 };
 function closeMenu() {
+  document.querySelector("header .grow").insertBefore($("cost"), $("expand"));
   document.querySelector("header .grow").insertBefore($("actions"), $("status"));
   $("menu").close();
 }

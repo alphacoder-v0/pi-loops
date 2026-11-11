@@ -94,8 +94,10 @@ weaker, and worth converting whenever one of them breaks.
       again after every slash command and when it is older than thirty seconds, so `/reload` is seen.
       `test/web.test.ts`: *without pi-loops in the page's pi, chat goes over rpc as before, and no row
       is written*, *a command list that changes is asked for again before a message is routed on it*.
-- [x] Abort stops the current turn. `test/web-page.test.ts`: *the stop button asks the server to abort
-      the turn*; `test/web.test.ts`: *the run button sends pi the job's run command, and refuses an id
+- [x] Abort stops the current turn. **stop** takes the place of **send** while a turn runs, and
+      Enter still queues. `test/web-page.test.ts`: *the stop button asks the server to abort
+      the turn*; *an empty conversation offers no undo, compact or resume, and stop takes send's
+      place while a turn runs*; `test/web.test.ts`: *the run button sends pi the job's run command, and refuses an id
       it cannot use* (which also posts the abort route).
 - [x] Busy, queued count, and "pi exited" are all visible without opening a terminal.
       `test/web-page.test.ts`: *a tool call and a dead pi both reach the page*.
@@ -513,7 +515,12 @@ weaker, and worth converting whenever one of them breaks.
       whatever is beside it, the ones you reach for mid-conversation (undo, find, compact and resume)
       stay in the header on one row with ⋯, and the header stays two rows at a 1280 or 1440 px
       window; reload, save, share, add device, theme and notifications go behind ⋯. The
-      sheet lists all of them, moved — not copied — into it. On a phone (760 px and less) every one is behind ⋯.
+      sheet lists all of them, moved — not copied — into it. On a phone (760 px and less) every one is
+      behind ⋯, and the header is one row: the title, the pickers, steps and ⋯. There the cost is
+      in the ⋯ sheet, and while a turn runs the stop button in send's place stands for the status
+      chip. The ⋯ sheet carries the cost at every width. The header has the
+      page's paper, so the feed scrolls out under its edge. `test/web-page.test.ts`: *the header is
+      opaque, and on a phone it is one row*.
       `test/web-page.test.ts`: *the header's secondary actions move into a sheet and back*, *below
       1000 px of conversation, undo, find, compact and resume stay in the header and the rest go
       behind ⋯*.
@@ -687,7 +694,9 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Attaching an image is refused, with the reason, by a model that cannot see one.
       `test/web-page.test.ts`: *a model that cannot see images has attach disabled and a pasted image
       refused*.
-- [x] Cost and token counts.
+- [x] Cost and token counts, once something is spent; before that the badge takes no room at any
+      width. `test/web-page.test.ts`: *the cost badge takes no room until something is spent, at
+      every width*.
 - [x] Compact, undo (fork from your last message), find across the whole session including
       abandoned branches, export to HTML, and share as a redacted gist. Undo reloads the
       conversation through the one path every other thing that empties the feed uses, so an undone

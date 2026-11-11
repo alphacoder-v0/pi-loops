@@ -1032,8 +1032,8 @@ test("the header's secondary actions move into a sheet and back, once each", { t
 	const doc = (globalThis as any).document;
 
 	doc.getElementById("more").onclick();
-	assert.equal(doc.getElementById("menuBody").children.length, 1, "the actions went into the sheet");
-	assert.equal(doc.getElementById("menuBody").children[0], doc.getElementById("actions"), "the same element, not a copy");
+	// The cost goes with them: on a phone the header has no room for it.
+	assert.deepEqual(doc.getElementById("menuBody").children, [doc.getElementById("cost"), doc.getElementById("actions")], "the same elements, not copies");
 	doc.getElementById("menuClose").onclick();
 	assert.equal(doc.getElementById("menuBody").children.length, 0, "and came back out");
 	dom.dispose();
@@ -4855,7 +4855,22 @@ test("the cost badge waits for a cost, and the composer says only Message pi", {
 	}
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	assert.ok(src.includes('<textarea id="input" placeholder="Message pi">'), "/ and @ are left to the pop-ups they open");
-	assert.ok(src.includes("#cost:empty{display:none}"), "and an empty badge takes no room");
+});
+
+test("the cost badge takes no room until something is spent, at every width", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] }, new Map(), { "/stats": { cost: 0, tokens: { total: 0 }, contextUsage: { percent: 0 } } });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	await dom.poll();
+	const doc = (globalThis as any).document;
+	assert.equal(doc.getElementById("cost").hidden, true, "nothing spent: no empty pill");
+	dom.dispose();
+	const spent = stubDom(STATE, { messages: [] }, new Map(), { "/stats": { cost: 0.0123, tokens: { total: 4200 }, contextUsage: { percent: 3 } } });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	await spent.poll();
+	assert.equal((globalThis as any).document.getElementById("cost").hidden, false, "a cost: the pill");
+	spent.dispose();
 });
 
 test("a Loops row says each thing once: no prompt peek for a named loop, no quiet under an error, no id or cwd, a rule named by its condition", { timeout: 20_000 }, async () => {
@@ -4964,4 +4979,29 @@ test("the first message names the conversation at once, and the list is asked ag
 	await new Promise((r) => setTimeout(r, 60));
 	assert.ok(lists() > atSend, "and again when the turn ends, once pi has written the conversation");
 	dom.dispose();
+});
+
+test("an empty conversation offers no undo, compact or resume, and stop takes send's place while a turn runs", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const dom = stubDom({ ...STATE, messageCount: 0 }, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const shown = (id: string) => !g.document.getElementById(id).hidden;
+	assert.deepEqual(["undo", "compact", "resume", "send", "stop"].map(shown), [false, false, false, true, false], "nothing said yet: send alone");
+	dom.source().onmessage({ data: JSON.stringify({ type: "agent_start" }) });
+	assert.deepEqual(["undo", "compact", "resume", "send", "stop"].map(shown), [true, true, true, false, true], "a turn runs: stop in send's slot");
+	dom.dispose();
+	const said = stubDom({ ...STATE, messageCount: 4 }, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	assert.deepEqual(["undo", "compact", "resume", "send", "stop"].map(shown), [true, true, true, true, false]);
+	said.dispose();
+});
+
+test("the header is opaque, and on a phone it is one row", () => {
+	const { css } = pageStyle();
+	assert.match(/(?:^|\n)header\{([^}]*)\}/.exec(css)?.[1] ?? "", /background:var\(--bg\)/, "the feed's top edge is the header's edge");
+	const phone = /@media \(max-width:900px\)\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
+	assert.match(phone, /header\{[^}]*flex-wrap:nowrap/, "title, pickers and buttons share one row");
+	assert.doesNotMatch(phone, /header>b\{[^}]*flex:1 1 100%/, "the title has no row of its own");
 });
