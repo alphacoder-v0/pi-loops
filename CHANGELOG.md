@@ -37,6 +37,10 @@ All notable changes to pi-loops are documented here. The format follows
   `2>/dev/null` and `2>&1`). Every other use is refused as before, also when the word is only
   text, as in `git log --grep=reboot`.
 
+- **A loop made without a name gets one.** `/cron add`, `cron_create` and the page's Watch flow
+  name it from the first words of its prompt (`check-new-issues`, then `check-new-issues-2`), so
+  you refer to it by a word and not by a 32-digit id. Loops that exist keep what they have.
+
 ## [0.24.2] - 2026-11-11
 
 Fixes from the 0.24.2 milestone and a review of what merged since 0.24.1: a path rule that never

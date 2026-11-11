@@ -156,7 +156,7 @@ A run writes into the conversation that created its loop only when there is some
   the project in the panel above the editor (`Runs`), the page lists the project's runs and rule results
   of the last day in its loop activity strip above the composer, and `/cron runs` has them all.
 
-A card is one line: `todo · 5s · $0.003 · 1 finding`, or `todo FAILED · 4s · <error>`; a loop with no name is labelled by the first 13 characters of its id (`cron-15c11c9f`), as every surface but `/cron`, `cron_list` and `inbox --json` labels it. It
+A card is one line: `todo · 5s · $0.003 · 1 finding`, or `todo FAILED · 4s · <error>`; a loop made without `--name` is named from the first words of its prompt (`check-new-issues`); an older loop that has no name is labelled by the first 13 characters of its id (`cron-15c11c9f`), as every surface but `/cron`, `cron_list` and `inbox --json` labels it. It
 is saved in the conversation, so a resumed conversation still shows how its loop started, and
 `/session-share` leaves it out. A run that was stopped (by a person, a quit or a restart) is not a
 failure and gets no card. When more than five carded runs finish between two looks at the run log,
