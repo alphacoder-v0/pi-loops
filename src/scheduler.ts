@@ -1264,7 +1264,9 @@ export class LoopScheduler {
 			warning: result.warning,
 			retries: result.retries,
 			compactions: result.compactions,
-			summary: previewRedacted(stripProtocolTags(result.text), 400) || undefined,
+			// What the run found, when it found something: the reply around the tags is the model signing
+			// off ("Filed as #220. Final state:"), which tells a person who reads the run nothing.
+			summary: previewRedacted(findings[0] ?? stripProtocolTags(result.text), 400) || undefined,
 			sessionId: result.sessionId,
 			sessionFile: result.sessionFile,
 			checker,

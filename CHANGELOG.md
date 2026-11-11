@@ -20,6 +20,9 @@ All notable changes to pi-loops are documented here. The format follows
   interruption, so its slot was given back and the same run started again on the next tick, with
   no backoff. Now the slot is spent, the failure streak rises, and three in a row back off. The
   loop's prompt also states the timeout.
+- **A run's summary says what it found.** The summary of a loop run that filed findings is now its
+  first finding. Before, it was the rest of the reply with the findings taken out, which was often
+  only a closing line such as "Filed as #220. Final state:". A run with no finding is unchanged.
 
 ## [0.24.2] - 2026-11-11
 
