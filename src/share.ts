@@ -9,7 +9,7 @@
  * taken back, so the summary comes first and the confirmation after it.
  */
 import { redact } from "./redact.ts";
-import { plural } from "./job-lines.ts";
+import { plural } from "./plural.ts";
 import { stamp } from "./schedule.ts";
 
 export interface ShareMessage {

@@ -45,10 +45,11 @@ import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
+import { plural } from "./plural.ts";
 import { openWhere, runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, type TurnMarks, closedConversation, markTurnEvent, openWindowPids, procStart, turnSinceOf } from "./lease.ts";
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
-import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, plural, queueLines, toolsCapNotice } from "./job-lines.ts";
+import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
@@ -1120,7 +1121,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const parts: string[] = [];
 		const n = scheduler.inbox.newCount();
 		const decisions = scheduler.inbox.decisionCount();
-		if (n > 0) parts.push(`Inbox: ${n} new${decisions ? ` (${decisions} decision${decisions === 1 ? "" : "s"})` : ""}`);
+		if (n > 0) parts.push(`Inbox: ${n} new${decisions ? ` (${plural(decisions, "decision")})` : ""}`);
 		// Machine-wide like the inbox count and the running list above it: one process owns the
 		// machine's clock, and a loop failing in another checkout is still this machine's automation
 		// going quiet.
@@ -1134,7 +1135,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const queued = here ? requests.list(here).filter((r) => r.kind === "input" && !executor.handedOver.has(r.id)).length : 0;
 		if (queued) parts.push(`queued ${queued}`);
 		const attention = mcpSources.filter((s) => s.status.state === "disconnected" || s.status.state === "auth_failed").length;
-		if (attention) parts.push(`mcp: ${attention} source${attention === 1 ? "" : "s"} down`);
+		if (attention) parts.push(`mcp: ${plural(attention, "source")} down`);
 		const paused = hostPauseReason();
 		if (paused && hostHasWork()) parts.push(`loops paused: ${paused}`);
 		else if (hostState?.kind === "channel-broken") parts.push(HOST_STATE_BADGE["channel-broken"]);
@@ -1322,7 +1323,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						for (const row of targets) requests.append(cancelRow(sessionId, { id: row.id }, "window", createdBy()));
 						const result = await drainRequests();
 						const gone = targets.filter((row) => result?.removed.includes(row.id)).length;
-						ctx.ui.notify(gone === targets.length ? `cancelled ${gone} queued item${gone === 1 ? "" : "s"}` : `cancelled ${gone} of ${targets.length}; the rest are handed to pi already (Esc stops the turn) or are for the window that has this conversation to cancel`, "info");
+						ctx.ui.notify(gone === targets.length ? `cancelled ${plural(gone, "queued item")}` : `cancelled ${gone} of ${targets.length}; the rest are handed to pi already (Esc stops the turn) or are for the window that has this conversation to cancel`, "info");
 						refreshBadge();
 						return;
 					}
@@ -1618,7 +1619,7 @@ export default function piLoops(pi: ExtensionAPI) {
 								const who = job ? "" : `${r.jobName ?? r.jobId} `;
 								const cost = r.usage?.cost ? ` $${r.usage.cost.toFixed(3)}` : "";
 								const chk = r.checker ? (r.checker.ok ? `, checker kept ${r.checker.kept}/${r.checker.kept + r.checker.dropped.length + r.checker.unreviewed}` : ", checker FAILED") : "";
-								const tail = r.ok ? `${r.findings} finding${r.findings === 1 ? "" : "s"}${chk}${r.stateUpdated ? ", state updated" : ""}` : r.stoppedBy === "person" ? `stopped by you ${r.stoppedFrom === "page" ? "from the page" : "from a terminal"}` : r.aborted ? "stopped" : `FAILED: ${previewRedacted(r.error ?? "?", 80)}`;
+								const tail = r.ok ? `${plural(r.findings, "finding")}${chk}${r.stateUpdated ? ", state updated" : ""}` : r.stoppedBy === "person" ? `stopped by you ${r.stoppedFrom === "page" ? "from the page" : "from a terminal"}` : r.aborted ? "stopped" : `FAILED: ${previewRedacted(r.error ?? "?", 80)}`;
 								return `${String(i + 1).padStart(2)}. ${formatLocal(Date.parse(r.startedAt))} ${who}${secs}s${cost} · ${tail}${r.sessionFile ? "" : " (no transcript)"}`;
 							}),
 							job ? `transcript: /cron trace ${job.name ?? job.id} <k>` : "transcript: /cron trace <job> <k>",
@@ -2039,7 +2040,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						}
 						const lines = inboxLines(entries, true);
 						const elsewhere = all.length - entries.length;
-						if (elsewhere) lines.push(`+ ${elsewhere} finding${elsewhere === 1 ? "" : "s"} in other projects — /inbox --all`);
+						if (elsewhere) lines.push(`+ ${plural(elsewhere, "finding")} in other projects — /inbox --all`);
 						const decisions = entries.filter((e) => e.kind === "checkpoint").length;
 						show(ctx, `Inbox (${where}, ${entries.length} new${decisions ? `, ${decisions} need${decisions === 1 ? "s" : ""} a decision` : ""}, times ${localOffset(Date.now())}):`, lines);
 						markSeenIfShown(everywhere);
@@ -2210,7 +2211,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const here = all.filter((r) => sameProject(r.cwd, session.cwd));
 						const elsewhere = all.length - here.length;
 						const lines = here.length ? ruleLines(here, true) : ["none"];
-						if (elsewhere) lines.push(`  + ${elsewhere} rule${elsewhere === 1 ? "" : "s"} in other projects — /triggers rules --all`);
+						if (elsewhere) lines.push(`  + ${plural(elsewhere, "rule")} in other projects — /triggers rules --all`);
 						if (rest.trim() === "--all") {
 							show(ctx, `Dynamic trigger rules (this machine, ${all.length}):`, all.length ? ruleLines(all, false) : ["none"]);
 							return;

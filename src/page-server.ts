@@ -36,6 +36,7 @@ import { conversationLabel } from "./session-head.ts";
 import { pidAlive, withFileLockSync } from "./lock.ts";
 import { asleepNote, type OwnerView, runsSomewhere, whereRuns } from "./job-owner.ts";
 import { loopLabel, snapshotLoopLabel } from "./job-lines.ts";
+import { plural } from "./plural.ts";
 import {
 	type ChildPool,
 	type ChildView,
@@ -1007,8 +1008,7 @@ export function renderHostPage(s: HostStatus): string {
 	const snap = s.snapshot;
 	/** A stamp as the page's clock writes it (CLOCK_SCRIPT); the stamp itself until then. */
 	const time = (iso: unknown) => `<time datetime="${e(iso)}">${e(iso)}</time>`;
-	const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
-	const since = ({ sinceYouLooked: y }: SessionRow) => (y.runs === 0 && y.findings === 0 ? "—" : `${count(y.runs, "run")}${y.failed ? `, ${y.failed} failed` : ""}, ${count(y.findings, "finding")}${y.mine && y.mine !== y.findings ? `, ${y.mine} from this conversation` : ""}`);
+	const since = ({ sinceYouLooked: y }: SessionRow) => (y.runs === 0 && y.findings === 0 ? "—" : `${plural(y.runs, "run")}${y.failed ? `, ${y.failed} failed` : ""}, ${plural(y.findings, "finding")}${y.mine && y.mine !== y.findings ? `, ${y.mine} from this conversation` : ""}`);
 	// A title and a path are what someone typed or named: drawn as text, as the page's list draws them.
 	const rows = s.sessions.map((row) => `<tr><td>${e(plainText(conversationLabel(row.sessionId, row.title)))}</td><td>${e(plainText(row.cwd ?? "—"))}</td><td>${e(openIn(row.holder))}</td><td>${e(row.plainJobs)}</td><td>${e(row.rules)}</td><td>${e(row.mailbox)}</td><td>${e(since(row))}</td></tr>`).join("");
 	const table = `<div class="scroll"><table><thead><tr><th>conversation</th><th>project</th><th>where</th><th>loops</th><th>rules</th><th>waiting</th><th>since you looked</th></tr></thead><tbody>${rows}</tbody></table></div>`;
@@ -1074,7 +1074,8 @@ const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 
 /**
  * Whether `args` carry `-e <path>`, `--extension <path>` or `--extension=<path>` naming this
- * package: its root, or the entry file package.json names. A relative path is read from `base`.
+ * package: its root, or its entry file `src/extension-entry.ts` (package.json `pi.extensions`). A
+ * relative path is read from `base`.
  */
 function loadsPiLoops(args: readonly string[], base: string): boolean {
 	const ours = [PACKAGE_ROOT, path.join(PACKAGE_ROOT, "src", "extension-entry.ts")].map(realpathish);

@@ -9,7 +9,7 @@
  *   pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]
  */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { plural } from "./job-lines.ts";
+import { plural } from "./plural.ts";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";

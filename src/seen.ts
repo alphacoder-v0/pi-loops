@@ -5,7 +5,7 @@ import { Inbox, type InboxEntry } from "./inbox.ts";
 import { stamp } from "./schedule.ts";
 import { JobStore, type RunRecord } from "./store.ts";
 import { realpathish, sameProject } from "./paths.ts";
-import { plural } from "./job-lines.ts";
+import { plural } from "./plural.ts";
 
 /**
  * When `/inbox` was last looked at, per project: the terminal's `/inbox`, and the page's Mark all
