@@ -7,6 +7,12 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Fixed
 
+- **The page says what failed.** A reply whose model call failed is an error row with the reason,
+  and pi's retries count on that row. While pi-loops does not answer, one line says "pi-loops
+  stopped or cannot be reached. Reconnecting…", the page keeps what it showed, and send and the
+  buttons that post to pi-loops are off until it answers again. A loop that failed three or more
+  times in a row says `failing ×N` on its card and is listed under Needs you. A send takes the
+  conversation to its end.
 - **A loop can ask you to decide.** A loop's prompt now shows the shape of a finding that needs a
   person (`<the decision> · waits: … · if not: …`), which the inbox shows as a decision card, and
   the caps of 16 findings per run and 500 characters each. Before, only recipe playbooks taught the

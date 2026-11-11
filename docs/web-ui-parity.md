@@ -100,7 +100,29 @@ weaker, and worth converting whenever one of them breaks.
       place while a turn runs*; `test/web.test.ts`: *the run button sends pi the job's run command, and refuses an id
       it cannot use* (which also posts the abort route).
 - [x] Busy, queued count, and "pi exited" are all visible without opening a terminal.
-      `test/web-page.test.ts`: *a tool call and a dead pi both reach the page*.
+      `test/web-page.test.ts`: *a tool call and a dead pi both reach the page*. A pi that stopped
+      with nothing on its stderr says "it stopped without saying why", and names no terminal.
+      `test/web-page.test.ts`: *a pi that stopped by itself says so without naming a terminal*.
+- [x] A reply whose model call failed is an error row with pi's reason ("Connection error."), as it
+      happens and after a reload. pi tries a failed call again; each try that fails with the same
+      reason counts on the same row ("Connection error. (tried 4 times)"), and a different reason,
+      or a failure after another message, is a row of its own. After a reload the row shows as many
+      tries as pi keeps on the conversation's branch. `test/web-page.test.ts`: *a reply the model
+      call failed on is one error row with the reason, live and from the transcript, and its
+      retries count on that row*.
+- [x] While pi-loops does not answer (it stopped, or the connection dropped), one line above the
+      composer says "pi-loops stopped or cannot be reached. Reconnecting…", and the status chip and
+      the status bar say "reconnecting…". The loops, the cards and the conversation list stay as
+      they were. Send, a card's buttons, a loop row's buttons and a starter's Add are off, and
+      Enter sends nothing and keeps the text. When pi-loops answers again, the line goes and
+      everything is on again, with no reload. A pi that pi-loops itself stopped is not an error row
+      in the conversation. `test/web-page.test.ts`: *while pi-loops does not answer the page says so
+      once, keeps what it had and turns off what posts to it; it comes back without a reload*;
+      `test/page-children.test.ts`: *a pi that pi-loops stops tells its page the stop was asked
+      for*.
+- [x] A send takes the conversation to its end, wherever it was scrolled to.
+      `test/web-page.test.ts`: *a send takes the conversation to its end, wherever it was scrolled
+      to*.
 - [x] Prompt history: ArrowUp and ArrowDown, but only while the caret is on the first or last line,
       so they still navigate a multi-line draft. `test/web-page.test.ts`: *prompt history recalls what
       was sent, and steps aside on a middle line*.
@@ -244,6 +266,14 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Jobs, loops and rules: what they are, whether they are enabled, and what the last error was.
       A disabled card says `disabled` in words, as `/cron` does, as well as being drawn faint.
       `test/web-page.test.ts`: *a disabled job or rule says so in words, not only by being faint*.
+- [x] A loop that failed three or more times in a row says `failing ×N` beside its schedule, and is
+      listed under **Needs you** above the conversations, for the project the list shows. The
+      server decides which loops count, with the rule `/cron` and the Background view use
+      (`src/job-health.ts`); the page only draws it. `test/web-page.test.ts`: *a loop the server
+      calls failing says failing ×N on its card and is listed under Needs you*;
+      `test/page-server.test.ts`: *a loop that counts as failing carries its streak on its row and
+      is listed by GET /inbox for its project; a disabled one, one below the threshold and another
+      project's are not*.
 - [x] **What this project has is what this project has, and the rest is counted rather than
       dropped.** The store is machine-wide and this list is not, so a job made in another directory
       says so as a count — without it, a job somewhere else is indistinguishable from a job that is

@@ -47,7 +47,7 @@ const api = (p, b) => {
 				: { method: "POST", headers: { "x-pi-web-token": TOKEN, "content-type": "application/json" }, body: JSON.stringify(b) },
 		);
 	// Sent at once when the token is here, so a request leaves in the order it was made.
-	return (TOKEN ? send() : tokenReady.then(send)).then((r) => r.json()).catch((e) => ({ success: false, error: String(e) }));
+	return (TOKEN ? send() : tokenReady.then(send)).then((r) => r.json()).catch((e) => ({ success: false, error: String(e), unreachable: true }));
 };
 // Opened at the bare address, or with a spent open key, pairing code or token in the query: show
 // this conversation's own address, which a reload or a bookmark comes back to.
@@ -59,6 +59,8 @@ const STREAM_PARK_MS = 15000;
 /** How long a send may take before the page says that it is taking long. */
 const SEND_WATCHDOG_MS = 6000;
 let state = {}, cwd = "", busy = false, atBottom = true, takesImages = true;
+/** pi-loops did not answer the last poll: the page keeps what it had, says so once, and sends nothing. */
+let down = false;
 /** Installed once the stream is up; until then a poll has nothing to compare against. */
 let checkStream;
 
@@ -670,7 +672,22 @@ function stamp(el) {
   return el;
 }
 
+/**
+ * A reply the model call failed on, as pi saved it: one error row. pi tries a failed call again and
+ * saves each try, so the tries that follow with the same error count on that row.
+ */
+let failed;
+function failedReply(why) {
+  const text = plain(str(why)) || "the model call failed";
+  if (failed && failed.text === text) {
+    failed.el.textContent = text + " (tried " + ++failed.tries + " times)";
+    return;
+  }
+  const el = row("err", "error", text);
+  failed = { el, text, tries: 1 };
+}
 function row(cls, role, text) {
+  failed = undefined;
   const el = document.createElement("div");
   el.className = "row " + cls;
   const b = document.createElement("span");
@@ -975,6 +992,8 @@ function handle(ev) {
       break;
     case "pi_exit": {
       busy = false;
+      // pi-loops stopped this pi itself (it is stopping, or the pi sat idle): not a fault to report.
+      if (ev.asked) { setStatus(); break; }
       statusEl.textContent = "pi exited";
       // The reason belongs on the page. Anything else means reading a terminal you may have opened
       // this window precisely to avoid.
@@ -985,7 +1004,7 @@ function handle(ev) {
         pre.textContent = plain(capped(why, 4000));
         el.parentElement.append(pre);
       } else {
-        el.textContent = "it stopped without saying why; the terminal that started this has its output";
+        el.textContent = "it stopped without saying why";
       }
       scroll();
       break;
@@ -1015,6 +1034,9 @@ function alreadyDrawn(text) {
 const drawnViews = new Set();
 function renderMessage(message, fromStream) {
   if (!message) return;
+  // A try that failed after it said something is a row of its own, under what it said.
+  const fail = message.role === "assistant" && message.stopReason === "error";
+  if (!fail || (message.content || []).length) failed = undefined;
   if (message.role === "pi-loops:view") {
     // A run card, or a view a terminal wrote (/cron, /inbox): one notice, as text. Once by its entry
     // id: a card saved while /history was read is in the transcript and arrives as an event too.
@@ -1089,6 +1111,7 @@ function renderMessage(message, fromStream) {
       else if (c.type === "toolCall") toolRow(c.name, c.arguments, c.id).state.textContent = "";
     }
   }
+  if (fail) failedReply(message.errorMessage);
 }
 
 /** What pi itself still holds (a slash command or template typed while busy): listed after the rows, labelled "pi". */
@@ -1103,10 +1126,11 @@ function setStatus() {
   qe.hidden = !q;
   qe.textContent = "queued " + q + " ✕";
   qe.onclick = () => api("/queue/clear", {}).then(refresh);
-  statusEl.textContent = busy ? "working…" : "";
+  statusEl.textContent = down ? "reconnecting…" : busy ? "working…" : "";
   // One slot: stop while a turn runs, send otherwise. Enter still queues during a turn.
   $("stop").hidden = !busy;
   $("send").hidden = busy;
+  $("send").disabled = down;
   // Nothing to undo, compact or go back from in a conversation nothing was said in yet.
   const empty = !busy && !state.messageCount;
   for (const id of ["undo", "compact", "resume"]) $(id).hidden = empty;
@@ -1240,6 +1264,7 @@ function rowButton(label, primary, onclick, act) {
   if (act) b.dataset.act = act;
   if (primary) b.className = "primary";
   b.textContent = label;
+  b.disabled = down;
   b.onclick = (e) => {
     // The row sits in the card's summary: a click on its buttons is not a click on the card.
     e.preventDefault(); e.stopPropagation();
@@ -1360,8 +1385,10 @@ function renderSidebar(s) {
       const fired = [j.lastFiredAt ? "last fired " + safeText(clock(j.lastFiredAt)) : "", j.skippedOverlap ? "skipped overlaps " + num(j.skippedOverlap) : ""].filter(Boolean).join(" · ");
       html += '<details class="card job' + (j.enabled ? "" : " off") + '" data-key="job:' + safeText(j.id) + '">' +
         '<summary><span class="t"><span class="nm"><b>' + safeText(j.label || j.name || j.id) + "</b>" +
-        '<span class="m">' + safeText(j.schedule) + (j.stateful ? "" : " · in its conversation") + (j.enabled ? "" : " · disabled") + "</span></span>" +
-        '<button data-run="' + safeText(j.id) + '">run</button></span>' +
+        '<span class="m">' + safeText(j.schedule) + (j.stateful ? "" : " · in its conversation") + (j.enabled ? "" : " · disabled") +
+        // Decided by the server, with the rule /cron and the Background view use (src/job-health.ts).
+        (num(j.failing) ? ' · <span class="bad">failing ×' + num(j.failing) + "</span>" : "") + "</span></span>" +
+        '<button data-run="' + safeText(j.id) + '"' + (down ? " disabled" : "") + ">run</button></span>" +
         (named ? "" : '<span class="m peek">' + prompt + "</span>") +
         // A run pi-loops holds has its own line, with Stop this run, under the card's name.
         runsLine(j) +
@@ -1646,8 +1673,26 @@ function renderRuntime(rt, auto) {
   };
 }
 
+/** pi-loops stopped answering, or answers again: every button that posts to it is drawn again, off or on. */
+function setDown(now) {
+  if (down === now) return;
+  down = now;
+  setStatus();
+  drawFrame(state);
+  // The line takes room from the conversation: its end stays in view.
+  if (atBottom) feed.scrollTop = feed.scrollHeight;
+  drawInbox();
+  drawStarters();
+  if (state.automation) renderSidebar(state);
+  if (!down) refreshList().catch(() => {});
+}
+
 async function refresh() {
-  state = await api("/state");
+  const s = await api("/state");
+  // No answer is not a state: what is on the screen stays, and the page asks again on its poll.
+  if (s.unreachable) return setDown(true);
+  state = s;
+  setDown(false);
   checkStream?.(state);
   checkAge(state);
   cwd = state.cwd || "";
@@ -1818,7 +1863,7 @@ $("composer").onsubmit = async (e) => {
   e.preventDefault();
   const input = $("input");
   let text = input.value.trim();
-  if (!text && !images.length) return;
+  if ((!text && !images.length) || down) return;
   input.value = ""; hidePop(); saveDraft(); autoGrow();
   if (text) { sentPrompts.push(text); if (sentPrompts.length > 200) sentPrompts.shift(); }
   promptIdx = -1;
@@ -1827,6 +1872,9 @@ $("composer").onsubmit = async (e) => {
   // is not given a message it would carry nowhere.
   if (pageCommand(text)) return;
   saidFirst(text);
+  // What you send is what you look at next, wherever you had scrolled to.
+  atBottom = true;
+  scroll();
   // '/session export|import' are the archive commands here. pi's own '/session' is a terminal
   // command that does not exist over rpc, so the two-word spelling is free to mean the extension's.
   text = text.replace(/^\/session\s+(export|import)\b/i, (_m, sub) => "/session-" + sub.toLowerCase());
@@ -2598,6 +2646,7 @@ let listAnswer, listAt = 0, listCwd;
  */
 const convRows = [];
 let focusAt = 0;
+const DOWN_LINE = "pi-loops stopped or cannot be reached. Reconnecting…";
 const HELD_LINE = "Your terminal has this conversation. What you send here is answered there.";
 const BESIDE_LINE = "A terminal has this conversation open, and this page's pi has no pi-loops: what you send here is answered here, beside the terminal.";
 const PLACEHOLDER = $("input").placeholder || "Message pi";
@@ -2792,7 +2841,8 @@ async function refreshList() {
   try {
     body = await fetch("/conversations" + q, { headers: { "x-pi-web-token": TOKEN } }).then((r) => r.json());
   } catch (e) {
-    return drawListError(String(e && e.message ? e.message : e));
+    // No answer at all: the line above the composer says so, and the last list stays.
+    return;
   }
   if (!body || !Array.isArray(body.rows)) return drawListError(body && body.error);
   listAnswer = body;
@@ -2893,6 +2943,7 @@ function inboxButton(label, act, primary) {
   b.dataset.act = act;
   if (primary) b.className = "primary";
   b.textContent = label;
+  b.disabled = down;
   return b;
 }
 
@@ -3033,8 +3084,16 @@ function drawInbox() {
     const d = inboxDone.get(c.id);
     slot.append(inboxCardEl(c, d && d.line));
   };
-  if (decisions.length) group("Needs you");
+  const failing = (Array.isArray(a.failing) ? a.failing : []).filter((f) => f && typeof f === "object");
+  if (decisions.length || failing.length) group("Needs you");
   decisions.forEach(add);
+  for (const f of failing) {
+    const card = textEl("article", "icard", "");
+    const head = textEl("div", "ih", "");
+    head.append(textEl("b", "", f.label), textEl("span", "bad", "failing ×" + num(f.streak)));
+    card.append(head);
+    slot.append(card);
+  }
   slot = $("cardsSlot");
   if (news.length) group("News");
   (newsOpen ? news : news.slice(0, NEWS_SHOWN)).forEach(add);
@@ -3261,7 +3320,7 @@ function drawStarters() {
   const slot = $("startersSlot");
   const list = offeredStarters();
   const held = terminalHolds();
-  const print = list.length ? JSON.stringify([list, held, [...starterBusy], [...starterLine]]) : "";
+  const print = list.length ? JSON.stringify([list, held, [...starterBusy], [...starterLine], down]) : "";
   if (print === startersDrawn) return;
   startersDrawn = print;
   slot.innerHTML = "";
@@ -3297,7 +3356,7 @@ function drawStarters() {
     } else {
       const busy = starterBusy.has(s.name);
       const add = inboxButton(busy ? "Adding…" : "Add", "add", true);
-      add.disabled = busy;
+      add.disabled = busy || down;
       add.onclick = () => void addStarter(s.name).catch(() => {});
       acts.append(add);
     }
@@ -3404,18 +3463,19 @@ function drawFrame(s) {
   const held = terminal && h.piLoops !== false;
   const beside = terminal && h.piLoops === false;
   const line = $("held");
-  line.hidden = !held && !beside;
+  line.hidden = !held && !beside && !down;
   line.innerHTML = "";
-  if (held) line.append(spanOf("", "⌨"), spanOf("", HELD_LINE));
+  if (down) line.append(spanOf("", DOWN_LINE));
+  else if (held) line.append(spanOf("", "⌨"), spanOf("", HELD_LINE));
   // A terminal says on its lease when a turn started; the page reads the file again when it ends.
   if (held && h.turnSince && Number.isFinite(Date.parse(h.turnSince))) line.append(spanOf("", "· answering since " + clock(h.turnSince)));
   else if (beside) line.append(spanOf("", "⌨"), spanOf("", BESIDE_LINE));
   $("input").placeholder = held ? "Message (answered in your terminal)…" : PLACEHOLDER;
   const a = s.automation || {};
-  const up = !!a.installed && a.hostPid !== undefined && a.hostPid !== null;
+  const up = !down && !!a.installed && a.hostPid !== undefined && a.hostPid !== null;
   const host = $("sbHost");
   host.innerHTML = "";
-  host.append(spanOf("st " + (up ? "up" : "down")), spanOf("", up ? "pi-loops running in the background" : a.paused ? "loops and checks are paused: " + plain(str(a.paused)) : "pi-loops is not running"));
+  host.append(spanOf("st " + (up ? "up" : "down")), spanOf("", up ? "pi-loops running in the background" : down ? "reconnecting…" : a.paused ? "loops and checks are paused: " + plain(str(a.paused)) : "pi-loops is not running"));
   drawTitle();
   // Who holds the conversation decides whether a starter's Add runs here or names the terminal command.
   drawStarters();
@@ -4109,6 +4169,8 @@ $("watchText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.
     };
     source.onerror = () => {
       statusEl.textContent = "reconnecting…";
+      // The stream broke: ask now whether pi-loops still answers, not at the next poll.
+      refresh().catch(() => {});
       if (es !== source || source.readyState !== 2) return;
       es = undefined;
       setTimeout(() => openStream().catch(() => {}), 3000);

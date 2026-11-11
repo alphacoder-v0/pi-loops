@@ -102,6 +102,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .icard .why[hidden]{display:none}
 .icard button{min-height:32px;padding:4px 10px;font-size:var(--fs-sm);border-radius:8px;max-width:100%}
 .icard button:disabled{opacity:.45;cursor:default}
+#send:disabled,#auto button:disabled{opacity:.45;cursor:default}
 .icard button:disabled:not(.primary):hover{background:transparent;color:var(--muted)}
 .icard button.primary:disabled:hover{background:var(--brand);color:var(--brand-ink);filter:none}
 .icard input{flex:1 1 12rem;min-width:0;min-height:32px;border:1px solid var(--line);border-radius:8px;padding:4px 8px;background:var(--panel);color:var(--fg);font:inherit}

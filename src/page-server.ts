@@ -22,6 +22,7 @@ import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseSt
 import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom, machineWide } from "./activity.ts";
 import { formatSchedule, scheduleWords, stamp } from "./schedule.ts";
 import { type Look, lookLine, watchOf } from "./path-precheck.ts";
+import { failingJobs } from "./job-health.ts";
 import { loopSignal, type LoopSignal, SIGNAL_WINDOW_MS } from "./job-signal.ts";
 import { applyTune, rowSignal, scheduleAudit, suggestTune } from "./job-tune.ts";
 import { HELD_READ_MAX_BYTES } from "./held-read.ts";
@@ -1264,6 +1265,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			prompt: maskSecrets(j.prompt),
 			runCount: j.runCount ?? 0,
 			lastError: maskSecrets(j.lastError),
+			// The streak, only for a loop that counts as failing by the rule `/cron` and the Background view use.
+			failing: failingJobs([j])[0]?.consecutiveFailures,
 			running: !!j.running,
 			// The run Stop this run names: the whole id, which the page posts back as it is.
 			// Only a run pi-loops in the background holds (a loop's run, a held turn) can be stopped from
@@ -1908,8 +1911,10 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		} catch (err: any) {
 			opts.log(`pi-loops web: away summary: ${err?.message ?? err}`);
 		}
+		// The loops of this project that count as failing: listed with the decisions, under Needs you.
+		const failing = failingJobs(objectsIn(readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs).filter((j) => !cwd || sameAsked(String(j.cwd ?? ""), cwd))).map((j) => ({ id: j.id, label: loopLabel({ id: j.id, name: typeof j.name === "string" ? j.name : undefined }), streak: j.consecutiveFailures }));
 		const offer = cwd && here ? startersFor(cwd, leaseOf(here)?.cwd ?? conversationThere(here)?.cwd) : undefined;
-		return { status: 200, body: { cwd: cwd ?? null, cards: shown, more: cards.length - shown.length, handled, elsewhere: fresh.length - scoped(fresh).length, chips: DISMISS_CHIPS, away, ...(offer ? { starters: offer } : {}) } };
+		return { status: 200, body: { cwd: cwd ?? null, cards: shown, more: cards.length - shown.length, handled, elsewhere: fresh.length - scoped(fresh).length, chips: DISMISS_CHIPS, away, failing, ...(offer ? { starters: offer } : {}) } };
 	}
 
 	/** The packaged starters, read once: they are files this package ships. */
