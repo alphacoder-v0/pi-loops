@@ -261,9 +261,3 @@ export function evaluationApplies(current: GoalState | undefined, pursued: GoalS
 	if (aborted) return false;
 	return !!current && current.status === "pursuing" && current.condition === pursued.condition;
 }
-
-/** One line for `/goal` and the panel. */
-export function goalLine(state: GoalState): string {
-	const iter = `${state.iterations}/${MAX_CONTINUATIONS}`;
-	return `${state.status} (${iter} continuations)${state.lastReason ? `: ${state.lastReason}` : ""}`;
-}

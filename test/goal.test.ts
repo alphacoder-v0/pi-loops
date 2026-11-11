@@ -8,7 +8,7 @@ import { TriggerStore } from "../src/triggers.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, drain, enqueue, goalRow } from "../src/engine.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
-import { GOAL_ENTRY, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPending, continuationPrompt, evaluationApplies, evaluatorPrompt, goalActive, goalLine, goalPursued, judgeCaughtUp, settledTurn, latestGoal, newGoal, parseDecision, pauseFor, resumeGoal, transcriptFromMessages } from "../src/goal.ts";
+import { GOAL_ENTRY, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPending, continuationPrompt, evaluationApplies, evaluatorPrompt, goalActive, goalPursued, judgeCaughtUp, settledTurn, latestGoal, newGoal, parseDecision, pauseFor, resumeGoal, transcriptFromMessages } from "../src/goal.ts";
 
 test("the evaluator's decision drives the turn, with a budget and pause-on-failure", () => {
 	let state = newGoal("the test suite passes");
@@ -111,7 +111,6 @@ test("the evaluator prompt carries its contract, the condition and the transcrip
 	assert.match(p, /Goal condition:\nship it/);
 	assert.match(p, /Conversation transcript:\nuser: hello/);
 	assert.match(continuationPrompt("c", "r"), /Goal condition:\nc/);
-	assert.match(goalLine(newGoal("x")), /pursuing \(0\/8 continuations\)/);
 });
 
 test("subcommands are exact words; a condition that starts with one is still a condition", () => {
