@@ -86,7 +86,7 @@ function forcePushMain(command: string): boolean {
  * They run against a *dequoted* copy of the command (see `dequote`), because `su''do` and
  * `sh""utdown` are the same program to a shell and no word-boundary rule survives them.
  */
-const PATTERNS: Array<[label: string, re: RegExp | ((command: string) => boolean)]> = [
+const PATTERNS: Array<[label: string, re: RegExp | ((scanned: string, command: string) => boolean)]> = [
 	["sudo invocation", /\b(sudo|doas|pkexec)\b/],
 	// Stopping at the first pipe is not enough; a command can reach a shell through any number of them.
 	["curl/wget piped into a shell", curlIntoShell],
@@ -94,12 +94,66 @@ const PATTERNS: Array<[label: string, re: RegExp | ((command: string) => boolean
 	["mkfs / format command", /\bmkfs(\.|\s)/],
 	// Requiring 777 immediately after chmod misses any flag (-R) walks past it.
 	["chmod 777 on an absolute path", chmod777Absolute],
-	["shutdown / reboot / halt", /\b(shutdown|reboot|halt|poweroff)\b/],
+	["shutdown / reboot / halt", powersOff],
 	// Matching only `--force`/`-f` misses `+main`, which is the same thing through a refspec.
 	["git push --force on main/master", forcePushMain],
 	["piping or substituting into eval", /(\|\s*eval\b|\beval\s+["'`]?\$\()/],
 	[":(){:|:&};: forkbomb", /:\(\)\s*\{\s*:\|:&\s*\}\s*;\s*:/],
 ];
+
+const POWER_OFF = /\b(shutdown|reboot|halt|poweroff)\b/;
+/** The only programs a search may start a command with. None of them runs a program or writes a file, whatever its arguments, but for `SEARCH_RUNS`. */
+const SEARCH_PROGRAMS = new Set(["grep", "egrep", "fgrep", "rg", "cat", "wc", "head", "tail", "cut", "tr", "cd", "ls"]);
+/** The options that make `rg` run a program it is handed: `--pre` (not `--pretty`) and `--hostname-bin`. */
+const SEARCH_RUNS = /--pre(?![a-z])|--hostname-bin/;
+/** Shell syntax a search does not need: grouping, a function, an expansion, a redirection, an escape, a second line. */
+const NOT_A_SEARCH = /[(){}`$<>\\\n\r]/;
+
+/**
+ * Whether `shutdown`, `reboot`, `halt` or `poweroff` is in a place where the shell may run it. Fail
+ * closed: the word is refused wherever it appears, since a parse for the command position misses a
+ * wrapper (`timeout 5 reboot`, `xargs reboot`, `ssh host reboot`, `sh -c reboot`). The one exception
+ * is a search (`isSearch`), such as `grep -rn shutdown src/ | wc -l`.
+ * Known gap, as before this exception: a word the shell builds (`re"boot"`).
+ */
+function powersOff(scanned: string, command: string): boolean {
+	return POWER_OFF.test(scanned) && !isSearch(command);
+}
+
+/**
+ * Whether `command` is one line of `SEARCH_PROGRAMS` commands joined by `|`, `&&`, `||` or `;`, and
+ * nothing else. It shares no helper with the other rules, so that this argument is the whole of it:
+ *
+ * 1. Without the words `2>/dev/null` and `2>&1`, the command has no character of `NOT_A_SEARCH`. So
+ *    the shell substitutes nothing, groups nothing, defines no function, writes no file, and a quote
+ *    is `'…'` or `"…"` with a body that is only text.
+ * 2. Each quote is closed and its body is set aside. Only `|`, `&&`, `||` and `;` are left to start a
+ *    command, and a `&` that is left is refused.
+ * 3. The first word of each command, cut at a space or a tab as the shell cuts it, is the bare name
+ *    of a `SEARCH_PROGRAMS` program: no path, no `VAR=` before it, no quote in it. Every other word
+ *    is an argument to that program, and no option in `SEARCH_RUNS` is among them, quoted or not.
+ *
+ * A text after `#` is read as a command here and as a comment by the shell, which only refuses more.
+ * A glob can become an option only through a file that has the name of the option (`--pre`), and a
+ * run that can make that file can make a script and run it with no exception at all.
+ */
+function isSearch(command: string): boolean {
+	const line = command.replace(/(^|[ \t])2>(\/dev\/null|&1)(?=[ \t]|$)/g, " ");
+	if (NOT_A_SEARCH.test(line) || SEARCH_RUNS.test(line.replace(/["']/g, ""))) return false;
+	let bare = ""; // the line with one quote character in place of each quoted string
+	for (let i = 0; i < line.length; i++) {
+		const c = line[i];
+		if (c !== "'" && c !== '"') {
+			bare += c;
+			continue;
+		}
+		const close = line.indexOf(c, i + 1);
+		if (close === -1) return false;
+		bare += c;
+		i = close;
+	}
+	return bare.split(/&&|\|\||[|;]/).every((sub) => !sub.includes("&") && SEARCH_PROGRAMS.has(sub.replace(/^[ \t]+/, "").split(/[ \t]/)[0]));
+}
 
 /** A run stopping other runs, or every loop on the machine, is a person's call, not a loop's. */
 const PI_LOOPS_STOP = "pi-loops abort / stop / restart";
@@ -343,7 +397,7 @@ export function dangerousCommandReason(command: string, home: string = process.e
 	const trimmed = command.trim();
 	if (allow.some((a) => allows(a, trimmed))) return undefined;
 	const scanned = dequote(command);
-	for (const [label, re] of PATTERNS) if (typeof re === "function" ? re(scanned) : re.test(scanned)) return label;
+	for (const [label, re] of PATTERNS) if (typeof re === "function" ? re(scanned, command) : re.test(scanned)) return label;
 	if (stopsPiLoops(command)) return PI_LOOPS_STOP;
 	return rmRecursiveForceOnDangerousTarget(scanned, home || undefined);
 }

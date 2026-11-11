@@ -23,6 +23,13 @@ All notable changes to pi-loops are documented here. The format follows
 - **A run's summary says what it found.** The summary of a loop run that filed findings is now its
   first finding. Before, it was the rest of the reply with the findings taken out, which was often
   only a closing line such as "Filed as #220. Final state:". A run with no finding is unchanged.
+- **An unattended run can search for `shutdown`, `reboot`, `halt` and `poweroff`.** The
+  dangerous-command policy refused these words anywhere, so `grep -rn shutdown src/` was refused.
+  A one-line search is now allowed: each part between `|`, `&&`, `||` and `;` starts with `grep`,
+  `egrep`, `fgrep`, `rg`, `cat`, `wc`, `head`, `tail`, `cut`, `tr`, `cd` or `ls`, and the line has
+  no other shell syntax (no substitution, variable, grouping, backslash or redirection, but for
+  `2>/dev/null` and `2>&1`). Every other use is refused as before, also when the word is only
+  text, as in `git log --grep=reboot`.
 
 ## [0.24.2] - 2026-11-11
 
