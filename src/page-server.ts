@@ -60,7 +60,7 @@ import { awayIn, markProjectSeen, type SinceYouLooked } from "./seen.ts";
 import { listRecipes, type Starter, starters } from "./recipe.ts";
 import { newTraceId, TriggerStore } from "./triggers.ts";
 import { writeUiPref } from "./ui-prefs.ts";
-import { DOOR, ICON, PAGE } from "./web.mjs";
+import { DOOR, ICON, PAGE, readPage } from "./web.mjs";
 import { producerAlive } from "./window-executor.ts";
 
 export interface PageServerOptions {
@@ -2454,8 +2454,9 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			"x-pi-loops-web": "1",
 		});
 		const id = sessionId;
+		// PI_LOOPS_PAGE_DEV=1: the page as it is on disk now, so an edit shows on the next reload.
 		res.end(
-			PAGE.replace("__TOKEN__", () => (first ? TOKEN : ""))
+			(process.env.PI_LOOPS_PAGE_DEV === "1" ? readPage() : PAGE).replace("__TOKEN__", () => (first ? TOKEN : ""))
 				.replace("__DEVICE_SECRET__", () => secret ?? "")
 				.replace("__VERSION__", () => VERSION)
 				.replace("__SESSION__", () => id),

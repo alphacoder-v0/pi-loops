@@ -30,7 +30,7 @@ export const ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 51
 
 /* ------------------------------------------------------------------ the page */
 
-/** The page as it is on disk now. `PAGE` is this at import. */
+/** The page as it is on disk now. `PAGE` is this at import; with `PI_LOOPS_PAGE_DEV=1` the server reads it per request. */
 export function readPage() {
 	const css = fs.readFileSync(new URL("./web/page.css", import.meta.url), "utf8");
 	const script = fs.readFileSync(new URL("./web/page.js", import.meta.url), "utf8");
