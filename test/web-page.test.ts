@@ -13,7 +13,8 @@ import { type WatchPlan, askTitle, planCard, watchOptions } from "../src/watch-p
  * which never executes a line of the page — and so `num is not defined` shipped in four releases,
  * where it threw inside the first `refresh()`, killed the startup, and left the front end with no
  * EventSource at all: you could send a message and never see a reply. A parser (`node --check`)
- * cannot catch that, and the linter cannot see whether a name is defined.
+ * cannot catch that. The linter now finds a name that is never declared, but only this file runs
+ * the page.
  */
 /**
  * The page has two scripts: a short one in the head that applies the stored theme before the first
