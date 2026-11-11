@@ -76,6 +76,20 @@ const program = ts.createProgram(files, {
 });
 const checker = program.getTypeChecker();
 
+// The browser page's script (src/web/page.js) is plain JavaScript for a browser, not Node: a program
+// of its own, with the DOM's types. A checkout with no page (the linter's own tests) has none.
+const page = path.join(process.cwd(), "src", "web", "page.js");
+const pages = fs.existsSync(page) ? [page] : [];
+const pageProgram = ts.createProgram(pages, {
+	target: ts.ScriptTarget.ES2022,
+	allowJs: true,
+	checkJs: true,
+	noEmit: true,
+	skipLibCheck: true,
+	lib: ["lib.es2022.d.ts", "lib.dom.d.ts", "lib.dom.iterable.d.ts"],
+	types: [],
+});
+
 /* ---------------------------------------------------------------- rules */
 
 const problems = [];
@@ -176,10 +190,32 @@ for (const file of program.getSourceFiles()) {
 	visit(file);
 }
 
+/**
+ * A name the page uses and never declares. Nothing else sees it: the page is not type-checked, and
+ * `node --check` only parses. `num is not defined` shipped in four releases this way, and left the
+ * page with no stream. TypeScript reads the file as JavaScript, so its other complaints (properties
+ * of `any`-shaped JSON) are noise here; only "cannot find name" is a sure fault.
+ *
+ * floating-promise does not apply to the page: a rejection in a browser is a console line, not the
+ * end of pi.
+ */
+for (const pageFile of pages.map((p) => pageProgram.getSourceFile(p))) {
+	for (const d of pageProgram.getSemanticDiagnostics(pageFile)) {
+		if (d.code !== 2304 && d.code !== 2552) continue;
+		const { line, character } = pageFile.getLineAndCharacterOfPosition(d.start ?? 0);
+		problems.push({ file: path.relative(process.cwd(), page), line: line + 1, column: character + 1, rule: "undefined-name", message: ts.flattenDiagnosticMessageText(d.messageText, " ") });
+	}
+	const visitPage = (node) => {
+		checkSilentCatch(node);
+		ts.forEachChild(node, visitPage);
+	};
+	visitPage(pageFile);
+}
+
 /* ---------------------------------------------------------------- output */
 
 if (!problems.length) {
-	console.log(`lint: ${files.length} file(s), no problems`);
+	console.log(`lint: ${files.length + pages.length} file(s), no problems`);
 	process.exit(0);
 }
 for (const p of problems) console.error(`${p.file}:${p.line}:${p.column}  ${p.rule}  ${p.message}`);

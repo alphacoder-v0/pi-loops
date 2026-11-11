@@ -8,10 +8,11 @@ import { fileURLToPath } from "node:url";
 
 const LINT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "lint.mjs");
 
-function lint(source: string): { code: number; out: string } {
+function lint(source: string, page?: string): { code: number; out: string } {
 	const dir = tmp("pi-loops-lint-");
-	fs.mkdirSync(path.join(dir, "src"));
+	fs.mkdirSync(path.join(dir, "src", "web"), { recursive: true });
 	fs.writeFileSync(path.join(dir, "src", "probe.ts"), source);
+	if (page !== undefined) fs.writeFileSync(path.join(dir, "src", "web", "page.js"), page);
 	const r = spawnSync("node", [LINT], { cwd: dir, encoding: "utf8" });
 	return { code: r.status ?? -1, out: `${r.stdout}${r.stderr}` };
 }
@@ -80,4 +81,18 @@ test("a clean file passes", { timeout: 120_000 }, () => {
 `);
 	assert.equal(code, 0, out);
 	assert.match(out, /no problems/);
+});
+
+// The page is browser JavaScript that nothing type-checks: `num is not defined` shipped in four
+// releases. A rejection there does not end pi, so floating-promise is not asked of it.
+test("in the page script, a name never declared and an empty catch are found; a floating promise is not", { timeout: 120_000 }, () => {
+	const { code, out } = lint("export const fine = 1;\n", `const num = (v) => Number(v) || 0;
+num("1");
+numm("1");
+fetch("/state");
+try { JSON.parse("x"); } catch {}
+try { JSON.parse("x"); } catch { /* a bad line is skipped on purpose */ }
+`);
+	assert.equal(code, 1, out);
+	assert.deepEqual([...out.matchAll(/page\.js:(\d+):\d+\s+(\S+)/g)].map((m) => `${m[1]} ${m[2]}`), ["3 undefined-name", "5 silent-catch"], out);
 });

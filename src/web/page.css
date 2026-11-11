@@ -1,0 +1,532 @@
+/* tokens: */
+/* Inspire's palette. Three paper levels instead of borders (--bg, --panel, --panel2), one amber for
+   what you can act on (--brand), and colour for state only: a hue other than amber is a fault. Every
+   surface is stated, so the page looks the same on a machine whose default background is not white,
+   and dark is a design rather than an inversion of light. The Background view reads this block too. */
+:root{
+  color-scheme:light;
+  --bg:#f2f2f7;--nav:#f2f2f7;--panel:#ffffff;--panel2:#efeff4;--hover:rgb(118 118 128 / .08);--line:#d1d1d6;
+  --fg:#111111;--dim:#636366;--brand:#9a5500;--brand-ink:#ffffff;--brand-soft:rgb(154 85 0 / .1);
+  --ok:#3c3c43;--quiet:#aeaeb2;--bad:#b3261e;--bad-soft:rgb(179 38 30 / .08);--code:#f2f2f7;--shadow:rgb(0 0 0 / .08);
+  /* Two fonts, because there are two kinds of text here. Prose — what the model wrote, what you
+     wrote — reads better proportional, Chinese especially. Anything that came from a terminal or
+     has columns in it stays monospace, and that stack names CJK faces whose characters are exactly
+     twice the ASCII advance: without one, a box a terminal drew comes apart on the first Chinese
+     character. */
+  --font-ui:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Sarasa Mono SC","Noto Sans Mono CJK SC","Source Han Mono SC",monospace;
+}
+@media (prefers-color-scheme:dark){html:not([data-theme=light]){
+  color-scheme:dark;
+  --bg:#000000;--nav:#000000;--panel:#1c1c1e;--panel2:#2c2c2e;--hover:rgb(118 118 128 / .24);--line:#38383a;
+  --fg:#f2f2f7;--dim:#98989f;--brand:#ffb340;--brand-ink:#1c1200;--brand-soft:rgb(255 179 64 / .16);
+  --ok:#d1d1d6;--quiet:#636366;--bad:#ff8a80;--bad-soft:rgb(255 138 128 / .12);--code:#000000;--shadow:rgb(0 0 0 / .25);
+}}
+html[data-theme=dark]{
+  color-scheme:dark;
+  --bg:#000000;--nav:#000000;--panel:#1c1c1e;--panel2:#2c2c2e;--hover:rgb(118 118 128 / .24);--line:#38383a;
+  --fg:#f2f2f7;--dim:#98989f;--brand:#ffb340;--brand-ink:#1c1200;--brand-soft:rgb(255 179 64 / .16);
+  --ok:#d1d1d6;--quiet:#636366;--bad:#ff8a80;--bad-soft:rgb(255 138 128 / .12);--code:#000000;--shadow:rgb(0 0 0 / .25);
+}
+/* The names the page's rules were written with, each one of the tokens above. On the root, beside
+   the tokens, so each follows the scheme the root is in. --faint is label text, so it is --dim:
+   --quiet is too faint to read on --panel2 and is for dots only. */
+:root{--side:var(--panel);--field:var(--panel);--soft:var(--panel2);--ink:var(--fg);--muted:var(--dim);--faint:var(--dim);--line-strong:var(--line);--warn:var(--brand)}
+/* :tokens */
+:root{
+  /* One column of text, centred, however wide the window is: a 2000px line is not readable. The
+     composer uses the same figure so the two line up. */
+  --pad:max(16px,calc((100% - 58rem) / 2));
+}
+*{box-sizing:border-box}
+/* dvh, not vh: a phone's address bar slides away and 100vh keeps counting the space it used to
+   occupy, so the composer sits below the fold exactly when you are trying to type into it. */
+/* The frame: the rail, this project's conversations, the conversation, its loops; the status bar
+   under all four. The paper says where one ends and the next starts, not a border. */
+body{margin:0;height:100vh;height:100dvh;display:grid;grid-template-columns:56px 300px minmax(0,1fr) 290px;grid-template-rows:minmax(0,1fr) 30px;overflow:hidden;background:var(--bg);color:var(--ink);font:15px/1.62 var(--font-ui);-webkit-font-smoothing:antialiased}
+/* The loops rail given back to the conversation (the rail's Loops button, remembered). */
+body:has(#loops.hidden){grid-template-columns:56px 300px minmax(0,1fr)}
+/* A container, so the header can tell how wide the conversation is, whatever is beside it. */
+main{grid-column:3;grid-row:1;display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg);container-type:inline-size}
+
+#rail{grid-column:1;grid-row:1;background:var(--nav);display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0;min-height:0}
+#rail .logo{width:30px;height:30px;border-radius:8px;background:var(--brand);color:var(--brand-ink);display:grid;place-items:center;font:700 13px var(--font-mono);margin-bottom:8px}
+#rail button,#rail a{width:40px;height:40px;min-height:0;border:0;border-radius:8px;padding:0;background:transparent;color:var(--dim);display:grid;place-items:center;text-decoration:none}
+#rail button:hover,#rail a:hover{background:var(--hover);color:var(--fg)}
+#rail .on,#rail button[aria-expanded=true]{background:var(--brand-soft);color:var(--brand)}
+svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+
+#list{grid-column:2;grid-row:1;background:var(--panel);display:flex;flex-direction:column;min-width:0;min-height:0}
+.lhead{padding:12px 12px 10px;display:grid;gap:10px}
+.lrow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;min-width:0}
+.lrow>button{flex:1}
+#project{flex:1 1 100%;min-width:0;border:0;border-radius:8px;padding:6px 10px;font-weight:600;background:var(--panel2);color:var(--fg)}
+#project option{background:Canvas;color:CanvasText}
+#newConv{white-space:nowrap}
+.lscroll{overflow-y:auto;min-height:0;flex:1;padding:0 10px 16px;display:flex;flex-direction:column;gap:2px}
+#awaySlot:empty,#needsSlot:empty,#startersSlot:empty,#cardsSlot:empty,#activitySlot:empty{display:none}
+/* Loop activity: one line between the conversation and the composer, a list under it when opened.
+   Colour for state only: a failure is the error token, the rest is dim. Nothing scrolls sideways. */
+#activitySlot{flex:none;background:var(--panel2);font-size:12.5px;color:var(--dim);min-width:0;max-width:100%}
+#activitySlot .strip-head{display:flex;gap:6px;align-items:center;width:100%;min-height:32px;padding:4px 12px;border:0;border-radius:0;background:transparent;color:var(--dim);text-align:left;white-space:nowrap;overflow:hidden;min-width:0}
+#activitySlot .strip-head span{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:none}
+#activitySlot .strip-head span:first-child{flex:0 1 auto}
+#activitySlot .chev{margin-left:auto}
+#activitySlot .bad{color:var(--bad)}
+#activitySlot ul{list-style:none;margin:0;padding:0 12px 8px;max-height:40vh;overflow-y:auto;overflow-x:hidden;display:grid;gap:2px}
+#activitySlot li{display:flex;gap:6px;min-width:0;white-space:nowrap}
+#activitySlot li[data-inb]{cursor:pointer}
+#activitySlot li .t{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;color:var(--fg)}
+#activitySlot li.bad .t,#activitySlot li.bad .mark{color:var(--bad)}
+#activitySlot li .when{flex:none;font-variant-numeric:tabular-nums}
+#needsSlot,#cardsSlot{padding:6px 0;font-size:12.5px;color:var(--dim);display:grid;gap:6px;min-width:0}
+/* An inbox finding as a card: the second paper on the list's, no border; amber only on the flag and
+   on the one button to press. Text wraps whole, whatever is in it: nothing in a card scrolls sideways. */
+.icard{background:var(--panel2);border-radius:10px;padding:10px;display:grid;gap:6px;color:var(--fg);font-size:13px;min-width:0;max-width:100%;overflow-wrap:anywhere}
+.icard .ih{display:flex;gap:6px;align-items:baseline;min-width:0}
+.icard .ih b{font-weight:600;flex:1;min-width:0}
+.icard .flag{color:var(--brand);flex:none}
+.icard .vf,.icard .when{color:var(--dim);font-size:11px;flex:none}
+.icard .chip{flex:none;font-size:11px;color:var(--dim);background:var(--hover);border-radius:999px;padding:1px 8px}
+.icard .ib{margin:0;color:var(--fg)}
+.icard dl{margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 8px}
+.icard dt{color:var(--dim);font-size:12px}
+.icard dd{margin:0;min-width:0}
+.icard .dim{color:var(--dim)}
+.icard .im{color:var(--dim);font-size:12px}
+.icard .acts,.icard .why{display:flex;flex-wrap:wrap;gap:6px}
+.icard .why[hidden]{display:none}
+.icard button{min-height:32px;padding:4px 10px;font-size:12.5px;border-radius:8px;max-width:100%}
+.icard button:disabled{opacity:.45;cursor:default}
+.icard button:disabled:not(.primary):hover{background:transparent;color:var(--muted)}
+.icard button.primary:disabled:hover{background:var(--brand);color:var(--brand-ink);filter:none}
+.icard input{flex:1 1 12rem;min-width:0;min-height:32px;border:1px solid var(--line);border-radius:8px;padding:4px 8px;background:var(--panel);color:var(--fg);font:inherit}
+.icard .cstat{color:var(--fg);font-size:12.5px}
+.icard .cstat:empty{display:none}
+/* The away card: one sentence that wraps between its parts, never inside one, above the cards. */
+.away .sent{display:flex;flex-wrap:wrap;column-gap:.3em;min-width:0}
+.away .sent>span{white-space:nowrap}
+#startersSlot{padding:6px 0;display:grid;gap:6px;min-width:0}
+.grp{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);font-weight:600;padding:10px 4px 2px}
+.conv{display:grid;gap:2px;padding:8px 10px;border-radius:9px;color:var(--fg);text-decoration:none;min-width:0}
+.conv:hover{background:var(--hover)}
+/* The hover paper is lighter than the list's in dark: the dim tag and time would drop under 4.5:1 on it. */
+.conv:hover .when,.conv:hover .who{color:var(--fg)}
+.conv.on{background:var(--panel2);box-shadow:inset 2px 0 0 var(--brand)}
+.conv>.ct{display:flex;gap:6px;align-items:center;min-width:0}
+.conv>.ct>b{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.conv .u{width:7px;height:7px;border-radius:50%;background:var(--brand);flex:none}
+.conv .when{font-size:11px;color:var(--dim);font-family:var(--font-mono);flex:none}
+.conv>.cm{font-size:12px;color:var(--dim);display:flex;gap:8px}
+.conv .need{color:var(--brand);font-weight:600}
+.who{font-size:10.5px;border:1px solid var(--line);border-radius:5px;padding:0 5px;color:var(--dim);white-space:nowrap;flex:none}
+.lnote{padding:6px 4px;color:var(--dim);font-size:13px}
+
+/* Above the composer: who answers what you send, when it is not this page's pi. */
+.held{margin:0 var(--pad) 8px;background:var(--panel2);border-radius:9px;padding:8px 12px;font-size:13px;display:flex;gap:8px;align-items:center}
+.held[hidden]{display:none}
+
+.sbar{grid-column:1/-1;grid-row:2;background:var(--nav);display:flex;align-items:center;gap:14px;padding:0 12px;font-size:12px;color:var(--dim);overflow:hidden;white-space:nowrap}
+.sbar #sbHost{color:inherit;text-decoration:none}
+.sbar #sbHost:hover{color:var(--fg)}
+.sbar .st{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;background:var(--quiet);vertical-align:middle}
+.sbar .st.up{background:var(--ok)}.sbar .st.down{background:var(--bad)}
+.tabs{display:none}
+
+/* The page's own paper, so the feed's top edge reads as the header's edge, not as text cut in half. */
+header{display:flex;gap:10px;align-items:center;padding:9px 14px;flex-wrap:wrap;min-height:52px;background:var(--bg);border-bottom:1px solid var(--line)}
+header b{font-weight:650}
+/* The conversation's title: as much of it as leaves the pickers on the same row. */
+header>b{flex:0 1 auto;min-width:0;max-width:24rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+header .grow{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+select,button,textarea,input{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:6px;padding:5px 9px}
+/* A select's dropdown is drawn by the platform, not by the page. With a transparent background the
+   list is painted on system white while the options keep the page's text colour — light-on-white in
+   a dark theme. Canvas and CanvasText follow color-scheme, so both halves agree in both themes. */
+select,option{background:Canvas;color:CanvasText}
+/* Focus is shown, in amber, wherever the keyboard puts it: a field that hid it left Tab with no way
+   to tell where it had gone. */
+:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+textarea:focus-visible,input:focus-visible{outline-offset:0}
+/* The browser's own placeholder grey is too faint on dark paper. */
+textarea::placeholder,input::placeholder{color:var(--dim);opacity:1}
+button{cursor:pointer;color:var(--muted)}
+button:hover{color:var(--ink);background:var(--hover)}
+/* The one amber control: the thing to press. */
+button.primary{background:var(--brand);border-color:var(--brand);color:var(--brand-ink);font-weight:600}
+button.primary:hover{background:var(--brand);color:var(--brand-ink);filter:brightness(1.08)}
+.badge{border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:12px;color:var(--muted);white-space:nowrap}
+#status:empty{display:none}
+#queued{border-top:1px solid var(--line);padding:4px 16px;font-size:13px;display:flex;flex-direction:column;gap:2px}
+#queued[hidden]{display:none}
+#queued .qrow{display:flex;gap:8px;align-items:baseline;min-width:0}
+#queued .qrow .m{flex:none}
+#queued .qtext{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#queued .qtext.full{overflow:visible;text-overflow:clip;white-space:pre-wrap;overflow-wrap:anywhere}
+#queued .offered .m,#queued .stuck .m{color:var(--brand)}
+#queued button{font-size:12px}
+
+/* Not a toast that fades: this is the difference between the window working and not, and it stays
+   until it is dealt with. Clicking it does the one thing it asks for. */
+#stale{display:block;width:100%;border:0;border-bottom:1px solid var(--line);border-radius:0;
+       background:var(--brand);color:var(--brand-ink);padding:7px var(--pad);text-align:left;font-size:13px}
+#stale:hover{background:var(--brand);color:var(--brand-ink);filter:brightness(1.08)}
+#stale[hidden]{display:none}
+#findbar{display:flex;gap:8px;align-items:center;padding:7px var(--pad);border-bottom:1px solid var(--line);background:var(--side)}
+/* The UA rule for [hidden] loses to any author rule that sets display, so this has to say it. */
+#findbar[hidden]{display:none}
+#findbar input{flex:1}
+.hit{border-left:2px solid var(--line-strong);padding-left:10px;font-size:13px;color:var(--muted);font-family:var(--font-mono)}
+
+#feed{flex:1;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;padding:20px var(--pad) 24px;display:flex;flex-direction:column;gap:14px;overflow-wrap:anywhere}
+/* The feed is a column flexbox with a definite height, so its children shrink by default: a tall
+   block — an expanded tool, a long reply — was squeezed to fit instead of making the feed scroll,
+   and its last line was cut in half. */
+#feed>*{flex:0 0 auto}
+.row{position:relative;min-width:0;max-width:100%}
+.role{display:flex;gap:8px;align-items:center;color:var(--faint);font-size:11px;letter-spacing:.03em;text-transform:uppercase;margin-bottom:3px}
+/* The copy button is not part of the conversation, so it waits until you are on the block. A finger
+   has no hover, so on a touch screen it is simply always there. */
+.role button{border:0;padding:0 5px;font-size:11px;background:none;min-height:0;color:var(--faint);opacity:0;text-transform:none}
+.row:hover .role button,.row:focus-within .role button{opacity:1}
+.role button:hover{color:var(--ink);background:none}
+@media (pointer:coarse){.role button{opacity:.7}}
+@media (pointer:coarse){.row[data-when]::after{content:attr(data-when);display:block;margin-top:2px;font-size:11px;color:var(--faint);letter-spacing:.03em}.row.user[data-when]::after{text-align:right}}
+
+/* You, on the right, in a bubble; the model, full width, as prose. The shape says who is speaking
+   before a word of it is read, which is most of what makes a long session scannable. */
+.row.user{align-self:flex-end;max-width:min(84%,40rem)}
+.row.user>span{display:block;white-space:pre-wrap;background:var(--soft);border-radius:16px 16px 5px 16px;padding:9px 14px}
+.row.user .role{justify-content:flex-end}
+/* Status lines are context, not conversation: quiet, small, monospace. */
+.notice{color:var(--muted);font-family:var(--font-mono);font-size:12.5px;white-space:pre-wrap}
+.err{color:var(--ink);border-left:2px solid var(--bad);padding-left:10px;font-family:var(--font-mono);font-size:12.5px;white-space:pre-wrap}
+.row>span{white-space:pre-wrap;word-break:break-word}
+/* The markdown body is block-level HTML; pre-wrap there turns the whitespace between tags into
+   blank lines. It is set on the span itself, so the selector has to be more specific than .row>span. */
+.row>span.md,.md{white-space:normal}
+
+/* A tool call and what it returned are one thing, and it is closed. A tool that prints two hundred
+   lines should not push the conversation off the screen to do it. */
+/* The run of them is the block; each one inside is a line. */
+/* Closed, it is a line of text — a box drawn around one line is itself the noise this is about.
+   The box appears when you open it, because then there is something in it. */
+details.work{border:1px solid transparent;border-radius:10px;overflow:hidden}
+details.work[open]{border-color:var(--line);background:var(--side)}
+details.work:not([open])>summary{padding-left:0;padding-right:0}
+details.work>summary{cursor:pointer;display:flex;align-items:center;gap:8px;padding:7px 11px;font-family:var(--font-mono);font-size:12px;color:var(--muted);list-style:none}
+/* The reply that follows a stretch of work shares its row: the label and the copy button sit in
+   the summary, so "ASSISTANT" and "6 steps · thinking, bash" are one line rather than two. */
+details.work>summary>span.tag{flex:0 0 auto;color:var(--faint);font-size:11px;letter-spacing:.03em;text-transform:uppercase}
+details.work>summary>button{border:0;background:none;color:var(--faint);padding:0 5px;font-size:11px;min-height:0;opacity:0;text-transform:none}
+details.work:hover>summary>button,details.work:focus-within>summary>button{opacity:1}
+@media (pointer:coarse){details.work>summary>button{opacity:.7}}
+details.work>summary::-webkit-details-marker{display:none}
+details.work>summary::before{content:"▸";color:var(--faint);flex:0 0 auto}
+details.work[open]>summary::before{content:"▾"}
+details.work>summary>span.what{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+details.work>summary:hover{color:var(--ink)}
+details.work>details.tool,details.work>details.think,details.work>.note{border:0;border-top:1px solid var(--line);border-radius:0;background:transparent;padding:6px 11px}
+details.work>.note{color:var(--muted);font-family:var(--font-mono);font-size:12px;white-space:pre-wrap}
+details.tool{border:1px solid var(--line);border-radius:10px;background:var(--side);overflow:hidden}
+details.tool>summary{cursor:pointer;display:flex;align-items:center;gap:8px;padding:7px 11px;font-family:var(--font-mono);font-size:12px;color:var(--muted);list-style:none}
+details.tool>summary::-webkit-details-marker{display:none}
+details.tool>summary::before{content:"▸";color:var(--faint);flex:0 0 auto}
+details.tool[open]>summary::before{content:"▾"}
+details.tool>summary>span.what{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+details.tool>summary>span.state{color:var(--faint);font-size:11px}
+details.tool>summary>button{border:0;background:none;color:var(--faint);padding:0 5px;font-size:11px;min-height:0;opacity:0}
+details.tool:hover>summary>button,details.tool:focus-within>summary>button{opacity:1}
+@media (pointer:coarse){details.tool>summary>button{opacity:.7}}
+details.tool>summary:hover{color:var(--ink)}
+details.tool.err{border-color:var(--bad);padding-left:0}
+details.tool pre{margin:0;padding:9px 11px;border-top:1px solid var(--line);max-height:22em;overflow:auto;color:var(--muted)}
+details.think{color:var(--muted)}
+details.think:not([open])>summary{padding-left:0}
+details.think>summary{cursor:pointer;font-size:12px;color:var(--faint);list-style:none}
+details.think>summary::-webkit-details-marker{display:none}
+details.think>summary::before{content:"▸ ";color:var(--faint)}
+details.think>summary .peek{color:var(--faint);font-style:italic}
+details.think[open]>summary .peek{display:none}
+details.think[open]>summary::before{content:"▾ "}
+details.think pre{border-left:2px solid var(--line);padding-left:10px;font-style:italic;font-size:13px}
+pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-word;max-height:22em;overflow:auto;font-family:var(--font-mono);font-size:12.5px;line-height:1.55}
+
+
+.md>*:first-child{margin-top:0}.md>*:last-child{margin-bottom:0}
+.md p{margin:0 0 10px}
+.md h3,.md h4,.md h5,.md h6{margin:14px 0 7px;line-height:1.25;font-weight:650}
+.md h3{font-size:16px}.md h4{font-size:14.5px}.md h5,.md h6{font-size:13.5px;color:var(--muted)}
+.md ul,.md ol{margin:0 0 10px 22px;padding:0}.md li{margin:3px 0}
+.md blockquote{margin:0 0 10px;padding-left:12px;border-left:2px solid var(--line-strong);color:var(--muted)}
+.md code{border:1px solid var(--line);border-radius:5px;background:var(--side);padding:1px 5px;font-family:var(--font-mono);font-size:.88em;overflow-wrap:anywhere}
+.md pre.code{border:1px solid var(--line);border-radius:10px;background:var(--side);padding:11px 12px;margin:0 0 10px;position:relative;white-space:pre;overflow:auto;max-height:none}
+.md pre.code code{border:0;background:none;padding:0;font-size:13px}
+.md pre.code[data-lang]::before{content:attr(data-lang);position:absolute;top:4px;right:9px;font-size:10px;color:var(--faint)}
+.md pre.code button.preview{position:absolute;top:2px;right:44px;font-size:11px;padding:1px 8px;min-height:0;background:var(--panel)}
+.md hr{border:0;border-top:1px solid var(--line);margin:14px 0}
+.md a{color:var(--ink);text-decoration:underline;text-underline-offset:2px}
+/* A link to something on disk says so, so it is not mistaken for a link to the web. */
+.md a.file::before{content:"⇱ ";color:var(--faint);text-decoration:none}
+/* A path that was written in backticks keeps looking like one, and is a link as well. */
+.md a.file>code{border-color:var(--line-strong)}
+.md img{max-width:100%;height:auto;border:1px solid var(--line);border-radius:8px;margin:4px 0;display:block}
+.md table{border-collapse:collapse;margin:0 0 10px;display:block;overflow-x:auto;max-width:100%;font-size:13.5px}
+.md th,.md td{border:1px solid var(--line);padding:5px 10px;text-align:left;vertical-align:top}
+.md th{font-weight:650;background:var(--soft);white-space:nowrap}
+
+/* Sitting just above the composer, out of the way of the text, and only while there is something
+   below the fold to go to. */
+#newer{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(100% + 6px);z-index:6;
+       border-radius:999px;padding:4px 12px;font-size:12.5px;background:var(--field);
+       border-color:var(--line-strong);box-shadow:0 4px 14px var(--shadow)}
+form#composer{display:flex;flex-direction:column;gap:7px;padding:4px var(--pad) calc(12px + env(safe-area-inset-bottom));position:relative}
+.composer-row{display:flex;gap:8px;align-items:flex-end}
+textarea{flex:1;resize:none;min-height:46px;max-height:40vh;background:var(--panel);border-color:var(--line);border-radius:12px;padding:10px 13px}
+.sid{margin-top:10px;font-family:var(--font-mono);font-size:12px;color:var(--muted);overflow-wrap:anywhere;user-select:all}
+#thumbs{display:flex;gap:6px;flex-wrap:wrap}
+#thumbs .thumb{position:relative;line-height:0}
+#thumbs img{height:46px;border:1px solid var(--line);border-radius:6px}
+img.shot{max-width:100%;max-height:26em;height:auto;border:1px solid var(--line);border-radius:8px;margin:6px 0 0;display:block}
+#thumbs .x{position:absolute;top:-6px;right:-6px;width:20px;height:20px;min-height:0;padding:0;border-radius:999px;background:var(--panel);border:1px solid var(--line-strong);color:var(--muted);font-size:12px;line-height:1}
+#pop{position:absolute;bottom:100%;left:var(--pad);right:var(--pad);max-height:min(15em,32vh);overflow:auto;border:1px solid var(--line-strong);border-radius:8px;background:var(--field);box-shadow:0 10px 30px var(--shadow);display:none;z-index:5}
+#pop div{padding:8px 11px;cursor:pointer;display:flex;gap:10px;border-bottom:1px solid var(--line)}
+#pop div:last-child{border-bottom:0}
+#pop div.sel,#pop div:hover{background:var(--soft)}
+#pop .h{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+#loops{grid-column:4;grid-row:1;overflow:auto;min-height:0;min-width:0;background:var(--panel);padding:0}
+#loops.hidden{display:none}
+#loops>div{padding:14px 12px 6px}
+#loops>details{padding:8px 12px}
+#addLoop{width:100%;min-height:36px}
+#loops h2,#loops>details>summary{font-size:12px;font-weight:700;color:var(--ink);margin:0 0 9px;letter-spacing:0;text-transform:none}
+#loops>details>summary{cursor:pointer;margin:0;padding:4px 0}
+#loops>details[open]>summary{margin-bottom:6px}
+.card{border:0;border-radius:12px;background:var(--panel2);padding:8px 10px;margin-bottom:7px;font-size:13px}
+/* The name is the thing you act on — a /cron set <name> --host here takes it — so it is the one
+   thing in this card that must not be abbreviated. It used to be clipped to an ellipsis while the
+   schedule beside it wrapped onto two lines: unreadable and impossible to copy, which is the whole
+   point of showing it. It wraps now and the row wraps with it; the schedule stays on one piece. */
+.card .t{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.card .t b{font-weight:650;min-width:0;overflow-wrap:anywhere}
+.card .t .m{white-space:nowrap}
+.card .m{color:var(--muted);font-size:12px}
+.card button{padding:2px 9px;font-size:12px;margin-left:auto;min-height:0}
+/* A job or rule is now a <details>: closed it is the name, a two-line preview and a one-line error
+   hint, open it is the whole prompt and the fields the terminal /cron listing has. The summary is
+   the only part shown closed, so the runs line, the preview and the error hint live there and the
+   full text lives in the body. */
+details.card{padding:0;overflow:hidden}
+details.card>summary{cursor:pointer;list-style:none;padding:7px 11px;display:flex;flex-wrap:wrap;align-items:baseline;gap:8px}
+details.card>summary::-webkit-details-marker{display:none}
+details.card>summary::before{content:"▸";color:var(--faint);flex:0 0 auto}
+details.card[open]>summary::before{content:"▾"}
+/* ▸, then the name and schedule, then run, on the first line of every row: the name and schedule
+   wrap inside their own box, so a long name never pushes ▸ or run onto a line of its own. */
+details.card>summary .t{flex:1 1 0;min-width:0;flex-wrap:nowrap;align-items:baseline}
+details.card>summary .nm{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:7px;min-width:0;flex:1 1 auto}
+details.card>summary>.m{flex-basis:100%}
+/* A summary must hold phrasing content, so these are spans; the summary is a flex row, which
+   blockifies its children anyway, and the block is stated here for the lines that need it. */
+details.card>summary>.m:not(.peek){display:block}
+details.card .peek{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-width:0}
+details.card[open] .peek{display:none}
+details.card .peek.failing{-webkit-line-clamp:1;color:var(--bad)}
+details.card .body{position:relative;padding:0 11px 9px}
+/* The id, cwd and last error are one unbroken run each — a path, a URL in an error — and the card
+   clips what it cannot wrap, so they break the way the full prompt does. */
+details.card .body .m{overflow-wrap:anywhere}
+details.card pre.full{margin:0;padding:3px 3.5em 6px 0;white-space:pre-wrap;overflow-wrap:anywhere;max-height:22em;overflow:auto;color:var(--muted);font-size:12px;font-family:inherit}
+details.card button.copy{border:0;background:none;color:var(--faint);padding:0 5px;font-size:11px;min-height:0;opacity:0;position:absolute;top:4px;right:6px}
+details.card:hover button.copy,details.card:focus-within button.copy{opacity:1}
+@media (pointer:coarse){details.card button.copy{opacity:.7}}
+/* A loop row's run, signal and suggestion, under the card's name. Its buttons wrap, never push the
+   panel sideways, and on a phone stack at full width. */
+details.card>summary>.loopx{display:flex;flex-direction:column;gap:5px}
+details.card>summary>.loopx:empty{display:none}
+.loopx .runline{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.loopx button{margin-left:0}
+.loopx .confirm{display:flex;flex-direction:column;gap:6px;padding:7px 8px;border-radius:9px;background:var(--panel);color:var(--fg);overflow-wrap:anywhere;cursor:default}
+.loopx .acts{display:flex;flex-wrap:wrap;gap:6px}
+.loopx .signal{display:block;overflow-wrap:anywhere}
+.loopx .note{border-top:1px solid var(--line);padding-top:4px}
+details.card>summary>.looks{display:block;overflow-wrap:anywhere}
+@media (max-width:420px){.loopx .acts button,.loopx .runline button,.loopx .confirm>button{flex:1 1 100%;min-height:36px}}
+.off{opacity:.5}
+.dot{display:inline-block;width:7px;height:7px;border-radius:99px;margin-right:6px;vertical-align:middle}
+.up{background:var(--ok)}.down{background:var(--bad)}.idle{background:var(--quiet)}
+/* Words in a state: a fault, or a quiet aside. */
+.bad{color:var(--bad)}.dim{color:var(--dim)}
+/* Counts as a row of figures rather than a sentence: the number is the thing being read, and each
+   one is a target big enough for a finger. */
+.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--field);margin-top:8px}
+.metrics>*{min-width:0;padding:8px 9px;border-right:1px solid var(--line);text-align:left;min-height:46px;border-radius:0;border-top:0;border-bottom:0}
+.metrics>*:last-child{border-right:0}
+.metrics b{display:block;font-size:16px;line-height:1.2;color:var(--ink)}
+.metrics span{display:block;color:var(--muted);font-size:11px}
+button.metric{background:none;border-left:0;cursor:pointer}
+button.metric:hover{background:var(--soft)}
+button.count{border:0;padding:0;background:none;font:inherit;min-height:0;text-decoration:underline dotted;text-underline-offset:2px;color:inherit}
+button.count:hover{background:none;color:var(--ink)}
+
+dialog{border:1px solid var(--line);border-radius:12px;padding:16px;max-width:42rem;width:min(92vw,42rem);background:var(--panel);color:var(--ink);box-shadow:0 16px 48px var(--shadow)}
+dialog::backdrop{background:rgba(0,0,0,.4)}
+dialog h3{margin:0 0 10px;font-size:14px;font-weight:650}
+dialog pre{background:var(--side);border:1px solid var(--line);padding:9px 10px;border-radius:8px}
+dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 0 0}
+/* Watch for…: the sentence box and the plan card (docs/design.md decision 24). Inspire tokens only:
+   --panel2 for the card, --brand for Set it up and the chosen chip, colour only for danger. */
+/* The body scrolls and the buttons stay: Read it in the dialog's own menu below the body, a card's
+   Cancel and Set it up stuck to the bottom of the scrolling body while the card is in view. */
+#watch{width:min(540px,calc(100% - 32px));max-height:90dvh;overflow:hidden}
+#watch[open]{display:flex;flex-direction:column}
+#watchBody{overflow:auto;min-height:0;flex:1 1 auto}
+#watch menu{flex:none}
+#watchCards .plan .foot{position:sticky;bottom:0;background:var(--panel2);padding-top:4px;display:grid;gap:6px}
+#watch label{display:block;font-size:13px;color:var(--dim);margin:0 0 6px}
+#watch textarea{width:100%;box-sizing:border-box;min-height:4.5em;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;background:var(--panel);color:var(--fg);resize:vertical}
+#watchEx{display:flex;flex-wrap:wrap;gap:5px;align-items:center;font-size:12px;margin:6px 0 0}
+#watchEx button{border:0;background:var(--hover);border-radius:999px;padding:4px 10px;min-height:32px;font-size:12px;color:var(--fg);text-align:left;max-width:100%;overflow-wrap:anywhere;white-space:normal}
+#watchEx button:hover{color:var(--brand)}
+#watchStatus{margin-top:10px}
+#watchStatus.bad{color:var(--bad)}
+#watchCards{display:grid;gap:10px;margin-top:10px}
+.plan{background:var(--panel2);border-radius:12px;padding:12px 14px;display:grid;gap:10px;font-size:13px;min-width:0;max-width:100%;overflow-wrap:anywhere}
+.plan.done,.plan.stale{opacity:.7}
+.plan .planh{font-weight:600}
+.plan .planh.bad,.plan .bad{color:var(--bad)}
+.plan dl{margin:0;display:grid;grid-template-columns:88px minmax(0,1fr);gap:8px 10px}
+.plan dt{color:var(--dim)}
+.plan dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.plan dd pre{margin:0;padding:8px 10px;background:var(--code);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--font-mono);font-size:12px;color:var(--fg)}
+.plan .dim{color:var(--dim)}
+.plan .ib{white-space:pre-wrap}
+.plan .chips{display:flex;flex-wrap:wrap;gap:6px}
+.plan .chips button{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:4px 11px;min-height:32px;font-size:12.5px;color:var(--fg);max-width:100%;text-align:left;white-space:normal;overflow-wrap:anywhere}
+.plan .chips button small{display:block;font-size:11px;color:var(--dim)}
+.plan .chips button.on{border-color:var(--brand);background:var(--brand-soft);color:var(--brand)}
+.plan .chips button.on small{color:var(--brand)}
+.plan .cstat{font-size:12.5px}
+.plan .cstat:empty{display:none}
+.plan .acts{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+.plan .acts button{min-height:32px;padding:4px 12px;border-radius:8px;font-size:12.5px}
+.plan .acts button:disabled{opacity:.45;cursor:default}
+.row.plan{max-width:min(100%,44rem)}
+@media (max-width:420px){.plan dl{grid-template-columns:minmax(0,1fr)}.plan dt{margin-top:2px}.plan .acts button.primary{flex:1 1 100%}}
+#pairPick{width:100%;margin-bottom:8px}
+.qr{display:flex;justify-content:center;padding:6px 0}
+.qr svg{width:min(62vw,240px);height:auto;background:#fff;padding:8px;border-radius:8px}
+/* By id, not by a class called "code": markdown fenced blocks are <pre class="code"> and were
+   inheriting this one's letter-spacing, which spread every line of code out across the page. */
+#pairCode{text-align:center;font-size:32px;letter-spacing:.28em;padding:8px 0 2px;font-variant-numeric:tabular-nums;font-family:var(--font-mono)}
+#pairWhere{text-align:center;padding-bottom:4px}
+.detail-row{padding:4px 0;border-bottom:1px solid var(--line);font-size:13px;font-family:var(--font-mono)}
+.detail-row:last-child{border-bottom:0}
+/* A session is picked by recognising the conversation, so the first thing said is the line that
+   matters and everything else is a caption under it. */
+#sessBody{max-height:60vh;overflow:auto}
+.sess{display:block;width:100%;text-align:left;padding:9px 10px;margin-bottom:6px;border:1px solid var(--line);
+      border-radius:9px;background:var(--side);color:var(--ink);cursor:pointer}
+.sess:hover{background:var(--hover)}
+/* Two lines of the opening prompt, so a long one does not turn the list into a page. */
+.sess b{font-weight:600;font-size:13px;line-height:1.35;
+        display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.sess span{display:block;margin-top:3px;font-size:11px;color:var(--muted);font-family:var(--font-mono)}
+.sess[disabled]{cursor:default;opacity:.75;border-style:dashed}
+.sess[disabled]:hover{border-color:var(--line)}
+#detailBody{max-height:60vh;overflow:auto}
+
+/* ---------------------------------------------------------------- narrow screens */
+/* The drawer covers the conversation, so tapping "somewhere else" has to mean the whole of
+   somewhere else — not the 47px strip the drawer happens to leave. It dims what it covers, which
+   is also how you know the panel is on top of the conversation rather than beside it. */
+#scrim{display:none}
+#actions{display:contents}
+/* In the sheet they are a list, not a row, and each one is a full-width target. */
+#menuBody #actions{display:flex;flex-direction:column;gap:8px}
+#menuBody #actions button{width:100%;text-align:left;min-height:44px}
+/* Thirteen controls do not fit across a narrow conversation. The ones you reach for mid-conversation
+   (undo, find, compact, resume) stay; the rest are one tap away behind ⋯, which lists all of them.
+   Asked of the conversation's own width, which the list and the loops rail beside it take from:
+   a laptop window leaves it 600 to 800 px. */
+@container (max-width:1000px){
+  #more{display:inline-block}
+  .grow>#actions>:not(#undo,#find,#compact,#resume){display:none}
+}
+/* At a laptop width the header stays two rows, as it was with the four hidden: title, path and pickers
+   on the first, where the title and the path give up width; the actions with ⋯ on the second, where
+   the row is tightened and the cost badge, which carries its own title, is the one thing that gives
+   up width. A phone keeps its own. */
+@media (min-width:761px){@container (min-width:600px) and (max-width:1000px){
+  header{display:grid;grid-template-columns:minmax(0,max-content) minmax(0,max-content) auto auto 1fr;padding-left:10px;padding-right:10px}
+  header .grow{grid-column:1/-1}
+  header .grow{flex-wrap:nowrap;gap:6px;min-width:0;max-width:100%}
+  header .grow *{flex-shrink:0}
+  header .grow button{padding:5px 7px}
+  #cost{flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+}}
+/* The loops rail is not dropped when the window narrows, it is put behind the rail's Loops button: it
+   slides over the conversation rather than taking a third of it, the way a drawer does elsewhere. */
+@media (max-width:1100px){
+  body{grid-template-columns:56px 300px minmax(0,1fr)}
+  #loops{position:fixed;top:0;right:0;bottom:0;width:min(88vw,23rem);z-index:40;
+        box-shadow:-14px 0 40px var(--shadow);transform:translateX(101%);transition:transform .18s ease;
+        padding-bottom:calc(10px + env(safe-area-inset-bottom))}
+  #loops.hidden{display:block}
+  #loops.open{transform:none}
+  #scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:39;background:rgba(0,0,0,.4)}
+}
+@media (max-width:900px){
+  :root{--pad:12px}
+  header{padding:8px 12px;gap:7px;padding-top:calc(8px + env(safe-area-inset-top))}
+  #feed{gap:12px}
+  .row.user{max-width:92%}
+  /* Anything under 16px makes iOS Safari zoom the whole page the moment you focus it, and it does
+     not zoom back out. Touch targets get a finger's worth of height at the same time. */
+  textarea,input,select{font-size:16px}
+  textarea{min-height:44px}
+  /* Three buttons beside the box left it about 150 characters wide, with its own scrollbar. The
+     box gets the width; the buttons get a row of their own and split it. */
+  .composer-row{flex-wrap:wrap}
+  .composer-row textarea{flex:1 1 100%}
+  .composer-row button{flex:1 1 0}
+  /* The path is in the switcher. Here it was costing a whole header row, on a screen where the
+     header was already taking an eighth of the height. */
+  /* One row: the title takes what the pickers and buttons leave, and the pickers give up width
+     before the buttons do. */
+  header{min-height:0;flex-wrap:nowrap}
+  header>b{flex:1 1 auto;max-width:none;min-width:4.5em}
+  #model{flex:0 1 auto;min-width:4.5rem;max-width:7rem}
+  #thinking{flex:none}
+  header .grow{flex:none;flex-wrap:nowrap;gap:6px}
+  header .grow button{padding:8px 9px}
+  /* No room beside the title: the cost is in the ⋯ sheet, with the actions, and while a turn runs
+     the stop button in send's place says what the status chip would. */
+  .grow>#cost,main:has(#stop:not([hidden])) #status{display:none}
+  button{padding:8px 12px;min-height:40px}
+  .card button,.role button{min-height:32px}
+}
+/* A phone: one pane at a time, Inbox (the list), Chat and Loops, picked by the tabs at the bottom and
+   kept in the address (#inbox, #chat, #loops), so Back goes to the pane before and a reload keeps it. */
+@media (max-width:760px){
+  .grow>#actions{display:none}
+  body,body:has(#loops.hidden){grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) calc(52px + env(safe-area-inset-bottom))}
+  #rail,#scrim{display:none}
+  #scrim:not([hidden]){display:none}
+  /* The status bar is where pi-loops says it runs, and its way to the Background view: on a phone, under the Loops pane. */
+  body:not([data-pane=loops]) .sbar{display:none}
+  body[data-pane=loops]{grid-template-rows:minmax(0,1fr) 34px calc(52px + env(safe-area-inset-bottom))}
+  body[data-pane=loops] .sbar{grid-row:2}
+  body[data-pane=loops] .tabs{grid-row:3}
+  #list,main,#loops{grid-column:1;grid-row:1}
+  body:not([data-pane=inbox]) #list{display:none}
+  body[data-pane=inbox] main,body[data-pane=loops] main{display:none}
+  #loops,#loops.hidden{position:static;transform:none;width:auto;box-shadow:none;transition:none;display:none}
+  body[data-pane=loops] #loops{display:block}
+  .tabs{display:flex;grid-column:1;grid-row:2;background:var(--nav);padding-bottom:env(safe-area-inset-bottom)}
+  .tabs a{flex:1;display:grid;justify-items:center;align-content:center;gap:2px;color:var(--dim);text-decoration:none;font-size:11px}
+  .tabs a.on{color:var(--brand)}
+  #activitySlot ul{max-height:50vh}
+}
+@media (pointer:coarse){button,select,.icard button{min-height:40px}}

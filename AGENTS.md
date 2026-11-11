@@ -113,7 +113,9 @@ src/trust.ts                whether pi trusts a directory, asked before anything
 src/toml.ts                 TOML subset parser
 src/version.ts              the version every archive, payload and `/pi-loops` line reports
 
-src/web.mjs                 the browser page itself, as strings (`DOOR`, `ICON`, `PAGE` last); src/web.d.mts declares them
+src/web.mjs                 the browser page as strings (`DOOR`, `ICON`, `PAGE`), with src/web/ inlined at import; src/web.d.mts declares them
+src/web/page.js             the page's script: plain browser JavaScript, one classic script, no imports
+src/web/page.css            the page's stylesheet, with the token block the Background view reads too
 skills/pi-loops/            when the agent should reach for cron_create, new_trigger and the inbox
 recipes/<name>/             a recipe: recipe.toml, the playbooks its jobs read, an optional setup script; _tracker-setup.md and _tracker/ are the prompt and templates the wizard hands to the session
 examples/                   a dependency-free MCP push server, and an mcp.toml to point at it
@@ -176,10 +178,16 @@ lists what a person can still do after the window changed. It is a gate — a re
 every line or says which one it dropped and why. Adding an affordance means adding a line; removing
 one means moving it to the "held" section with the reason, not deleting it.
 
-The page inside `src/web.mjs` is a blind spot for both: it is a string, so the linter never sees it
-and `node --check` only parses the file around it. `test/web-page.test.ts` runs that script against
-a DOM stub for exactly this reason — an undefined identifier in it used to ship silently and leave
-the front end unable to display anything. Anything you add to the page needs a line there.
+The page's script, `src/web/page.js`, is browser JavaScript with no types. `check:scripts` parses
+it, and the linter reads it with the DOM's types for two faults only: **undefined-name** (a name
+that is never declared) and **silent-catch**. floating-promise does not apply there, because a
+rejection in a browser does not stop pi. Nothing checks what the page does, so
+`test/web-page.test.ts` runs the script against a DOM stub — an undefined identifier in it once
+shipped in four releases and left the front end unable to display anything. Anything you add to the
+page needs a line there.
+
+To see a page edit without a restart, start pi-loops with `PI_LOOPS_PAGE_DEV=1` (for example
+`PI_LOOPS_PAGE_DEV=1 pi-loops restart`): each page load then reads `src/web/` again.
 
 ## Where a decision goes
 
