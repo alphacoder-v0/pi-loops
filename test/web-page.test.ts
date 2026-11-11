@@ -4475,6 +4475,9 @@ test("a held conversation read again shows its three run cards, and a card saved
 		assert.equal((text.match(/cron todo/g) ?? []).length, 3, `three cards after the reload; the feed: ${text.replace(/\s+/g, " ").trim()}`);
 		assert.match(text, /start a loop[\s\S]*5s · 0 findings[\s\S]*4s · 1 finding[\s\S]*FAILED · 2s · <b>500<\/b>/, "in file order, as text");
 		assert.ok(!dom.made.some((m: any) => m.tag === "b"), "a card's text creates no element");
+		// A view a terminal drew has columns: its row is the one notice the style sheet keeps in monospace.
+		const views = dom.made.filter((m: any) => m.className === "row notice view" && m.children.some((c: any) => String(c._text).includes("cron todo")));
+		assert.ok(views.length >= 3, "each card is drawn as a view row");
 		send({ type: "entry_appended", entry: { type: "custom", customType: "pi-loops:view", data: { title: "cron todo · 3s · 2 findings", lines: [] } }, seq: 5, epoch: "aaa" });
 		send({ type: "entry_appended", entry: { type: "custom", customType: "trigger_result", data: { state: "completed" } }, seq: 6, epoch: "aaa" });
 		await new Promise((r) => setTimeout(r, 100));

@@ -1023,7 +1023,7 @@ function renderMessage(message, fromStream) {
       drawnViews.add(str(message.id));
     }
     const lines = Array.isArray(message.lines) ? message.lines.map(str) : [];
-    row("notice", "", capped([str(message.title), ...lines].join("\n"), 4000));
+    row("notice view", "", capped([str(message.title), ...lines].join("\n"), 4000));
     return;
   }
   if (message.role === "user") {

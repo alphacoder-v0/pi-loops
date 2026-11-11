@@ -120,7 +120,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .conv>.ct{display:flex;gap:6px;align-items:center;min-width:0}
 .conv>.ct>b{font-weight:600;font-size:var(--fs-sm);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
 .conv .u{width:7px;height:7px;border-radius:50%;background:var(--brand);flex:none}
-.conv .when{font-size:var(--fs-xs);color:var(--dim);font-family:var(--font-mono);flex:none}
+.conv .when{font-size:var(--fs-xs);color:var(--dim);flex:none}
 .conv>.cm{font-size:var(--fs-xs);color:var(--dim);display:flex;gap:8px}
 .conv .need{color:var(--brand);font-weight:600}
 .who{font-size:var(--fs-xs);border:1px solid var(--line);border-radius:5px;padding:0 5px;color:var(--dim);white-space:nowrap;flex:none}
@@ -180,7 +180,7 @@ button.primary:hover{background:var(--brand);color:var(--brand-ink);filter:brigh
 /* The UA rule for [hidden] loses to any author rule that sets display, so this has to say it. */
 #findbar[hidden]{display:none}
 #findbar input{flex:1}
-.hit{border-left:2px solid var(--line-strong);padding-left:10px;font-size:var(--fs-sm);color:var(--muted);font-family:var(--font-mono)}
+.hit{border-left:2px solid var(--line-strong);padding-left:10px;font-size:var(--fs-sm);color:var(--muted)}
 
 #feed{flex:1;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;padding:20px var(--pad) 24px;display:flex;flex-direction:column;gap:14px;overflow-wrap:anywhere}
 /* The feed is a column flexbox with a definite height, so its children shrink by default: a tall
@@ -203,7 +203,9 @@ button.primary:hover{background:var(--brand);color:var(--brand-ink);filter:brigh
 .row.user>span{display:block;white-space:pre-wrap;background:var(--soft);border-radius:16px 16px 5px 16px;padding:9px 14px}
 .row.user .role{justify-content:flex-end}
 /* Status lines are context, not conversation: quiet, small, monospace. */
-.notice{color:var(--muted);font-family:var(--font-mono);font-size:var(--fs-sm);white-space:pre-wrap}
+.notice{color:var(--muted);font-size:var(--fs-sm);white-space:pre-wrap}
+/* A view a terminal drew (/cron, /inbox) has columns: it keeps the terminal's font. */
+.notice.view{font-family:var(--font-mono)}
 .err{color:var(--ink);border-left:2px solid var(--bad);padding-left:10px;font-family:var(--font-mono);font-size:var(--fs-sm);white-space:pre-wrap}
 .row>span{white-space:pre-wrap;word-break:break-word}
 /* The markdown body is block-level HTML; pre-wrap there turns the whitespace between tags into
@@ -218,7 +220,7 @@ button.primary:hover{background:var(--brand);color:var(--brand-ink);filter:brigh
 details.work{border:1px solid transparent;border-radius:10px;overflow:hidden}
 details.work[open]{border-color:var(--line);background:var(--side)}
 details.work:not([open])>summary{padding-left:0;padding-right:0}
-details.work>summary{cursor:pointer;display:flex;align-items:center;gap:8px;padding:7px 11px;font-family:var(--font-mono);font-size:var(--fs-sm);color:var(--muted);list-style:none}
+details.work>summary{cursor:pointer;display:flex;align-items:center;gap:8px;padding:7px 11px;font-size:var(--fs-sm);color:var(--muted);list-style:none}
 /* The reply that follows a stretch of work shares its row: the label and the copy button sit in
    the summary, so "ASSISTANT" and "6 steps · thinking, bash" are one line rather than two. */
 details.work>summary>span.tag{flex:0 0 auto;color:var(--faint);font-size:var(--fs-xs);letter-spacing:.03em;text-transform:uppercase}
@@ -231,7 +233,7 @@ details.work[open]>summary::before{content:"▾"}
 details.work>summary>span.what{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 details.work>summary:hover{color:var(--ink)}
 details.work>details.tool,details.work>details.think,details.work>.note{border:0;border-top:1px solid var(--line);border-radius:0;background:transparent;padding:6px 11px}
-details.work>.note{color:var(--muted);font-family:var(--font-mono);font-size:var(--fs-sm);white-space:pre-wrap}
+details.work>.note{color:var(--muted);font-size:var(--fs-sm);white-space:pre-wrap}
 details.tool{border:1px solid var(--line);border-radius:10px;background:var(--side);overflow:hidden}
 details.tool>summary{cursor:pointer;display:flex;align-items:center;gap:8px;padding:7px 11px;font-family:var(--font-mono);font-size:var(--fs-sm);color:var(--muted);list-style:none}
 details.tool>summary::-webkit-details-marker{display:none}
@@ -403,7 +405,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 .plan dl{margin:0;display:grid;grid-template-columns:88px minmax(0,1fr);gap:8px 10px}
 .plan dt{color:var(--dim)}
 .plan dd{margin:0;min-width:0;overflow-wrap:anywhere}
-.plan dd pre{margin:0;padding:8px 10px;background:var(--code);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--font-mono);font-size:var(--fs-sm);color:var(--fg)}
+.plan dd pre{margin:0;padding:8px 10px;background:var(--code);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;font-family:inherit;font-size:var(--fs-sm);color:var(--fg)}
 .plan .dim{color:var(--dim)}
 .plan .ib{white-space:pre-wrap}
 .plan .chips{display:flex;flex-wrap:wrap;gap:6px}
@@ -436,7 +438,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 /* Two lines of the opening prompt, so a long one does not turn the list into a page. */
 .sess b{font-weight:600;font-size:var(--fs-sm);line-height:1.35;
         display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.sess span{display:block;margin-top:3px;font-size:var(--fs-xs);color:var(--muted);font-family:var(--font-mono)}
+.sess span{display:block;margin-top:3px;font-size:var(--fs-xs);color:var(--muted)}
 .sess[disabled]{cursor:default;opacity:.75;border-style:dashed}
 .sess[disabled]:hover{border-color:var(--line)}
 #detailBody{max-height:60vh;overflow:auto}
