@@ -815,6 +815,24 @@ test("a run that timed out is a failed run: its slot is spent and the failure st
 	}
 });
 
+test("the run summary is the first finding when the run filed one, and the reply when it filed none", async () => {
+	const dir = tmp("pi-loops-summary-");
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
+	try {
+		const job = await sched.store.add(makeJob({ cwd: dir }));
+		process.env.FAKE_PI_REPLY = "Looked at CI.\n<inbox>main is red: test/x.test.ts fails</inbox>\n<inbox>second</inbox>\nFiled as #220. Final state:\n<loop-state>seen: 1</loop-state>";
+		assert.equal(await sched.runNow(job.id), true);
+		await sched.drain(10_000);
+		process.env.FAKE_PI_REPLY = "Nothing new since the last run.\n<loop-state>seen: 1</loop-state>";
+		assert.equal(await sched.runNow(job.id), true);
+		await sched.drain(10_000);
+		assert.deepEqual(sched.store.listRuns(job.id).map((r) => r.summary), ["main is red: test/x.test.ts fails", "Nothing new since the last run."]);
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		await sched.stop();
+	}
+});
+
 test("each run's record says which run of its loop it was, a failure counted, and a stopped run says so", async () => {
 	const dir = tmp("pi-loops-ordinal-");
 	const finished: string[] = [];
