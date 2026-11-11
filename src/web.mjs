@@ -344,6 +344,7 @@ img.shot{max-width:100%;max-height:26em;height:auto;border:1px solid var(--line)
 #loops.hidden{display:none}
 #loops>div{padding:14px 12px 6px}
 #loops>details{padding:8px 12px}
+#addLoop{width:100%;min-height:36px}
 #loops h2,#loops>details>summary{font-size:12px;font-weight:700;color:var(--ink);margin:0 0 9px;letter-spacing:0;text-transform:none}
 #loops>details>summary{cursor:pointer;margin:0;padding:4px 0}
 #loops>details[open]>summary{margin-bottom:6px}
@@ -641,7 +642,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 <aside id="loops" aria-label="Loops">
   <div><h2>Loops</h2><div id="auto"></div></div>
   <details id="goalBox" hidden><summary>Goal</summary><div id="goal" class="notice"></div></details>
-  <details><summary>pi-loops</summary><div id="runtime" class="notice">—</div></details>
+  <details id="runtimeBox"><summary>pi-loops</summary><div id="runtime" class="notice">—</div></details>
 </aside>
 <footer class="sbar" aria-label="Status"><a id="sbHost" href="/background"></a></footer>
 <nav class="tabs" aria-label="Panes">
@@ -2102,6 +2103,18 @@ function renderSidebar(s) {
       if (d.open) openCards.add(d.dataset.key); else openCards.delete(d.dataset.key);
     });
     box.innerHTML = html;
+    // A project with no loop and no rule: the one thing to do here is make one, not read counters.
+    const none = !a.jobs.length && !a.rules.length;
+    $("runtimeBox").hidden = none;
+    if (none) {
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "primary";
+      add.id = "addLoop";
+      add.textContent = "+ Add a loop";
+      add.onclick = () => openWatch();
+      box.insertBefore(add, box.firstChild);
+    }
     const slots = [...box.querySelectorAll("[data-loopx]")];
     for (const j of a.jobs) {
       const slot = slots.find((el) => el.dataset.loopx === str(j.id));

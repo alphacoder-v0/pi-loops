@@ -499,7 +499,10 @@ weaker, and worth converting whenever one of them breaks.
       `test/web-page.test.ts`: *every time on the page is in one format, the away card's 24-hour
       words, ahead as well as behind*.
 - [x] Runtime: MCP servers and their state, hook count and events, tool count, last poll, snapshot
-      age and version. Whether pi-loops is running is the status bar's.
+      age and version, while the project has a loop or a rule. A project with neither shows
+      **+ Add a loop** there instead, which opens the Watch for… box. Whether pi-loops is running is
+      the status bar's. `test/web-page.test.ts`: *a project with no loop shows one way to add one in
+      the Loops pane, and no runtime counters*.
 - [x] A count leads to the list behind it — "24 tools" answers the wrong question on its own.
       `test/web-page.test.ts`: *a count in the panel leads to the list behind it*.
 - [x] Goal state when a goal is set, and pi-loops for the runtime, each one click open.

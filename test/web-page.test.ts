@@ -3111,10 +3111,6 @@ test("the status bar says whether pi-loops runs", { timeout: 20_000 }, async () 
 	dom = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
 	assert.match(textOf(doc().getElementById("sbHost")), /pi-loops is not running/);
 	dom.dispose();
-	dom = await startPage({ ...STATE, automation: { ...STATE.automation, jobs: [], rules: [] } }, { "/conversations": listAnswer(ROWS) });
-	assert.equal(textOf(doc().getElementById("auto")), "", "an empty Loops pane is empty");
-	assert.doesNotMatch(String(doc().getElementById("auto").innerHTML), /no loops or rules/);
-	dom.dispose();
 });
 
 test("the frame's class names are its own: nothing in it reuses a name the conversation or the panel styles", () => {
@@ -5004,4 +5000,19 @@ test("the header is opaque, and on a phone it is one row", () => {
 	const phone = /@media \(max-width:900px\)\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
 	assert.match(phone, /header\{[^}]*flex-wrap:nowrap/, "title, pickers and buttons share one row");
 	assert.doesNotMatch(phone, /header>b\{[^}]*flex:1 1 100%/, "the title has no row of its own");
+});
+
+test("a project with no loop shows one way to add one in the Loops pane, and no runtime counters", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const dom = await startPage({ ...STATE, automation: { ...STATE.automation, jobs: [], rules: [] } }, { "/conversations": listAnswer(ROWS) });
+	const auto = g.document.getElementById("auto");
+	assert.equal(textOf(auto), "+ Add a loop");
+	assert.equal(g.document.getElementById("runtimeBox").hidden, true, "hooks, tools and mcp counts are not what an empty pane is for");
+	buttonIn(auto, "+ Add a loop").onclick();
+	assert.equal(g.document.getElementById("watch").open, true, "it opens the Watch for… box");
+	dom.dispose();
+	const one = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
+	assert.equal(buttonIn(g.document.getElementById("auto"), "+ Add a loop"), undefined, "a project with a loop lists it instead");
+	assert.equal(g.document.getElementById("runtimeBox").hidden, false);
+	one.dispose();
 });
