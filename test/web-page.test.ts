@@ -2956,7 +2956,7 @@ async function startPage(state: unknown, answers: Record<string, unknown>, store
 	return dom;
 }
 
-test("the list shows this project's conversations, grouped Today and Earlier when both are there, with the open one marked, and each row is its address", { timeout: 20_000 }, async () => {
+test("the list shows this project's conversations under a Conversations heading, grouped Today and Earlier when both are there, with the open one marked, and each row is its address", { timeout: 20_000 }, async () => {
 	const dom = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
 	const call = dom.calls.find((c) => c.url.startsWith("/conversations"));
 	assert.ok(call, "the page asked for the list");
@@ -2967,8 +2967,8 @@ test("the list shows this project's conversations, grouped Today and Earlier whe
 	assert.deepEqual(rows.map((r) => r.href), [`/c/${SESSION_UNDER_TEST}/`, "/c/held-one/", "/c/loop-one/"], "a row loads that conversation's own page");
 	assert.match(rows[0].className, /\bon\b/, "the open conversation is marked");
 	assert.doesNotMatch(rows[1].className, /\bon\b/);
-	const groups = ((globalThis as any).document.getElementById("convs").children as any[]).filter((c) => c.className === "grp").map((c) => c._text);
-	assert.deepEqual(groups, ["Today", "Earlier"]);
+	const headings = () => ((globalThis as any).document.getElementById("convs").children as any[]).filter((c) => /^grp\b/.test(c.className)).map((c) => [c.className, c._text]);
+	assert.deepEqual(headings(), [["grp", "Conversations"], ["grp sub", "Today"], ["grp sub", "Earlier"]], "headed as Needs you and News are, with the days under it");
 	assert.match(textOf(rows[2]), /⚑ 2/, "what needs you is counted on its row");
 	assert.match(textOf(rows[2]), /queued 1/, "and what is queued for it");
 	assert.equal((globalThis as any).document.getElementById("project").value, "/work/api", "the switcher is on this project");
@@ -2976,7 +2976,7 @@ test("the list shows this project's conversations, grouped Today and Earlier whe
 	dom.dispose();
 	const today = await startPage(STATE, { "/conversations": listAnswer(ROWS.slice(0, 2)) });
 	assert.equal(rowsOf().length, 2);
-	assert.deepEqual(((globalThis as any).document.getElementById("convs").children as any[]).filter((c) => c.className === "grp"), [], "one group has no heading");
+	assert.deepEqual(headings(), [["grp", "Conversations"]], "one day has no label of its own");
 	today.dispose();
 });
 

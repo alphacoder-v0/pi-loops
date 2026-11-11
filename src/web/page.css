@@ -114,6 +114,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .away .sent>span{white-space:nowrap}
 #startersSlot{padding:6px 0;display:grid;gap:6px;min-width:0}
 .grp{font-size:var(--fs-md);color:var(--ink);font-weight:650;padding:10px 4px 2px}
+.grp.sub{font-size:var(--fs-xs);color:var(--dim);font-weight:600;padding:6px 4px 0}
 .conv{display:grid;gap:2px;padding:8px 10px;border-radius:9px;color:var(--fg);text-decoration:none;min-width:0}
 .conv:hover{background:var(--hover)}
 /* The hover paper is lighter than the list's in dark: the dim tag and time would drop under 4.5:1 on it. */

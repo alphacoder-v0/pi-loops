@@ -2801,14 +2801,16 @@ function drawList() {
   convRows.length = 0;
   const today = new Date().toDateString();
   const groupOf = (r) => (new Date(r.lastActivityAt).toDateString() === today ? "Today" : "Earlier");
-  // A heading over the only group says nothing.
+  // Named as Needs you and News are, so the list is found between them; Today and Earlier sit under
+  // it, and only when both are there: a label over the only group says nothing.
+  if (rows.length) box.append(Object.assign(document.createElement("div"), { className: "grp", textContent: "Conversations" }));
   const grouped = new Set(rows.map(groupOf)).size > 1;
   let group;
   for (const r of rows) {
     const g = groupOf(r);
     if (grouped && g !== group) {
       group = g;
-      box.append(Object.assign(document.createElement("div"), { className: "grp", textContent: g }));
+      box.append(Object.assign(document.createElement("div"), { className: "grp sub", textContent: g }));
     }
     const el = convRow(r);
     box.append(el);

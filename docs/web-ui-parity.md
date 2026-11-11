@@ -765,8 +765,9 @@ weaker, and worth converting whenever one of them breaks.
       once, and the list is asked again at once*.
       A row loads that conversation's own page, so Back, a new tab and a bookmark work as links do.
       Conversations from before 0.23, or from a pi without pi-loops, are listed and open too: pi's
-      own session files are what is read. `test/web-page.test.ts`: *the list shows this project's
-      conversations, grouped Today and Earlier when both are there, with the open one marked, and
+      own session files are what is read. The list is headed **Conversations**, in the style of
+      **Needs you** and **News** around it, on a phone too. `test/web-page.test.ts`: *the list shows this project's
+      conversations under a Conversations heading, grouped Today and Earlier when both are there, with the open one marked, and
       each row is its address*, *a row says who holds it: terminal, open, pi-loops, or nothing at all*, *showing the
       list asks for no other conversation, and rides on the page's own poll at most every fifteen
       seconds*, *a title cannot carry markup or reorder its line*; `test/page-server.test.ts`: *GET
