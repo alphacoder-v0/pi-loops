@@ -457,11 +457,8 @@ function linkPathsInProse(html) {
     .join("");
 }
 
-// This page is a template literal inside a Node file, so a backtick cannot be written here at all
-// — and Markdown is made of them. Building the character keeps those two facts from colliding.
-const BT = String.fromCharCode(96);
-const RE_CODESPAN = new RegExp(BT + "([^" + BT + "]+)" + BT, "g");
-const FENCE = "^\\s*" + BT + BT + BT;
+const RE_CODESPAN = /`([^`]+)`/g;
+const RE_FENCE = /^\s*```(\w*)/;
 
 function inlineMd(text) {
   // Code spans first and put back last, so nothing inside them is read as markup.
@@ -518,11 +515,11 @@ function markdownToHtml(src) {
   const flushList = () => { if (list) { html.push("</" + list + ">"); list = ""; } };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const fence = new RegExp(FENCE + "(\\w*)").exec(line);
+    const fence = RE_FENCE.exec(line);
     if (fence) {
       flushPara(); flushList();
       const body = [];
-      for (i++; i < lines.length && !new RegExp(FENCE).test(lines[i]); i++) body.push(lines[i]);
+      for (i++; i < lines.length && !RE_FENCE.test(lines[i]); i++) body.push(lines[i]);
       html.push('<pre class="code"' + (fence[1] ? ' data-lang="' + esc(fence[1]) + '"' : "") + "><code>" + esc(body.join("\n")) + "</code></pre>");
       continue;
     }
@@ -2007,7 +2004,7 @@ function pageCommand(text) {
   return true;
 }
 
-/* /sessions: one line per session, newest first — short id, when it started, what was first said. No backticks in here: this is inside the page template. */
+/* /sessions: one line per session, newest first — short id, when it started, what was first said. */
 async function listSessionsHere() {
   const r = await api("/sessions");
   const list = r.sessions || [];
