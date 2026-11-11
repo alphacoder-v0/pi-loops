@@ -967,7 +967,7 @@ export function sessionRows(input: SessionRowsInput): SessionRow[] {
 }
 
 /**
- * The page's token block (src/web.mjs, between its markers), comments left out: the Background view
+ * The page's token block (src/web/page.css, between its markers), comments left out: the Background view
  * is drawn in the same palette, both schemes, rather than in a second one of its own.
  */
 const TOKENS = (() => {
@@ -979,7 +979,7 @@ const TOKENS = (() => {
 /** The page's own before-first-paint rule (src/web.mjs): the theme chosen there, `localStorage.theme`. */
 const THEME_SCRIPT = `try { var t = localStorage.getItem("theme"); if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; } catch (e) {}\n`;
 
-/** The page's clock (src/web.mjs, between its markers), writing every `<time>` of the Background view in this browser's format. */
+/** The page's clock (src/web/page.js, between its markers), writing every `<time>` of the Background view in this browser's format. */
 const CLOCK_SCRIPT = (() => {
 	const from = PAGE.indexOf("/* clock: */");
 	const to = PAGE.indexOf("/* :clock */");
@@ -2915,7 +2915,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					await snapshot(child);
 					const answer = await child.swapSession(child.newSessionPath());
 					// The pool re-keys the child to the new id and its pages are told, before this answers. The
-					// answer carries the id too: the page moves on it before it reloads (src/web.mjs swap).
+					// answer carries the id too: the page moves on it before it reloads (src/web/page.js swap).
 					await snapshot(child);
 					return void json(res, { ...answer, sessionId: child.sessionId });
 				}

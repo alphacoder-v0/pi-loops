@@ -273,7 +273,7 @@ test("the Background view's times are written by the page's own clock, from the 
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { background: status } });
 	try {
 		const html = await (await fetch(`${page.url}background?token=${TEST_TOKEN}`)).text();
-		const clockSrc = /\/\* clock: \*\/([\s\S]*?)\/\* :clock \*\//.exec(fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8"))?.[1];
+		const clockSrc = /\/\* clock: \*\/([\s\S]*?)\/\* :clock \*\//.exec(fs.readFileSync(path.join(process.cwd(), "src", "web", "page.js"), "utf8"))?.[1];
 		assert.ok(clockSrc && html.includes(clockSrc.trim()), "the strip's clock, the same text");
 		assert.match(html, /querySelectorAll\("time\[datetime\]"\)/);
 	} finally {

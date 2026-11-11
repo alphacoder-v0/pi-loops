@@ -77,7 +77,7 @@ export const MISS_CAP = 1000;
 /**
  * Text someone typed, made safe to draw as one line: terminal escape sequences, C0 and C1 controls,
  * and the bidi embeddings, overrides and isolates go, as the page's `plain()` takes them out
- * (src/web.mjs). Escaping stops markup; it does nothing about a U+202E that reorders the line.
+ * (src/web/page.js). Escaping stops markup; it does nothing about a U+202E that reorders the line.
  */
 export function plainText(text: string): string {
 	return String(text ?? "")

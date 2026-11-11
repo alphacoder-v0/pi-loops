@@ -218,7 +218,7 @@ const pad = (n: number) => String(n).padStart(2, "0");
 /**
  * When `sinceMs` was, said from `nowMs`, in local time: "09:14", "yesterday 23:10", "Mon 23:10",
  * "Oct 28 23:10", "Oct 28 2025 23:10". Days are calendar dates, not 24-hour steps, so a night with
- * a clock change is still one day. The page has a copy of this (src/web.mjs `sinceWords`).
+ * a clock change is still one day. The page has a copy of this (src/web/page.js `sinceWords`).
  */
 export function sinceWords(sinceMs: number, nowMs: number): string {
 	const a = new Date(sinceMs);

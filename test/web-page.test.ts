@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { THINKING_LEVELS } from "../src/thinking.ts";
+import { DOOR, PAGE } from "../src/web.mjs";
 import { type WatchPlan, askTitle, planCard, watchOptions } from "../src/watch-plan.ts";
 
 /**
@@ -12,16 +13,14 @@ import { type WatchPlan, askTitle, planCard, watchOptions } from "../src/watch-p
  * which never executes a line of the page — and so `num is not defined` shipped in four releases,
  * where it threw inside the first `refresh()`, killed the startup, and left the front end with no
  * EventSource at all: you could send a message and never see a reply. A parser (`node --check`)
- * cannot catch that and the linter does not read template literals.
+ * cannot catch that, and the linter cannot see whether a name is defined.
  */
 /**
  * The page has two scripts: a short one in the head that applies the stored theme before the first
- * paint, and the rest at the bottom. `lastIndexOf` takes the second, which is what these tests run.
+ * paint, and the rest at the bottom, which is src/web/page.js and what these tests run.
  */
 function headScript(): string {
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
-	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(src)?.[1] ?? "";
-	return html.slice(html.indexOf("<script>") + 8, html.indexOf("</" + "script>"));
+	return PAGE.slice(PAGE.indexOf("<script>") + 8, PAGE.indexOf("</script>"));
 }
 
 /** A version for the page under test: what matters is only whether it matches what /state says. */
@@ -30,13 +29,10 @@ const PAGE_UNDER_TEST = "0.0.0-test";
 const SESSION_UNDER_TEST = "test-session";
 
 function pageScript(served: { token?: string; secret?: string } = {}): string {
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
-	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(src)?.[1];
-	assert.ok(html, "found the page in src/web.mjs");
 	// The server substitutes these on the way out; the tests have to as well or the page is
 	// running with placeholders where its own identity should be.
-	return html
-		.slice(html.lastIndexOf("<script>") + 8, html.lastIndexOf("</" + "script>"))
+	return fs
+		.readFileSync(path.join(process.cwd(), "src", "web", "page.js"), "utf8")
 		.replace("__TOKEN__", served.token ?? "test-token")
 		.replace("__DEVICE_SECRET__", served.secret ?? "")
 		.replace("__SESSION__", SESSION_UNDER_TEST)
@@ -815,7 +811,7 @@ test("Enter in a confirmation dialog hits cancel, not approve", () => {
 	 * cannot see either — `querySelector` returns a detached element and `focus()` does nothing — so
 	 * this is asserted on the source, the way the soft-keyboard rule below is.
 	 */
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.match(src, /dlg\.querySelector\("menu button"\)\?\.focus\(\)/, "the dialog focuses the first menu button");
 
 	const at = src.indexOf('<dialog id="ask"');
@@ -1051,7 +1047,7 @@ test("below 1000 px of conversation, undo, find, compact and resume stay in the 
 	assert.doesNotMatch(narrow, /\.grow>#actions\{display:none\}/, "and the whole row is not hidden at a laptop width");
 	const phone = /@media \(max-width:760px\)\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
 	assert.match(phone, /\.grow>#actions\{display:none\}/, "on a phone every action is behind ⋯, as before");
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	const actions = /<span id="actions">([\s\S]*?)<\/span>/.exec(src)?.[1] ?? "";
 	for (const id of ["undo", "find", "compact", "resume", "reload", "save", "share", "adddev", "theme"]) assert.match(actions, new RegExp(`id="${id}"`), `${id} is one of the header's actions, so the sheet lists it`);
 });
@@ -1059,8 +1055,7 @@ test("below 1000 px of conversation, undo, find, compact and resume stay in the 
 test("the stored theme is applied before the first paint", () => {
 	// Applied with the rest of the script, a dark page renders light and then blinks. The test that
 	// matters is where the code is, not what it does: it has to be its own tag, above the style.
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
-	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(src)?.[1] ?? "";
+	const html = PAGE;
 	assert.ok(html.indexOf("<script>") < html.indexOf("<style>"), "the theme script comes before the stylesheet");
 
 	const head = headScript();
@@ -1146,7 +1141,7 @@ test("a tool call that never returns stops saying it is running", { timeout: 20_
 });
 
 test("the find bar is actually hidden, and a metric tile is clickable where the numbers are", () => {
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	// A rule that sets display beats the browser's own [hidden] rule, so the page has to say it.
 	assert.match(src, /#findbar\[hidden\]\{display:none\}/, "the find bar can be hidden at all");
 
@@ -1186,7 +1181,7 @@ test("events already in the transcript are skipped by number, not by a timer", {
 });
 
 test("the stylesheet does not let one thing style another", () => {
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	// The pairing code used to be `class="code"`, which is also what a fenced code block gets, so
 	// every line of code on the page was rendered with .28em of letter-spacing. Seen, not deduced.
 	assert.doesNotMatch(src, /id="pairCode" class="code"/, "the pairing code is styled by its id");
@@ -1198,8 +1193,7 @@ test("the stylesheet does not let one thing style another", () => {
 
 /** The page's stylesheet, and the token block in it (between its markers). */
 function pageStyle(): { css: string; tokens: string; rest: string } {
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
-	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(src)?.[1] ?? "";
+	const html = PAGE;
 	const css = html.slice(html.indexOf("<style>") + 7, html.indexOf("</style>"));
 	const from = css.indexOf("/* tokens: */");
 	const to = css.indexOf("/* :tokens */");
@@ -1236,7 +1230,7 @@ test("the stylesheet carries Inspire's paper and amber in both schemes, and no c
 	assert.doesNotMatch(rest, /outline:none/, "and no rule hides it");
 	assert.match(rest, /button\.primary\{background:var\(--brand\);[^}]*color:var\(--brand-ink\)/, "the primary button is amber");
 	assert.match(rest, /#stale\{[^}]*color:var\(--brand-ink\)/, "the stale banner's text is the ink for amber, which white on light amber is not");
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.doesNotMatch(src, /style="color:#/, "a state colour in the panel is a class, not an inline colour");
 });
 
@@ -1283,23 +1277,21 @@ test("a stale completion answer cannot overwrite a newer one", { timeout: 20_000
 test("undo does not claim to have put a message back when it has not", () => {
 	// pi hands back the forked message when there was one. The notice used to say it was in the
 	// composer either way.
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.match(src, /\$\("input"\)\.value \? "forked from your last message — it is back in the composer" : "forked from your last message"/);
 });
 
 test("the door page is readable on a phone and follows the system theme", () => {
 	// It is the first screen a new device sees, and it had neither a viewport nor a colour scheme:
 	// desktop-width text, and a white flash on a phone in dark mode.
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
-	const door = /const DOOR = `([\s\S]*?)`;/.exec(src)?.[1] ?? "";
+	const door = DOOR;
 	assert.match(door, /name="viewport"/, "it has a viewport");
 	assert.match(door, /name="color-scheme" content="light dark"/, "and follows the system theme");
 	assert.match(door, /background:Canvas;color:CanvasText/, "with surfaces that follow it too");
 });
 
 test("the door is a heading, one line per way in, and the code field: pi-loops open here, pi-loops pair for another device", () => {
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
-	const door = /const DOOR = `([\s\S]*?)`;/.exec(src)?.[1] ?? "";
+	const door = DOOR;
 	assert.match(door, /<h2[^>]*>This browser has not been here before\.<\/h2>/, "docs/troubleshooting.md quotes it");
 	// "Run pi-loops" was what the person had just done, and "add device" needs a browser already in.
 	assert.deepEqual([...door.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map((m) => m[1]), [
@@ -1376,7 +1368,7 @@ test("a phone's soft keyboard cannot steal the tap on send", () => {
 	// Tapping a button beside the box blurs the box, which dismisses the keyboard, which relayouts
 	// the page — and the tap lands where the button used to be. Not reproducible in a desktop
 	// browser, which is why this is asserted on the source rather than on behaviour.
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.match(src, /form#composer button[\s\S]{0,240}pointerdown[\s\S]{0,80}preventDefault/, "the composer's buttons do not take focus on pointerdown");
 });
 
@@ -2284,7 +2276,7 @@ test("every block keeps its time where a touch screen can show it, not only in a
 		assert.match(el.dataset.when, /\d{2}:\d{2}/, `${el.className} keeps its time as data, not only as a tooltip`);
 		assert.equal(el.dataset.when, el.title, "the same time in both");
 	}
-	assert.match(fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8"), /@media \(pointer:coarse\)\{\.row\[data-when\]::after\{content:attr\(data-when\)/, "and a coarse pointer shows it");
+	assert.match(PAGE, /@media \(pointer:coarse\)\{\.row\[data-when\]::after\{content:attr\(data-when\)/, "and a coarse pointer shows it");
 	dom.dispose();
 });
 
@@ -2976,7 +2968,7 @@ test("the list has no tabs: every row is shown, the dot marks what changed since
 	assert.deepEqual(dots(), ["new-since"], "only what changed since this browser last looked");
 	const old = rowsOf().find((r) => r.dataset.conv === "old");
 	assert.match(textOf(old), /⚑ 1/, "the row says what needs you");
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.doesNotMatch(src, /role="tablist"|pi-loops-segment/, "no tab bar above the cards");
 	dom.dispose();
 
@@ -3031,7 +3023,7 @@ test("choosing another project asks for that project's list by its cwd", { timeo
 	assert.deepEqual(picker.children.map((o: any) => o.value), ["/work/api", "/work/web"]);
 	assert.deepEqual(picker.children.map((o: any) => o.textContent), ["api", "web"], "the folder's name, which a narrow select does not cut to its tail");
 	assert.deepEqual(picker.children.map((o: any) => o.title), ["/work/api", "/work/web"], "the whole path is the title");
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.doesNotMatch(src, /id="cwd"/, "the header does not say the project a second time");
 	picker.value = "/work/web";
 	picker.onchange();
@@ -3104,7 +3096,7 @@ test("the status bar says whether pi-loops runs", { timeout: 20_000 }, async () 
 	let dom = await startPage({ ...STATE, automation: { ...STATE.automation, hostPid: 77 } }, { "/conversations": listAnswer(ROWS) });
 	const doc = () => (globalThis as any).document;
 	assert.match(textOf(doc().getElementById("sbHost")), /pi-loops running in the background/);
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.match(src, /<footer class="sbar" aria-label="Status"><a id="sbHost" href="\/background"><\/a><\/footer>/, "no loop count beside the pane that lists them, no terminal count beside the rows' terminal tags");
 	assert.equal(doc().getElementById("cardsSlot")._text, "", "no count line: the inbox has cards of its own there");
 	dom.dispose();
@@ -3120,7 +3112,7 @@ test("the frame's class names are its own: nothing in it reuses a name the conve
 		if (!/#rail|#list|\.conv\b|\.sbar|\.tabs|\.held|\.lhead|\.grp/.test(selector)) continue;
 		assert.doesNotMatch(selector, /\.(card|row|dot|empty|t|m)\b/, `the frame's rule ${selector} styles one of the page's own names`);
 	}
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.match(src, /<aside id="loops"/, "the loops rail is found by its id");
 	assert.doesNotMatch(src, /querySelector\("aside"\)/, "not by its tag, which a second column would share");
 });
@@ -3167,7 +3159,7 @@ test("a terminal that answers nothing is not said to answer, and that is the one
 });
 
 test("the status bar is the one way to the Background view, and a phone shows it under the Loops pane", () => {
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	const html = src.slice(src.indexOf('<nav id="rail"'), src.indexOf('<dialog id="menu"'));
 	assert.deepEqual([...html.matchAll(/<a [^>]*href="\/background"[^>]*>/g)].map((m) => m[0]), ['<a id="sbHost" href="/background">'], "one link, the status bar's");
 	assert.doesNotMatch(src, /What pi-loops is doing in the background/);
@@ -3251,7 +3243,7 @@ test("the ⋯ sheet ends with the conversation's whole id, to copy", { timeout: 
 	const dom = await startPage({ ...STATE, sessionId: "01a1a1ee-5090-730c-8474-cfd9d591868b" }, { "/conversations": listAnswer(ROWS) });
 	const doc = (globalThis as any).document;
 	assert.equal(doc.getElementById("sid")._text, "01a1a1ee-5090-730c-8474-cfd9d591868b");
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.match(src, /<div id="menuBody"><\/div><div id="sid" class="sid"><\/div>/, "the last line of the sheet");
 	assert.match(src, /\.sid\{[^}]*user-select:all/, "one click selects all of it");
 	assert.doesNotMatch(src, /^#more\{display:none\}/m, "⋯ is there at every width, so the id is too");
@@ -3388,7 +3380,7 @@ test("the Loops pane lists loops: no inbox count and no summary line, and its ra
 	await new Promise((r) => setTimeout(r, 400));
 	const panel = String(g.document.getElementById("auto").innerHTML);
 	assert.doesNotMatch(panel, /inbox <b>|job\(s\)|rule\(s\)/, panel);
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.match(src, /<button type="button" id="railList" class="on" title="Inbox" aria-label="Inbox">/, "the rail and the phone's tab bar name the pane one way");
 	assert.match(src, /<nav id="list" aria-label="Inbox">/);
 	assert.match(src, /<span>Inbox<\/span><\/a>/);
@@ -3405,7 +3397,7 @@ test("more new findings than the cards show is a count, with no terminal command
 });
 
 test("a control has a title only when it says what its label does not", { timeout: 20_000 }, async () => {
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	const html = src.slice(src.indexOf('<nav id="rail"'), src.indexOf('<dialog id="menu"'));
 	const tag = (id: string) => new RegExp(`<[a-z]+ [^>]*id="${id}"[^>]*>`).exec(html)?.[0] ?? `#${id} missing`;
 	for (const id of ["watchFor", "newConv", "model", "expand", "reload", "find", "undo", "share", "compact", "resume", "adddev", "theme", "notifyMe"]) {
@@ -3429,7 +3421,7 @@ test("a control has a title only when it says what its label does not", { timeou
 });
 
 test("the Loops pane shows Goal only while a goal is set, and has no This conversation section", { timeout: 20_000 }, async () => {
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.doesNotMatch(src, /<summary>This conversation<\/summary>/, "the conversation is on screen; the model is in the header");
 	let dom = await startPage(STATE, {});
 	const doc = () => (globalThis as any).document;
@@ -3516,7 +3508,7 @@ test("See the run opens the run's lines read-only, as text", { timeout: 20_000 }
 });
 
 test("inbox card buttons are at least 32 px tall and the card wraps rather than scroll sideways", () => {
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.match(src, /\.icard button\{min-height:32px/);
 	assert.match(src, /@media \(pointer:coarse\)\{button,select,\.icard button\{min-height:40px\}\}/, "a touch screen gets the 40 px every button there gets");
 	assert.match(src, /\.icard\{[^}]*overflow-wrap:anywhere/);
@@ -3546,7 +3538,7 @@ test("a claim's card follows the server: queued while its row waits, then says i
 });
 
 test("a disabled card button looks disabled, and a disabled button does not change on hover", () => {
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.match(src, /\.icard button:disabled\{[^}]*opacity:\.45[^}]*cursor:default/);
 	assert.doesNotMatch(src, /\.icard button:disabled:hover\{background:transparent/, "a transparent hover outranks button.primary: a disabled Yes would lose its amber");
 	assert.match(src, /\.icard button:disabled:not\(\.primary\):hover\{background:transparent;color:var\(--muted\)\}/, "an ordinary one keeps its resting look");
@@ -3759,7 +3751,7 @@ test("the page's since words are src/seen.ts's, across midnight, in two time zon
 });
 
 test("the away card wraps between its parts and keeps the inbox card's buttons", () => {
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.match(src, /\.away \.sent\{display:flex;flex-wrap:wrap/);
 	assert.match(src, /\.away \.sent>span\{white-space:nowrap/);
 });
@@ -3895,7 +3887,7 @@ test("the Watch for… box opens with three examples and no caption, and an exam
 	const ex = doc.getElementById("watchEx").children;
 	assert.equal(ex.length, 3, "three examples, and nothing else");
 	assert.equal(ex.filter((e: any) => e.tag === "button").length, 3);
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.match(src, /<h3 id="watchTitle">Watch for…<\/h3>/);
 	assert.doesNotMatch(src, /\$\("watchTitle"\)\.textContent =/, "the title is the button's words, whatever the project");
 	assert.match(src, /<textarea id="watchText" rows="3" aria-label="[^"]+" placeholder="A time or a thing to wait for, and what to do then"><\/textarea>/, "the box is named for a screen reader, with no label above it");
@@ -4178,7 +4170,7 @@ test("a sentence queued behind a busy turn waits for its own turn's question, no
 test("closing the box keeps a waiting card; it is there when you reopen it", { timeout: 20_000 }, async () => {
 	// The layout rule, pinned in the page's own stylesheet: the body scrolls, the menu does not, the
 	// card's buttons stick to the bottom of what is in view.
-	const page = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const page = PAGE;
 	assert.match(page, /#watch\{[^}]*max-height:90dvh;overflow:hidden\}/);
 	assert.match(page, /#watch\[open\]\{display:flex;flex-direction:column\}/, "a closed dialog stays closed: the flex layout applies only while it is open");
 	assert.match(page, /#watchBody\{overflow:auto;min-height:0;flex:1 1 auto\}/);
@@ -4355,7 +4347,7 @@ test("on plain http the notification switch says it needs https or localhost and
 });
 
 test("the strip stays one line on a phone and nothing in it scrolls sideways", () => {
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.match(src, /#activitySlot \.strip-head\{[^}]*white-space:nowrap;overflow:hidden/);
 	assert.match(src, /#activitySlot li \.t\{overflow:hidden;text-overflow:ellipsis/);
 	assert.match(src, /#activitySlot ul\{[^}]*overflow-y:auto;overflow-x:hidden/);
@@ -4529,7 +4521,7 @@ test("a run card in the transcript and replayed as it landed is drawn once, by i
 });
 
 test("opening the strip keeps the end of the conversation in view", { timeout: 20_000 }, async () => {
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.match(src, /#activitySlot\{[^}]*flex:none/, "the strip takes its own room below the feed, never over it");
 	const { doc, slot, done } = await activityPage(activityAnswer());
 	try {
@@ -4699,7 +4691,7 @@ test("a rule that waits for a path says what it waits for and when it looks next
 });
 
 test("the loop row's confirm is built around clicks only, and at 390 px its buttons stack at full width and at least 32 px tall", () => {
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	const row = src.slice(src.indexOf("function drawLoopRow"), src.indexOf("function drawLoopRow") + 4000);
 	assert.doesNotMatch(row, /keydown|Escape|key ===/, "no key handler: closing by any means loses nothing");
 	const { rest } = pageStyle();
@@ -4812,8 +4804,7 @@ test("an applied next run that has passed gives way to the store's, so a row nev
 
 test("a loop row's signal line and its note each take their own line, so the note never runs on after 'quiet ×N'", () => {
 	// The loop rows in the side panel are not inside a flex column, so a span would run on inline.
-	const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "web.mjs"), "utf8");
-	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(src)?.[1] ?? "";
+	const html = PAGE;
 	assert.match(html, /\.loopx \.signal\{display:block[;}]/);
 });
 
@@ -4849,7 +4840,7 @@ test("the cost badge waits for a cost, and the composer says only Message pi", {
 		assert.equal(doc.getElementById("cost").textContent, want, JSON.stringify(stats));
 		dom.dispose();
 	}
-	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const src = PAGE;
 	assert.ok(src.includes('<textarea id="input" placeholder="Message pi">'), "/ and @ are left to the pop-ups they open");
 });
 
@@ -4924,7 +4915,7 @@ test("the list reads what needs you, then the conversations, then news, and the 
 	assert.ok(!doc.getElementById("needsSlot").children.includes(news));
 	dom.dispose();
 	// The slots are the list's markup: their order is the order a person reads.
-	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8"))?.[1] ?? "";
+	const html = PAGE;
 	const scroll = /<div class="lscroll" id="lscroll">([\s\S]*?)\n {2}<\/div>/.exec(html)?.[1] ?? "";
 	assert.deepEqual([...scroll.matchAll(/id="([^"]+)"/g)].map((m) => m[1]), ["awaySlot", "needsSlot", "convs", "cardsSlot", "startersSlot"]);
 });

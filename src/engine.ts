@@ -761,7 +761,7 @@ export interface DrainOptions {
  * what is left to cover is pi's pre-run phase after its `input` event: the other extensions' input
  * handlers and the credential check, which can go to the network, none of which pi reports. Five
  * seconds covered `before_agent_start` handlers alone, and a tick landing after a slow credential
- * check failed a send pi then ran. The name stays: src/web.mjs reads it for its follow-up ring.
+ * check failed a send pi then ran. The name stays: src/web/page.js reads it for its follow-up ring.
  */
 export const PERSON_SEND_GRACE_MS = 10_000;
 
