@@ -2224,11 +2224,6 @@ for (const dlg of document.querySelectorAll("dialog")) {
 }
 
 /* ---------------- the actions sheet ---------------- */
-/**
- * The same buttons, moved rather than duplicated: a second copy means two of every id, two
- * handlers, and one of them going stale the next time somebody edits the other. On a wide screen
- * they live in the header; on a narrow one they are behind ⋯, and this carries them there and back.
- */
 /** The sheet's two groups: what acts on this conversation, and what sets up this browser. */
 const MENU_GROUPS = [
   ["Conversation", ["reload", "find", "undo", "save", "share", "compact", "resume"]],
@@ -2236,6 +2231,11 @@ const MENU_GROUPS = [
 ];
 /** On a phone the title has the header to itself: the pickers are at the top of the sheet's first group. */
 const PICKERS = ["model", "thinking"];
+/**
+ * The same buttons, moved rather than duplicated: a second copy means two of every id, two
+ * handlers, and one of them going stale the next time somebody edits the other. On a wide screen
+ * they live in the header; on a narrow one they are behind ⋯, and this carries them there and back.
+ */
 $("more").onclick = () => {
   const body = $("menuBody");
   body.append($("cost"));
