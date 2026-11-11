@@ -3918,14 +3918,15 @@ function cardParts(card: any) {
 	const chip = (key: string) => all.find((b) => b.dataset?.key === key);
 	const foot = card.children.find((c: any) => c.className === "foot");
 	const acts = foot?.children.find((c: any) => c.className === "acts");
-	assert.ok(foot && acts, "the card ends in a footer that holds the status and the buttons");
+	assert.ok(foot, "the card ends in a footer that holds the status and, while it can be answered, the buttons");
 	assert.ok(!treeText(card).includes("Not right?"), "Read it says it: no hint under the card");
 	return {
 		text: treeText(card),
 		chip,
 		on: all.filter((b) => b.className === "on").map((b) => b._text),
-		set: acts.children.find((b: any) => b._text === "Set it up"),
-		cancel: acts.children.find((b: any) => b._text === "Cancel"),
+		buttons: all.length,
+		set: acts?.children.find((b: any) => b._text === "Set it up"),
+		cancel: acts?.children.find((b: any) => b._text === "Cancel"),
 		status: foot.children.find((c: any) => c.className === "cstat")?._text ?? "",
 	};
 }
@@ -4024,6 +4025,9 @@ test("a watch question draws the card from its title and options, in the box whi
 	assert.match(card.text, /Put it in my inbox/);
 	assert.equal(doc.getElementById("watchStatus").hidden, true, "the reading line is gone");
 	assert.ok(card.cancel && card.set, "Cancel and Set it up");
+	const primaries = [doc.getElementById("watchRead"), card.set, card.cancel].filter((b: any) => b.className === "primary");
+	assert.deepEqual(primaries, [card.set], "Set it up is the one primary button while a plan is shown");
+	assert.equal(doc.getElementById("watchEx").hidden, true, "and the examples give the plan their room");
 	assert.deepEqual(cards("modal")[0]._scrolledTo, { block: "start" }, "the card is scrolled to the top of the box, so what it says comes before its buttons");
 	assert.equal(card.cancel._parent.children.indexOf(card.cancel) < card.cancel._parent.children.indexOf(card.set), true, "Cancel first, so Enter hits it");
 
@@ -4106,7 +4110,8 @@ test("the tool's result in the same turn turns every card of the question into a
 	assert.equal(cards("feed").length, 1, "the transcript gets the receipt once the question settles");
 	const receipt = cardParts(cards("feed")[0]);
 	assert.equal(receipt.status, "Set up ~/build.done appears · shows here · once");
-	assert.equal(receipt.set.disabled, true, "settled");
+	assert.equal(receipt.buttons, 0, "a receipt has nothing to press");
+	assert.match(receipt.text, /Result Show it in this conversation Repeats Once, then turn itself off/, "what was chosen, as text");
 	// A loop is named as the Loops pane names it: its name, else the first 13 characters of its id.
 	ask("ask-2", DAILY);
 	result("cron_create", `created cron job cron-${"d".repeat(32)}`, { id: `cron-${"d".repeat(32)}`, stateful: true });
@@ -4168,9 +4173,8 @@ test("a question pi answered on its own is not left waiting: the turn's end, or 
 	send({ type: "agent_end" });
 	const ended = cardParts(cards("feed")[0]);
 	assert.equal(ended.status, "Not set up");
-	assert.equal(ended.set.disabled, true);
-	ended.set.onclick();
-	assert.deepEqual(answered(), [], "an answer to it would go nowhere: none is sent");
+	assert.equal(ended.buttons, 0, "an answer to it would go nowhere: there is nothing to press");
+	assert.deepEqual(answered(), []);
 	ask("ask-2", RULE, { timeout: 30 });
 	await until(() => cardParts(cards("feed").at(-1)).status !== "", "the question's own time ran out");
 	assert.equal(cardParts(cards("feed").at(-1)).status, "Not set up: nobody answered in time");
@@ -4271,6 +4275,8 @@ test("closing the box moves a waiting card into the conversation, where it can s
 	assert.equal(dlg._on.cancel, undefined, "nothing is designed around Escape");
 	doc.getElementById("watchFor").onclick();
 	assert.equal(doc.getElementById("watchCards").children.length, 0, "the box reopens empty: the question stays in the conversation");
+	assert.equal(doc.getElementById("watchEx").hidden, false, "with its examples");
+	assert.equal(doc.getElementById("watchRead").className, "primary", "and Read it as the button to press");
 	cardParts(waiting).set.onclick();
 	assert.deepEqual(answered(), [{ id: "ask-1", value: "Set it up · this conversation · once" }], "answered from the conversation");
 	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}`, CREATED_RULE);

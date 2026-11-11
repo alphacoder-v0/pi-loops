@@ -560,7 +560,8 @@ weaker, and worth converting whenever one of them breaks.
 
 - [x] **A watch from one sentence.** `+ Watch for…` beside `+ New` opens the box *Watch for…*: one
       sentence field, named for a screen reader, and three example sentences (English and Chinese);
-      an example fills the box. `Read it` sends the
+      an example fills the box. Once a plan card shows in the box, the examples hide and the card's
+      `Set it up` is the one primary button. `Read it` sends the
       sentence as the ordinary chat message `Watch for: <sentence>`, queued and cancellable like
       any other; `cron_create` and `new_trigger` answer it by asking the person, through pi's own
       select, before they create anything.
@@ -595,7 +596,8 @@ weaker, and worth converting whenever one of them breaks.
       ~/build.done appears · shows here · once*, *Not set up*, or *Not set up:* and why the create
       failed), and the transcript has the receipt once the question settles. The receipt names a
       rule by its condition and a loop by its name, else the first 13 characters of its id, as the
-      Loops pane does.
+      Loops pane does; a loop made without a name is named from the first words of its prompt. A
+      receipt shows the chosen Result, Repeats and Checks as text and has no buttons.
       `test/web-page.test.ts`: *the tool's result in the same turn turns every card of the question
       into a receipt*.
 - [x] A card in the box that is set up or cancelled closes the box, the way its close button does,

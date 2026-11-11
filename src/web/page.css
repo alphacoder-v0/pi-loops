@@ -401,13 +401,14 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 #watch label{display:block;font-size:var(--fs-sm);color:var(--dim);margin:0 0 6px}
 #watch textarea{width:100%;box-sizing:border-box;min-height:4.5em;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;background:var(--panel);color:var(--fg);resize:vertical}
 #watchEx{display:flex;flex-wrap:wrap;gap:5px;align-items:center;font-size:var(--fs-sm);margin:6px 0 0}
+#watchEx[hidden]{display:none}
 #watchEx button{border:0;background:var(--hover);border-radius:999px;padding:4px 10px;min-height:32px;font-size:var(--fs-sm);color:var(--fg);text-align:left;max-width:100%;overflow-wrap:anywhere;white-space:normal}
 #watchEx button:hover{color:var(--brand)}
 #watchStatus{margin-top:10px}
 #watchStatus.bad{color:var(--bad)}
 #watchCards{display:grid;gap:10px;margin-top:10px}
 .plan{background:var(--panel2);border-radius:12px;padding:12px 14px;display:grid;gap:10px;font-size:var(--fs-sm);min-width:0;max-width:100%;overflow-wrap:anywhere}
-.plan.done,.plan.stale{opacity:.7}
+.plan.stale{opacity:.7}
 .plan .planh{font-weight:600}
 .plan .planh.bad,.plan .bad{color:var(--bad)}
 .plan dl{margin:0;display:grid;grid-template-columns:88px minmax(0,1fr);gap:8px 10px}

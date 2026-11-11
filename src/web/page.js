@@ -3772,6 +3772,7 @@ function openWatch(prefill) {
     b.onclick = () => { $("watchText").value = e; $("watchText").focus(); };
     ex.append(b);
   }
+  watchPlanShown(false);
   if (prefill !== undefined) $("watchText").value = prefill;
   // A settled card, or the now card, goes. A card that still waits for its click is never here
   // while the box is closed: closing the box moved it into the conversation.
@@ -3779,6 +3780,11 @@ function openWatch(prefill) {
   watchSay("");
   if (!dlg.open) dlg.showModal();
   $("watchText").focus();
+}
+/** With a plan in the box, its Set it up is the one button to press, and the examples have done their job. */
+function watchPlanShown(shown) {
+  $("watchEx").hidden = shown;
+  $("watchRead").className = shown ? "" : "primary";
 }
 /** The "now" card: nothing is sent, and the box stays. */
 function nowCard() {
@@ -3814,6 +3820,7 @@ async function readWatch() {
   if (!text) return;
   const cards = $("watchCards");
   cards.innerHTML = "";
+  watchPlanShown(false);
   watchSay("");
   if (readsLikeNow(text)) { cards.append(nowCard()); return; }
   if (watchReading) clearTimeout(watchReading.timer);
@@ -3901,7 +3908,10 @@ function watchAskOf(req) {
 function chipRow(options, current, onPick) {
   const wrap = document.createElement("div");
   wrap.className = "chips";
-  const draw = (key) => { for (const b of wrap.children) { b.className = b.dataset.key === key ? "on" : ""; b.setAttribute("aria-pressed", b.dataset.key === key ? "true" : "false"); } };
+  const draw = (key) => {
+    wrap.chosen = options.find((o) => o[0] === key)?.[1] ?? "";
+    for (const b of wrap.children) { b.className = b.dataset.key === key ? "on" : ""; b.setAttribute("aria-pressed", b.dataset.key === key ? "true" : "false"); }
+  };
   for (const [key, label, sub] of options) {
     const b = document.createElement("button");
     b.type = "button";
@@ -3939,6 +3949,9 @@ function watchCardEl(rec) {
     dl.append(dt, dd);
     return [dt, dd];
   };
+  /** The chip rows, each with its cell: a receipt shows what was chosen as text, not as buttons. */
+  const chipCells = [];
+  const chipsIn = (label, chips) => { const cells = rowOf(label, chips); chipCells.push([cells[1], chips]); return cells; };
   const textOf = (text, cls) => { const s = document.createElement(cls === "pre" ? "pre" : "span"); if (cls && cls !== "pre") s.className = cls; s.textContent = plain(String(text ?? "")); return s; };
   // The rows are the plan: the terminal's question keeps the Command line, the card does not repeat it.
   for (const [label, value] of ask.rows) {
@@ -3948,7 +3961,7 @@ function watchCardEl(rec) {
   /** The rows that hold only for a result in the inbox: a stateful loop's notes, and its checker. */
   const inboxRows = [];
   const showInboxRows = () => { for (const el of inboxRows) el.hidden = choice.where !== "inbox"; };
-  rowOf("Result", chipRow(
+  chipsIn("Result", chipRow(
     rule
       ? [["chat", "Show it in this conversation"], ["inbox", "Put it in my inbox"]]
       : [["inbox", "Put it in my inbox"], ["chat", "Show it in this conversation"]],
@@ -3957,10 +3970,10 @@ function watchCardEl(rec) {
   ));
   if (!rule) {
     inboxRows.push(...rowOf("Remembers", textOf("what changed since the last run")));
-    if (ask.options.some((o) => watchChoiceOf(o)?.checks)) inboxRows.push(...rowOf("Checks", chipRow([["none", "None"], ["checks", "Each finding, before the inbox"]], choice.checks ? "checks" : "none", (k) => { choice.checks = k === "checks"; })));
+    if (ask.options.some((o) => watchChoiceOf(o)?.checks)) inboxRows.push(...chipsIn("Checks", chipRow([["none", "None"], ["checks", "Each finding, before the inbox"]], choice.checks ? "checks" : "none", (k) => { choice.checks = k === "checks"; })));
     showInboxRows();
   }
-  if (rule) rowOf("Repeats", chipRow([["once", "Once, then turn itself off"], ["every", "Every time it happens"]], choice.once ? "once" : "every", (k) => { choice.once = k === "once"; }));
+  if (rule) chipsIn("Repeats", chipRow([["once", "Once, then turn itself off"], ["every", "Every time it happens"]], choice.once ? "once" : "every", (k) => { choice.once = k === "once"; }));
   const status = document.createElement("div");
   status.className = "cstat";
   const acts = document.createElement("div");
@@ -3985,8 +3998,9 @@ function watchCardEl(rec) {
   card.wait = (text) => { cancel.disabled = set.disabled = true; status.textContent = text; };
   card.settle = (line) => {
     card.pending = false;
-    cancel.disabled = set.disabled = true;
     card.classList.add("done");
+    acts.remove();
+    for (const [dd, chips] of chipCells) { chips.remove(); dd.append(textOf(chips.chosen)); }
     status.textContent = line;
   };
   if (rec.answered) card.wait(rec.answered);
@@ -4027,6 +4041,7 @@ function watchAsked(ask) {
   watchSay("");
   rec.modal = card;
   $("watchCards").append(card);
+  watchPlanShown(true);
   // What the card says comes before its buttons: scrolled to the top of the box, on a short screen too.
   if (card.scrollIntoView) card.scrollIntoView({ block: "start" });
 }
