@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { parseTriggerRule } from "../src/triggers.ts";
 import { type WatchPlan, actionDanger, askTitle, planCard, scheduleWords, watchChoice, watchOptions } from "../src/watch-plan.ts";
 
 const NOW = Date.parse("2026-11-05T10:00:00");
@@ -25,8 +26,12 @@ test("planCard says a schedule in words with its next run, and a rule with how o
 	assert.equal(rule.looksEverySecs, 600);
 	assert.equal(rule.next, undefined);
 	assert.equal(rule.command, "/new-trigger when ~/build.done appears, run cargo test and show me the result");
-	const model = planCard(rulePlan({ rule: { condition: "when a PR of mine gets a review", action: "tell me", cwd: "/p" } }), { now: NOW, pollSecs: 600 });
-	assert.equal(model.command, "/new-trigger when a PR of mine gets a review, tell me", "one when, not two");
+	// new_trigger stores the condition cleaned of one leading "when", so the line puts that word back
+	// and reads back as the same rule: a condition that still starts with "when" keeps it.
+	for (const condition of ["a PR of mine gets a review", "when-ready.txt appears", "when the tests pass"]) {
+		const line = planCard(rulePlan({ rule: { condition, action: "run cargo test", cwd: "/p" } }), { now: NOW, pollSecs: 600 }).command;
+		assert.equal(parseTriggerRule(line.replace(/^\/new-trigger /, "")).condition, condition, line);
+	}
 });
 
 test("the card shows the whole action and condition, redacted, and says when a loop is checked", () => {
