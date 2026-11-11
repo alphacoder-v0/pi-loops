@@ -4475,6 +4475,9 @@ test("a held conversation read again shows its three run cards, and a card saved
 		assert.equal((text.match(/cron todo/g) ?? []).length, 3, `three cards after the reload; the feed: ${text.replace(/\s+/g, " ").trim()}`);
 		assert.match(text, /start a loop[\s\S]*5s · 0 findings[\s\S]*4s · 1 finding[\s\S]*FAILED · 2s · <b>500<\/b>/, "in file order, as text");
 		assert.ok(!dom.made.some((m: any) => m.tag === "b"), "a card's text creates no element");
+		// A view a terminal drew has columns: its row is the one notice the style sheet keeps in monospace.
+		const views = dom.made.filter((m: any) => m.className === "row notice view" && m.children.some((c: any) => String(c._text).includes("cron todo")));
+		assert.ok(views.length >= 3, "each card is drawn as a view row");
 		send({ type: "entry_appended", entry: { type: "custom", customType: "pi-loops:view", data: { title: "cron todo · 3s · 2 findings", lines: [] } }, seq: 5, epoch: "aaa" });
 		send({ type: "entry_appended", entry: { type: "custom", customType: "trigger_result", data: { state: "completed" } }, seq: 6, epoch: "aaa" });
 		await new Promise((r) => setTimeout(r, 100));
@@ -5007,4 +5010,23 @@ test("a project with no loop shows one way to add one in the Loops pane, and no 
 	assert.equal(buttonIn(g.document.getElementById("auto"), "+ Add a loop"), undefined, "a project with a loop lists it instead");
 	assert.equal(g.document.getElementById("runtimeBox").hidden, false);
 	one.dispose();
+});
+
+test("the page's text comes in four sizes, each named once on the root", () => {
+	// This reads the style sheet as text, against the usual rule here: the stub DOM computes no
+	// styles, so the sheet is the only place a size can be read. It checks values, not formatting.
+	const css = fs.readFileSync(path.join(process.cwd(), "src", "web", "page.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+	const tokens = [...css.matchAll(/--fs-([a-z]+):([^;}]+)/g)].map((m) => [m[1], m[2].trim()]);
+	assert.deepEqual(tokens, [["xs", "11px"], ["sm", "13px"], ["md", "15px"], ["lg", "16px"]]);
+	const token = /^var\(--fs-(xs|sm|md|lg)\)$/;
+	const sizes = [...css.matchAll(/font-size:([^;}]+)/g)].map((m) => m[1].trim());
+	// A shorthand's size is the word before the family, with its line height after a slash.
+	const shorthands = [...css.matchAll(/[{;]font:([^;}]+)/g)]
+		.map((m) => m[1].trim())
+		.filter((v) => v !== "inherit")
+		.map((v) => v.split(/\s+(?=var\(--font-)/)[0].split(/\s+/).pop()!.split("/")[0]);
+	assert.ok(sizes.length > 40 && shorthands.length >= 2, "the sheet was read");
+	// The pairing code is read off one screen to type into another: twice the large size.
+	const off = [...sizes, ...shorthands].filter((v) => !token.test(v) && v !== "calc(var(--fs-lg) * 2)");
+	assert.deepEqual(off, [], "every font size is one of the four tokens");
 });
