@@ -6,6 +6,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { HOST_SERVICE_FILE, type HostServiceRecord, LEAVE_WAIT_MS, PAGE_TURN_WAIT_MS, decideEnsure, ensureHost, stopWaitsForPage, waitForPageTurns, hostPushWork, hostServiceAlive, hostSpawnArgs, piPackageDir, readHostService, readSpawnLog, spawnHost } from "../src/host-control.ts";
+import { hostSocketPath } from "../src/host-control-channel.ts";
+import { pidAlive } from "../src/lock.ts";
 import { procStart } from "../src/lease.ts";
 import { THINKING_LEVELS, requireThinkingLevel, thinkingLevelOrUndefined } from "../src/thinking.ts";
 
@@ -203,15 +205,18 @@ test("with nothing busy in the page, nothing waits and nothing is said", async (
 test("the side that asked waits longer than the page's turns may take, and reports no failure meanwhile", async () => {
 	assert.equal(PAGE_TURN_WAIT_MS, 120_000);
 	assert.ok(LEAVE_WAIT_MS >= PAGE_TURN_WAIT_MS + 60_000, "the bound, the 10 s shutdown and room to spare");
-	// An older process still letting a turn finish: the newer one asks, waits, and says nothing failed.
+	// An older process still letting a turn finish: it answers the upgrade on its control socket,
+	// so the newer one asks, waits, and says nothing failed.
 	const dir = tmp("pi-loops-host-");
-	const old = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)", "src/host.ts"], { stdio: "ignore" });
+	const ready = path.join(dir, "standin-ready");
+	const old = spawn(process.execPath, ["-e", 'const net = require("net"); const fs = require("fs"); const s = net.createServer((c) => { c.once("data", () => { c.end(JSON.stringify({ ok: true }) + "\\n"); c.destroy(); }); }); s.listen(process.argv[1], () => fs.writeFileSync(process.argv[2], "r")); setTimeout(() => {}, 30000);', hostSocketPath(dir), ready, "src/host.ts"], { stdio: "ignore" });
+	for (let i = 0; i < 100 && !fs.existsSync(ready); i++) await new Promise((r) => setTimeout(r, 50));
 	try {
 		await new Promise((r) => setTimeout(r, 100));
 		const rec: HostServiceRecord = { v: 1, pid: old.pid!, startedAt: new Date().toISOString(), version: "0.9.0", entry: "src/host.ts", node: "node", dir, socket: "", token: "t", managed: "spawned" };
 		fs.writeFileSync(path.join(dir, HOST_SERVICE_FILE), JSON.stringify(rec));
 		const began = Date.now();
-		// `npm test` sets PI_LOOPS_HOST=off; this one asks a stand-in that never answers its socket.
+		// `npm test` sets PI_LOOPS_HOST=off; this one asks the stand-in's live control socket.
 		const off = process.env.PI_LOOPS_HOST;
 		delete process.env.PI_LOOPS_HOST;
 		let out: Awaited<ReturnType<typeof ensureHost>>;
@@ -236,5 +241,35 @@ test("the side that asked waits longer than the page's turns may take, and repor
 		assert.equal(readSpawnLog(dir).attempts.length, 0, "and it started nothing beside it");
 	} finally {
 		old.kill();
+	}
+});
+
+test("an upgrade the socket cannot deliver evicts the old process and starts the new one", async () => {
+	const dir = tmp("pi-loops-host-");
+	// The older process never binds the control socket: a removed socket, a channel no one answers.
+	const old = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)", "src/host.ts"], { stdio: "ignore" });
+	try {
+		await new Promise((r) => setTimeout(r, 100));
+		const rec: HostServiceRecord = { v: 1, pid: old.pid!, startedAt: new Date().toISOString(), version: "0.9.0", entry: "src/host.ts", node: "node", dir, socket: "", token: "t", managed: "spawned" };
+		fs.writeFileSync(path.join(dir, HOST_SERVICE_FILE), JSON.stringify(rec));
+		const began = Date.now();
+		// `npm test` sets PI_LOOPS_HOST=off; this one must be able to evict and start.
+		const off = process.env.PI_LOOPS_HOST;
+		delete process.env.PI_LOOPS_HOST;
+		let out: Awaited<ReturnType<typeof ensureHost>>;
+		try {
+			out = await ensureHost({ dir, packageDir: "/nowhere", automation: { loops: 1, rules: 0, pushServers: 0 }, auto: true, stopped: false, myVersion: "1.0.0", leaveWaitMs: 600 });
+		} finally {
+			if (off === undefined) delete process.env.PI_LOOPS_HOST;
+			else process.env.PI_LOOPS_HOST = off;
+		}
+		assert.ok(Date.now() - began < 595, `no full wait bound: ${Date.now() - began} ms`);
+		assert.deepEqual(out.action, { kind: "upgrade" });
+		assert.equal(out.up, false, "the /nowhere start dies at once");
+		assert.equal(readSpawnLog(dir).attempts.at(-1)?.outcome, "died");
+		assert.equal(readHostService(dir), undefined, "the evicted record is gone");
+		assert.equal(pidAlive(old.pid!), false, "the old process was evicted");
+	} finally {
+		try { process.kill(old.pid!, "SIGKILL"); } catch { /* already gone */ }
 	}
 });

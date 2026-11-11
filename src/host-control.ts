@@ -650,10 +650,15 @@ export async function ensureHost(opts: EnsureHostOptions): Promise<{ action: Ens
 	});
 	if (action.kind === "upgrade") {
 		recordUpgrader(opts.dir, { pid: process.pid, version: opts.myVersion, procStart: procStart(process.pid) });
-		await askHost(opts.dir, { op: "upgrade" });
+		const upgradeAnswered = await askHost(opts.dir, { op: "upgrade" });
 		// A quitting window asks and goes. The claim above holds older windows back; the next window,
 		// or the next `pi-loops`, starts this version once the old process has left.
 		if (opts.wait === false) return { action };
+		// An upgrade the socket cannot deliver (a removed control socket, a channel no one answers)
+		// would cost the whole wait bound every tick, and the old process would keep running the old
+		// version the while: SIGTERM reaches it without the socket, so evict it and start this
+		// version instead of waiting for an answer it never gets.
+		if (upgradeAnswered === undefined) await evictHost(opts.dir, rec!.pid);
 		// Wait for it to go and start this version at once: the gap until the next tick is where an
 		// older window used to start the old code again. It may first let a turn in the page finish.
 		const old = rec!.pid;

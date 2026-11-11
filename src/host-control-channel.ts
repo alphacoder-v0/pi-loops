@@ -83,7 +83,7 @@ function prepareSocketDir(socketPath: string, log?: (message: string) => void): 
  * access is the directory — 0700 and ownership-checked — plus this uid comparison, which is what
  * stops another account's socket from answering for the host.
  */
-function ownedSocket(socketPath: string): boolean {
+export function ownedSocket(socketPath: string): boolean {
 	try {
 		// lstat, so a symlink pointing at someone else's socket is rejected rather than followed.
 		const st = fs.lstatSync(socketPath);
@@ -91,6 +91,19 @@ function ownedSocket(socketPath: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * Whether the host re-binds its control channel this tick. A socket file removed while the host
+ * runs (an OS temp cleaner, a manual cleanup) leaves the server listening on the deleted inode:
+ * the host keeps turning, but every control op fails, and its fresh heartbeat keeps the window
+ * from evicting it. A stale one of our own is the leftover of a degraded bind. Someone else's
+ * socket keeps the startup degrade: re-binding would only be refused again.
+ */
+export function channelNeedsRebind(input: { present: boolean; ours: boolean; listening: boolean }): boolean {
+	if (input.present && !input.ours) return false;
+	if (input.present && input.ours && input.listening) return false;
+	return true;
 }
 
 /** One of the last few runs. `stopped`: a person, a quit or a restart stopped it; `byPerson`: a person did. */

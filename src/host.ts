@@ -18,7 +18,7 @@ import { ModelRuntime, ProjectTrustStore, SettingsManager, VERSION as PI_VERSION
 import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig, pageBindPort } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
-import { hostSocketPath, recentRun, requestQueues, serveHostChannel, stopRunFrom } from "./host-control-channel.ts";
+import { channelNeedsRebind, hostSocketPath, ownedSocket, recentRun, requestQueues, serveHostChannel, stopRunFrom, type HostChannelHandlers } from "./host-control-channel.ts";
 import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, leavesWithWindows, openWindows, stopWaitsForPage, waitForPageTurns, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
 import { ChildPool, piCommand } from "./page-children.ts";
 import { type HostStatus, lanAddresses, openForLaunch, type PageServer, ring as ringChild, sessionRows, startPageServer, unsentPersonRows, webToken } from "./page-server.ts";
@@ -512,6 +512,11 @@ function everyTick(now: number): void {
 	} catch (err: any) {
 		log(`heartbeat: ${err?.message ?? err}`);
 	}
+	try {
+		healControlChannel();
+	} catch (err: any) {
+		log(`control channel heal: ${err?.message ?? err}`);
+	}
 }
 
 /**
@@ -526,6 +531,28 @@ function serveHostChannelSafely(...args: Parameters<typeof serveHostChannel>): R
 		log(`control channel unavailable: ${err?.message ?? err}`);
 		return undefined;
 	}
+}
+
+/**
+ * A control socket removed while the host runs (an OS temp cleaner for the temp fallback path,
+ * a manual cleanup) leaves the server listening on the deleted inode: the host keeps turning,
+ * but status, run, abort, page-open and pair all stop reaching it, and its fresh heartbeat keeps
+ * the window from evicting it. Re-bind the way startup does: the bind handles a stale one of
+ * ours, and degrades with a log line when the path is someone else's. The server is unref'd, so
+ * a re-bind cannot keep the process alive.
+ */
+function healControlChannel(): void {
+	const socketPath = hostSocketPath(dir);
+	let present = false;
+	try {
+		present = fs.lstatSync(socketPath).isSocket();
+	} catch {
+		/* removed */
+	}
+	if (!channelNeedsRebind({ present, ours: ownedSocket(socketPath), listening: channel?.listening ?? false })) return;
+	if (channel?.listening) channel.close(); // the server on the deleted inode
+	channel = serveHostChannelSafely(dir, channelHandlers, log);
+	log("control socket removed or stale; re-bound");
 }
 
 /** The rules, or none when triggers.json cannot be read: a status must not fail with the file it reports on. */
@@ -786,40 +813,37 @@ async function pageOpen(req: Omit<PageOpenRequest, "op">): Promise<PageOpened> {
 
 // The page binds while the socket already takes `page-open`: a launch's pi starts beside the bind.
 const firstBind = bindPageAndSay();
-const channel = serveHostChannelSafely(
-	dir,
-	{
-		status: () => snapshot(),
-		abortRun,
-		stopRun: stopRunFrom("cli", true, stopHost),
-		abortCheck: (traceId) => {
-			const match = host.triggers.runningList().find((r) => r.traceId === traceId || r.traceId.startsWith(traceId));
-			return match ? host.triggers.abort(match.traceId) : false;
-		},
-		// Called once, or twice when a plain stop cuts a restart's or an upgrade's wait short: that
-		// `stop` leaves at once, and the wait's own leave later finds the shutdown under way. A restart
-		// or an upgrade first lets a turn in the page finish, up to PAGE_TURN_WAIT_MS; a signal still
-		// leaves at once.
-		stop: (reason) => {
-			log(reason === "upgrade" ? "a newer pi-loops asked this process to make way; leaving" : reason === "restart" ? "asked to restart; leaving" : "asked to stop; leaving");
-			if (!stopWaitsForPage(reason)) return leave(0);
-			waitForPageTurns({ busy: () => pool.views().filter((c) => c.busy).length, log })
-				.catch((err: any) => log(`waiting for the page: ${err?.message ?? err}`))
-				.finally(() => leave(0))
-				.catch((err: any) => log(`leaving: ${err?.message ?? err}`));
-		},
-		run: (jobId, requestedBy) => host.scheduler.runNow(jobId, requestedBy),
-		ring: (sessionId) => host.ring(sessionId),
-		pageOpen,
-		pageKey: (sessionId) => {
-			if (!page) return { error: "the page is not served" };
-			if (!pool.has(sessionId) && !leases.read(sessionId)) return { error: `pi-loops knows no conversation ${shortSessionId(sessionId)}` };
-			return { openKey: page.openKeyFor(sessionId) };
-		},
-		pair: () => (page ? { code: page.newPairCode(), addresses: pageOnLoopback ? [] : lanAddresses(page.port()).map((a) => a.url) } : { error: "the page is not served" }),
+const channelHandlers: HostChannelHandlers = {
+	status: () => snapshot(),
+	abortRun,
+	stopRun: stopRunFrom("cli", true, stopHost),
+	abortCheck: (traceId) => {
+		const match = host.triggers.runningList().find((r) => r.traceId === traceId || r.traceId.startsWith(traceId));
+		return match ? host.triggers.abort(match.traceId) : false;
 	},
-	log,
-);
+	// Called once, or twice when a plain stop cuts a restart's or an upgrade's wait short: that
+	// `stop` leaves at once, and the wait's own leave later finds the shutdown under way. A restart
+	// or an upgrade first lets a turn in the page finish, up to PAGE_TURN_WAIT_MS; a signal still
+	// leaves at once.
+	stop: (reason) => {
+		log(reason === "upgrade" ? "a newer pi-loops asked this process to make way; leaving" : reason === "restart" ? "asked to restart; leaving" : "asked to stop; leaving");
+		if (!stopWaitsForPage(reason)) return leave(0);
+		waitForPageTurns({ busy: () => pool.views().filter((c) => c.busy).length, log })
+			.catch((err: any) => log(`waiting for the page: ${err?.message ?? err}`))
+			.finally(() => leave(0))
+			.catch((err: any) => log(`leaving: ${err?.message ?? err}`));
+	},
+	run: (jobId, requestedBy) => host.scheduler.runNow(jobId, requestedBy),
+	ring: (sessionId) => host.ring(sessionId),
+	pageOpen,
+	pageKey: (sessionId) => {
+		if (!page) return { error: "the page is not served" };
+		if (!pool.has(sessionId) && !leases.read(sessionId)) return { error: `pi-loops knows no conversation ${shortSessionId(sessionId)}` };
+		return { openKey: page.openKeyFor(sessionId) };
+	},
+	pair: () => (page ? { code: page.newPairCode(), addresses: pageOnLoopback ? [] : lanAddresses(page.port()).map((a) => a.url) } : { error: "the page is not served" }),
+};
+let channel = serveHostChannelSafely(dir, channelHandlers, log);
 await firstBind;
 parentModel = await defaultModel().catch((err) => {
 	log(`default model: ${err?.message ?? err}`);

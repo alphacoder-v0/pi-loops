@@ -110,7 +110,9 @@ raised.
 **`pi-loops status` says pi-loops "is not answering" but it is running.** Before 0.4.0 this
 happened whenever `PI_LOOPS_DIR` was deep: a unix socket path is capped at 108 bytes, so
 the old socket path failed to bind and the control channel silently did not exist. It now falls back
-to a short path under a per-user directory in the temp directory. If you still see it, pi-loops is
+to a short path under a per-user directory in the temp directory. A temp cleaner that removes that
+socket while pi-loops runs is healed by pi-loops itself: the process re-binds the socket within the
+next 30 s tick, and `host.log` says so. If you still see it with the socket file present, pi-loops is
 genuinely wedged — `host.log` has its last line, and `pi-loops stop` escalates to SIGTERM.
 
 **pi-loops is running and you did not start it.** A window starts pi-loops when there is work to run, and

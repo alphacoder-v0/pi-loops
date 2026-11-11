@@ -8,7 +8,7 @@ import * as path from "node:path";
 import * as net from "node:net";
 import { execFile } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { ALREADY_LEAVING, API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, HOST_SOCKET, type HostRequest, type HostSnapshot, askHost, hostSocketPath, recentRun, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, stopRun, type Notice } from "../src/host-control-channel.ts";
+import { ALREADY_LEAVING, API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, HOST_SOCKET, type HostRequest, type HostSnapshot, askHost, channelNeedsRebind, hostSocketPath, recentRun, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, stopRun, type Notice } from "../src/host-control-channel.ts";
 
 const snapshot = (): HostSnapshot => ({
 	pid: 4242,
@@ -456,4 +456,41 @@ test("pi-loops status names an unnamed loop by its label, as every other surface
 	assert.match(lines, /  cron-01234567\b/, "a recent run");
 	assert.match(lines, /! cron-01234567: boom/, "a failing loop");
 	assert.match(renderHostSnapshot({ ...snapshot(), failing: [{ job: "pr-watch", error: "boom" }] }).join("\n"), /! pr-watch: boom/, "a name stays a name");
+});
+
+test("a live and healthy socket is left alone; a removed one, a stale one of ours and no server at all re-bind; someone else's keeps the degrade", () => {
+	assert.equal(channelNeedsRebind({ present: true, ours: true, listening: true }), false, "live and healthy");
+	assert.equal(channelNeedsRebind({ present: false, ours: false, listening: true }), true, "removed while running: the server is on the deleted inode");
+	assert.equal(channelNeedsRebind({ present: false, ours: false, listening: false }), true, "no server at all (a degraded startup bind)");
+	assert.equal(channelNeedsRebind({ present: true, ours: true, listening: false }), true, "a stale one of ours after a degraded bind");
+	assert.equal(channelNeedsRebind({ present: true, ours: false, listening: true }), false, "someone else's socket: re-binding would only be refused again");
+});
+
+test("a host that loses its control socket re-binds it and answers on it again", async () => {
+	const dir = tmp("pi-loops-chan-");
+	let server = serveHostChannel(dir, { status: () => snapshot() });
+	await new Promise((r) => setTimeout(r, 60));
+	assert.equal((await askHost(dir, { op: "status" }))?.ok, true, "bound at start");
+	// The temp cleaner removes the socket file while the host runs: the old server keeps listening
+	// on the deleted inode, and askHost finds no one.
+	fs.rmSync(hostSocketPath(dir));
+	assert.equal(await askHost(dir, { op: "status" }), undefined, "a removed socket answers no one");
+	// The tick's heal closes the server on the deleted inode and re-runs the startup bind.
+	server.close();
+	server = serveHostChannel(dir, { status: () => snapshot() });
+	await new Promise((r) => setTimeout(r, 60));
+	assert.equal((await askHost(dir, { op: "status" }))?.ok, true, "re-bound, and the channel works again");
+	server.close();
+});
+
+test("a degraded bind that left a stale socket of its own re-binds over it", async () => {
+	const dir = tmp("pi-loops-chan-");
+	// A socket file left by a crashed host of the same user: the startup bind takes it back.
+	const stale = serveHostChannel(dir, { status: () => snapshot() });
+	await new Promise((r) => setTimeout(r, 60));
+	stale.close();
+	const second = serveHostChannel(dir, { status: () => snapshot() });
+	await new Promise((r) => setTimeout(r, 60));
+	assert.equal((await askHost(dir, { op: "status" }))?.ok, true, "a stale one of ours is replaced");
+	second.close();
 });
