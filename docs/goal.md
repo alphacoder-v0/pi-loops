@@ -29,6 +29,7 @@ is told to answer `{"ok": false, "reason": "insufficient evidence in transcript"
 |---|---|
 | Continuations | At most 8, then the goal is `budget_limited` and pauses |
 | Evaluator failure | Pauses with the reason; it never loops on an evaluator that cannot decide |
+| Waiting on you | When the agent asked you for something it cannot get alone, the evaluator answers `needs_person` and the goal pauses with `waiting on you: …` instead of sending it back |
 | Transcript | 40 000 characters, truncated from the front so the newest evidence always survives |
 | Tools | None. The evaluator reads, it does not act |
 | Interruption | Esc on a turn pauses the goal — it stays paused across `--resume` until `/goal resume` — and Esc during an evaluation stops that evaluation the same way |

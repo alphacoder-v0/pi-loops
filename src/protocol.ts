@@ -103,7 +103,8 @@ export function composeLoopPrompt(action: string, previousState: string | undefi
 		"",
 		OUTPUT_PROTOCOL_HEADING,
 		`- End your reply with <loop-state>notes for the next run</loop-state> — it REPLACES the saved state; keep it under ${LOOP_STATE_MAX_CHARS} characters and make it the information your next run needs (baselines, ids already seen, watermarks).`,
-		"- For each finding a human should act on, emit <inbox>one concise line</inbox>. No findings → no inbox tags; do not invent work.",
+		`- For each finding a human should act on, emit <inbox>one concise line</inbox>, at most ${INBOX_TAGS_PER_RUN} per run and ${INBOX_TEXT_MAX_CHARS} characters each. No findings → no inbox tags; do not invent work.`,
+		"- When a finding needs a person to decide, write it as <inbox><the decision> · waits: <what waits on it> · if not: <what happens if nobody acts></inbox>.",
 		"- Keep everything after the last tool call short so the tags are not truncated.",
 	].join("\n");
 }

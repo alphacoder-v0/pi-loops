@@ -474,7 +474,8 @@ You are running the recurring loop "ci" (current run started <这次运行开始
 
 Output protocol (mandatory):
 - End your reply with <loop-state>notes for the next run</loop-state> — it REPLACES the saved state; keep it under 2000 characters and make it the information your next run needs (baselines, ids already seen, watermarks).
-- For each finding a human should act on, emit <inbox>one concise line</inbox>. No findings → no inbox tags; do not invent work.
+- For each finding a human should act on, emit <inbox>one concise line</inbox>, at most 16 per run and 500 characters each. No findings → no inbox tags; do not invent work.
+- When a finding needs a person to decide, write it as <inbox><the decision> · waits: <what waits on it> · if not: <what happens if nobody acts></inbox>.
 - Keep everything after the last tool call short so the tags are not truncated.
 ```
 

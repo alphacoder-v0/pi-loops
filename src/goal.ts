@@ -43,6 +43,8 @@ export function goalPursued(state: GoalState | undefined): boolean {
 
 export interface EvaluatorDecision {
 	ok: boolean;
+	/** The agent stopped to ask a person: sending it back would only spend the budget. */
+	needsPerson?: boolean;
 	reason: string;
 }
 
@@ -107,6 +109,8 @@ export function evaluatorPrompt(condition: string, transcript: string): string {
 		"Your response must be a JSON object with one of these shapes:",
 		'{"ok": true, "reason": "<quote evidence from the transcript that satisfies the condition>"}',
 		'{"ok": false, "reason": "<quote what is missing or what blocks the condition>"}',
+		'{"ok": false, "needs_person": true, "reason": "<quote the question or approval the agent is waiting on>"}',
+		"Use needs_person only when the agent asked a person for something it cannot get or decide alone.",
 		"Always include a reason field, quoting specific text from the transcript whenever possible.",
 		'If the transcript does not contain clear evidence that the condition is satisfied, return {"ok": false, "reason": "insufficient evidence in transcript"}.',
 		"",
@@ -132,7 +136,7 @@ export function parseDecision(text: string): EvaluatorDecision {
 		}
 		if (!parsed || typeof parsed.ok !== "boolean" || typeof parsed.reason !== "string") continue;
 		if (!parsed.reason.trim()) throw new Error("goal evaluator returned an empty reason");
-		return { ok: parsed.ok, reason: parsed.reason };
+		return parsed.ok === false && parsed.needs_person === true ? { ok: false, needsPerson: true, reason: parsed.reason } : { ok: parsed.ok, reason: parsed.reason };
 	}
 	throw new Error(`goal evaluator returned invalid JSON: ${tailChars(trimmed, 300)}`);
 }
@@ -144,7 +148,7 @@ function tailChars(text: string, maxChars: number): string {
 
 /** What the agent is sent back to work with. */
 export function continuationPrompt(condition: string, reason: string): string {
-	return `The current /goal is not satisfied yet.\n\nGoal condition:\n${condition}\n\nGoal evaluator says what is missing or blocking completion:\n${reason}\n\nContinue working toward the goal. Do not claim completion until the transcript contains explicit evidence that satisfies the condition.`;
+	return `The current /goal is not satisfied yet.\n\nGoal condition:\n${condition}\n\nGoal evaluator says what is missing or blocking completion:\n${reason}\n\nContinue working toward the goal. Do not claim completion until the transcript contains explicit evidence that satisfies the condition. If only a person can unblock it, ask them and stop.`;
 }
 
 export type GoalAction = { kind: "stop" } | { kind: "continue"; prompt: string } | { kind: "pause"; reason: string };
@@ -153,6 +157,7 @@ export type GoalAction = { kind: "stop" } | { kind: "continue"; prompt: string }
 export function applyDecision(state: GoalState, decision: EvaluatorDecision, now = new Date()): { state: GoalState; action: GoalAction } {
 	const next: GoalState = { ...state, iterations: state.iterations + 1, lastReason: decision.reason, updatedAt: stamp(now.getTime()) };
 	if (decision.ok) return { state: { ...next, status: "achieved" }, action: { kind: "stop" } };
+	if (decision.needsPerson) return { state: { ...next, status: "paused" }, action: { kind: "pause", reason: `waiting on you: ${decision.reason}` } };
 	if (next.iterations >= MAX_CONTINUATIONS) {
 		return { state: { ...next, status: "budget_limited" }, action: { kind: "pause", reason: `goal continuation limit reached (${MAX_CONTINUATIONS}); resume with /goal resume` } };
 	}
@@ -255,10 +260,4 @@ export function resumeGoal(state: GoalState, now = new Date()): GoalState {
 export function evaluationApplies(current: GoalState | undefined, pursued: GoalState, aborted: boolean): boolean {
 	if (aborted) return false;
 	return !!current && current.status === "pursuing" && current.condition === pursued.condition;
-}
-
-/** One line for `/goal` and the panel. */
-export function goalLine(state: GoalState): string {
-	const iter = `${state.iterations}/${MAX_CONTINUATIONS}`;
-	return `${state.status} (${iter} continuations)${state.lastReason ? `: ${state.lastReason}` : ""}`;
 }

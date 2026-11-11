@@ -469,7 +469,7 @@ export function auditArgs(rest: string): { limit: number; all: boolean } | { usa
 export function controlPlanePreflight(proc: { hop: number; hasUI: boolean; held?: boolean }, reason: string): string | undefined {
 	// A plain job's turn in a closed conversation: the person's own turn, run where they were not.
 	if (proc.held) return `${reason} requires user confirmation; this turn ran in the background with nobody to ask (fail-closed deny): report what you would have done, so it can be approved when the conversation is open`;
-	if (proc.hop > 0) return `${reason} requires user confirmation; sub-agents have no control-plane prompt channel (fail-closed deny): report what you would have done, so a person can do it`;
+	if (proc.hop > 0) return `${reason} requires user confirmation; sub-agents have no control-plane prompt channel (fail-closed deny): say what you would have done in your final reply (in a loop run, as one <inbox> line), so a person sees it and can do it`;
 	if (!proc.hasUI) return `${reason} requires interactive confirmation; a person can do it with the slash command`;
 	return undefined;
 }

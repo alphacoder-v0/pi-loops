@@ -8,7 +8,7 @@ import { TriggerStore } from "../src/triggers.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, drain, enqueue, goalRow } from "../src/engine.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
-import { GOAL_ENTRY, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPending, continuationPrompt, evaluationApplies, evaluatorPrompt, goalActive, goalLine, goalPursued, judgeCaughtUp, settledTurn, latestGoal, newGoal, parseDecision, pauseFor, resumeGoal, transcriptFromMessages } from "../src/goal.ts";
+import { GOAL_ENTRY, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPending, continuationPrompt, evaluationApplies, evaluatorPrompt, goalActive, goalPursued, judgeCaughtUp, settledTurn, latestGoal, newGoal, parseDecision, pauseFor, resumeGoal, transcriptFromMessages } from "../src/goal.ts";
 
 test("the evaluator's decision drives the turn, with a budget and pause-on-failure", () => {
 	let state = newGoal("the test suite passes");
@@ -42,6 +42,18 @@ test("the evaluator's decision drives the turn, with a budget and pause-on-failu
 	assert.equal(paused.state.status, "paused");
 	assert.equal(paused.action.kind, "pause");
 	assert.equal(goalActive(paused.state), true, "a paused goal is still the session's goal");
+});
+
+test("a goal waiting on a person pauses at once instead of sending the agent back", () => {
+	const decision = parseDecision('{"ok": false, "needs_person": true, "reason": "the agent asked which branch to deploy"}');
+	assert.deepEqual(decision, { ok: false, needsPerson: true, reason: "the agent asked which branch to deploy" });
+	const next = applyDecision(newGoal("the app is deployed"), decision);
+	assert.equal(next.state.status, "paused");
+	assert.equal(next.action.kind, "pause");
+	assert.match((next.action as any).reason, /waiting on you: the agent asked which branch to deploy/);
+	// The evaluator is told the shape, and the agent is told it may stop and ask.
+	assert.match(evaluatorPrompt("c", "t"), /"needs_person": true/);
+	assert.match(continuationPrompt("c", "r"), /only a person can unblock/);
 });
 
 test("parseDecision accepts the shapes it must and refuses everything else", () => {
@@ -99,7 +111,6 @@ test("the evaluator prompt carries its contract, the condition and the transcrip
 	assert.match(p, /Goal condition:\nship it/);
 	assert.match(p, /Conversation transcript:\nuser: hello/);
 	assert.match(continuationPrompt("c", "r"), /Goal condition:\nc/);
-	assert.match(goalLine(newGoal("x")), /pursuing \(0\/8 continuations\)/);
 });
 
 test("subcommands are exact words; a condition that starts with one is still a condition", () => {
