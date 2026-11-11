@@ -366,7 +366,7 @@ pi-loops inbox list [--all] [--cwd <dir>] | claim <id> | dismiss <id> [--reason 
 
 `-h` or `--help` anywhere in a subcommand's arguments before a `--` prints that subcommand's usage
 and exits 0 without doing anything else; `pi-loops -h`, `pi-loops help` and `pi-loops --help` are the same. After `--` they are pi's.
-`pi-loops --version` (or `-v`) alone prints the pi-loops version, such as `pi-loops v0.24.1`;
+`pi-loops --version` (or `-v`) alone prints the pi-loops version, such as `pi-loops v0.24.2`;
 `pi-loops --tui -- --version` prints pi's.
 A command typed wrong, such as a missing archive path, a flag the command does not read
 (`status does not take --json`) or a word it does not read (`export: unexpected argument "out.pisession"`),
@@ -424,7 +424,7 @@ spellings `pi-loops host status|abort|stop|start` and `/cron host` still work.
 $ pi-loops status
 pi-loops
   pid 2949521 on box, started 2026-09-09 13:33, model openai-codex/gpt-5.5
-  pi-loops 0.24.1 · 1/1 loops, 0/0 rules enabled · inbox: 0 new
+  pi-loops 0.24.2 · 1/1 loops, 0/0 rules enabled · inbox: 0 new
   started by the shell that ran pi-loops
   conversation 424aba43-0c1f "fix the flaky login test" open in pid 939915 (tui)
   running nightly (run-97ffb250) since 2026-09-09 13:34: check the repo issues

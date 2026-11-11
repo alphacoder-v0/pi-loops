@@ -5,6 +5,12 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.24.2] - 2026-11-11
+
+Fixes from the 0.24.2 milestone and a review of what merged since 0.24.1: a path rule that never
+fired, faster `pi-loops` commands, page edges that showed what nobody could use, and fewer tools
+offered to a sub-agent that could only fail.
+
 ### Fixed
 
 - **A path rule with an aside in parentheses is checked by the model.** The path precheck dropped
@@ -12,8 +18,6 @@ All notable changes to pi-loops are documented here. The format follows
   fired when only `/tmp/b` appeared. No word list can tell such an aside from a harmless one, so a
   condition with one is model-checked again, and `new_trigger` asks the model to keep the person's
   words with nothing added.
-- **Sub-agents are not offered `cron_remove`.** Every call needs a person's approval, and a
-  sub-agent has nobody to ask, so the tool could only fail there.
 - **Every `pi-loops` command answers in a fraction of a second.** The command line loaded pi's SDK
   on every call, about a second of each `status`, `stop` and `--help`; it now loads it only for
   `import`, the one command that needs it. `pi-loops --version` went from about 1.2 s to 0.17 s here
@@ -78,8 +82,8 @@ All notable changes to pi-loops are documented here. The format follows
   The theme button's name is its visible state (#156).
 - **`cron_remove` asks once.** It had a `confirm` parameter: the model asked the person in chat,
   then the dialog asked again. The parameter is gone, and one call asks through the dialog.
-- **A sub-agent is not offered `new_trigger` or `remove_trigger`.** Every call of either was denied
-  at hop 1, so the tools only invited a failed first try (#159).
+- **A sub-agent is not offered `new_trigger`, `remove_trigger` or `cron_remove`.** Every call of
+  each was denied at hop 1, so the tools only invited a failed first try (#159, #212).
 - **The agent is told more of what it can use.** `cron_create`'s schedule names `hourly`, `daily`
   (09:00), `weekly` (Monday 09:00) and that `@daily` is midnight. SKILL.md names the inbox
   commands a shell can run. The `catch_up` and `spec` descriptions are shorter (#160).
