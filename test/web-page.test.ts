@@ -4900,3 +4900,19 @@ test("a created watch read back from the transcript settles nothing and fetches 
 	assert.equal(cardParts(cards("feed").at(-1)).status, "", "and the waiting question is still waiting");
 	dom.dispose();
 });
+
+/* ------------------------------------------------------------------ layout and typing */
+
+test("the list reads what needs you, then the conversations, then news, and the starters last", { timeout: 20_000 }, async () => {
+	const { dom, cards } = await inboxPage();
+	const doc = (globalThis as any).document;
+	const [decision, news] = cards();
+	assert.ok(doc.getElementById("needsSlot").children.includes(decision), "a decision is above the conversations");
+	assert.ok(doc.getElementById("cardsSlot").children.includes(news), "news is below them");
+	assert.ok(!doc.getElementById("needsSlot").children.includes(news));
+	dom.dispose();
+	// The slots are the list's markup: their order is the order a person reads.
+	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8"))?.[1] ?? "";
+	const scroll = /<div class="lscroll" id="lscroll">([\s\S]*?)\n {2}<\/div>/.exec(html)?.[1] ?? "";
+	assert.deepEqual([...scroll.matchAll(/id="([^"]+)"/g)].map((m) => m[1]), ["awaySlot", "needsSlot", "convs", "cardsSlot", "startersSlot"]);
+});

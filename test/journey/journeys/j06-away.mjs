@@ -94,7 +94,7 @@ export async function run(ctx) {
 	ctx.browser("click", `#awaySlot .away [data-act="seen"]`);
 	await ctx.waitFor("the card gone", () => ({ ok: card() === null, last: card() }), 30000);
 	ctx.browser("open", `${ctx.boot.pageUrl}?token=${ctx.boot.token}`);
-	await ctx.waitFor("the page again", () => page(`!!document.getElementById("cardsSlot") && document.querySelectorAll("#cardsSlot [data-inb]").length >= 3`), 30000);
+	await ctx.waitFor("the page again", () => page(`!!document.getElementById("cardsSlot") && document.querySelectorAll(":is(#needsSlot,#cardsSlot) [data-inb]").length >= 3`), 30000);
 	if (card() !== null) throw new Error(`the card is back after a reload: ${JSON.stringify(card())}`);
 	const stored = JSON.parse(fs.readFileSync(path.join(loops, "seen.json"), "utf8")).projects[fs.realpathSync(project)];
 	if (!(Date.parse(stored) > Date.parse(cursor))) throw new Error(`seen.json was not moved: ${stored}`);
@@ -121,7 +121,7 @@ export async function run(ctx) {
 	ctx.browser("set", "viewport", "390", "844");
 	ctx.browser("open", `${ctx.boot.pageUrl}?token=${ctx.boot.token}#inbox`);
 	const phone = await ctx.waitFor("the away card on a phone", () => {
-		const now = page(`(() => { const c = document.querySelector("#awaySlot .away"); const first = document.querySelector("#cardsSlot [data-inb]"); return { card: !!c && !!c.offsetParent, above: !!c && !!first && c.getBoundingClientRect().bottom <= first.getBoundingClientRect().top, wide: document.documentElement.scrollWidth, width: window.innerWidth, pane: document.body.dataset.pane, visible: !!c && c.getBoundingClientRect().top >= 0 && c.getBoundingClientRect().top < window.innerHeight }; })()`);
+		const now = page(`(() => { const c = document.querySelector("#awaySlot .away"); const first = document.querySelector(":is(#needsSlot,#cardsSlot) [data-inb]"); return { card: !!c && !!c.offsetParent, above: !!c && !!first && c.getBoundingClientRect().bottom <= first.getBoundingClientRect().top, wide: document.documentElement.scrollWidth, width: window.innerWidth, pane: document.body.dataset.pane, visible: !!c && c.getBoundingClientRect().top >= 0 && c.getBoundingClientRect().top < window.innerHeight }; })()`);
 		return { ok: now.card && now.pane === "inbox" && now.visible, last: now, value: now };
 	}, 30000);
 	if (!phone.above) throw new Error("the away card is not above the cards on a phone");

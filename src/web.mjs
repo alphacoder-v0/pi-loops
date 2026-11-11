@@ -109,7 +109,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 #project option{background:Canvas;color:CanvasText}
 #newConv{white-space:nowrap}
 .lscroll{overflow-y:auto;min-height:0;flex:1;padding:0 10px 16px;display:flex;flex-direction:column;gap:2px}
-#awaySlot:empty,#startersSlot:empty,#cardsSlot:empty,#activitySlot:empty{display:none}
+#awaySlot:empty,#needsSlot:empty,#startersSlot:empty,#cardsSlot:empty,#activitySlot:empty{display:none}
 /* Loop activity: one line between the conversation and the composer, a list under it when opened.
    Colour for state only: a failure is the error token, the rest is dim. Nothing scrolls sideways. */
 #activitySlot{flex:none;background:var(--panel2);font-size:12.5px;color:var(--dim);min-width:0;max-width:100%}
@@ -124,7 +124,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 #activitySlot li .t{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;color:var(--fg)}
 #activitySlot li.bad .t,#activitySlot li.bad .mark{color:var(--bad)}
 #activitySlot li .when{flex:none;font-variant-numeric:tabular-nums}
-#cardsSlot{padding:6px 0;font-size:12.5px;color:var(--dim);display:grid;gap:6px;min-width:0}
+#needsSlot,#cardsSlot{padding:6px 0;font-size:12.5px;color:var(--dim);display:grid;gap:6px;min-width:0}
 /* An inbox finding as a card: the second paper on the list's, no border; amber only on the flag and
    on the one button to press. Text wraps whole, whatever is in it: nothing in a card scrolls sideways. */
 .icard{background:var(--panel2);border-radius:10px;padding:10px;display:grid;gap:6px;color:var(--fg);font-size:13px;min-width:0;max-width:100%;overflow-wrap:anywhere}
@@ -580,9 +580,10 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   </div>
   <div class="lscroll" id="lscroll">
     <div id="awaySlot"></div>
-    <div id="startersSlot"></div>
-    <div id="cardsSlot"></div>
+    <div id="needsSlot"></div>
     <div id="convs"></div>
+    <div id="cardsSlot"></div>
+    <div id="startersSlot"></div>
   </div>
 </nav>
 <main>
@@ -3659,11 +3660,14 @@ function onCardClick(c, b, parts) {
   }
 }
 
+/** What needs you goes above the conversations; news, what was handled and the counts go below them. */
 function drawInbox() {
-  const slot = $("cardsSlot");
+  const needs = $("needsSlot");
+  let slot = needs;
   const a = inboxAnswer;
   keepForms();
-  slot.innerHTML = "";
+  needs.innerHTML = "";
+  $("cardsSlot").innerHTML = "";
   if (!a) return;
   const cards = a.cards.filter((c) => c && typeof c === "object" && typeof c.id === "string");
   const listed = new Set([...cards, ...(Array.isArray(a.handled) ? a.handled : [])].map((c) => c && c.id));
@@ -3683,6 +3687,7 @@ function drawInbox() {
   };
   if (decisions.length) group("Needs you");
   decisions.forEach(add);
+  slot = $("cardsSlot");
   if (news.length) group("News");
   (newsOpen ? news : news.slice(0, NEWS_SHOWN)).forEach(add);
   if (!newsOpen && news.length > NEWS_SHOWN) {
@@ -3903,7 +3908,7 @@ function terminalHolds() {
   return h.kind === "terminal" && h.mine !== true && h.delivers === true && h.piLoops !== false;
 }
 
-/** The starter cards, above the inbox's. Drawn again only when what they say changes. */
+/** The starter cards, last in the list. Drawn again only when what they say changes. */
 function drawStarters() {
   const slot = $("startersSlot");
   const list = offeredStarters();

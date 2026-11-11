@@ -323,8 +323,8 @@ weaker, and worth converting whenever one of them breaks.
       model call until the file exists*. `test/web-page.test.ts`: *a rule that waits for a path says
       what it waits for and when it looks next*; `test/page-server.test.ts`: *a rule that waits for a
       path says so on its row, with the next look from the process that checks rules*.
-- [x] The inbox as cards above the conversations: decisions first under **Needs you**, each with
-      **Waiting on** and **If you don't** when the loop said them, then news. A card names its loop
+- [x] The inbox as cards around the conversations: decisions above them under **Needs you**, each with
+      **Waiting on** and **If you don't** when the loop said them, and news below them. A card names its loop
       only when the list holds more than one loop's findings, and says where a claim runs only when
       that is not the conversation on screen (another conversation's or project's finding, or a
       terminal that takes no messages). **See the run** is there only when the finding has a run this page can read
@@ -332,7 +332,8 @@ weaker, and worth converting whenever one of them breaks.
       Every card carries its finding's whole id; no button names a position. `test/web-page.test.ts`:
       *the inbox shows decisions before news, each row only with a value, and where a claim runs
       only when that is not here*. `test/page-server.test.ts`: *GET /inbox: one project's cards, decisions first,
-      fifty at most, a torn line left out, and starts no pi*.
+      fifty at most, a torn line left out, and starts no pi*; `test/web-page.test.ts`: *the list reads
+      what needs you, then the conversations, then news, and the starters last*.
 - [x] **Yes, do it** on a decision and **Look into it** on news claim the finding into the
       conversation that created its loop, and the card says where it runs: queued for your
       terminal, running in a conversation open in the page, starting one, or waiting on pi-loops'
@@ -399,7 +400,7 @@ weaker, and worth converting whenever one of them breaks.
       mark keeps the card and says why. `test/web-page.test.ts`: *the away card: the first window's
       words, nothing without a finding, and a refused mark keeps the card*. `test/page-server.test.ts`: *POST /inbox/seen takes the checks every POST takes, a
       512-byte body, a known project and a time not in the future, and writes only seen.json*.
-- [x] A project with no loop and no rule offers three starters above the cards (daily-digest,
+- [x] A project with no loop and no rule offers three starters last in the list (daily-digest,
       pr-watch, changelog-draft), each its name, a `≈ $N/day` chip when it costs something, its
       recipe's `line` (one sentence of at most twelve words; its summary when it has none), whole, and
       **Add**. Only for the open conversation's project, since Add installs there.

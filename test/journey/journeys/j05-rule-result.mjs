@@ -53,7 +53,7 @@ export async function run(ctx) {
 	if (skipped?.state !== "skipped") throw new Error(`without promote_to_chat the result is not in the conversation: ${JSON.stringify(skipped)}`);
 	// The only origin in the list, so the card does not name it; the strip's row does.
 	const card = await ctx.waitFor("the card", () => {
-		const text = page(`[...document.querySelectorAll("#cardsSlot [data-inb]")].map((c) => c.textContent).join(" | ")`);
+		const text = page(`[...document.querySelectorAll(":is(#needsSlot,#cardsSlot) [data-inb]")].map((c) => c.textContent).join(" | ")`);
 		return { ok: text.includes("hello, world") && !text.includes("rule ~/build.done appears"), last: text, value: text };
 	}, 30000);
 	await ctx.waitFor("the strip lists the rule result", () => {
