@@ -77,9 +77,10 @@ const program = ts.createProgram(files, {
 const checker = program.getTypeChecker();
 
 // The browser page's script (src/web/page.js) is plain JavaScript for a browser, not Node: a program
-// of its own, with the DOM's types.
+// of its own, with the DOM's types. A checkout with no page (the linter's own tests) has none.
 const page = path.join(process.cwd(), "src", "web", "page.js");
-const pageProgram = ts.createProgram([page], {
+const pages = fs.existsSync(page) ? [page] : [];
+const pageProgram = ts.createProgram(pages, {
 	target: ts.ScriptTarget.ES2022,
 	allowJs: true,
 	checkJs: true,
@@ -198,22 +199,23 @@ for (const file of program.getSourceFiles()) {
  * floating-promise does not apply to the page: a rejection in a browser is a console line, not the
  * end of pi.
  */
-const pageFile = pageProgram.getSourceFile(page);
-for (const d of pageProgram.getSemanticDiagnostics(pageFile)) {
-	if (d.code !== 2304 && d.code !== 2552) continue;
-	const { line, character } = pageFile.getLineAndCharacterOfPosition(d.start ?? 0);
-	problems.push({ file: path.relative(process.cwd(), page), line: line + 1, column: character + 1, rule: "undefined-name", message: ts.flattenDiagnosticMessageText(d.messageText, " ") });
+for (const pageFile of pages.map((p) => pageProgram.getSourceFile(p))) {
+	for (const d of pageProgram.getSemanticDiagnostics(pageFile)) {
+		if (d.code !== 2304 && d.code !== 2552) continue;
+		const { line, character } = pageFile.getLineAndCharacterOfPosition(d.start ?? 0);
+		problems.push({ file: path.relative(process.cwd(), page), line: line + 1, column: character + 1, rule: "undefined-name", message: ts.flattenDiagnosticMessageText(d.messageText, " ") });
+	}
+	const visitPage = (node) => {
+		checkSilentCatch(node);
+		ts.forEachChild(node, visitPage);
+	};
+	visitPage(pageFile);
 }
-const visitPage = (node) => {
-	checkSilentCatch(node);
-	ts.forEachChild(node, visitPage);
-};
-visitPage(pageFile);
 
 /* ---------------------------------------------------------------- output */
 
 if (!problems.length) {
-	console.log(`lint: ${files.length + 1} file(s), no problems`);
+	console.log(`lint: ${files.length + pages.length} file(s), no problems`);
 	process.exit(0);
 }
 for (const p of problems) console.error(`${p.file}:${p.line}:${p.column}  ${p.rule}  ${p.message}`);
