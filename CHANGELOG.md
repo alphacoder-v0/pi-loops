@@ -42,7 +42,7 @@ All notable changes to pi-loops are documented here. The format follows
   primary button once a plan shows. A paused loop is set in a readable dim colour, not faded. The
   slash list's selected row is amber and differs from the hover row. The conversation list is
   headed **Conversations**. The ⋯ sheet has two labelled groups in sentence case, and on a phone
-  the title keeps its room in the header. A page that is loading shows no placeholder title or
+  the title has the header: the pickers are at the top of the sheet. A page that is loading shows no placeholder title or
   empty pickers. While pi-loops is down, the header's chip no longer repeats "reconnecting", and an
   error row is set in the page's own font.
 - **A loop made without a name gets one.** `/cron add`, `cron_create` and the page's Watch flow

@@ -66,6 +66,8 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .lrow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;min-width:0}
 .lrow>button{flex:1}
 #project{flex:1 1 100%;min-width:0;border:0;border-radius:8px;padding:6px 10px;font-weight:600;background:var(--panel2);color:var(--fg)}
+/* Kept in its place before the list arrives, so nothing below it moves, but not drawn empty. */
+#project:empty{visibility:hidden}
 #project option{background:Canvas;color:CanvasText}
 #newConv{white-space:nowrap}
 .lscroll{overflow-y:auto;min-height:0;flex:1;padding:0 10px 16px;display:flex;flex-direction:column;gap:2px}
@@ -437,7 +439,9 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 .plan .acts{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
 .plan .acts button{min-height:32px;padding:4px 12px;border-radius:8px;font-size:var(--fs-sm)}
 .plan .acts button:disabled{opacity:.45;cursor:default}
-.row.plan{max-width:min(100%,44rem)}
+/* The row only carries the card into the conversation: one box, the card's, not a box around a box. */
+.row.plan{max-width:min(100%,44rem);background:none;padding:0;border-radius:0}
+.row.plan>span:empty{display:none}
 @media (max-width:420px){.plan dl{grid-template-columns:minmax(0,1fr)}.plan dt{margin-top:2px}.plan .acts button.primary{flex:1 1 100%}}
 #pairPick{width:100%;margin-bottom:8px}
 .qr{display:flex;justify-content:center;padding:6px 0}
@@ -472,7 +476,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 #menuBody{display:grid;gap:14px}
 #menuBody .mgrp{display:flex;flex-direction:column;gap:6px}
 #menuBody .mgrp h4{margin:0 0 2px;font-size:var(--fs-md);font-weight:650;color:var(--ink)}
-#menuBody .mgrp button{width:100%;text-align:left;min-height:44px}
+#menuBody .mgrp button,#menuBody .mgrp select{width:100%;max-width:none;text-align:left;min-height:44px}
 #menuBody .mgrp button[hidden]{display:none}
 /* Thirteen controls do not fit across a narrow conversation. The ones you reach for mid-conversation
    (undo, find, compact, resume) stay; the rest are one tap away behind ⋯, which lists all of them.
@@ -539,11 +543,8 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
    kept in the address (#inbox, #chat, #loops), so Back goes to the pane before and a reload keeps it. */
 @media (max-width:760px){
   .grow>#actions{display:none}
-  /* The title keeps at least 40% of the header; the pickers give up width first, and the steps
-     button shows its arrow alone. */
-  header>b{min-width:40%}
-  #model{min-width:3.5rem;max-width:6rem}
-  #thinking{flex:0 1 auto;min-width:3.2rem}
+  /* The title has the header: the pickers are in the ⋯ sheet, and steps shows its arrow alone. */
+  header>#model,header>#thinking{display:none}
   #expand .lbl{display:none}
   body,body:has(#loops.hidden){grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) calc(52px + env(safe-area-inset-bottom))}
   #rail,#scrim{display:none}

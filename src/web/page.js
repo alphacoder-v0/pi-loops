@@ -2234,19 +2234,23 @@ const MENU_GROUPS = [
   ["Conversation", ["reload", "find", "undo", "save", "share", "compact", "resume"]],
   ["Settings", ["theme", "notifyMe", "adddev"]],
 ];
+/** On a phone the title has the header to itself: the pickers are at the top of the sheet's first group. */
+const PICKERS = ["model", "thinking"];
 $("more").onclick = () => {
   const body = $("menuBody");
   body.append($("cost"));
   for (const [label, ids] of MENU_GROUPS) {
     const group = document.createElement("section");
     group.className = "mgrp";
-    group.append(textEl("h4", "", label), ...ids.map($));
+    group.append(textEl("h4", "", label), ...(label === "Conversation" && phone() ? PICKERS : []).map($), ...ids.map($));
     body.append(group);
   }
   $("menu").showModal();
 };
 function closeMenu() {
-  document.querySelector("header .grow").insertBefore($("cost"), $("expand"));
+  const grow = document.querySelector("header .grow");
+  for (const id of PICKERS) grow.parentElement.insertBefore($(id), grow);
+  grow.insertBefore($("cost"), $("expand"));
   // Back into the header in its own order, which is the sheet's order too.
   for (const [, ids] of MENU_GROUPS) $("actions").append(...ids.map($));
   $("menuBody").innerHTML = "";

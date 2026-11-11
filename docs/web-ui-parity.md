@@ -557,14 +557,14 @@ weaker, and worth converting whenever one of them breaks.
       sheet lists all of them, moved — not copied — into it, in two labelled groups: **Conversation**
       (Reload, Find, Undo, Save, Share, Compact, Resume) and **Settings** (Theme, Notifications, Add a
       device), each label in sentence case. On a phone (760 px and less) every one is
-      behind ⋯, and the header is one row: the title, the pickers, steps and ⋯; the title keeps at
-      least 40% of it, the pickers give up width first, and steps shows its arrow alone. There the cost is
+      behind ⋯, and the header is one row: the title, steps (its arrow alone) and ⋯; the model and
+      thinking pickers lead the sheet's Conversation group, and go back to the header when it closes. There the cost is
       in the ⋯ sheet, and while a turn runs the stop button in send's place stands for the status
       chip. The ⋯ sheet carries the cost at every width. The header has the
       page's paper, so the feed scrolls out under its edge. `test/web-page.test.ts`: *the header is
       opaque, and on a phone it is one row*.
-      A page that is still loading shows no title, no empty pickers and no stop, undo, compact or
-      resume: they come with the conversation's state. `test/web-page.test.ts`: *a page still
+      A page that is still loading shows no title, no status word, no empty pickers and no stop,
+      undo, compact or resume: they come with the conversation's state. `test/web-page.test.ts`: *a page still
       loading shows no title, no pickers and no turn buttons; the state brings the pickers*.
       `test/web-page.test.ts`: *the header's secondary actions move into a sheet and back*, *below
       1000 px of conversation, undo, find, compact and resume stay in the header and the rest go

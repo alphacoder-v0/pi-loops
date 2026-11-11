@@ -90,7 +90,7 @@ ${css}</style>
         <button id="notifyMe">Notifications</button>
         <button id="adddev" aria-label="Add a device">Add a device</button>
       </span>
-      <span class="badge" id="status">connecting</span>
+      <span class="badge" id="status"></span>
       <button id="more" title="Conversation actions" aria-label="Conversation actions">⋯</button>
     </span>
   </header>

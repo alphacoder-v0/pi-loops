@@ -1076,6 +1076,26 @@ test("an empty conversation is a blank feed, and the first message is its first 
 	dom.dispose();
 });
 
+test("on a phone the ⋯ sheet carries the model and thinking pickers, and gives them back to the header", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const dom = stubDom(STATE, { messages: [] });
+	g.matchMedia = (q: string) => ({ matches: /max-width:(760|900|1100)px/.test(q), addEventListener() {} });
+	g.location.hash = "#chat";
+	g.history.pushState = () => undefined;
+	await new Function(pageScript())();
+	await dom.started();
+	const byId = (id: string) => g.document.getElementById(id);
+	byId("more").onclick();
+	const first = byId("menuBody").children[1];
+	assert.equal(first.children[0]._text, "Conversation");
+	assert.ok(first.children[1] === byId("model") && first.children[2] === byId("thinking"), "the pickers lead the conversation's group");
+	byId("menuClose").onclick();
+	const grow = g.document.querySelector("header .grow");
+	const header = grow.parentElement.children;
+	assert.ok(header.indexOf(byId("model")) >= 0 && header.indexOf(byId("model")) + 1 === header.indexOf(byId("thinking")), "back in the header, in order");
+	dom.dispose();
+});
+
 test("a page still loading shows no title, no pickers and no turn buttons; the state brings the pickers", { timeout: 20_000 }, async () => {
 	// What the page is served with, before its script has a state: read off the served markup, the
 	// one place it exists before the script runs.
@@ -5111,7 +5131,7 @@ test("the header is opaque, and on a phone it is one row", () => {
 	const phone = /@media \(max-width:900px\)\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
 	assert.match(phone, /header\{[^}]*flex-wrap:nowrap/, "title, pickers and buttons share one row");
 	const narrow = /@media \(max-width:760px\)\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
-	assert.match(narrow, /header>b\{min-width:40%\}/, "on a phone the title keeps at least 40% of it");
+	assert.match(narrow, /header>#model,header>#thinking\{display:none\}/, "on a phone the title has the row: the pickers are in the sheet");
 	assert.doesNotMatch(phone, /header>b\{[^}]*flex:1 1 100%/, "the title has no row of its own");
 });
 
