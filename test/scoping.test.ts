@@ -179,12 +179,8 @@ test("a sub-agent cannot remove a cron job, and another project's job needs its 
 		assert.equal(byName.isError, true, "another project's job is not reachable by name");
 		assert.equal(f.scheduler.store.load().length, 1);
 
-		// A sub-agent is denied outright: nobody can approve a removal in an unattended run.
-		const subHost: ToolHost = { ...f.host, confirmTool: async () => "denied: no user to approve this" };
-		const atHop1 = automationTools({ hop: 1, actor: "sub-agent" }, subHost).find((t) => t.name === "cron_remove")!;
-		const denied = await atHop1.execute("i", { ref: "cron-other" }, undefined, undefined, ctx);
-		assert.equal(denied.isError, true);
-		assert.equal(f.scheduler.store.load().length, 1, "the job is still there");
+		// A sub-agent is not offered the tool: nobody can approve a removal in an unattended run.
+		assert.equal(automationTools({ hop: 1, actor: "sub-agent" }, f.host).find((t) => t.name === "cron_remove"), undefined);
 	} finally {
 		await f.scheduler.stop();
 	}
@@ -627,7 +623,7 @@ test("a sub-agent has no new_trigger; a scheduled turn and a pi with no dialog k
 	try {
 		// Hop 1: a call nobody can approve is not offered at all, so the agent does not try it first.
 		const names = automationTools({ hop: 1, actor: "sub-agent" }, sub.host).map((t) => t.name).sort();
-		assert.deepEqual(names, ["cron_create", "cron_list", "cron_remove", "list_triggers", "set_cron_job_state", "set_trigger_state"]);
+		assert.deepEqual(names, ["cron_create", "cron_list", "list_triggers", "set_cron_job_state", "set_trigger_state"]);
 		assert.deepEqual(automationTools({ hop: 0, actor: "tool" }, sub.host).map((t) => t.name).sort(), ["cron_create", "cron_list", "cron_remove", "list_triggers", "new_trigger", "remove_trigger", "set_cron_job_state", "set_trigger_state"]);
 		assert.equal(sub.selects.length, 0);
 	} finally {

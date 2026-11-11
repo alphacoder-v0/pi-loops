@@ -2625,9 +2625,7 @@ async function swap(call, body, why) {
   const held = waiting.splice(0, waiting.length);
   if (r.success && !r.data?.cancelled && typeof r.sessionId === "string" && r.sessionId && r.sessionId !== SESSION) {
     // Moved first, then one reload, for the reason given; what waited is applied after it.
-    SESSION = r.sessionId;
-    history.replaceState(null, "", "/c/" + SESSION + "/");
-    listAt = 0;
+    moveTo(r.sessionId);
     waiting.push(...held);
     await resync(reloadReason());
     return;
@@ -3198,6 +3196,13 @@ async function resync(why) {
   refresh();
 }
 
+/** Point the page's routes and address at another conversation; the list marks it at the next poll. */
+function moveTo(id) {
+  SESSION = id;
+  history.replaceState(null, "", "/c/" + SESSION + "/");
+  listAt = 0;
+}
+
 /**
  * One event, against the numbering this page is counting on: already covered by the transcript, the
  * next one in sequence, or evidence that something in between never arrived.
@@ -3207,13 +3212,8 @@ function applyEvent(ev) {
   // clears the feed, and the replay must not go on drawing into what it cleared (the history it reads
   // has those events already). Applied once the transcript is back.
   if (resyncing || swapPending) return void waiting.push(ev);
-  if (ev.type === "page_moved" && ev.sessionId) {
-    // pi is in another conversation now (a new session, a resume): its routes and its address move.
-    SESSION = ev.sessionId;
-    history.replaceState(null, "", "/c/" + SESSION + "/");
-    // And the list marks it at the next poll, not fifteen seconds later.
-    listAt = 0;
-  }
+  // pi is in another conversation now (a new session, a resume).
+  if (ev.type === "page_moved" && ev.sessionId) moveTo(ev.sessionId);
   if (!ev.seq) return handle(ev); // not numbered: nothing to reason about
   if (epoch && ev.epoch && ev.epoch !== epoch) {
     // A different run of the server: its numbers mean nothing next to the ones we were counting.

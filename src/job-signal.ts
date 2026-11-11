@@ -9,6 +9,7 @@
  */
 import type { InboxEntry } from "./inbox.ts";
 import type { RunRecord } from "./store.ts";
+import { plural } from "./plural.ts";
 
 export interface LoopSignal {
 	/** Runs that finished in the window (failed ones included: they cost, and they are what `quiet` is measured against). */
@@ -71,7 +72,7 @@ export function loopSignal(jobId: string, runs: RunRecord[], inbox: InboxEntry[]
  */
 export function signalSummary(s: LoopSignal): string | undefined {
 	if (!s.findings) return undefined;
-	const parts = [`${s.findings} finding${s.findings === 1 ? "" : "s"}`];
+	const parts = [`${plural(s.findings, "finding")}`];
 	if (s.claimed) parts.push(`${s.claimed} claimed`);
 	if (s.dismissed) parts.push(`${s.dismissed} dismissed${s.dismissedWithReason ? ` (${s.dismissedWithReason} with a reason)` : ""}`);
 	return parts.join(" · ");

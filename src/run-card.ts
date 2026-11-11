@@ -6,6 +6,7 @@
  */
 import { screenText } from "./inbox-card.ts";
 import { loopLabel } from "./job-lines.ts";
+import { plural } from "./plural.ts";
 import { previewRedacted } from "./redact.ts";
 import type { RunRecord } from "./store.ts";
 
@@ -48,12 +49,12 @@ export function runLine(r: RunRecord, name?: string): string {
 	if (r.aborted) return `${label} stopped · ${secs}s`;
 	if (!r.ok) return `${label} FAILED · ${secs}s · ${previewRedacted(r.error ?? "unknown error", ERROR_CHARS)}`;
 	const cost = r.usage?.cost ? ` · $${r.usage.cost.toFixed(3)}` : "";
-	return `${label} · ${secs}s${cost} · ${r.findings} finding${r.findings === 1 ? "" : "s"}`;
+	return `${label} · ${secs}s${cost} · ${plural(r.findings, "finding")}`;
 }
 
 /** The one line a burst's carded rest is folded into. */
 export function burstLine(placed: { more: number; failed: number }): string {
-	return `+${placed.more} more run${placed.more === 1 ? "" : "s"} finished${placed.failed ? ` (${placed.failed} failed)` : ""} — /cron runs`;
+	return `+${plural(placed.more, "more run")} finished${placed.failed ? ` (${placed.failed} failed)` : ""} — /cron runs`;
 }
 
 /** The carded runs of `fresh`, oldest first, at most `max`; `more` counts the carded rest and `failed` the failures among them. */

@@ -372,15 +372,8 @@ test("with no terminal and no --web, pi-loops says why and what to run instead, 
 	const marker = path.join(dir, "pi-started");
 	const fakePi = path.join(dir, "pi");
 	fs.writeFileSync(fakePi, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\n`, { mode: 0o755 });
-	const before = { PI_BIN: process.env.PI_BIN, PI_LOOPS_DIR: process.env.PI_LOOPS_DIR };
-	process.env.PI_BIN = fakePi;
-	process.env.PI_LOOPS_DIR = path.join(dir, "loops");
 	const said: string[] = [];
-	try {
-		assert.equal(await runCli([], (l) => said.push(l)), 1);
-	} finally {
-		for (const [k, v] of Object.entries(before)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
-	}
+	assert.equal(await withEnv({ PI_BIN: fakePi, PI_LOOPS_DIR: path.join(dir, "loops") }, () => runCli([], (l) => said.push(l))), 1);
 	assert.deepEqual(said, [line]);
 	assert.equal(fs.existsSync(marker), false, "pi was not started");
 });
@@ -1813,11 +1806,8 @@ test("--tui --loops-dir hands the directory to pi's extension, and --open and --
 	const record = path.join(dir, "argv");
 	const fakePi = path.join(dir, "pi");
 	fs.writeFileSync(fakePi, `#!/bin/sh\necho "PI_LOOPS_DIR=\${PI_LOOPS_DIR:-unset} args=$*" > ${JSON.stringify(record)}\n`, { mode: 0o755 });
-	const before = { PI_BIN: process.env.PI_BIN, PI_LOOPS_DIR: process.env.PI_LOOPS_DIR };
-	process.env.PI_BIN = fakePi;
-	delete process.env.PI_LOOPS_DIR;
 	const scratch = path.join(dir, "loops");
-	try {
+	await withEnv({ PI_BIN: fakePi, PI_LOOPS_DIR: undefined }, async () => {
 		assert.equal(await runCli(["--tui", "--loops-dir", scratch, "--open", "--model", "x"], () => undefined), 0);
 		assert.equal(fs.readFileSync(record, "utf8").trim(), `PI_LOOPS_DIR=${scratch} args=--open --model x`);
 		const said: string[] = [];
@@ -1826,9 +1816,7 @@ test("--tui --loops-dir hands the directory to pi's extension, and --open and --
 		assert.deepEqual(said, [`pi-loops v${PI_LOOPS_VERSION}`, `pi-loops v${PI_LOOPS_VERSION}`]);
 		assert.equal(await runCli(["--tui", "--", "--version"], () => undefined), 0);
 		assert.equal(fs.readFileSync(record, "utf8").trim(), "PI_LOOPS_DIR=unset args=--version", "after -- it is still pi's");
-	} finally {
-		for (const [k, v] of Object.entries(before)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
-	}
+	});
 });
 
 test("the usage and docs/cli.md name sessions --cwd and pi-loops help", async () => {

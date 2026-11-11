@@ -53,10 +53,9 @@ quoted path that may hold spaces. The verb is one of `exists`, `appears`, `is cr
 noun only when a space sets it apart from the path: `~/备份文件 存在` waits for `~/备份文件`), with an optional leading `when`, `if`,
 `once`, `当`, `如果` or `一旦` and an optional trailing `的时候`, `时` or `后`. `~` and `$HOME` are
 resolved in the process that creates the rule, so they are your home even when pi-loops in the
-background was started with another one; a relative path is resolved against the rule's project. A
-single trailing parenthetical after the verb is an aside, not a second clause:
-`~/build.done exists (a build finished)` is path-only too — the watch waits on the path alone,
-and once the path exists the model reads the whole condition.
+background was started with another one; a relative path is resolved against the rule's project.
+An aside in parentheses is a second clause: `/tmp/a exists (or /tmp/b exists)` is true while
+`/tmp/a` is absent, so a condition with one is checked by the model.
 
 Anything else is refused as path-only and checked by the model, as before: a glob, a second clause
 (`~/x appears and it contains ERROR`, `~/a exists or ~/b exists`), another verb, a bare word with no
@@ -210,13 +209,14 @@ poll interval is unaffected: the next scheduled check happens when it would have
 
 ## Cycle safety
 
-Cycles are bounded by a hop count: sub-agents run at hop 1 and still have the
-cron tools, `list_triggers` and `set_trigger_state`, so a trigger action can schedule a job; they
-never run the trigger runtime, so nothing nests. `new_trigger` and `remove_trigger` are not offered
-at hop 1: every call of either needs a person, and a sub-agent has nobody to ask. The other
+Cycles are bounded by a hop count: sub-agents run at hop 1 and still have
+`cron_create`, `cron_list`, `set_cron_job_state`, `list_triggers` and `set_trigger_state`, so a
+trigger action can schedule a job; they never run the trigger runtime, so nothing nests.
+`new_trigger`, `remove_trigger` and `cron_remove` are not offered at hop 1: every call of each
+needs a person, and a sub-agent has nobody to ask. The other
 prompt-class operations — re-enabling a trigger or a cron job — are denied fail-closed in
 sub-agents (no control-plane prompt channel there). `cron_create` works there, and so does disabling a job of the sub-agent's own
-project; the control-plane audit records `actor: sub-agent`. `cron_remove`, re-enabling a job and
+project; the control-plane audit records `actor: sub-agent`. Re-enabling a job and
 touching another project's job are denied there like the other prompt-class operations. Sub-agents never handle triggers themselves: they ignore MCP pushes, and the
 runtime audits anything reaching hop ≥ 1 as `cycle_suppressed` (hops are counted per trace, but the
 bound that matters is structural: a sub-agent session never acts on a trigger at all).

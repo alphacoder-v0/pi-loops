@@ -902,16 +902,12 @@ test("a rule that waits for a path: no model call and no running row while the f
 	assert.equal(runner.calls.length, 1, "disabled: no more checks");
 });
 
-test("a rule whose condition has a trailing parenthetical is path-watched too: no model call while the file is absent", async () => {
+test("a rule whose aside offers another way to be true is checked by the model while the file is absent", async () => {
 	const { rt, runner, poll, file } = waitingSetup();
-	const rule = await rt.store.add({ condition: `${file} exists (a build finished)`, action: "tell me", cwd: path.dirname(file) });
-	assert.equal(rule.precheck?.resolved, file, "the aside does not defeat the pre-check");
-	for (let i = 0; i < 3; i++) await poll();
-	assert.equal(runner.calls.length, 0, "no model call before the file exists");
-	assert.equal(rt.ruleLook(rule.id)?.look, "absent");
-	fs.writeFileSync(file, "");
+	const rule = await rt.store.add({ condition: `${file} exists (or ${file}.other exists)`, action: "tell me", cwd: path.dirname(file) });
+	assert.equal(rule.precheck, undefined, "no path-only watch");
 	await poll();
-	assert.equal(runner.calls.length, 1, "the model checks the whole condition once the path exists");
+	assert.equal(runner.calls.length, 1, "the model reads the condition although the first path is absent");
 });
 
 test("a repeating rule that waits for a path matches while the file is there, stops when it is deleted, and matches again when it comes back", async () => {

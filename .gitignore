@@ -16,3 +16,6 @@ __pycache__/
 
 # LoopX's goal state for this checkout: local progress, not part of the repository.
 .loopx/
+
+# Lessons an agent on this machine keeps for itself: local notes, not part of the repository.
+LESSONS.md

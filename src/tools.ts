@@ -3,7 +3,7 @@
  * SetCronJobState and NewTrigger / ListTriggers / RemoveTrigger / SetTriggerState — as pi tool
  * definitions. One factory serves the interactive session (hop 0, registered with pi), every
  * in-process sub-session (hop 1, passed as customTools) and the headless host (hop 1, no UI).
- * Hop 1 does not get `new_trigger` or `remove_trigger`: nobody can approve either there.
+ * Hop 1 does not get `new_trigger`, `remove_trigger` or `cron_remove`: nobody can approve any of them there.
  */
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal } from "./job-signal.ts";
 import { formatWait, queuedPrompt, type QueuedPrompt } from "./engine.ts";
@@ -17,7 +17,7 @@ import type { LoopScheduler, SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
 import { asleepNote, ownerSession, runsSomewhere, whereRuns, type OwnerView } from "./job-owner.ts";
 import { inProject } from "./inbox.ts";
-import { plural } from "./job-lines.ts";
+import { plural } from "./plural.ts";
 import type { TriggerRuntime } from "./trigger-runtime.ts";
 import { sameProject, withinProject } from "./paths.ts";
 import { type TriggerStore, cleanCondition, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
@@ -324,12 +324,15 @@ export interface ToolScope {
 	parentSessionId?: string;
 	parentCwd?: string;
 }
+// Every call of these is a prompt-class operation, denied at hop > 0 (controlPlanePreflight): a
+// tool that can only fail is one an agent tries first.
+const HOP0_ONLY = new Set(["new_trigger", "remove_trigger", "cron_remove"]);
+
 /**
  * The cron/trigger tools are registered in sub-agents too (Prompt-class ones are denied there)
  * and bounds cycles with a hop count. The same definitions serve the interactive session
  * (hop 0, registered with pi) and every in-process sub-session (hop 1, passed as customTools).
  */
-const HOP0_ONLY = new Set(["new_trigger", "remove_trigger"]);
 
 export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinition<any, any>[] {
 	const defs: ToolDefinition<any, any>[] = [];
@@ -344,7 +347,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			"Create an event/condition-based dynamic trigger rule. Use this for future events such as a browser tab, file, MCP notification, webhook, or other condition becoming true. Do not use this for fixed time, recurring, scheduled, hourly, daily, weekly, cron, crontab, 定时任务, 每小时, or similar time-based jobs; use cron_create instead.",
 		parameters: Type.Object(
 			{
-				condition: Type.String({ description: "The natural-language condition that should be evaluated against future trigger events. For 'when <path> exists', keep the person's words: '<path> exists', with at most one aside in parentheses — a condition like that is checked with a local stat, no model call, while the path is absent." }),
+				condition: Type.String({ description: "The natural-language condition that should be evaluated against future trigger events. For 'when <path> exists', keep the person's words: '<path> exists', with nothing added (no aside in parentheses) — a condition like that is checked with a local stat, no model call, while the path is absent." }),
 				action: Type.String({ description: "The action to perform when the condition matches. This may be a shell command or a natural-language instruction." }),
 				spec: Type.Optional(Type.String({ description: "The whole rule as one sentence, only when condition and action cannot be given apart." })),
 				fire_once: Type.Optional(Type.Boolean({ description: "Whether to disable the rule after the first successful match. Defaults to true unless the user explicitly asks for a repeating trigger." })),
@@ -583,7 +586,5 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			};
 		},
 	});
-	// Every call of these is a prompt-class operation, denied at hop > 0 (controlPlanePreflight): a
-	// tool that can only fail is one an agent tries first.
 	return scope.hop === 0 ? defs : defs.filter((d) => !HOP0_ONLY.has(d.name));
 }

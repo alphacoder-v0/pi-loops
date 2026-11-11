@@ -16,6 +16,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { DEAD_AFTER_ATTEMPTS, formatWait, heldTurnFor, stopRow } from "./engine.ts";
 import { snapshotLoopLabel } from "./job-lines.ts";
+import { plural } from "./plural.ts";
 import { type LeaseStore, type ProcessProbe, holderAlive, sessionFileName } from "./lease.ts";
 import { conversationLabel, shortSessionId } from "./session-head.ts";
 import { previewRedacted, redact } from "./redact.ts";
@@ -205,7 +206,7 @@ export function requestLines(queues: readonly RequestQueue[], now: number, opts:
 	const dead = queues.reduce((n, q) => n + q.dead, 0);
 	const undelivered = (n: number) => `${n} could not be delivered`;
 	const where = (q: RequestQueue) => (q.holder.kind === "terminal" ? `open in pid ${line(q.holder.pid)}` : q.holder.kind === "host" ? "in the background" : "closed");
-	const head = `  ${total} message${total === 1 ? "" : "s"} waiting for ${queues.length} conversation${queues.length === 1 ? "" : "s"}${dead ? `, ${undelivered(dead)}` : ""}`;
+	const head = `  ${plural(total, "message")} waiting for ${plural(queues.length, "conversation")}${dead ? `, ${undelivered(dead)}` : ""}`;
 	return [head, ...queues.map((q) => `    ${shortSessionId(line(q.sessionId))}: ${line(q.count)} waiting · oldest ${formatWait(now - Date.parse(q.oldest))}${q.dead ? ` · ${undelivered(q.dead)}` : ""}${opts.where === false ? "" : ` · ${where(q)}`}`)];
 }
 

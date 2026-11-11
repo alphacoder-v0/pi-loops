@@ -1,6 +1,7 @@
 # Working on pi-loops
 
 pi-loops is an automation layer for pi, shipped as an extension that touches nothing in pi.
+Read [LESSONS.md](LESSONS.md) before you start: it lists the mistakes that merged changes made here.
 Keep these invariants:
 
 - **Non-invasive.** Only public pi exports (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`,

@@ -12,6 +12,7 @@ import { shortSessionId } from "./session-head.ts";
 import type { InboxEntry } from "./inbox.ts";
 import { asleepNote, runsSomewhere, type OwnerView } from "./job-owner.ts";
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal, signalSummary } from "./job-signal.ts";
+import { plural } from "./plural.ts";
 import { previewRedacted } from "./redact.ts";
 import type { SessionRequest } from "./requests.ts";
 import { computeNext, formatLocal, formatSchedule } from "./schedule.ts";
@@ -102,11 +103,6 @@ export function pickQueued(rows: readonly SessionRequest[], ref: string): Sessio
 	if (exact) return exact;
 	const prefixed = trimmed ? inputs.filter((row) => row.id.startsWith(trimmed)) : [];
 	return prefixed.length === 1 ? prefixed[0] : undefined;
-}
-
-/** `1 loop`, `2 loops`: a count a person reads, never `loop(s)`. */
-export function plural(n: number, one: string, many = `${one}s`): string {
-	return `${n} ${n === 1 ? one : many}`;
 }
 
 /**

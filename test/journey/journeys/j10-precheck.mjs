@@ -1,11 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-export const id = "J10", title = "A path-only rule whose condition carries a parenthetical makes no model call until the path exists", expect = "head", active = true, milestone = "M7", page = "new", tui = false, needs = ["agent-browser"];
+export const id = "J10", title = "A path-only rule makes no model call until the path exists", expect = "head", active = true, milestone = "M7", page = "new", tui = false, needs = ["agent-browser"];
 
-/** The sentence's tool call, as J8 has the stand-in make it. The condition is the one a model
- * rewrites a person's words into: the path, the verb, and an aside in parentheses. */
-export const modelTools = [{ match: "build.done", tool: "new_trigger", args: { condition: "~/build.done appears (a build finished)", action: "tell me it is there" } }];
+/** The sentence's tool call, as J8 has the stand-in make it. */
+export const modelTools = [{ match: "build.done", tool: "new_trigger", args: { condition: "~/build.done appears", action: "tell me it is there" } }];
 
 export function seed(dirs) {
 	fs.writeFileSync(path.join(dirs.loops, "config.toml"), "[triggers]\npoll_interval_secs = 1\n");
@@ -37,7 +36,7 @@ export async function run(ctx) {
 	ctx.browser("open", `${ctx.boot.url}?token=${ctx.boot.token}`);
 	await ctx.waitFor("the Watch for… button", () => page(`!!document.getElementById("watchFor")`), 30000);
 	ctx.browser("click", "#watchFor");
-	ctx.browser("fill", "#watchText", "When ~/build.done appears (a build finished), tell me it is there");
+	ctx.browser("fill", "#watchText", "When ~/build.done appears, tell me it is there");
 	ctx.browser("click", "#watchRead");
 	await ctx.waitFor("the rule card", () => page(`[...document.querySelectorAll("#watchCards .plan")].length === 1`), 30000);
 	ctx.browser("click", "#watchCards .plan button.primary");

@@ -7,6 +7,13 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Fixed
 
+- **A path rule with an aside in parentheses is checked by the model.** The path precheck dropped
+  a trailing parenthetical, so `/tmp/a exists (or /tmp/b exists)` waited on `/tmp/a` alone and never
+  fired when only `/tmp/b` appeared. No word list can tell such an aside from a harmless one, so a
+  condition with one is model-checked again, and `new_trigger` asks the model to keep the person's
+  words with nothing added.
+- **Sub-agents are not offered `cron_remove`.** Every call needs a person's approval, and a
+  sub-agent has nobody to ask, so the tool could only fail there.
 - **Every `pi-loops` command answers in a fraction of a second.** The command line loaded pi's SDK
   on every call, about a second of each `status`, `stop` and `--help`; it now loads it only for
   `import`, the one command that needs it. `pi-loops --version` went from about 1.2 s to 0.17 s here
@@ -24,11 +31,6 @@ All notable changes to pi-loops are documented here. The format follows
 - **A stopped MCP connection pushes nothing more.** A push read from the server just before the
   connection stopped could still reach the host after it, and its trust check then read a project
   directory that might be gone (#188).
-- **A path watch survives an aside in parentheses.** A condition a model rewrote to `<path> exists
-  (a build finished)` was read as an extra clause, so the local `stat` pre-check never engaged and
-  every poll before the path existed cost a model call. One trailing parenthetical after the verb is
-  now an aside: the watch waits on the path alone, and the model reads the whole condition once the
-  path exists (#147).
 - **An upgrade no longer holds a quit, or the page opening, in silence.** `pi-loops` opening the
   page during an upgrade waited up to 180 s for the older process with nothing said; it now prints
   `waiting up to 2 min for a turn in the browser page to finish…` when the wait passes 2 s. A pi
