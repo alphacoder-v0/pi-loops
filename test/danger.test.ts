@@ -149,6 +149,110 @@ test("shutdown / reboot / halt are refused wherever they appear: a parse that mi
 	for (const c of ["reboot", "sudo reboot", "/sbin/shutdown -h now", "sleep 5; reboot", "halt &", "systemctl reboot", "echo done && poweroff", "bash -c 'reboot'", "sh -c \"shutdown -h now\"", "cmd & reboot", "(reboot)", "{ reboot; }", "if true; then reboot; fi", "timeout 5 reboot", "nice -n 5 reboot", "env -i reboot", "xargs reboot", "busybox reboot", "ssh host reboot"]) assert.ok(dangerousCommandReason(c, HOME), `should refuse: ${c}`);
 });
 
+test("a one-line search for shutdown, reboot or halt, with no shell syntax past pipes and lists, is not the command", () => {
+	const allowed = [
+		"grep -rn shutdown src/",
+		'rg -n "halt" src | wc -l',
+		"grep -rn reboot src/ 2>/dev/null | head -20",
+		"cd src && grep -n halt host.ts",
+		'grep -rnE "shutdown|reboot; halt" docs 2>&1 | tail -5',
+		"cat docs/shutdown.md | cut -c1-80 | tr a-z A-Z; ls reboot || fgrep -c 'poweroff' x",
+	];
+	for (const c of allowed) assert.equal(dangerousCommandReason(c, HOME), undefined, `should allow: ${c}`);
+	const refused = [
+		// A program after the search, or one that is not in the short list.
+		"grep -rn x src; reboot",
+		"grep -rn x src | reboot",
+		"grep halt src & reboot",
+		"grep halt src |& reboot",
+		"echo reboot | sh",
+		"echo reboot | xargs -I{} {}",
+		"cat reboot.sh | bash",
+		"exec reboot",
+		"command reboot",
+		"nohup shutdown -h now",
+		"time halt",
+		"! reboot",
+		"X=1 reboot",
+		"X=1 grep reboot src",
+		"/bin/grep reboot src",
+		"./grep reboot src",
+		'"reboot"',
+		"'shutdown' -h now",
+		"'grep' reboot src",
+		'gr""ep reboot src',
+		"grep reboot src;;",
+		"alias ls=reboot",
+		"python3 -c 'import os; os.system(\"reboot\")'",
+		"find . -exec reboot \;",
+		"watch reboot",
+		"npm run x reboot",
+		"echo reboot | npm test",
+		// A function that takes the name of a listed program.
+		"grep () ( reboot ) ; grep x",
+		"cd () ( reboot ) && cd",
+		"function grep { reboot; }; grep x",
+		// Programs that run or write what they are given.
+		"gh config set browser reboot && gh browse -R cli/cli 1",
+		"gh ext exec reboot",
+		"gh cs ssh -- reboot",
+		'gh issue create --body "the host needs a reboot"',
+		'printf "[core]\\n\\tfsmonitor = reboot \\n" | uniq - .git/config && git status',
+		"echo reboot | uniq - ~/.bashrc",
+		"grep -h reboot notes | uniq - .git/hooks/post-checkout",
+		"grep reboot x | sort -o .git/hooks/pre-commit",
+		"git log --oneline --grep=reboot",
+		"git -c alias.x='!reboot' x",
+		"git diff reboot",
+		"git fetch --upload-pack=reboot origin",
+		"git fetch --upload-pa reboot .",
+		"git fetch ext::reboot",
+		// An option that makes a search run a program.
+		"rg --pre reboot x",
+		"rg --pre=reboot x",
+		"rg '--pre=reboot' x",
+		'rg "--pre" reboot x',
+		"rg --p're' reboot x",
+		"rg \\--pre reboot x",
+		"rg -n halt src --hostname-bin reboot",
+		"rg {--pre,reboot} src",
+		"rg --pre$IFS reboot src",
+		"ag --pager reboot x",
+		"ag --pag reboot x",
+		// Substitution, redirection, and anything a variable or a backslash could build.
+		"echo $(reboot)",
+		"grep x $(reboot)",
+		"grep x `reboot`",
+		'grep "$(reboot)" src',
+		"cat <(reboot)",
+		"cat < reboot",
+		"grep reboot src > /tmp/x.sh",
+		"grep reboot src 2>/tmp/x.sh",
+		"grep reboot src 2>/dev/null.sh",
+		"grep reboot src 2>&1>x",
+		"grep reboot src 2>>x",
+		"$CMD reboot",
+		"grep halt src; $CMD",
+		"grep halt $HOME",
+		"grep reboot \\\n src",
+		// More than one line, or a quote that does not close.
+		"echo x\nreboot",
+		"grep x src\nreboot",
+		"grep x src\rreboot",
+		"# reboot later\nls",
+		"grep 'x src ; reboot",
+		'grep "x src ; reboot',
+		"echo \"'\" ; reboot ; echo \"'\"",
+		"grep \"'\" x ; reboot ; grep \"'\" x",
+		"echo a #'\ntrue '' ; reboot ; true ''",
+		"echo $'a\\' ; reboot ; echo 'b\\'",
+		// A space the shell does not split on.
+		"grep -rn reboot src",
+		"grep x src; reboot",
+	];
+	for (const c of refused) assert.ok(dangerousCommandReason(c, HOME), `should refuse: ${JSON.stringify(c)}`);
+});
+
 test("an unattended run may not stop other runs or every loop: pi-loops abort and pi-loops stop are refused", () => {
 	for (const c of ["pi-loops abort run-abc", "pi-loops stop", "sleep 1; pi-loops abort --all", "/usr/local/bin/pi-loops stop", "pi-loops restart", 'pi-loops "stop"', "pi-loops 'abort' x", 'pi-loops "st"op', "pi-loops host stop"]) assert.match(dangerousCommandReason(c, HOME) ?? "", /pi-loops abort \/ stop \/ restart/, c);
 	for (const c of ["pi-loops status", "pi-loops inbox list --json", "echo stop"]) assert.equal(dangerousCommandReason(c, HOME), undefined, c);
@@ -313,7 +417,7 @@ test("pi-loops with a verb the shell expands is refused: what it expands to is n
 test("the pi-loops refusal is linear: 200 KB of open parentheses, quotes, comments or pi-loops is answered in under 200 ms, and so is every other pattern", () => {
 	const size = 200 * 1024;
 	const fill = (unit: string) => unit.repeat(Math.ceil(size / unit.length));
-	for (const unit of ["( a ", '"', "'", '"a b" ', "'a b' ", "$'", '\\"', "pi-loops ", "pi-loops host ", "pi-loops -", "{,", "$IFS", "curl |", "wget | ", "# '", "chmod -", "dd ", "git push ", "git push --force ", "git push --force\n", "dd of=/dev/x "]) {
+	for (const unit of ["( a ", '"', "'", '"a b" ', "'a b' ", "$'", '\\"', "pi-loops ", "pi-loops host ", "pi-loops -", "{,", "$IFS", "curl |", "wget | ", "# '", "chmod -", "dd ", "git push ", "git push --force ", "git push --force\n", "dd of=/dev/x ", "reboot ", "grep halt | ", "grep 'halt' ", 'grep "halt" x; ', "grep halt 2>&1 "]) {
 		const command = fill(unit);
 		const started = performance.now();
 		dangerousCommandReason(command, HOME);
