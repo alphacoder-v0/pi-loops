@@ -5095,3 +5095,118 @@ test("the page's text comes in four sizes, each named once on the root", () => {
 	const off = [...sizes, ...shorthands].filter((v) => !token.test(v) && v !== "calc(var(--fs-lg) * 2)");
 	assert.deepEqual(off, [], "every font size is one of the four tokens");
 });
+
+/* ------------------------------------------------------------------ saying what failed */
+
+const FAILED_REPLY = { role: "assistant", content: [], stopReason: "error", errorMessage: "Connection error." };
+/** The error rows in the conversation now, as a person reads them. */
+const errorRows = (dom: { made: any[] }) => dom.made.filter((m: any) => m.className === "row err" && m._parent === (globalThis as any).document.getElementById("feed")).map(textOf);
+
+test("a reply the model call failed on is one error row with the reason, live and from the transcript, and its retries count on that row", { timeout: 20_000 }, async () => {
+	const said = { role: "user", content: [{ type: "text", text: "hello" }] };
+	const live = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await live.started();
+	const end = (message: unknown) => {
+		live.source().onmessage({ data: JSON.stringify({ type: "message_start" }) });
+		live.source().onmessage({ data: JSON.stringify({ type: "message_end", message }) });
+	};
+	end(FAILED_REPLY);
+	assert.deepEqual(errorRows(live), ["error Connection error."], "the reason, the first time it fails");
+	end(FAILED_REPLY);
+	end(FAILED_REPLY);
+	assert.deepEqual(errorRows(live), ["error Connection error. (tried 3 times)"], "pi's retries count on the one row");
+	end({ ...FAILED_REPLY, errorMessage: "401 Unauthorized" });
+	end(said);
+	end(FAILED_REPLY);
+	assert.deepEqual(errorRows(live), ["error Connection error. (tried 3 times)", "error 401 Unauthorized", "error Connection error."], "another reason, or a failure after another message, is a row of its own");
+	live.dispose();
+
+	const reloaded = stubDom(STATE, { messages: [said, FAILED_REPLY, FAILED_REPLY, FAILED_REPLY, FAILED_REPLY] });
+	await new Function(pageScript())();
+	await reloaded.started();
+	assert.deepEqual(errorRows(reloaded), ["error Connection error. (tried 4 times)"], "the same row after a reload");
+	reloaded.dispose();
+});
+
+test("while pi-loops does not answer the page says so once, keeps what it had and turns off what posts to it; it comes back without a reload", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const owned = { ...DECISION_CARD, sessionId: undefined, fromThisConversation: false, owner: { holder: "project" } };
+	const { dom, cards, button } = await inboxPage({ "/inbox?": { ...INBOX, cards: [owned] }, "/conversations": listAnswer(ROWS) });
+	const at = (id: string) => g.document.getElementById(id);
+	await until(() => cards().length > 0 && at("auto").innerHTML.includes("nightly") && textOf(at("convs")) !== "", "the page drew its cards, its loops and its list");
+	assert.equal(button(cards().at(-1), "Yes, do it here").disabled, false);
+	const rail = textOf(at("convs"));
+
+	// pi-loops stops: it tells the page that it stopped this pi itself, and then nothing answers.
+	dom.source().onmessage({ data: JSON.stringify({ type: "pi_exit", code: 143, signal: null, stderr: "", asked: true }) });
+	const answering = g.fetch;
+	g.fetch = async () => { throw new TypeError("Failed to fetch"); };
+	await dom.poll();
+	await until(() => at("held").hidden === false, "the line above the composer");
+	assert.equal(textOf(at("held")), "pi-loops stopped or cannot be reached. Reconnecting…");
+	assert.deepEqual(errorRows(dom), [], "a pi that pi-loops stopped itself is no error in the conversation");
+	assert.match(at("auto").innerHTML, /nightly/, "the loops it knew stay listed");
+	assert.doesNotMatch(at("auto").innerHTML, /not found/);
+	assert.match(at("auto").innerHTML, /<button data-run="cron-a" disabled>/, "run is off");
+	// The end of a turn asks for the list again, and gets no answer either.
+	dom.source().onmessage({ data: JSON.stringify({ type: "agent_end" }) });
+	await settled();
+	assert.equal(textOf(at("convs")), rail, "the list stays, with nothing said about it");
+	assert.equal(textOf(at("sbHost")).trim(), "reconnecting…", "the status bar does not say pi-loops runs");
+	assert.equal(at("send").disabled, true, "send is off");
+	assert.equal(button(cards().at(-1), "Yes, do it here").disabled, true, "and so is a card's Yes");
+	at("input").value = "typed while it was away";
+	await at("composer").requestSubmit();
+	assert.equal(at("input").value, "typed while it was away", "Enter sends nothing and keeps the text");
+
+	// It answers again: the next poll puts everything back.
+	g.fetch = answering;
+	await dom.poll();
+	await until(() => at("held").hidden === true, "the line goes");
+	assert.equal(at("send").disabled, false);
+	assert.equal(button(cards().at(-1), "Yes, do it here").disabled, false);
+	assert.match(at("auto").innerHTML, /<button data-run="cron-a">/);
+	assert.match(textOf(at("sbHost")), /pi-loops/);
+	dom.dispose();
+});
+
+test("a pi that stopped by itself says so without naming a terminal", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await dom.started();
+	dom.source().onmessage({ data: JSON.stringify({ type: "pi_exit", code: 1, signal: null, stderr: "" }) });
+	assert.deepEqual(errorRows(dom), ["pi exited (code 1) it stopped without saying why"]);
+	dom.dispose();
+});
+
+test("a loop the server calls failing says failing ×N on its card and is listed under Needs you", { timeout: 20_000 }, async () => {
+	const automation = { ...STATE.automation, jobs: [{ ...STATE.automation.jobs[0], failing: 5, lastError: "401 Unauthorized" }, { ...STATE.automation.jobs[0], id: "cron-b", name: "weekly", lastError: "skipped: previous run still active" }] };
+	const dom = stubDom({ ...STATE, automation }, { messages: [] }, new Map(), { "/inbox?": { ...INBOX, cards: [], failing: [{ id: "cron-a", label: "nightly", streak: 5 }] } });
+	await new Function(pageScript())();
+	await dom.started();
+	const doc = (globalThis as any).document;
+	await until(() => textOf(doc.getElementById("needsSlot")).includes("nightly"), "the rail lists the failing loop");
+	assert.equal(textOf(doc.getElementById("needsSlot")).replace(/\s+/g, " ").trim(), "Needs you nightly failing ×5");
+	const cardsHtml = String(doc.getElementById("auto").innerHTML).split("<details");
+	assert.match(cardsHtml.find((c) => c.includes('data-key="job:cron-a"'))!, /<span class="bad">failing ×5<\/span>/);
+	assert.doesNotMatch(cardsHtml.find((c) => c.includes('data-key="job:cron-b"'))!, /failing ×/, "a last error alone is not a failing loop: the server decides");
+	dom.dispose();
+});
+
+test("a send takes the conversation to its end, wherever it was scrolled to", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await dom.started();
+	const doc = (globalThis as any).document;
+	const feed = doc.getElementById("feed");
+	feed.scrollHeight = 2000;
+	feed.clientHeight = 600;
+	feed.scrollTop = 100;
+	feed._on.scroll();
+	doc.getElementById("input").value = "sent while reading back";
+	await doc.getElementById("composer").requestSubmit();
+	assert.equal(feed.scrollTop, 2000, "what was sent is in view");
+	assert.equal(doc.getElementById("newer").hidden, true);
+	dom.dispose();
+});
