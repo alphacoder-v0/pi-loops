@@ -69,26 +69,26 @@ ${css}</style>
 </nav>
 <main>
   <header>
-    <b id="title">pi web</b>
-    <select id="model" aria-label="Model"></select>
-    <select id="thinking" title="Thinking level">
+    <b id="title"></b>
+    <select id="model" aria-label="Model" hidden></select>
+    <select id="thinking" title="Thinking level" hidden>
       <option>off</option><option>minimal</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option>
     </select>
     <span class="grow">
       <span class="badge" id="queue" hidden></span>
       <span class="badge" id="cost" title="Session tokens and cost" hidden></span>
-      <button id="expand">▸ steps</button>
+      <button id="expand" aria-label="Steps">▸<span class="lbl"> steps</span></button>
       <span id="actions">
-        <button id="reload">reload</button>
-        <button id="find" aria-label="Search this conversation">find</button>
-        <button id="undo">undo</button>
-        <button id="save" title="Export this conversation as HTML">save</button>
-        <button id="share">share</button>
-        <button id="compact">compact</button>
-        <button id="resume">resume</button>
-        <button id="adddev" aria-label="Add a device">add device</button>
-        <button id="theme">theme: system</button>
-        <button id="notifyMe">notifications</button>
+        <button id="reload">Reload</button>
+        <button id="find" aria-label="Search this conversation">Find</button>
+        <button id="undo" hidden>Undo</button>
+        <button id="save" title="Export this conversation as HTML">Save</button>
+        <button id="share">Share</button>
+        <button id="compact" hidden>Compact</button>
+        <button id="resume" hidden>Resume</button>
+        <button id="theme">Theme: system</button>
+        <button id="notifyMe">Notifications</button>
+        <button id="adddev" aria-label="Add a device">Add a device</button>
       </span>
       <span class="badge" id="status">connecting</span>
       <button id="more" title="Conversation actions" aria-label="Conversation actions">⋯</button>
@@ -108,7 +108,7 @@ ${css}</style>
       <textarea id="input" placeholder="Message pi"></textarea>
       <button type="button" id="attach">attach</button>
       <button type="submit" id="send" class="primary">send</button>
-      <button type="button" id="stop">stop</button>
+      <button type="button" id="stop" hidden>stop</button>
     </div>
     <input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" multiple hidden>
   </form>
@@ -126,7 +126,7 @@ ${css}</style>
 </nav>
 <div id="scrim" hidden></div>
 <dialog id="menu" aria-label="Conversation actions" role="dialog">
-  <h3>Conversation</h3><div id="menuBody"></div><div id="sid" class="sid"></div>
+  <div id="menuBody"></div><div id="sid" class="sid"></div>
   <menu><button id="menuClose" value="close">close</button></menu>
 </dialog>
 <dialog id="pairdlg" aria-labelledby="pairTitle" role="dialog">

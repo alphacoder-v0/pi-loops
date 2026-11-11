@@ -1076,6 +1076,23 @@ test("an empty conversation is a blank feed, and the first message is its first 
 	dom.dispose();
 });
 
+test("a page still loading shows no title, no pickers and no turn buttons; the state brings the pickers", { timeout: 20_000 }, async () => {
+	// What the page is served with, before its script has a state: read off the served markup, the
+	// one place it exists before the script runs.
+	const html = PAGE.slice(PAGE.indexOf("<header>"), PAGE.indexOf("</header>")) + PAGE.slice(PAGE.indexOf('<form id="composer">'), PAGE.indexOf("</form>"));
+	const tag = (id: string) => new RegExp(`<[a-z]+ [^>]*id="${id}"[^>]*>`).exec(html)?.[0] ?? "";
+	assert.match(html, /<b id="title"><\/b>/, "no placeholder title");
+	for (const id of ["model", "thinking", "stop", "undo", "compact", "resume"]) assert.match(tag(id), /\bhidden\b/, `${id} waits for the state`);
+	const dom = stubDom(STATE, { messages: [] });
+	const doc = (globalThis as any).document;
+	for (const id of ["model", "thinking"]) doc.getElementById(id).hidden = true;
+	await new Function(pageScript())();
+	await dom.started();
+	assert.deepEqual(["model", "thinking"].map((id) => doc.getElementById(id).hidden), [false, false], "the pickers show with the state");
+	assert.equal(doc.getElementById("model").value, "p/m", "holding its model");
+	dom.dispose();
+});
+
 test("the header's secondary actions move into a sheet and back, once each", { timeout: 20_000 }, async () => {
 	// Moved rather than duplicated: two copies would mean two of every id and one of them going
 	// stale the next time somebody edits the other.
@@ -1084,11 +1101,19 @@ test("the header's secondary actions move into a sheet and back, once each", { t
 	await dom.started();
 	const doc = (globalThis as any).document;
 
+	const byId = (id: string) => doc.getElementById(id);
 	doc.getElementById("more").onclick();
 	// The cost goes with them: on a phone the header has no room for it.
-	assert.deepEqual(doc.getElementById("menuBody").children, [doc.getElementById("cost"), doc.getElementById("actions")], "the same elements, not copies");
+	const [cost, ...groups] = doc.getElementById("menuBody").children;
+	assert.equal(cost, byId("cost"));
+	const conversation = ["reload", "find", "undo", "save", "share", "compact", "resume"];
+	const settings = ["theme", "notifyMe", "adddev"];
+	assert.deepEqual(groups.map((g: any) => g.children[0]._text), ["Conversation", "Settings"], "two labelled groups");
+	assert.deepEqual(groups.map((g: any) => g.children.slice(1)), [conversation.map(byId), settings.map(byId)], "the same elements, not copies, each in its group");
+	assert.equal(byId("theme")._text, "Theme: system", "in sentence case");
 	doc.getElementById("menuClose").onclick();
 	assert.equal(doc.getElementById("menuBody").children.length, 0, "and came back out");
+	assert.deepEqual(byId("actions").children, [...conversation, ...settings].map(byId), "into the header, in the sheet's order");
 	dom.dispose();
 });
 
@@ -2903,7 +2928,7 @@ test("a send answered elsewhere says so, and one pi refused comes back to the co
 	assert.equal(input.value, "hello there\ntyped since", "the text is back in the composer, ahead of what was typed since");
 	assert.equal(doc.getElementById("thumbs").children.length, 1, "with its image");
 	assert.match(dom.rendered(), /pi did not start a turn for it/, "and the error is on the page");
-	assert.match(dom.rendered(), /\nnot sent\n/, "under its own label");
+	assert.match(dom.rendered(), /\nNot sent\n/, "under its own label");
 	dom.dispose();
 });
 
@@ -3481,9 +3506,9 @@ test("a control has a title only when it says what its label does not", { timeou
 	assert.equal(tag("clear"), "#clear missing", "+ New in this project is the new conversation; no second button does it");
 	const dom = await startPage(STATE, {});
 	const doc = (globalThis as any).document;
-	assert.equal(doc.getElementById("theme")._text, "theme: system", "the theme in words, not a glyph");
+	assert.equal(doc.getElementById("theme")._text, "Theme: system", "the theme in words, not a glyph");
 	doc.getElementById("theme").onclick();
-	assert.equal(doc.getElementById("theme")._text, "theme: light");
+	assert.equal(doc.getElementById("theme")._text, "Theme: light");
 	doc.getElementById("expand").onclick();
 	assert.equal(doc.getElementById("theme").title, undefined, "no title written when the theme changes");
 	assert.equal(doc.getElementById("expand").title, undefined, "nor when the steps open");
@@ -4391,10 +4416,10 @@ test("a notification fires only while the tab is hidden, only once switched on, 
 	try {
 		assert.equal(asked(), 0, "permission is asked only from the click");
 		const toggle = doc.getElementById("notifyMe");
-		assert.equal(toggle._text, "notifications: off");
+		assert.equal(toggle._text, "Notifications: off");
 		await toggle._on.click();
 		assert.equal(asked(), 1);
-		assert.equal(toggle._text, "notifications: on");
+		assert.equal(toggle._text, "Notifications: on");
 		answer.attention = { ...answer.attention, newDecisions: [{ id: "inb-d2", cwd: "/work/web", headline: "Merge it?" }, ...answer.attention.newDecisions] };
 		await dom.poll();
 		assert.equal(fired.length, 0, "a visible tab is not interrupted");
@@ -4423,7 +4448,7 @@ test("on plain http the notification switch says it needs https or localhost and
 	const { doc, asked, done } = await activityPage(activityAnswer(), { secure: false });
 	try {
 		const toggle = doc.getElementById("notifyMe");
-		assert.equal(toggle._text, "notifications need https or localhost");
+		assert.equal(toggle._text, "Notifications need https or localhost");
 		assert.equal(toggle.disabled, true);
 		await toggle._on.click();
 		assert.equal(asked(), 0);
@@ -5085,6 +5110,8 @@ test("the header is opaque, and on a phone it is one row", () => {
 	assert.match(/(?:^|\n)header\{([^}]*)\}/.exec(css)?.[1] ?? "", /background:var\(--bg\)/, "the feed's top edge is the header's edge");
 	const phone = /@media \(max-width:900px\)\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
 	assert.match(phone, /header\{[^}]*flex-wrap:nowrap/, "title, pickers and buttons share one row");
+	const narrow = /@media \(max-width:760px\)\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
+	assert.match(narrow, /header>b\{min-width:40%\}/, "on a phone the title keeps at least 40% of it");
 	assert.doesNotMatch(phone, /header>b\{[^}]*flex:1 1 100%/, "the title has no row of its own");
 });
 
@@ -5166,20 +5193,20 @@ test("a reply the model call failed on is one error row with the reason, live an
 		live.source().onmessage({ data: JSON.stringify({ type: "message_end", message }) });
 	};
 	end(FAILED_REPLY);
-	assert.deepEqual(errorRows(live), ["error Connection error."], "the reason, the first time it fails");
+	assert.deepEqual(errorRows(live), ["Error Connection error."], "the reason, the first time it fails");
 	end(FAILED_REPLY);
 	end(FAILED_REPLY);
-	assert.deepEqual(errorRows(live), ["error Connection error. (tried 3 times)"], "pi's retries count on the one row");
+	assert.deepEqual(errorRows(live), ["Error Connection error. (tried 3 times)"], "pi's retries count on the one row");
 	end({ ...FAILED_REPLY, errorMessage: "401 Unauthorized" });
 	end(said);
 	end(FAILED_REPLY);
-	assert.deepEqual(errorRows(live), ["error Connection error. (tried 3 times)", "error 401 Unauthorized", "error Connection error."], "another reason, or a failure after another message, is a row of its own");
+	assert.deepEqual(errorRows(live), ["Error Connection error. (tried 3 times)", "Error 401 Unauthorized", "Error Connection error."], "another reason, or a failure after another message, is a row of its own");
 	live.dispose();
 
 	const reloaded = stubDom(STATE, { messages: [said, FAILED_REPLY, FAILED_REPLY, FAILED_REPLY, FAILED_REPLY] });
 	await new Function(pageScript())();
 	await reloaded.started();
-	assert.deepEqual(errorRows(reloaded), ["error Connection error. (tried 4 times)"], "the same row after a reload");
+	assert.deepEqual(errorRows(reloaded), ["Error Connection error. (tried 4 times)"], "the same row after a reload");
 	reloaded.dispose();
 });
 
@@ -5208,6 +5235,7 @@ test("while pi-loops does not answer the page says so once, keeps what it had an
 	await settled();
 	assert.equal(textOf(at("convs")), rail, "the list stays, with nothing said about it");
 	assert.equal(textOf(at("sbHost")).trim(), "reconnecting…", "the status bar does not say pi-loops runs");
+	assert.equal(at("status")._text, "", "the header's chip says nothing: the line and the status bar have said it");
 	assert.equal(at("send").disabled, true, "send is off");
 	assert.equal(button(cards().at(-1), "Yes, do it here").disabled, true, "and so is a card's Yes");
 	at("input").value = "typed while it was away";

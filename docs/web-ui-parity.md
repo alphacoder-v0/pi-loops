@@ -107,12 +107,15 @@ weaker, and worth converting whenever one of them breaks.
       happens and after a reload. pi tries a failed call again; each try that fails with the same
       reason counts on the same row ("Connection error. (tried 4 times)"), and a different reason,
       or a failure after another message, is a row of its own. After a reload the row shows as many
-      tries as pi keeps on the conversation's branch. `test/web-page.test.ts`: *a reply the model
+      tries as pi keeps on the conversation's branch. An error row is set in the page's own font with
+      a red rule and a sentence-case label (*Error*, *pi exited (code 1)*); only what pi printed on
+      its way out is monospace. `test/web-page.test.ts`: *a reply the model
       call failed on is one error row with the reason, live and from the transcript, and its
       retries count on that row*.
 - [x] While pi-loops does not answer (it stopped, or the connection dropped), one line above the
-      composer says "pi-loops stopped or cannot be reached. Reconnecting…", and the status chip and
-      the status bar say "reconnecting…". The loops, the cards and the conversation list stay as
+      composer says "pi-loops stopped or cannot be reached. Reconnecting…", and the status bar says
+      "reconnecting…". The header's status chip says nothing about it, so ⋯ stays in a phone's
+      header. The loops, the cards and the conversation list stay as
       they were. Send, a card's buttons, a loop row's buttons and a starter's Add are off, and
       Enter sends nothing and keeps the text. When pi-loops answers again, the line goes and
       everything is on again, with no reload. A pi that pi-loops itself stopped is not an error row
@@ -551,12 +554,18 @@ weaker, and worth converting whenever one of them breaks.
       whatever is beside it, the ones you reach for mid-conversation (undo, find, compact and resume)
       stay in the header on one row with ⋯, and the header stays two rows at a 1280 or 1440 px
       window; reload, save, share, add device, theme and notifications go behind ⋯. The
-      sheet lists all of them, moved — not copied — into it. On a phone (760 px and less) every one is
-      behind ⋯, and the header is one row: the title, the pickers, steps and ⋯. There the cost is
+      sheet lists all of them, moved — not copied — into it, in two labelled groups: **Conversation**
+      (Reload, Find, Undo, Save, Share, Compact, Resume) and **Settings** (Theme, Notifications, Add a
+      device), each label in sentence case. On a phone (760 px and less) every one is
+      behind ⋯, and the header is one row: the title, the pickers, steps and ⋯; the title keeps at
+      least 40% of it, the pickers give up width first, and steps shows its arrow alone. There the cost is
       in the ⋯ sheet, and while a turn runs the stop button in send's place stands for the status
       chip. The ⋯ sheet carries the cost at every width. The header has the
       page's paper, so the feed scrolls out under its edge. `test/web-page.test.ts`: *the header is
       opaque, and on a phone it is one row*.
+      A page that is still loading shows no title, no empty pickers and no stop, undo, compact or
+      resume: they come with the conversation's state. `test/web-page.test.ts`: *a page still
+      loading shows no title, no pickers and no turn buttons; the state brings the pickers*.
       `test/web-page.test.ts`: *the header's secondary actions move into a sheet and back*, *below
       1000 px of conversation, undo, find, compact and resume stay in the header and the rest go
       behind ⋯*.

@@ -662,9 +662,9 @@ function mdInto(el, text) {
     b.textContent = "preview";
     b.onclick = async () => {
       const r = await api("/preview", { html: source });
-      if (!r.success) return row("err", "error", r.error || "could not open a preview");
+      if (!r.success) return row("err", "Error", r.error || "could not open a preview");
       const k = await api("/key", { for: "preview", path: r.id });
-      if (!k.key) return row("err", "error", k.error || "could not open a preview");
+      if (!k.key) return row("err", "Error", k.error || "could not open a preview");
       window.open("/preview/" + r.id + "?key=" + k.key, "_blank", "noopener");
     };
     pre.append(b);
@@ -692,7 +692,7 @@ function failedReply(why) {
     failed.el.textContent = text + " (tried " + ++failed.tries + " times)";
     return;
   }
-  const el = row("err", "error", text);
+  const el = row("err", "Error", text);
   failed = { el, text, tries: 1 };
 }
 function row(cls, role, text) {
@@ -813,7 +813,9 @@ function setAllWork(open) {
   remember("work", open ? "open" : "closed");
   for (const d of feed.querySelectorAll?.("details.work") ?? []) d.open = open;
   const b = $("expand");
-  b.textContent = open ? "▾ steps" : "▸ steps";
+  // The word is its own span, so a phone, short of room for the title, can show the arrow alone.
+  b.textContent = open ? "▾" : "▸";
+  b.append(textEl("span", "lbl", " steps"));
 }
 
 /**
@@ -978,7 +980,7 @@ function handle(ev) {
       const input = $("input");
       input.value = ev.text + (input.value ? "\n" + input.value : "");
       images = ev.images || []; drawThumbs(); autoGrow(); saveDraft();
-      row("err", "not sent", ev.error || "pi did not take it");
+      row("err", "Not sent", ev.error || "pi did not take it");
       refresh();
       break;
     }
@@ -1135,7 +1137,9 @@ function setStatus() {
   qe.hidden = !q;
   qe.textContent = "queued " + q + " ✕";
   qe.onclick = () => api("/queue/clear", {}).then(refresh);
-  statusEl.textContent = down ? "reconnecting…" : busy ? "working…" : "";
+  // While pi-loops does not answer, the line above the composer and the status bar say so; a third
+  // copy here pushed ⋯ out of a phone's header.
+  statusEl.textContent = busy && !down ? "working…" : "";
   // One slot: stop while a turn runs, send otherwise. Enter still queues during a turn.
   $("stop").hidden = !busy;
   $("send").hidden = busy;
@@ -1709,6 +1713,8 @@ async function refresh() {
   drawModels(state.modelCatalog || [], state.model?.label);
   if (state.model) $("model").value = state.model.label;
   drawThinking(state.thinkingLevels, state.thinkingLevel);
+  // Hidden in the page as served, so a page that is still loading shows no empty pickers.
+  $("model").hidden = $("thinking").hidden = false;
   // Whether this model can look at an image is something pi knows and the button was guessing at.
   const currentModel = (state.modelCatalog || []).find((m) => state.model && m.provider + "/" + m.id === state.model.label);
   takesImages = currentModel?.images !== false;
@@ -1909,7 +1915,7 @@ $("composer").onsubmit = async (e) => {
     clearTimeout(slow);
     if (statusEl.textContent.startsWith("still sending")) statusEl.textContent = busy ? "working…" : "";
   }
-  if (!r.success) row("err", "error", r.error || JSON.stringify(r));
+  if (!r.success) row("err", "Error", r.error || JSON.stringify(r));
   // The session is open in a terminal, which holds it: that terminal answers (owner decision O2).
   else if (r.elsewhere) row("notice", "", "open in a terminal: answered there");
   // This page's own pi holds the session but shows an older copy of it: nothing may write into it
@@ -1942,7 +1948,7 @@ $("findq").oninput = () => {
 };
 $("undo").onclick = async () => {
   const r = await api("/undo", {});
-  if (!r.success) return row("err", "error", r.error || "cannot undo");
+  if (!r.success) return row("err", "Error", r.error || "cannot undo");
   if (r.data?.cancelled) return row("notice", "", "undo was cancelled by an extension");
   // pi hands back the forked message; put it where it came from.
   $("input").value = r.data?.text ?? "";
@@ -2129,7 +2135,7 @@ $("model").onchange = async (e) => {
   const was = remembered("models", "").split(",").filter(Boolean);
   remember("models", [e.target.value, ...was.filter((m) => m !== e.target.value)].slice(0, 5).join(","));
   const r = await api("/model", { model: e.target.value });
-  if (!r.success) row("err", "error", r.error || "model not available — check credentials");
+  if (!r.success) row("err", "Error", r.error || "model not available — check credentials");
   refresh();
 };
 $("thinking").onchange = (e) => api("/thinking", { level: e.target.value }).then(refresh);
@@ -2156,7 +2162,7 @@ function qrSvg(q) {
 
 $("adddev").onclick = async () => {
   const r = await api("/pair", {});
-  if (!r.success) { row("err", "error", r.error || "could not make a pairing code"); return; }
+  if (!r.success) { row("err", "Error", r.error || "could not make a pairing code"); return; }
 
   // The address this browser reached, first: under tailscale serve that is the tailnet name, and
   // it is the only one anybody had to configure. Then whatever else the machine can see — which is
@@ -2223,13 +2229,27 @@ for (const dlg of document.querySelectorAll("dialog")) {
  * handlers, and one of them going stale the next time somebody edits the other. On a wide screen
  * they live in the header; on a narrow one they are behind ⋯, and this carries them there and back.
  */
+/** The sheet's two groups: what acts on this conversation, and what sets up this browser. */
+const MENU_GROUPS = [
+  ["Conversation", ["reload", "find", "undo", "save", "share", "compact", "resume"]],
+  ["Settings", ["theme", "notifyMe", "adddev"]],
+];
 $("more").onclick = () => {
-  $("menuBody").append($("cost"), $("actions"));
+  const body = $("menuBody");
+  body.append($("cost"));
+  for (const [label, ids] of MENU_GROUPS) {
+    const group = document.createElement("section");
+    group.className = "mgrp";
+    group.append(textEl("h4", "", label), ...ids.map($));
+    body.append(group);
+  }
   $("menu").showModal();
 };
 function closeMenu() {
   document.querySelector("header .grow").insertBefore($("cost"), $("expand"));
-  document.querySelector("header .grow").insertBefore($("actions"), $("status"));
+  // Back into the header in its own order, which is the sheet's order too.
+  for (const [, ids] of MENU_GROUPS) $("actions").append(...ids.map($));
+  $("menuBody").innerHTML = "";
   $("menu").close();
 }
 $("menuClose").onclick = closeMenu;
@@ -2333,7 +2353,7 @@ function applyTheme(theme) {
   const root = document.documentElement;
   if (theme === "system") root.removeAttribute("data-theme");
   else root.setAttribute("data-theme", theme);
-  $("theme").textContent = "theme: " + theme;
+  $("theme").textContent = "Theme: " + theme;
 }
 let theme = remembered("theme", "system");
 applyTheme(THEMES.includes(theme) ? theme : "system");
@@ -3682,17 +3702,17 @@ function notifyFrom(att) {
 function drawNotifyToggle() {
   const b = $("notifyMe");
   if (!window.isSecureContext || typeof Notification !== "function") {
-    b.textContent = "notifications need https or localhost";
+    b.textContent = "Notifications need https or localhost";
     b.disabled = true;
     return;
   }
   if (Notification.permission === "denied") {
-    b.textContent = "notifications are blocked for this site";
+    b.textContent = "Notifications are blocked for this site";
     b.disabled = true;
     return;
   }
   b.disabled = false;
-  b.textContent = "notifications: " + (notifyOn && Notification.permission === "granted" ? "on" : "off");
+  b.textContent = "Notifications: " + (notifyOn && Notification.permission === "granted" ? "on" : "off");
 }
 $("notifyMe").addEventListener("click", async () => {
   if (!window.isSecureContext || typeof Notification !== "function") return;
@@ -4182,7 +4202,6 @@ $("watchText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.
     opening = false;
     if (es) return;
     if (!k.key) {
-      statusEl.textContent = "reconnecting…";
       setTimeout(() => openStream().catch(() => {}), 3000);
       return;
     }
@@ -4194,7 +4213,6 @@ $("watchText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.
       applyEvent(ev);
     };
     source.onerror = () => {
-      statusEl.textContent = "reconnecting…";
       // The stream broke: ask now whether pi-loops still answers, not at the next poll.
       refresh().catch(() => {});
       if (es !== source || source.readyState !== 2) return;

@@ -180,6 +180,7 @@ button.primary:hover{background:var(--brand);color:var(--brand-ink);filter:brigh
 #stale:hover{background:var(--brand);color:var(--brand-ink);filter:brightness(1.08)}
 #stale[hidden]{display:none}
 #findbar{display:flex;gap:8px;align-items:center;padding:7px var(--pad);border-bottom:1px solid var(--line);background:var(--side)}
+header [hidden]{display:none}
 /* The UA rule for [hidden] loses to any author rule that sets display, so this has to say it. */
 #findbar[hidden]{display:none}
 #findbar input{flex:1}
@@ -209,7 +210,11 @@ button.primary:hover{background:var(--brand);color:var(--brand-ink);filter:brigh
 .notice{color:var(--muted);font-size:var(--fs-sm);white-space:pre-wrap}
 /* A view a terminal drew (/cron, /inbox) has columns: it keeps the terminal's font. */
 .notice.view{font-family:var(--font-mono)}
-.err{color:var(--ink);border-left:2px solid var(--bad);padding-left:10px;font-family:var(--font-mono);font-size:var(--fs-sm);white-space:pre-wrap}
+.err{color:var(--ink);border-left:2px solid var(--bad);padding-left:10px;font-size:var(--fs-sm);white-space:pre-wrap}
+/* What failed is a sentence, so its label is too: not the role labels' small capitals. What pi
+   printed on its way out (the pre under it) stays in the terminal's font. */
+.row.err .role{text-transform:none;letter-spacing:0;font-size:var(--fs-sm);font-weight:600;color:var(--bad)}
+.row.err pre{font-family:var(--font-mono);font-size:var(--fs-sm);white-space:pre-wrap;margin:4px 0 0}
 .row>span{white-space:pre-wrap;word-break:break-word}
 /* The markdown body is block-level HTML; pre-wrap there turns the whitespace between tags into
    blank lines. It is set on the span itself, so the selector has to be more specific than .row>span. */
@@ -464,8 +469,11 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 #scrim{display:none}
 #actions{display:contents}
 /* In the sheet they are a list, not a row, and each one is a full-width target. */
-#menuBody #actions{display:flex;flex-direction:column;gap:8px}
-#menuBody #actions button{width:100%;text-align:left;min-height:44px}
+#menuBody{display:grid;gap:14px}
+#menuBody .mgrp{display:flex;flex-direction:column;gap:6px}
+#menuBody .mgrp h4{margin:0 0 2px;font-size:var(--fs-md);font-weight:650;color:var(--ink)}
+#menuBody .mgrp button{width:100%;text-align:left;min-height:44px}
+#menuBody .mgrp button[hidden]{display:none}
 /* Thirteen controls do not fit across a narrow conversation. The ones you reach for mid-conversation
    (undo, find, compact, resume) stay; the rest are one tap away behind ⋯, which lists all of them.
    Asked of the conversation's own width, which the list and the loops rail beside it take from:
@@ -531,6 +539,12 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
    kept in the address (#inbox, #chat, #loops), so Back goes to the pane before and a reload keeps it. */
 @media (max-width:760px){
   .grow>#actions{display:none}
+  /* The title keeps at least 40% of the header; the pickers give up width first, and the steps
+     button shows its arrow alone. */
+  header>b{min-width:40%}
+  #model{min-width:3.5rem;max-width:6rem}
+  #thinking{flex:0 1 auto;min-width:3.2rem}
+  #expand .lbl{display:none}
   body,body:has(#loops.hidden){grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) calc(52px + env(safe-area-inset-bottom))}
   #rail,#scrim{display:none}
   #scrim:not([hidden]){display:none}
