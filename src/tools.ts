@@ -347,7 +347,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			"Create an event/condition-based dynamic trigger rule. Use this for future events such as a browser tab, file, MCP notification, webhook, or other condition becoming true. Do not use this for fixed time, recurring, scheduled, hourly, daily, weekly, cron, crontab, 定时任务, 每小时, or similar time-based jobs; use cron_create instead.",
 		parameters: Type.Object(
 			{
-				condition: Type.String({ description: "The natural-language condition that should be evaluated against future trigger events. For 'when <path> exists', keep the person's words: '<path> exists', with at most one aside in parentheses — a condition like that is checked with a local stat, no model call, while the path is absent." }),
+				condition: Type.String({ description: "The natural-language condition that should be evaluated against future trigger events. For 'when <path> exists', keep the person's words: '<path> exists', with nothing added (no aside in parentheses) — a condition like that is checked with a local stat, no model call, while the path is absent." }),
 				action: Type.String({ description: "The action to perform when the condition matches. This may be a shell command or a natural-language instruction." }),
 				spec: Type.Optional(Type.String({ description: "The whole rule as one sentence, only when condition and action cannot be given apart." })),
 				fire_once: Type.Optional(Type.Boolean({ description: "Whether to disable the rule after the first successful match. Defaults to true unless the user explicitly asks for a repeating trigger." })),
