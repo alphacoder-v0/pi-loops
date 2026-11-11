@@ -3,6 +3,7 @@
  * docs/loops.md: the sub-agent ends its reply with <loop-state>…</loop-state>
  * and zero or more <inbox>…</inbox> tags. Extraction never fails a run.
  */
+import { formatDuration } from "./schedule.ts";
 
 export const LOOP_STATE_MAX_CHARS = 2000;
 export const INBOX_TEXT_MAX_CHARS = 500;
@@ -61,7 +62,7 @@ function unclosing(text: string): string {
 	return text.replace(/\[\/(\s*)dismissed\]/gi, "[/ dismissed]");
 }
 
-export function composeLoopPrompt(action: string, previousState: string | undefined, meta?: { name?: string; runAt?: string; dismissed?: DismissedFeedback[] }): string {
+export function composeLoopPrompt(action: string, previousState: string | undefined, meta?: { name?: string; runAt?: string; dismissed?: DismissedFeedback[]; timeoutMs?: number }): string {
 	const state = previousState && previousState.trim() ? capChars(previousState, LOOP_STATE_MAX_CHARS) : FIRST_RUN_MARKER;
 	/**
 	 * Feedback, not permission. A reason is shown to the one run after it was given and then only
@@ -91,8 +92,9 @@ export function composeLoopPrompt(action: string, previousState: string | undefi
 	 * goes in this line rather than in the protocol block below, which is quoted verbatim.
 	 */
 	const when = meta?.runAt ? ` (current run started ${meta.runAt}; write any time in your notes with its offset, as that one has)` : "";
+	const limit = meta?.timeoutMs ? ` The run is stopped after ${formatDuration(meta.timeoutMs)} and counted as a failure, so finish inside that time.` : "";
 	return [
-		`${header}${when}. This is a background run: nobody is watching, and your final reply is parsed by a program.`,
+		`${header}${when}. This is a background run: nobody is watching, and your final reply is parsed by a program.${limit}`,
 		"",
 		"[loop-state] (your notes from the previous run of this recurring job)",
 		state,

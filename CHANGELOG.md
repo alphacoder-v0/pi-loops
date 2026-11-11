@@ -16,6 +16,10 @@ All notable changes to pi-loops are documented here. The format follows
 - **A `/goal` waiting on you pauses at once.** When the agent asked you for something it cannot get
   alone, the evaluator answers `needs_person` and the goal pauses with `waiting on you: …`, instead
   of sending the agent back to work up to 8 times.
+- **A loop that times out is a failed run.** A run that passed its timeout was recorded as an
+  interruption, so its slot was given back and the same run started again on the next tick, with
+  no backoff. Now the slot is spent, the failure streak rises, and three in a row back off. The
+  loop's prompt also states the timeout.
 
 ## [0.24.2] - 2026-11-11
 

@@ -108,10 +108,10 @@ tools of the chat the loop was made in (or its `--tools`), the MCP servers it co
 conversation history, its own transcript file. It does not get the window's `-e` extensions, flags
 or live MCP connections. Every run gets the same prompt: the output
 protocol, preceded by one line of context (the job's name, when the run started, whether it is a
-catch-up):
+catch-up, the job's timeout):
 
 ```text
-You are running the recurring loop "<name>" (current run started <when it started, on the clock of the machine running it, with that machine's offset>; write any time in your notes with its offset, as that one has). This is a background run: nobody is watching, and your final reply is parsed by a program.
+You are running the recurring loop "<name>" (current run started <when it started, on the clock of the machine running it, with that machine's offset>; write any time in your notes with its offset, as that one has). This is a background run: nobody is watching, and your final reply is parsed by a program. The run is stopped after <the job's timeout> and counted as a failure, so finish inside that time.
 
 [loop-state] (your notes from the previous run of this recurring job)
 <contents of the state file, or "(first run)">
@@ -454,7 +454,7 @@ admitted in the same tick would each be free to. A run is measured once per mode
 today's recorded spend plus everything this process has in flight — its own cost so far, the runs
 beside it, and, with `verify = true`, the maker whose findings its checker is reviewing. When that
 total reaches the cap the run is stopped the way the run timeout stops one: pi aborts the
-sub-session and the run is recorded with what it had spent. It is treated as an interruption rather
+sub-session and the run is recorded with what it had spent. Unlike a timeout, a budget stop is treated as an interruption rather
 than as a job that failed — the concurrency slot is released, the tick stays owed, the job's
 failure streak is untouched and a one-shot is not retired — so the loop simply resumes when the day
 rolls over or the cap is raised, held back until then by the check at dispatch.
@@ -496,6 +496,10 @@ tick. A stop is not a failure, so the run does not count toward `runs` or the fa
 one-shot loop you stop is turned off with `last error: stopped by a person; /cron run <ref> runs it
 now`, and keeps its notes. A run stopped by quitting, an upgrade or the daily budget gives its slot
 back and runs again on the next tick, as before.
+
+A run that passes its timeout (`--timeout`, default 15m) is a failed run, `timed out after <n>s`:
+its slot is spent, it counts toward `runs` and the failure streak, and the loop runs again at its
+next scheduled time.
 
 A job that fails three times in a row is retried on a widening gap (5 minutes, doubling, up to six
 hours) instead of at every due tick, and says so; one success clears the streak.
