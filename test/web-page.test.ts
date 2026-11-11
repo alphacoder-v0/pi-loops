@@ -768,6 +768,26 @@ test("a reply is rendered as Markdown, and cannot smuggle markup through it", { 
 	dom.dispose();
 });
 
+test("a reply's headings come in three levels and its indented list items nest", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await dom.started();
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+	const reply = ["# Plan", "## Steps", "### Detail", "- one", "  - one a", "    1. deep", "  - one b", "- two", "", "1. first", "   - under first", "2. second"].join("\n");
+	send({ type: "message_start" });
+	send({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: reply } });
+	send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: reply }] } });
+	const md = dom.made.find((m: any) => m.className === "md" && String(m._html).includes("Plan"));
+	assert.ok(md, "the reply was drawn as Markdown");
+	assert.equal(
+		md._html,
+		"<h3>Plan</h3><h4>Steps</h4><h5>Detail</h5>" +
+			"<ul><li>one<ul><li>one a<ol><li>deep</li></ol></li><li>one b</li></ul></li><li>two</li></ul>" +
+			"<ol><li>first<ul><li>under first</li></ul></li><li>second</li></ol>",
+	);
+	dom.dispose();
+});
+
 test("a confirmation shows what is about to run, apart from the reasoning", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
@@ -5082,7 +5102,7 @@ test("the page's text comes in four sizes, each named once on the root", () => {
 	// styles, so the sheet is the only place a size can be read. It checks values, not formatting.
 	const css = fs.readFileSync(path.join(process.cwd(), "src", "web", "page.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 	const tokens = [...css.matchAll(/--fs-([a-z]+):([^;}]+)/g)].map((m) => [m[1], m[2].trim()]);
-	assert.deepEqual(tokens, [["xs", "11px"], ["sm", "13px"], ["md", "15px"], ["lg", "16px"]]);
+	assert.deepEqual(tokens, [["xs", "11px"], ["sm", "13px"], ["md", "15px"], ["lg", "18px"]]);
 	const token = /^var\(--fs-(xs|sm|md|lg)\)$/;
 	const sizes = [...css.matchAll(/font-size:([^;}]+)/g)].map((m) => m[1].trim());
 	// A shorthand's size is the word before the family, with its line height after a slash.

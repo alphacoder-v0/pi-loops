@@ -38,9 +38,10 @@ html[data-theme=dark]{
      composer uses the same figure so the two line up. */
   --pad:max(16px,calc((100% - 58rem) / 2));
   /* Four sizes and no others: meta (times, tags, counts), small (cards, buttons, code), body, and
-     large (a reply's top heading, a figure, and a phone's fields, which iOS zooms under 16px). A
-     section label is body size and heavy, the conversation title's style. */
-  --fs-xs:11px;--fs-sm:13px;--fs-md:15px;--fs-lg:16px;
+     large (a reply's headings, a figure, and a phone's fields, which iOS zooms under 16px). A
+     section label is body size and heavy, the conversation title's style. Large is three steps
+     above body so a heading reads as one at a glance. */
+  --fs-xs:11px;--fs-sm:13px;--fs-md:15px;--fs-lg:18px;
 }
 *{box-sizing:border-box}
 /* dvh, not vh: a phone's address bar slides away and 100vh keeps counting the space it used to
@@ -262,8 +263,14 @@ pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-word;max-height:22em;ov
 
 .md>*:first-child{margin-top:0}.md>*:last-child{margin-bottom:0}
 .md p{margin:0 0 10px}
-.md h3,.md h4,.md h5,.md h6{margin:14px 0 7px;line-height:1.25;font-weight:650}
-.md h3{font-size:var(--fs-lg)}.md h4{font-size:var(--fs-md)}.md h5,.md h6{font-size:var(--fs-sm);color:var(--muted)}
+/* Three heading levels, none smaller or fainter than the text under it: # is large and heavy over a
+   rule, ## large, ### and #### body size and heavy. */
+.md h3,.md h4,.md h5,.md h6{margin:18px 0 8px;line-height:1.3;color:var(--ink)}
+.md h3{font-size:var(--fs-lg);font-weight:700;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.md h4{font-size:var(--fs-lg);font-weight:600}
+.md h5,.md h6{font-size:var(--fs-md);font-weight:700;margin-top:14px}
+.md li>ul,.md li>ol{margin:3px 0 0 20px}
+.md ul ul{list-style-type:circle}.md ul ul ul{list-style-type:square}
 .md ul,.md ol{margin:0 0 10px 22px;padding:0}.md li{margin:3px 0}
 .md blockquote{margin:0 0 10px;padding-left:12px;border-left:2px solid var(--line-strong);color:var(--muted)}
 .md code{border:1px solid var(--line);border-radius:5px;background:var(--side);padding:1px 5px;font-family:var(--font-mono);font-size:var(--fs-sm);overflow-wrap:anywhere}

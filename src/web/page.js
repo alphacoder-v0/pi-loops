@@ -511,10 +511,13 @@ function cells(line) {
 function markdownToHtml(src) {
   const lines = String(src ?? "").split("\n");
   const html = [];
-  let list = "";
+  // The lists open at this point, outermost first, each with the indent of its items: an item
+  // indented past the innermost one opens a list inside that item.
+  const lists = [];
   let para = [];
   const flushPara = () => { if (para.length) { html.push("<p>" + inlineMd(para.join("\n")) + "</p>"); para = []; } };
-  const flushList = () => { if (list) { html.push("</" + list + ">"); list = ""; } };
+  const closeList = () => html.push("</li></" + lists.pop().tag + ">");
+  const flushList = () => { while (lists.length) closeList(); };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const fence = RE_FENCE.exec(line);
@@ -550,9 +553,15 @@ function markdownToHtml(src) {
     const item = /^\s*(?:([-*+])|(\d+)[.)])\s+(.*)$/.exec(line);
     if (item) {
       flushPara();
-      const want = item[1] ? "ul" : "ol";
-      if (list !== want) { flushList(); html.push("<" + want + ">"); list = want; }
-      html.push("<li>" + inlineMd(item[3]) + "</li>");
+      const tag = item[1] ? "ul" : "ol";
+      const indent = /^\s*/.exec(line)[0].replace(/\t/g, "    ").length;
+      while (lists.length && indent < lists[lists.length - 1].indent) closeList();
+      const top = lists[lists.length - 1];
+      if (top && indent === top.indent && top.tag !== tag) closeList();
+      const open = lists[lists.length - 1];
+      if (open && indent <= open.indent) html.push("</li>");
+      else { html.push("<" + tag + ">"); lists.push({ tag, indent }); }
+      html.push("<li>" + inlineMd(item[3]));
       continue;
     }
     if (!line.trim()) { flushPara(); flushList(); continue; }
