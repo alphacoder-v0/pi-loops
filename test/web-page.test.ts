@@ -3878,7 +3878,8 @@ async function watchPage(answers: Record<string, unknown> = {}, state: Record<st
 	const answered = () => dom.calls.filter((c) => c.url.endsWith("/ui-response")).map((c) => c.body);
 	return { dom, doc, send, cards, read, ask, result, answered };
 }
-const CREATED_RULE = { id: `dyn-${"c".repeat(32)}`, promote_to_chat: true, fire_once: true };
+/** What new_trigger returns in its details (src/tools.ts addRule), the fields the receipt reads. */
+const CREATED_RULE = { id: `dyn-${"c".repeat(32)}`, condition: "~/build.done appears", promote_to_chat: true, fire_once: true };
 
 test("the Watch for… box opens with three examples and no caption, and an example fills it", { timeout: 20_000 }, async () => {
 	const { dom, doc } = await watchPage();
@@ -3933,15 +3934,14 @@ test("a sentence with no time and nothing to wait for gets the now card, and not
 	dom.dispose();
 });
 
-test("a watch question draws the card from its title and options, in the box and in the transcript, and no dialog", { timeout: 20_000 }, async () => {
+test("a watch question draws the card from its title and options, in the box while it is open, else in the transcript, and no dialog", { timeout: 20_000 }, async () => {
 	const { dom, doc, read, ask, cards } = await watchPage();
 	doc.getElementById("watchFor").onclick();
 	await read(WATCH_EXAMPLE);
 	assert.equal(doc.getElementById("watchStatus").textContent, "pi is reading it…");
 	ask("ask-1", RULE);
 	assert.equal(cards("modal").length, 1, "one card in the box");
-	assert.equal(cards("feed").length, 1, "and one in the transcript");
-	assert.equal(cards("feed")[0]._parent.children.some((c: any) => c.className === "role"), false, "no role tag over it: the card's heading says what it is");
+	assert.equal(cards("feed").length, 0, "and none in the transcript: one live copy of a question");
 	assert.notEqual(doc.getElementById("ask").open, true, "the question is the card, not the dialog over it");
 	const card = cardParts(cards("modal")[0]);
 	assert.match(card.text, /When something happens/);
@@ -3961,6 +3961,8 @@ test("a watch question draws the card from its title and options, in the box and
 	// A schedule: the inbox by default, what the inbox means, and its checker as a choice.
 	const { dom: dom2, ask: ask2, cards: cards2 } = await (async () => { dom.dispose(); return watchPage(); })();
 	ask2("ask-2", DAILY);
+	assert.equal(cards2("modal").length, 0, "with the box closed, the card is in the transcript only");
+	assert.equal(cards2("feed")[0]._parent.children.some((c: any) => c.className === "role"), false, "no role tag over it: the card's heading says what it is");
 	const daily = cardParts(cards2("feed")[0]);
 	assert.match(daily.text, /On a schedule/);
 	assert.match(daily.text, /Runs every day at 09:00 · next /);
@@ -4030,17 +4032,22 @@ test("the tool's result in the same turn turns every card of the question into a
 	ask("ask-1", RULE);
 	cardParts(cards("modal")[0]).set.onclick();
 	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}\ncondition: ~/build.done appears`, CREATED_RULE);
-	for (const where of ["modal", "feed"] as const) {
-		const card = cardParts(cards(where)[0]);
-		assert.equal(card.status, "Set up dyn-cccccccc · shows here · once", where);
-		assert.equal(card.set.disabled, true, `${where}: settled`);
-	}
+	// The rule is named as the Loops pane names it: by what it waits for.
+	assert.equal(cardParts(cards("modal")[0]).status, "Set up ~/build.done appears · shows here · once");
+	assert.equal(cards("feed").length, 1, "the transcript gets the receipt once the question settles");
+	const receipt = cardParts(cards("feed")[0]);
+	assert.equal(receipt.status, "Set up ~/build.done appears · shows here · once");
+	assert.equal(receipt.set.disabled, true, "settled");
+	// A loop is named as the Loops pane names it: its name, else the first 13 characters of its id.
 	ask("ask-2", DAILY);
 	result("cron_create", `created cron job cron-${"d".repeat(32)}`, { id: `cron-${"d".repeat(32)}`, stateful: true });
-	assert.equal(cardParts(cards("feed").at(-1)).status, "Set up cron-ddddddd · inbox");
+	assert.equal(cardParts(cards("feed").at(-1)).status, "Set up cron-dddddddd · inbox");
+	ask("ask-2b", DAILY);
+	result("cron_create", `created cron job cron-${"f".repeat(32)} (nightly)`, { id: `cron-${"f".repeat(32)}`, name: "nightly", stateful: false });
+	assert.equal(cardParts(cards("feed").at(-1)).status, "Set up nightly · shows here");
 	ask("ask-3", RULE);
 	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}`, { ...CREATED_RULE, promote_to_chat: false, fire_once: false });
-	assert.equal(cardParts(cards("feed").at(-1)).status, "Set up dyn-cccccccc · kept out of this conversation · every time");
+	assert.equal(cardParts(cards("feed").at(-1)).status, "Set up ~/build.done appears · kept out of this conversation · every time");
 	ask("ask-4", RULE);
 	result("new_trigger", "cancelled: the person did not set up this watch (aborted). Nothing was created.", { id: undefined });
 	assert.equal(cardParts(cards("feed").at(-1)).status, "Not set up");
@@ -4063,7 +4070,7 @@ test("Set it up closes the Watch for… box, gives the composer back and refresh
 	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}`, CREATED_RULE);
 	assert.equal(dlg.open, false, "closed once it is set up");
 	assert.equal(doc.activeElement, doc.getElementById("input"), "and the composer has the focus");
-	assert.equal(cardParts(cards("feed")[0]).status, "Set up dyn-cccccccc · shows here · once", "the transcript's card keeps the receipt");
+	assert.equal(cardParts(cards("feed")[0]).status, "Set up ~/build.done appears · shows here · once", "the transcript's card keeps the receipt");
 	await new Promise((r) => setTimeout(r, 50));
 	const fetched = dom.calls.slice(before).map((c) => c.url);
 	assert.ok(fetched.some((u) => /\/state$/.test(u)), `the state was fetched: ${fetched.join(", ")}`);
@@ -4082,6 +4089,7 @@ test("Set it up closes the Watch for… box, gives the composer back and refresh
 	result("cron_create", 'a cron job named "nightly" already exists', {}, true);
 	assert.equal(dlg.open, true, "the box stays, with the sentence in it to change");
 	assert.equal(cardParts(cards("modal").at(-1)).status, 'Not set up: a cron job named "nightly" already exists');
+	assert.equal(cardParts(cards("feed").at(-1)).status, 'Not set up: a cron job named "nightly" already exists', "and the transcript has the receipt");
 	dom.dispose();
 });
 
@@ -4131,6 +4139,7 @@ test("a turn that ends with no plan shows pi's reply and keeps the box", { timeo
 	assert.match(treeText(cards), /pi needs more before it can set this up/);
 	assert.match(treeText(cards), /Which file says the build is done\?/);
 	assert.match(treeText(cards), /Edit the sentence above and read it again\./);
+	assert.deepEqual(cards.children.at(-1)._scrolledTo, { block: "start" }, "scrolled to the top of the box, as a plan card is");
 	assert.equal(doc.getElementById("watchText").value, "When the build is done, tell me");
 	assert.equal(doc.getElementById("watch").open, true, "the box is still open");
 	dom.dispose();
@@ -4168,7 +4177,7 @@ test("a sentence queued behind a busy turn waits for its own turn's question, no
 	dom.dispose();
 });
 
-test("closing the box keeps a waiting card; it is there when you reopen it", { timeout: 20_000 }, async () => {
+test("closing the box moves a waiting card into the conversation, where it can still be answered", { timeout: 20_000 }, async () => {
 	// The layout rule, pinned in the page's own stylesheet: the body scrolls, the menu does not, the
 	// card's buttons stick to the bottom of what is in view.
 	const page = PAGE;
@@ -4176,27 +4185,28 @@ test("closing the box keeps a waiting card; it is there when you reopen it", { t
 	assert.match(page, /#watch\[open\]\{display:flex;flex-direction:column\}/, "a closed dialog stays closed: the flex layout applies only while it is open");
 	assert.match(page, /#watchBody\{overflow:auto;min-height:0;flex:1 1 auto\}/);
 	assert.match(page, /#watchCards \.plan \.foot\{position:sticky;bottom:0/, "the hint, the status and the buttons stick together, so the hint is never under the bar");
-	const { dom, doc, read, ask, result, cards } = await watchPage();
+	const { dom, doc, read, ask, result, cards, answered } = await watchPage();
 	doc.getElementById("watchFor").onclick();
 	await read(WATCH_EXAMPLE);
 	ask("ask-1", RULE);
 	const dlg = doc.getElementById("watch");
 	const waiting = cards("modal")[0];
+	assert.equal(cards("feed").length, 0, "while the box is open, the card is only there");
 	// Closed by any means (the close button, a click outside, the browser's own Escape): the box
-	// closes, and the card that waits for its click is there again when the box reopens.
-	waiting._scrolledTo = undefined;
+	// closes, and the card that waits for its click goes into the conversation, the same one.
 	doc.getElementById("watchClose").onclick();
 	assert.equal(dlg.open, false, "the box closes");
-	doc.getElementById("watchFor").onclick();
-	assert.equal(dlg.open, true);
-	assert.ok(doc.getElementById("watchCards").children.includes(waiting), "the waiting card is still in the box, the same one");
-	assert.deepEqual(waiting._scrolledTo, { block: "start" }, "and is scrolled to the top of the box again, so its body is in view before its buttons");
+	assert.deepEqual(cards("feed"), [waiting], "the waiting card is in the transcript, once");
+	assert.ok(!doc.getElementById("watchCards").children.includes(waiting), "and not in the box");
 	assert.ok(!cardParts(waiting).set.disabled, "and still clickable");
 	assert.equal(dlg._on.cancel, undefined, "nothing is designed around Escape");
-	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}`, CREATED_RULE);
-	doc.getElementById("watchClose").onclick();
 	doc.getElementById("watchFor").onclick();
-	assert.ok(!doc.getElementById("watchCards").children.includes(waiting), "a settled card goes when the box reopens");
+	assert.equal(doc.getElementById("watchCards").children.length, 0, "the box reopens empty: the question stays in the conversation");
+	cardParts(waiting).set.onclick();
+	assert.deepEqual(answered(), [{ id: "ask-1", value: "Set it up · this conversation · once" }], "answered from the conversation");
+	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}`, CREATED_RULE);
+	assert.equal(cardParts(waiting).status, "Set up ~/build.done appears · shows here · once");
+	assert.equal(cards("feed").length, 1, "its receipt is the same card");
 	dom.dispose();
 });
 

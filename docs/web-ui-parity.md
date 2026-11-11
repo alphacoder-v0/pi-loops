@@ -540,8 +540,8 @@ weaker, and worth converting whenever one of them breaks.
       to do now, not something to watch." from the page itself: nothing is sent and no model is
       called. `test/web-page.test.ts`: *a sentence with no time and nothing to wait for gets the now
       card, and nothing is sent*.
-- [x] The question is a card, in the box and in the transcript, drawn from the select's title rows
-      and options alone: the kind (*On a schedule* / *When something happens*), when it runs or
+- [x] The question is one live card: in the box while the box is open, else in the transcript. It
+      is drawn from the select's title rows and options alone: the kind (*On a schedule* / *When something happens*), when it runs or
       waits for, how often the background looks for a rule, what it does, for a schedule whose
       result goes to the inbox what it remembers and whether a checker reviews each finding, the
       policy's reason when the action is one the unattended guard would refuse, and the choices:
@@ -550,7 +550,7 @@ weaker, and worth converting whenever one of them breaks.
       (once or every time), and for a schedule in the inbox Checks (none or each finding). The chips start on the first option, which is the model's own choice. A select that
       is not a watch question stays a dialog. Nothing is written until the person answers.
       `test/web-page.test.ts`: *a watch question draws the card from its title and options, in the
-      box and in the transcript, and no dialog*, *a select that is not a watch question stays a
+      box while it is open, else in the transcript, and no dialog*, *a select that is not a watch question stays a
       dialog*; `test/scoping.test.ts`: *with a person in their own turn, new_trigger asks through
       pi's select and Set it up creates the rule in the same call*.
 - [x] `Set it up` answers the select with the one option the chips name, and `Cancel` with
@@ -562,7 +562,10 @@ weaker, and worth converting whenever one of them breaks.
       `test/scoping.test.ts`: *Cancel, Esc, a timeout and an abort all return cancelled in the same
       call and leave jobs.json and triggers.json as they were*.
 - [x] The tool's result in the same turn turns every card of the question into a receipt (*Set up
-      dyn-… · shows here · once*, *Not set up*, or *Not set up:* and why the create failed).
+      ~/build.done appears · shows here · once*, *Not set up*, or *Not set up:* and why the create
+      failed), and the transcript has the receipt once the question settles. The receipt names a
+      rule by its condition and a loop by its name, else the first 13 characters of its id, as the
+      Loops pane does.
       `test/web-page.test.ts`: *the tool's result in the same turn turns every card of the question
       into a receipt*.
 - [x] A card in the box that is set up or cancelled closes the box, the way its close button does,
@@ -578,9 +581,11 @@ weaker, and worth converting whenever one of them breaks.
 - [x] On a short screen the box's body scrolls, Read it stays in the box's own menu, a card's
       Cancel and Set it up stick to the bottom of what is in view, and a card is scrolled to the top
       of the box when it is drawn, with its status and buttons as one footer so the bar never
-      covers the status. Closing the box keeps a waiting card; it is there when you reopen it, and a
-      settled one goes. `test/web-page.test.ts`: *closing the box keeps a waiting card; it is there
-      when you reopen it*.
+      covers the status; the *pi needs more* card is scrolled the same way. Closing the box moves a
+      waiting card into the conversation, where it can still be answered, and the box reopens
+      empty. `test/web-page.test.ts`: *closing the box moves a waiting card into the conversation,
+      where it can still be answered*, *a turn that ends with no plan shows pi's reply and keeps
+      the box*.
 - [x] The now-check knows weekdays (plural too), *nightly*, *noon*, *midnight*, *daily*, *weekly*,
       *at 9am*, *in an hour*, *twice a day*, *weeknights*, *later today* and the Chinese time
       words, and a sentence queued behind a busy turn waits for its own turn's question.
@@ -865,6 +870,9 @@ weaker, and worth converting whenever one of them breaks.
   The tool result in the same turn is the receipt now, and the model reads that result; nothing
   else is written into the conversation. A failure keeps the box open with the sentence in it, so
   the box's own Read it does what Read it again did; a plan cannot be gone while its question is open.
+- **A waiting card kept in the box, there again when the box reopens.** The box and the transcript
+  each drew a live copy of one question. Now one copy is live: closing the box moves the waiting
+  card into the conversation, where Set it up and Cancel still answer it.
 - **A Set it up with no note in a minute gives the buttons back.** The answer goes to the select pi
   is waiting on, in the same process, so there is no second step that can stall; a question pi
   stopped waiting for says *Not set up* at the turn's end or its own timeout instead.

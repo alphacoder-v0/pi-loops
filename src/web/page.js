@@ -3659,7 +3659,7 @@ if (window.addEventListener) window.addEventListener("popstate", () => showPane(
  * The sentence is a chat message ('Watch for: …'), queued and cancellable like any other. The model
  * answers it with cron_create or new_trigger, which ask before they create anything: pi's own select,
  * whose title is the card's rows and whose options are the card's choices. That select is drawn here
- * as the card, in the transcript and in the box; Set it up and Cancel answer it through /ui-response
+ * as the card, in the box while it is open, else in the transcript; Set it up and Cancel answer it through /ui-response
  * like any dialog, and the tool's result in the same turn turns the card into a receipt. Nothing here
  * reads the sentence back into a prompt.
  */
@@ -3677,7 +3677,7 @@ function readsLikeNow(sentence) {
   const s = String(sentence || "");
   return !WATCH_TIME.test(s) && !WATCH_WAIT.test(s);
 }
-/** Every watch question drawn, by its dialog id: the transcript's card and the box's, settled together. */
+/** Every watch question drawn, by its dialog id: its cards, settled together. */
 const watchAsks = new Map();
 /** Set once the transcript is drawn: a question replayed before it would land above the conversation. */
 let historyDrawn = false;
@@ -3704,15 +3704,11 @@ function openWatch(prefill) {
     ex.append(b);
   }
   if (prefill !== undefined) $("watchText").value = prefill;
-  // Closing the box, however it was closed, loses nothing: a card that still waits for its click
-  // is here again; one that is settled, or the now card, goes.
+  // A settled card, or the now card, goes. A card that still waits for its click is never here
+  // while the box is closed: closing the box moved it into the conversation.
   for (const c of [...$("watchCards").children]) if (!c.pending) c.remove();
   watchSay("");
   if (!dlg.open) dlg.showModal();
-  // A kept card is scrolled to the top of the box, as it was when it arrived: on a short screen
-  // the box reopens at the top, and the card's body would sit out of view under its buttons.
-  const kept = [...$("watchCards").children].find((c) => c.pending);
-  if (kept && kept.scrollIntoView) kept.scrollIntoView({ block: "start" });
   $("watchText").focus();
 }
 /** The "now" card: nothing is sent, and the box stays. */
@@ -3792,7 +3788,10 @@ function watchTurnEnded() {
   clearTimeout(watchReading.timer);
   watchReading = undefined;
   watchSay("");
-  if (watchDialog().open) $("watchCards").append(needsMoreCard(lastReply));
+  if (!watchDialog().open) return;
+  const card = needsMoreCard(lastReply);
+  $("watchCards").append(card);
+  if (card.scrollIntoView) card.scrollIntoView({ block: "start" });
 }
 /** The first line of the select cron_create and new_trigger ask with (src/watch-plan.ts WATCH_ASK_HEAD). */
 const WATCH_ASK_HEAD = "Set up this watch?";
@@ -3852,7 +3851,7 @@ function chipRow(options, current, onPick) {
  * creates. Every fact is the question's own text, drawn as text; the choices are the axes of its
  * options, and Set it up sends the one option they name.
  */
-function watchCardEl(rec, inModal) {
+function watchCardEl(rec) {
   const ask = rec.ask;
   const rule = ask.kind === "rule";
   const choice = { ...ask.start };
@@ -3924,14 +3923,23 @@ function watchCardEl(rec, inModal) {
   if (rec.answered) card.wait(rec.answered);
   return card;
 }
-/** One answer per question, from whichever of its cards was clicked: both cards wait for the tool's result. */
+/** One answer per question, from whichever of its cards was clicked: every card waits for the tool's result. */
 function watchAnswer(rec, value, saying) {
   if (rec.done || rec.answered || !rec.ask.options.includes(value)) return;
   rec.answered = saying;
   for (const c of rec.cards) c.wait(saying);
   api("/ui-response", { id: rec.ask.id, value });
 }
-/** A watch question arrived (live, or replayed while pi still waits for it): its card in the transcript, and in the box when the sentence is being read there. */
+/** Put a card of the question into the transcript, as its one copy there. */
+function watchToFeed(rec, card) {
+  row("plan", "", "").parentElement.append(card);
+  rec.feed = card;
+  scroll();
+}
+/**
+ * A watch question arrived (live, or replayed while pi still waits for it). One live copy of it is
+ * on the screen: in the box when the sentence is being read there, else in the transcript.
+ */
 function watchAsked(ask) {
   // Before the transcript is drawn, a card would land above it; the stream's replay and the next poll bring it back.
   if (!historyDrawn) return;
@@ -3941,24 +3949,25 @@ function watchAsked(ask) {
     // pi cancels it on its own when the time is up and tells nobody but the tool, whose result says so too.
     if (ask.timeout > 0) rec.timer = setTimeout(() => watchSettle(rec, { line: "Not set up: nobody answered in time" }), ask.timeout);
   }
-  if (rec.done) return;
-  if (!rec.feed) {
-    rec.feed = watchCardEl(rec, false);
-    const line = row("plan", "", "");
-    line.parentElement.append(rec.feed);
-    rec.cards.push(rec.feed);
+  if (rec.done || rec.feed || rec.modal) return;
+  const card = watchCardEl(rec);
+  rec.cards.push(card);
+  if (!watchReading || !watchDialog().open) return void watchToFeed(rec, card);
+  watchReading.gotPlan = true;
+  clearTimeout(watchReading.timer);
+  watchSay("");
+  rec.modal = card;
+  $("watchCards").append(card);
+  // What the card says comes before its buttons: scrolled to the top of the box, on a short screen too.
+  if (card.scrollIntoView) card.scrollIntoView({ block: "start" });
+}
+/** The box closed before its question settled: the card that waits goes into the conversation, so nothing is lost. */
+function watchBoxClosed() {
+  for (const rec of watchAsks.values()) {
+    if (!rec.modal || rec.done) continue;
+    watchToFeed(rec, rec.modal);
+    rec.modal = undefined;
   }
-  if (!rec.modal && watchReading && watchDialog().open) {
-    watchReading.gotPlan = true;
-    clearTimeout(watchReading.timer);
-    watchSay("");
-    rec.modal = watchCardEl(rec, true);
-    $("watchCards").append(rec.modal);
-    // What the card says comes before its buttons: scrolled to the top of the box, on a short screen too.
-    if (rec.modal.scrollIntoView) rec.modal.scrollIntoView({ block: "start" });
-    rec.cards.push(rec.modal);
-  }
-  scroll();
 }
 /** What a create tool's result says, as the one line its card keeps. */
 function watchReceipt(message) {
@@ -3969,7 +3978,10 @@ function watchReceipt(message) {
   if (typeof d.id === "string" && text.startsWith("created ")) {
     const rule = message.toolName === "new_trigger";
     const where = rule ? (d.promote_to_chat ? "shows here" : "kept out of this conversation") : d.stateful ? "inbox" : "shows here";
-    return { line: "Set up " + d.id.slice(0, 12) + " · " + where + (rule ? " · " + (d.fire_once === false ? "every time" : "once") : ""), created: true, close: true };
+    // Named as the Loops pane names it: a rule by what it waits for, a loop by its name, else the
+    // first 13 characters of its id (src/job-lines.ts loopLabel).
+    const name = rule ? clipChars(plain(str(d.condition)), 80) : plain(str(d.name));
+    return { line: "Set up " + (name || d.id.slice(0, 13)) + " · " + where + (rule ? " · " + (d.fire_once === false ? "every time" : "once") : ""), created: true, close: true };
   }
   return { line: "Not set up", close: true };
 }
@@ -3983,11 +3995,19 @@ function watchResult(message) {
 function watchTurnOver() {
   for (const rec of watchAsks.values()) if (!rec.done) watchSettle(rec, { line: "Not set up" });
 }
-/** Every card of the question becomes its receipt; set up or cancelled, the box closes and the composer is free again. */
+/**
+ * Every card of the question becomes its receipt, and the transcript has one; set up or cancelled,
+ * the box closes and the composer is free again.
+ */
 function watchSettle(rec, receipt) {
   if (rec.done) return;
   rec.done = receipt;
   clearTimeout(rec.timer);
+  if (!rec.feed) {
+    const card = watchCardEl(rec);
+    rec.cards.push(card);
+    watchToFeed(rec, card);
+  }
   for (const c of rec.cards) c.settle(receipt.line);
   // Something was created: the starters, the panel and the inbox count change now, not at the next
   // timer, which a hidden tab never reaches. A reload reads them all anyway.
@@ -3996,7 +4016,6 @@ function watchSettle(rec, receipt) {
     refreshInbox().catch(() => {});
   }
   if (rec.modal && watchReading) watchReading = undefined;
-  // The transcript's copy of this card keeps the receipt, so closing loses nothing.
   if (receipt.close && rec.modal && watchDialog().open) {
     $("watchClose").onclick();
     $("input").focus();
@@ -4005,6 +4024,7 @@ function watchSettle(rec, receipt) {
 $("watchFor").onclick = () => openWatch();
 $("watchRead").onclick = () => { readWatch().catch((e) => watchSay(String(e), true)); };
 $("watchClose").onclick = () => watchDialog().close();
+watchDialog().addEventListener("close", watchBoxClosed);
 $("watchText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); $("watchRead").onclick(); } });
 
 /* ---------------- start ---------------- */
