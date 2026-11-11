@@ -306,7 +306,9 @@ img.shot{max-width:100%;max-height:26em;height:auto;border:1px solid var(--line)
 #pop{position:absolute;bottom:100%;left:var(--pad);right:var(--pad);max-height:min(15em,32vh);overflow:auto;border:1px solid var(--line-strong);border-radius:8px;background:var(--field);box-shadow:0 10px 30px var(--shadow);display:none;z-index:5}
 #pop div{padding:8px 11px;cursor:pointer;display:flex;gap:10px;border-bottom:1px solid var(--line)}
 #pop div:last-child{border-bottom:0}
-#pop div.sel,#pop div:hover{background:var(--soft)}
+#pop div:hover{background:var(--soft)}
+/* The row the arrow keys are on: amber, so it is not mistaken for the row under the pointer. */
+#pop div.sel{background:var(--brand-soft);box-shadow:inset 3px 0 0 var(--brand)}
 #pop .h{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 #loops{grid-column:4;grid-row:1;overflow:auto;min-height:0;min-width:0;background:var(--panel);padding:0}
@@ -367,7 +369,9 @@ details.card>summary>.loopx:empty{display:none}
 .loopx .note{border-top:1px solid var(--line);padding-top:4px}
 details.card>summary>.looks{display:block;overflow-wrap:anywhere}
 @media (max-width:420px){.loopx .acts button,.loopx .runline button,.loopx .confirm>button{flex:1 1 100%;min-height:36px}}
-.off{opacity:.5}
+/* A paused loop or rule: its words in the dim colour, which still reads (4.5:1 or more on the card in
+   both themes). Opacity faded them below that. */
+.card.off,.card.off b,.card.off pre{color:var(--dim)}
 .dot{display:inline-block;width:7px;height:7px;border-radius:99px;margin-right:6px;vertical-align:middle}
 .up{background:var(--ok)}.down{background:var(--bad)}.idle{background:var(--quiet)}
 /* Words in a state: a fault, or a quiet aside. */

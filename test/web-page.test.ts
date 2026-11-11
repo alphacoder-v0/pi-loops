@@ -5122,6 +5122,34 @@ test("the page's text comes in four sizes, each named once on the root", () => {
 	assert.deepEqual(off, [], "every font size is one of the four tokens");
 });
 
+test("a paused loop and the slash row the keys are on read at 4.5:1 or more in both themes, and the selected row is not the hover row", () => {
+	// Read from the style sheet, as the placeholder's contrast is: the stub computes no styles.
+	const { tokens, rest } = pageStyle();
+	const scheme = (start: string) => Object.fromEntries([...tokens.slice(tokens.indexOf(start)).split("}")[0].matchAll(/--([a-z0-9-]+):([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
+	const rule = (sel: string) => rest.split("}").map((r) => r.replace(/\/\*[\s\S]*?\*\//g, "").trim()).find((r) => r.startsWith(sel + "{"))?.slice(sel.length + 1) ?? "";
+	const prop = (decl: string, name: string, t: Record<string, string>) => (new RegExp(`(?:^|;)${name}:([^;]+)`).exec(decl)?.[1].trim() ?? "").replace(/var\(--([a-z0-9-]+)\)/g, (_, k) => t[k]);
+	/** An `rgb(r g b / a)` laid over a #rrggbb paper, as #rrggbb. */
+	const over = (c: string, paper: string) => {
+		if (c.startsWith("#")) return c;
+		const [r, g, b, a] = c.replace(/[^\d. ]/g, " ").trim().split(/\s+/).map(Number);
+		return "#" + [r, g, b].map((v, i) => Math.round(v * a + parseInt(paper.slice(1 + 2 * i, 3 + 2 * i), 16) * (1 - a)).toString(16).padStart(2, "0")).join("");
+	};
+	const paused = rule(".card.off,.card.off b,.card.off pre");
+	assert.ok(paused, "a paused card has a rule of its own");
+	assert.doesNotMatch(paused, /opacity/, "and no opacity on its words");
+	const sel = rule("#pop div.sel");
+	const hover = rule("#pop div:hover");
+	const light = scheme(":root{");
+	const dark = { ...light, ...scheme("html[data-theme=dark]{") };
+	for (const [name, t] of [["light", light], ["dark", dark]] as const) {
+		const ratio = contrast(prop(paused, "color", t), t.panel2);
+		assert.ok(ratio >= 4.5, `${name}: a paused card's text is ${ratio.toFixed(2)}:1`);
+		const selBg = over(prop(sel, "background", t), t.panel);
+		assert.ok(contrast(t.fg, selBg) >= 4.5, `${name}: text on the selected row`);
+		assert.notEqual(selBg, over(prop(hover, "background", t), t.panel), `${name}: the selected row is not the hover row`);
+	}
+});
+
 /* ------------------------------------------------------------------ saying what failed */
 
 const FAILED_REPLY = { role: "assistant", content: [], stopReason: "error", errorMessage: "Connection error." };

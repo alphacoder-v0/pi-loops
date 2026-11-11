@@ -200,7 +200,10 @@ weaker, and worth converting whenever one of them breaks.
       them*, *a reply without work keeps its own label row*, *the work row's live line is cut in
       characters, not the units a string is counted in*.
 - [x] Replies render as Markdown — headings, lists, quotes, rules, tables, inline code, fenced
-      code, and http(s) links. Everything is escaped first: a reply is not trusted input, and a
+      code, and http(s) links. Headings come in three levels, none smaller or fainter than body
+      text, and an indented list item nests under the one above it.
+      `test/web-page.test.ts`: *a reply's headings come in three levels and its indented list items
+      nest*. Everything is escaped first: a reply is not trusted input, and a
       tool result quoted inside one is whatever some web page said. `test/web-page.test.ts`: *a
       reply is rendered as Markdown, and cannot smuggle markup through it*.
 - [x] Terminal escape sequences are stripped rather than shown. Plenty of what reaches a session
@@ -666,6 +669,11 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Focus is visible wherever the keyboard puts it: an amber ring on `:focus-visible`, and no
       rule hides it. `test/web-page.test.ts`: *the stylesheet carries Inspire's paper and amber in
       both schemes, and no colour outside its tokens*.
+- [x] A paused loop or rule is set in the dim colour, at 4.5:1 or more on its card in both schemes,
+      not faded with opacity. The slash list's row that the arrow keys are on is amber-tinted with an
+      amber edge, so it is never mistaken for the row under the pointer. `test/web-page.test.ts`: *a
+      paused loop and the slash row the keys are on read at 4.5:1 or more in both themes, and the
+      selected row is not the hover row*.
 - [x] The stored theme is applied before the first paint. Applied later, a dark page renders light
       and then blinks. `test/web-page.test.ts`: *the stored theme is applied before the first
       paint*.
