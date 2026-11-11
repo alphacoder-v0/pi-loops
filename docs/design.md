@@ -153,8 +153,9 @@ machine. Everything here follows from that, and each one has a price.
     three is recorded in the control-plane audit, the self-removals included.
 
 12. **Cycle suppression by hop count.** Sub-agents run at hop 1 and keep the cron and trigger tools
-    (`cron_create`, `cron_remove`, listing, disabling), so a loop can manage automation; the
-    operations that would need a human's yes are denied there, and sub-sessions never run the
+    (`cron_create`, listing, disabling), so a loop can manage automation; the tools whose every
+    call needs a human's yes are not offered there, the other operations that need one are
+    denied, and sub-sessions never run the
     trigger runtime, so nothing nests.
 
 13. **Stdio MCP servers reconnect** with backoff (20 attempts by default), each distinct error
