@@ -8,6 +8,7 @@
  * and "If you don't". News is one finding with a headline. What a claim says to the agent and what a
  * dismiss tells the loop are decided here too, so every surface says the same thing.
  */
+import * as path from "node:path";
 import { deadLetterParts } from "./engine.ts";
 import { loopLabel } from "./job-lines.ts";
 import type { InboxEntry, InboxStatus } from "./inbox.ts";
@@ -234,15 +235,20 @@ export function dismissLine(outcome: DismissOutcome): string {
 	return "Dismissed.";
 }
 
-/** The turn a claim runs: the finding, where it came from, and what a claim of a checkpoint means. */
-export function claimPrompt(e: InboxEntry): string {
+/**
+ * The turn a claim runs: the finding, where it came from, and what a claim of a checkpoint means.
+ * The finding is the first line, because a conversation the claim starts is titled by its first
+ * message. `loopName` is the name of the loop that filed it, when that loop has one.
+ */
+export function claimPrompt(e: InboxEntry, loopName?: string): string {
 	// The words the card showed, redacted and capped as it does, so the turn is asked about what the
 	// person read and said yes to, and a secret masked on the card is not sent to the model; the
-	// source and the cwd are screened too, since the turn's message is drawn in a terminal when one
-	// holds the conversation.
+	// source, the loop's name and the cwd are screened too, since the turn's message is drawn in a
+	// terminal when one holds the conversation.
+	const one = (s: string) => screenText(s).replace(/\s+/g, " ").trim();
 	const text = capChars(redact(screenText(e.text)).replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS);
-	const source = screenText(e.source).replace(/\s+/g, " ").trim();
-	const cwd = screenText(e.cwd).replace(/\s+/g, " ").trim();
+	const source = one(e.source);
+	const cwd = one(e.cwd);
 	const verified = e.verified ? `\n(An independent checker reviewed and kept this finding${e.verified_reason ? `: ${redact(screenText(e.verified_reason))}` : ""}.)` : "";
 	// A checkpoint is a decision the loop prepared and left to a person; the claim is that
 	// person's yes, so the turn carries the decision out rather than re-investigating it.
@@ -250,7 +256,10 @@ export function claimPrompt(e: InboxEntry): string {
 	// A prompt that never reached the chat: claiming it is asking for it now, not investigating why it was late.
 	const late = deadLetterParts(e, text);
 	if (late) return `This prompt (${source}, for ${cwd}) could not be delivered earlier (${late.why}). Do what it asks now:\n${late.prompt}`;
-	return `A recurring loop (${source}, running in ${cwd}) reported this finding — investigate and address it:\n${text}${verified}${checkpoint}`;
+	// Named as the card names it (cardOrigin): a loop by its label, a rule by its source.
+	const from = e.job_id && !e.source.startsWith("trigger:") ? `loop ${loopLabel({ id: one(e.job_id), name: loopName && one(loopName) })}` : source;
+	const project = cwd ? ` in ${path.basename(cwd) || cwd}` : "";
+	return `${text}\n\n(from ${from}${project}; investigate and address it)${verified}${checkpoint}`;
 }
 
 /**

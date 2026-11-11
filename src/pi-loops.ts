@@ -2120,7 +2120,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							return;
 						}
 						// The hand-off is queued before the finding is marked claimed (src/engine.ts handOver).
-						await handOver(inboxClaimRow(claimPrompt(entry), entry.id, rowAddress()), { inbox: scheduler.inbox, entryId: entry.id });
+						await handOver(inboxClaimRow(claimPrompt(entry, scheduler.store.load().find((j) => j.id === entry.job_id)?.name), entry.id, rowAddress()), { inbox: scheduler.inbox, entryId: entry.id });
 						refreshBadge();
 						return;
 					}

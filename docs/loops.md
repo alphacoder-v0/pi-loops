@@ -184,8 +184,10 @@ Global JSONL, shared by every session and project. Each line is one finding in t
 /inbox --all           the same, every project on this machine
 /inbox all [--all]     history including claimed and dismissed
 /inbox claim <n|id>    mark claimed and queue a real agent turn, run once the agent is idle:
-                       "A recurring loop (<source>, running in <cwd>) reported this finding — investigate and address it: …"
-                       (the loop's cwd is part of the line; a checker-kept finding adds a line saying so)
+                       "<finding>\n\n(from loop <label> in <project>; investigate and address it)"
+                       (the finding comes first, so a conversation the claim starts is titled by it;
+                       <label> is the loop's name, else its 13-character id, and <project> the last
+                       part of its cwd; a checker-kept finding adds a line saying so)
 /inbox dismiss <n|id> [reason]   mark dismissed; the reason, if you give one, is shown to the loop's next run
 /inbox clear [--all]
 ```
