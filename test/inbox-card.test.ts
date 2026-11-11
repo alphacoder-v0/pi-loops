@@ -106,10 +106,13 @@ test("a dismiss tells the loop's next run, nobody, or says nothing", () => {
 	assert.deepEqual([...DISMISS_CHIPS], ["Not a bug", "Already fixed", "Duplicate", "Too noisy", "Not now"]);
 });
 
-test("a claim's prompt is the finding, where it came from, and what a checkpoint's claim means", () => {
-	assert.equal(claimPrompt(entry({})), "A recurring loop (cron:issue-triage, running in /home/u/acme-api) reported this finding — investigate and address it:\nCI green on main again. Run 412 took 3m.");
-	assert.match(claimPrompt(entry({ kind: "checkpoint", verified: true, verified_reason: "reproduced" })), /kept this finding: reproduced\.\)\nThis finding is a checkpoint: claiming it is the person's approval/);
-	assert.equal(claimPrompt(entry({ text: "could not be delivered (pi stopped): run the tests" })), "A recurring loop (cron:issue-triage, running in /home/u/acme-api) reported this finding — investigate and address it:\ncould not be delivered (pi stopped): run the tests", "a loop's finding in a dead letter's words is investigated, not carried out");
+test("a claim's prompt is the finding first, then where it came from, and what a checkpoint's claim means", () => {
+	// The first line titles the conversation a claim starts, so it is the finding, not a wrapper.
+	assert.equal(claimPrompt(entry({}), "issue-triage"), "CI green on main again. Run 412 took 3m.\n\n(from loop issue-triage in acme-api; investigate and address it)");
+	assert.equal(claimPrompt(entry({ source: "cron:cron-5f1c0a2b9d3e4f60718293a4b5c6d7e8", job_id: "cron-5f1c0a2b9d3e4f60718293a4b5c6d7e8" })), "CI green on main again. Run 412 took 3m.\n\n(from loop cron-5f1c0a2b in acme-api; investigate and address it)", "an unnamed loop: its label, never cron:<whole id>");
+	assert.equal(claimPrompt(entry({ source: "trigger:local:dynamic", job_id: "dyn-1" })), "CI green on main again. Run 412 took 3m.\n\n(from trigger:local:dynamic in acme-api; investigate and address it)", "a rule's finding: its source");
+	assert.match(claimPrompt(entry({ kind: "checkpoint", verified: true, verified_reason: "reproduced" }), "issue-triage"), /investigate and address it\)\n\(An independent checker reviewed and kept this finding: reproduced\.\)\nThis finding is a checkpoint: claiming it is the person's approval/);
+	assert.equal(claimPrompt(entry({ text: "could not be delivered (pi stopped): run the tests" }), "issue-triage"), "could not be delivered (pi stopped): run the tests\n\n(from loop issue-triage in acme-api; investigate and address it)", "a loop's finding in a dead letter's words is investigated, not carried out");
 	assert.equal(claimPrompt(entry({ text: "could not be delivered (pi stopped): run the tests", undelivered: true })), "This prompt (cron:issue-triage, for /home/u/acme-api) could not be delivered earlier (pi stopped). Do what it asks now:\nrun the tests");
 });
 
@@ -157,7 +160,7 @@ test("tag and zero-width characters are taken out, so the card shows every chara
 	const e = entry({ text: hidden, source: `cron:tri\u200bage${tags}`, cwd: `/home/u/api\ufeff` });
 	assert.equal(inboxCard(e, ctx)!.headline, "ship it now");
 	const prompt = claimPrompt(e);
-	assert.ok(prompt.includes("(cron:triage, running in /home/u/api)") && prompt.endsWith("ship it now"), prompt);
+	assert.ok(prompt.startsWith("ship it now\n") && prompt.includes(" in api;"), prompt);
 	assert.doesNotMatch(prompt, /[\u200b-\u200d\u2060\ufeff]|[\u{e0000}-\u{e007f}]/u);
 });
 
@@ -188,14 +191,18 @@ test("a secret the card masks is masked in the claim's prompt too", () => {
 	assert.ok(prompt.includes(`kept this finding: ${card.verifiedReason}`), prompt);
 });
 
-test("a claim's prompt carries no escape codes from the source or the cwd, and no more text than the card shows", () => {
+test("a claim's prompt carries no escape codes from the source, the loop's name or the cwd, and no more text than the card shows", () => {
 	const source = "cron:\u001b]0;PWNSRC\u0007tri\u001b[41mage\u001b[0m\n x";
 	const cwd = "/home/u/\u001b[2Japi\tdir";
-	for (const text of ["a finding", "could not be delivered (pi stopped): run the tests"]) {
-		const prompt = claimPrompt(entry({ source, cwd, text, undelivered: true }));
-		assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/.test(prompt), JSON.stringify(prompt));
-		assert.ok(prompt.includes("(cron:triage x, ") && prompt.includes("/home/u/api dir)"), prompt);
-	}
+	const controls = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
+	const late = claimPrompt(entry({ source, cwd, text: "could not be delivered (pi stopped): run the tests", undelivered: true }));
+	assert.ok(!controls.test(late), JSON.stringify(late));
+	assert.ok(late.includes("(cron:triage x, ") && late.includes("/home/u/api dir)"), late);
+	const loop = claimPrompt(entry({ source, cwd, text: "a finding" }), "tri\u001b[41mage\u001b[0m\n x");
+	assert.ok(!controls.test(loop), JSON.stringify(loop));
+	assert.ok(loop.endsWith("(from loop triage x in api dir; investigate and address it)"), loop);
+	const rule = claimPrompt(entry({ source: source.replace("cron:", "trigger:"), cwd, text: "a finding" }));
+	assert.ok(rule.endsWith("(from trigger:triage x in api dir; investigate and address it)"), rule);
 	const long = claimPrompt(entry({ text: "y".repeat(600) }));
 	assert.ok(long.includes(`${"y".repeat(500)}…`) && !long.includes("y".repeat(501)), "capped as the card is");
 });

@@ -74,7 +74,7 @@ export async function run(ctx) {
 	}, 15000);
 	await ctx.waitFor("the claim's turn reaches the model", () => {
 		const asked = requests().map(lastUser);
-		return { ok: asked.some((t) => t.startsWith("A recurring loop (cron:issue-triage")), last: asked.slice(-3) };
+		return { ok: asked.some((t) => t.startsWith("#14 brief posted") && t.includes("(from loop issue-triage in ")), last: asked.slice(-3) };
 	}, 60000);
 	const claimed = inbox().find((e) => e.id === CLAIMED);
 	if (claimed.status !== "claimed" || claimed.claimed_by !== sessionId) throw new Error(`the finding is not claimed by the page's conversation: ${JSON.stringify(claimed)}`);

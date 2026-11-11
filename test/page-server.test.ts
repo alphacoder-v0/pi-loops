@@ -1284,6 +1284,7 @@ test("a claim from the page queues the born-left inbox: row for the terminal tha
 	try {
 		liveLease(page.loops, "held-1", file, project);
 		writeInbox(page.loops, [finding({ kind: "checkpoint", text: "ship it · waits: you · if not: it waits", cwd: project, session_id: "held-1" }), finding({ id: `inb-${hex(2)}`, cwd: project, session_id: "held-1" })]);
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-1", name: "issue-triage", cwd: project }] }));
 		const claimed = await page.post("inbox/claim", { id: `inb-${hex(1)}`, from: "s1", extra: "ignored" });
 		assert.equal(claimed.status, 200);
 		assert.deepEqual([claimed.body.delivery, claimed.body.conversation, claimed.body.line], ["terminal", "held-1", "Queued for your terminal."]);
@@ -1291,7 +1292,7 @@ test("a claim from the page queues the born-left inbox: row for the terminal tha
 		assert.equal(rows.length, 1);
 		assert.deepEqual([rows[0].source, rows[0].collapse_key, rows[0].mode, rows[0].created_by.instance, rows[0].created_by.pid], [`inbox:inb-${hex(1)}`, `inbox:inb-${hex(1)}`, "attended", "page", process.pid]);
 		assert.ok(rows[0].created_by.left, "born left: the holder runs it");
-		assert.match(rows[0].payload.text, /^A recurring loop \(cron:issue-triage, running in .*proj\) reported this finding — investigate and address it:\nship it · waits: you · if not: it waits\nThis finding is a checkpoint/);
+		assert.match(rows[0].payload.text, /^ship it · waits: you · if not: it waits\n\n\(from loop issue-triage in proj; investigate and address it\)\nThis finding is a checkpoint/, "the finding first, so a conversation the claim starts is titled by it");
 		const stored = inboxNow(page.loops).find((e) => e.id === `inb-${hex(1)}`);
 		assert.deepEqual([stored.status, stored.claimed_by], ["claimed", "held-1"], "claimed by the conversation it runs in, as /inbox claim marks it");
 		const audit = audits(page.loops).filter((a) => a.state === "claimed");

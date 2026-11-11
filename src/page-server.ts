@@ -2182,7 +2182,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const owner = conversationThere(entry.session_id);
 		const target = owner ?? (from && from.cwd && (!entry.cwd || sameProject(entry.cwd, from.cwd)) ? from : undefined);
 		if (!target) return { status: 409, body: { error: `${entry.session_id === undefined ? "this loop belongs to its project" : "the conversation that made this loop is gone"}; open a conversation in ${plainText(entry.cwd || "its project")} to claim it there` } };
-		const row = pageClaimRow(claimPrompt(entry), entry.id, { sessionId: target.sessionId, cwd: entry.cwd || target.cwd || "", createdBy: pageSigner() });
+		const row = pageClaimRow(claimPrompt(entry, jobStore.load().find((j) => j.id === entry.job_id)?.name), entry.id, { sessionId: target.sessionId, cwd: entry.cwd || target.cwd || "", createdBy: pageSigner() });
 		// Queued under the inbox lock once the finding is found still new: of claims racing one finding
 		// (another page, a terminal, a shell, a held lock), only the winner queues a row.
 		let written = false;

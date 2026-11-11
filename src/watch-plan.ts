@@ -100,8 +100,7 @@ export function planCard(plan: WatchPlan, ctx: { now: number; pollSecs: number; 
 		looksEverySecs: ctx.pollSecs,
 		does: redact(plan.rule.action),
 		danger: actionDanger(plan.rule.action, ctx.home),
-		// A condition the model wrote as "when …" already has its word.
-		command: oneLine(`/new-trigger when ${plan.rule.condition.replace(/^\s*when\s+/i, "")}, ${plan.rule.action}`),
+		command: oneLine(`/new-trigger when ${plan.rule.condition}, ${plan.rule.action}`),
 	};
 }
 

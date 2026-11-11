@@ -68,16 +68,18 @@ export async function run(ctx) {
 	await readSentence(EXAMPLES.buildDone, "#watchEx button:nth-of-type(2)");
 	const ruleCard = await waitCard("the rule card", (c) => c.text.includes("When something happens") && c.text.includes("every 10 minutes") && c.on.includes("Show it in this conversation") && c.on.some((t) => t.startsWith("Once")));
 	if (rules().length !== 0) throw new Error(`a rule exists before Set it up: ${JSON.stringify(rules())}`);
+	const feedCards = page(`document.querySelectorAll("#feed .plan").length`);
+	if (feedCards !== 0) throw new Error(`the question is drawn in the transcript too while the box is open: ${feedCards}`);
 	const ruleShot = path.join(ctx.dir, "watch-rule.png");
 	ctx.browser("screenshot", ruleShot);
 	ctx.addEvidence(ruleShot);
 
-	// 3. Set it up: one rule, this conversation, once; the receipt here and in the transcript; the tool's own result in the session file.
+	// 3. Set it up: one rule, this conversation, once; the receipt here and once in the transcript; the tool's own result in the session file.
 	setItUp();
-	await waitReceipt("the rule receipt", /^Set up dyn-/);
+	await waitReceipt("the rule receipt, named by its condition", /^Set up .*build\.done.* · shows here · once$/);
 	const made = rules();
 	if (made.length !== 1 || made[0].promoteToChat !== true || made[0].fireOnce !== true) throw new Error(`expected one rule with promoteToChat and fireOnce: ${JSON.stringify(made)}`);
-	await ctx.waitFor("the receipt in the transcript", () => { const r = feedReceipts(); return { ok: r.some((t) => t.startsWith("Set up dyn-")), last: r }; }, 10000);
+	await ctx.waitFor("the receipt in the transcript", () => { const r = feedReceipts(); return { ok: r.length === 1 && /^Set up .*build\.done/.test(r[0]), last: r }; }, 10000);
 	await ctx.waitFor("the tool's created result in the session file, and no pi-loops:watch note", () => { const n = createdResults(); return { ok: n.length === 1 && n[0].includes(made[0].id) && !sessionLines().some((l) => l.includes('"pi-loops:watch"')), last: n.length }; }, 10000);
 	// A settled card closes the box and gives the composer back, so the next message sends.
 	await ctx.waitFor("the box closed and the composer focused", () => { const s = page(`({ open: document.getElementById("watch").open, focus: document.activeElement && document.activeElement.id })`); return { ok: s.open === false && s.focus === "input", last: s }; }, 10000);
@@ -101,7 +103,7 @@ export async function run(ctx) {
 	await readSentence(EXAMPLES.morning);
 	await waitCard("the daily card", (c) => c.text.includes("On a schedule") && c.text.includes("every day at 09:00") && c.on.includes("Put it in my inbox"));
 	setItUp();
-	await waitReceipt("the job receipt", /^Set up cron-/);
+	await waitReceipt("the job receipt, named as the Loops pane names it", /^Set up (cron-[0-9a-f]{8}|(?!cron-)\S+) · /);
 	const daily = jobs().find((j) => j.schedule.kind === "cron");
 	if (!daily || daily.schedule.expr !== "0 9 * * *" || daily.stateful !== true) throw new Error(`expected a stateful 0 9 * * * job: ${JSON.stringify(jobs())}`);
 
@@ -110,7 +112,7 @@ export async function run(ctx) {
 	await readSentence(EXAMPLES.ci);
 	await waitCard("the half-hour card", (c) => c.text.includes("On a schedule") && c.text.includes("every 30m"));
 	setItUp();
-	await waitReceipt("the second job receipt", /^Set up cron-/);
+	await waitReceipt("the second job receipt", /^Set up (cron-[0-9a-f]{8}|(?!cron-)\S+) · /);
 	if (!jobs().some((j) => j.schedule.kind === "every" && j.schedule.ms === 1800000)) throw new Error(`expected an every-30m job: ${JSON.stringify(jobs())}`);
 
 	// 6. Something to do now: the card says so, no model call, nothing written.
@@ -138,7 +140,7 @@ export async function run(ctx) {
 	await waitCard("the review card", (c) => c.text.includes("review asking for changes"));
 	ctx.browser("click", "#watchCards .plan .chips button[data-key=every]");
 	setItUp();
-	await waitReceipt("the repeating rule's receipt", /^Set up dyn-.*every time$/);
+	await waitReceipt("the repeating rule's receipt", /^Set up .*review asking for changes.* · every time$/);
 	const repeating = rules().find((r) => r.condition.includes("review asking for changes"));
 	if (!repeating || repeating.fireOnce !== false) throw new Error(`expected a repeating rule: ${JSON.stringify(rules())}`);
 
