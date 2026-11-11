@@ -1615,7 +1615,7 @@ function grow(el, delta) {
 function handle(ev) {
   switch (ev.type) {
     case "agent_start": busy = true; setStatus(); break;
-    case "agent_end": busy = false; endOpenCalls(); setStatus(); refresh(); watchTurnEnded(); watchTurnOver(); break;
+    case "agent_end": busy = false; endOpenCalls(); setStatus(); refresh(); refreshList().catch(() => {}); watchTurnEnded(); watchTurnOver(); break;
     case "message_start": blocks = new Map(); break;
     case "message_update": {
       const d = ev.assistantMessageEvent || {};
@@ -1717,6 +1717,7 @@ function renderMessage(message, fromStream) {
     const shown = text + (imgs ? "\n[" + imgs + (imgs === 1 ? " image]" : " images]") : "");
     // The Watch box's sentence, echoed: the turn that carries it is the one whose end counts.
     if (fromStream && watchReading && text === watchReading.text) watchReading.turn = true;
+    saidFirst(text);
     if (fromStream && alreadyDrawn(shown)) return;
     if (text || imgs) {
       const body = row("user", "you", text);
@@ -2491,6 +2492,7 @@ $("composer").onsubmit = async (e) => {
   // instead of being sent: anything attached stays in the tray, and a session about to be replaced
   // is not given a message it would carry nowhere.
   if (pageCommand(text)) return;
+  saidFirst(text);
   // '/session export|import' are the archive commands here. pi's own '/session' is a terminal
   // command that does not exist over rpc, so the two-word spelling is free to mean the extension's.
   text = text.replace(/^\/session\s+(export|import)\b/i, (_m, sub) => "/session-" + sub.toLowerCase());
@@ -2523,6 +2525,7 @@ $("composer").onsubmit = async (e) => {
   // until pi reads it again (the server asks once pi is idle), and the message waits until then.
   else if (r.aside) row("notice", "", "this page shows an older copy of this conversation: your message is answered once it reads the new one");
   else if (r.queued) refresh();
+  refreshList().catch(() => {});
 };
 $("stop").onclick = () => api("/abort", {});
 
@@ -2683,7 +2686,7 @@ async function listSessionsHere() {
 
 $("compact").onclick = () => compactNow("");
 /** A new conversation in this page's pi: + New in this project, and /clear or /new typed. */
-function newHere() { swap("/session/new", {}, "new conversation — the one you left is under resume"); }
+function newHere() { swap("/session/new", {}, "new conversation — the one you left is in the list"); }
 
 /** The sessions of this project, newest first — the conversation, not the filename. */
 async function openSessions() {
@@ -3179,6 +3182,7 @@ async function resync(why) {
   // A dialog is offered again if the server still has it unanswered, and it does say so in /state.
   asked.clear();
   for (const rec of watchAsks.values()) rec.feed = undefined;
+  firstSaid = "";
   const again = await api("/history");
   for (const m of again.messages || []) renderMessage(m, false);
   seen = again.seq ?? seen;
@@ -3197,11 +3201,20 @@ async function resync(why) {
   refresh();
 }
 
-/** Point the page's routes and address at another conversation; the list marks it at the next poll. */
+/**
+ * Point the page's routes and address at another conversation. The composer, the title and the
+ * list follow at once: what was typed stays with the conversation it was typed in.
+ */
 function moveTo(id) {
   SESSION = id;
   history.replaceState(null, "", "/c/" + SESSION + "/");
-  listAt = 0;
+  openTitle = "";
+  firstSaid = "";
+  drawTitle();
+  $("input").value = savedDraft();
+  autoGrow();
+  $("input").focus();
+  refreshList().catch(() => {});
 }
 
 /**
@@ -4031,8 +4044,15 @@ $("railList").onclick = () => moveFocus(focusAt);
  */
 let openTitle = "";
 let shownOpen = false;
+/** The first thing said in this conversation, which the list names it by once pi has written it. */
+let firstSaid = "";
+function saidFirst(text) {
+  if (firstSaid || !text) return;
+  firstSaid = plain(str(text)).replace(/\s+/g, " ").trim();
+  drawTitle();
+}
 function drawTitle() {
-  const title = plain(str(state.sessionName || openTitle)).trim();
+  const title = plain(str(state.sessionName || openTitle || firstSaid)).trim();
   $("title").textContent = title || (state.messageCount ? SESSION.slice(0, 13) : "New conversation");
   $("title").title = SESSION;
 }
@@ -4656,6 +4676,7 @@ $("watchText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.
 (async () => {
   $("input").value = savedDraft();
   autoGrow();
+  if (!phone()) $("input").focus();
   setAllWork(allOpen);
   await refresh();
   const hist = await api("/history");

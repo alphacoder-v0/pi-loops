@@ -132,8 +132,10 @@ weaker, and worth converting whenever one of them breaks.
       reload button, the stale-page banner and a phone that discards a backgrounded tab all come
       back to the same text, and a second tab of the same address keeps its own. A draft belongs to
       its conversation too: a row of the list loads another one in the same tab, and the box there
-      starts empty. `test/web-page.test.ts`: *a reload keeps what is in the composer, in that tab
-      only*, *a draft typed in another conversation of this tab stays with that conversation*.
+      starts empty; + New starts with an empty box, and the draft waits in the conversation it was
+      typed in. `test/web-page.test.ts`: *a reload keeps what is in the composer, in that tab
+      only*, *a draft typed in another conversation of this tab stays with that conversation*, *+ New
+      starts with an empty, focused composer; the draft stays with the conversation it was typed in*.
 - [x] The composer grows with what is typed into it, up to the ceiling the stylesheet declares, and
       comes back down when the text goes or is sent — a multi-line prompt is written and read at its
       own height rather than through a one-line slot. `test/web-page.test.ts`: *the composer grows
@@ -226,8 +228,11 @@ weaker, and worth converting whenever one of them breaks.
       conversation.
 - [x] The conversation has a reading width. A line the width of a 27-inch monitor is not readable.
 - [x] An empty conversation is a blank feed above a focused composer, whose placeholder says what
-      to type; the first message is its first row. `test/web-page.test.ts`: *an empty conversation
-      is a blank feed, and the first message is its first row*.
+      to type; the first message is its first row. The composer has the focus on load (not on a
+      phone, where it would open the keyboard), after + New, and after a switch. An empty
+      conversation offers no undo, compact or resume: there is nothing to act on yet.
+      `test/web-page.test.ts`: *an empty conversation is a blank feed, and the first message is its
+      first row*.
 - [x] The conversation's whole id is the last line of the ⋯ sheet, one click to select and copy;
       ⋯ is there at every width. `test/web-page.test.ts`: *the ⋯ sheet ends with the conversation's
       whole id, to copy*.
@@ -697,7 +702,10 @@ weaker, and worth converting whenever one of them breaks.
       no pi.** Each row is the conversation's title (its `/name`, else the first thing said), when it
       last changed, and who holds it: `terminal`, `open` (the page), `pi-loops` (in the background), or
       no tag; `· open here` when the page also has it. Grouped Today and Earlier when both are there,
-      the open one marked.
+      the open one marked. The header names a new conversation by its first message the moment it
+      is sent, and the list is asked again then, when the turn ends and when + New moves the page,
+      not at the next poll. `test/web-page.test.ts`: *the first message names the conversation at
+      once, and the list is asked again at once*.
       A row loads that conversation's own page, so Back, a new tab and a bookmark work as links do.
       Conversations from before 0.23, or from a pi without pi-loops, are listed and open too: pi's
       own session files are what is read. `test/web-page.test.ts`: *the list shows this project's

@@ -70,7 +70,7 @@ export async function run(ctx) {
 	ctx.browser("click", `[data-inb="${CLAIMED}"] [data-act="claim"]`);
 	await ctx.waitFor("the card says the claim runs here", () => {
 		const now = cards().find((c) => c.id === CLAIMED);
-		return { ok: !!now && /Running in|Starting/.test(now.text), last: now };
+		return { ok: !!now && /Running in|Starting|Handed to that conversation/.test(now.text), last: now };
 	}, 15000);
 	await ctx.waitFor("the claim's turn reaches the model", () => {
 		const asked = requests().map(lastUser);

@@ -550,7 +550,8 @@ test("your own message is drawn once, not once by you and once by pi", { timeout
 	// about it — and how this one used to end up showing everything you typed twice.
 	dom.source().onmessage({ data: JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "你好呀" }] } }) });
 
-	const hits = dom.rendered().split("你好呀").length - 1;
+	// In the feed: the header's title says it too, as the first thing said.
+	const hits = textOf(doc.getElementById("feed")).split("你好呀").length - 1;
 	assert.equal(hits, 1, `drawn once; got ${hits} times`);
 	dom.dispose();
 });
@@ -1972,7 +1973,7 @@ test("the reload after clearing says what was asked for, not that something rest
 	await new Promise((r) => setTimeout(r, 200));
 
 	const shown = dom.rendered();
-	assert.match(shown, /new conversation — the one you left is under resume/, `it says what happened; got:\n${shown.slice(-400)}`);
+	assert.match(shown, /new conversation — the one you left is in the list/, `it says what happened; got:\n${shown.slice(-400)}`);
 	assert.doesNotMatch(shown, /the session restarted/, "and not the sentence for an epoch nobody asked to change");
 	g.fetch = realFetch;
 	dom.dispose();
@@ -2015,7 +2016,7 @@ test("a swap reloads once, for its reason, under the new id: the new session's e
 	assert.deepEqual(read.map((u) => u.replace(/\?.*$/, "")), ["/c/new-id/history"], "one reload, of the new id's history");
 	assert.ok(dom.replaced.includes("/c/new-id/"), "and the address moved first");
 	const shown = dom.rendered();
-	assert.match(shown, /new conversation — the one you left is under resume/);
+	assert.match(shown, /new conversation — the one you left is in the list/);
 	assert.doesNotMatch(shown, /the session restarted/);
 	g.fetch = realFetch;
 	dom.dispose();
@@ -2047,7 +2048,7 @@ test("the new session announcing itself does not beat the page to the reason", {
 	await new Promise((r) => setTimeout(r, 300));
 
 	const shown = dom.rendered();
-	assert.match(shown, /new conversation — the one you left is under resume/, `it still says what happened; got:\n${shown.slice(-400)}`);
+	assert.match(shown, /new conversation — the one you left is in the list/, `it still says what happened; got:\n${shown.slice(-400)}`);
 	assert.doesNotMatch(shown, /the session restarted/);
 	g.fetch = realFetch;
 	dom.dispose();
@@ -2854,7 +2855,7 @@ test("a message sent while others are queued is not drawn above them", { timeout
 	doc.getElementById("input").value = "gamma";
 	await doc.getElementById("composer").onsubmit({ preventDefault() {} });
 	await new Promise((r) => setTimeout(r, 40));
-	assert.doesNotMatch(dom.rendered(), /gamma/, "beta runs first: gamma is drawn when pi echoes it, not now");
+	assert.doesNotMatch(textOf(doc.getElementById("feed")), /gamma/, "beta runs first: gamma is drawn when pi echoes it, not now");
 	dom.dispose();
 });
 
@@ -4915,4 +4916,52 @@ test("the list reads what needs you, then the conversations, then news, and the 
 	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8"))?.[1] ?? "";
 	const scroll = /<div class="lscroll" id="lscroll">([\s\S]*?)\n {2}<\/div>/.exec(html)?.[1] ?? "";
 	assert.deepEqual([...scroll.matchAll(/id="([^"]+)"/g)].map((m) => m[1]), ["awaySlot", "needsSlot", "convs", "cardsSlot", "startersSlot"]);
+});
+
+test("+ New starts with an empty, focused composer; the draft stays with the conversation it was typed in", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const tab = new Map<string, string>();
+	const state: any = { ...STATE, epoch: "e1", seq: 0 };
+	const history: any = { messages: [], epoch: "e1", seq: 0 };
+	const dom = stubDom(state, history, tab, { "/session/new": { success: true, data: { cancelled: false }, sessionId: "new-id" } });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const input = g.document.getElementById("input");
+	assert.equal(g.document.activeElement, input, "the composer has the focus on load");
+	input.value = "half a thought";
+	input.oninput();
+	g.document.activeElement = undefined;
+	g.document.getElementById("newConv").onclick();
+	await new Promise((r) => setTimeout(r, 200));
+	assert.equal(input.value, "", "the new conversation's box is empty: Enter cannot send the old draft into it");
+	assert.equal(g.document.activeElement, input, "and has the focus");
+	assert.equal(tab.get(`pi-web-draft:${SESSION_UNDER_TEST}`), "half a thought", "the draft is kept for the conversation it was typed in");
+	dom.dispose();
+	// Going back to that conversation brings the draft back.
+	const back = stubDom(STATE, { messages: [] }, tab);
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	assert.equal(g.document.getElementById("input").value, "half a thought");
+	back.dispose();
+});
+
+test("the first message names the conversation at once, and the list is asked again at once", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const dom = stubDom({ ...STATE, sessionName: undefined, messageCount: 0 }, { messages: [] }, new Map(), { "/conversations": listAnswer([]) });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const title = g.document.getElementById("title");
+	assert.equal(title._text, "New conversation");
+	const lists = () => dom.calls.filter((c) => c.url.startsWith("/conversations?")).length;
+	const before = lists();
+	g.document.getElementById("input").value = "fix the flaky\n  cache test";
+	await g.document.getElementById("composer").onsubmit({ preventDefault() {} });
+	assert.equal(title._text, "fix the flaky cache test", "the header says what was said, not the id");
+	await new Promise((r) => setTimeout(r, 60));
+	assert.ok(lists() > before, "the list is asked for now, not at the next poll");
+	const atSend = lists();
+	dom.source().onmessage({ data: JSON.stringify({ type: "agent_end" }) });
+	await new Promise((r) => setTimeout(r, 60));
+	assert.ok(lists() > atSend, "and again when the turn ends, once pi has written the conversation");
+	dom.dispose();
 });
