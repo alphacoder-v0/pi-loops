@@ -40,12 +40,15 @@ function pageScript(served: { token?: string; secret?: string } = {}): string {
 		.replace("__VERSION__", PAGE_UNDER_TEST);
 }
 
+/** Taken before any test can mock the timers, so `settled` works while one does. */
+const realSetTimeout = globalThis.setTimeout;
+
 /**
  * One turn of the event loop. The stub's fetch answers at once, so all the work the page does with
  * an answer is promise callbacks, and they all run before the next timer turn.
  */
 function settled(): Promise<void> {
-	return new Promise((r) => setTimeout(r, 1));
+	return new Promise((r) => realSetTimeout(r, 1));
 }
 
 /** Waits, a timer turn at a time, until `cond` holds; fails with `what` after `ms`. */
@@ -661,8 +664,13 @@ test("Enter while an input method is mid-word does not send", { timeout: 20_000 
 	assert.equal(submitted, 0, "and so does the one right after it ends");
 
 	// A while later, with nothing being composed, Enter is a person pressing send.
-	await new Promise((r) => setTimeout(r, 80));
-	input.onkeydown({ key: "Enter", shiftKey: false, preventDefault() {} });
+	const realNow = Date.now;
+	Date.now = () => realNow() + 60;
+	try {
+		input.onkeydown({ key: "Enter", shiftKey: false, preventDefault() {} });
+	} finally {
+		Date.now = realNow;
+	}
 	assert.equal(submitted, 1, "then it sends");
 	dom.dispose();
 });
@@ -684,7 +692,7 @@ test("prompt history recalls what was sent, and steps aside on a middle line", {
 		input.selectionStart = text.length;
 		input.oninput();
 		doc.getElementById("composer").requestSubmit();
-		await new Promise((r) => setTimeout(r, 40));
+		await settled();
 	}
 
 	// A draft that is not empty must come back when you walk forward past the newest prompt.
@@ -796,10 +804,18 @@ test("a question pi times out closes itself, says it was refused, and a late app
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 	const answers = () => dom.calls.filter((c) => c.url.includes("/ui-response")).map((c) => c.body);
 
-	send({ type: "extension_ui_request", id: "q1", method: "confirm", title: "Allow rm?", message: "rm -rf /tmp/x", timeout: 150 });
-	assert.equal(ask.open, true, "the question is on the screen");
-	send({ type: "extension_ui_request", id: "q2", method: "confirm", title: "Allow push?", message: "git push", timeout: 60_000 });
-	await new Promise((r) => setTimeout(r, 300));
+	mock.timers.enable({ apis: ["setTimeout"] });
+	try {
+		send({ type: "extension_ui_request", id: "q1", method: "confirm", title: "Allow rm?", message: "rm -rf /tmp/x", timeout: 150 });
+		assert.equal(ask.open, true, "the question is on the screen");
+		send({ type: "extension_ui_request", id: "q2", method: "confirm", title: "Allow push?", message: "git push", timeout: 60_000 });
+		mock.timers.tick(149);
+		assert.equal(ask.open, true, "not before its time");
+		mock.timers.tick(1);
+	} finally {
+		mock.timers.reset();
+	}
+	await settled();
 	assert.equal(ask.open, false, "it closes when its time is up");
 	assert.match(dom.rendered(), /Allow rm\? → timed out with no answer: refused/);
 	assert.deepEqual(answers(), [], "nothing is posted for a question pi has already answered");
@@ -1021,7 +1037,7 @@ test("the page's own helpers are all actually reachable", { timeout: 20_000 }, a
 	const g = globalThis as any;
 	const names = ["plain", "markdownToHtml", "inlineMd", "safeHref", "qrMatrix", "qrSvg", "row", "renderMessage", "renderSidebar", "renderRuntime", "handle", "refresh", "onAsk", "copyBtn", "mdInto", "countOf", "applyTheme"];
 	await new Function(pageScript() + `\n; globalThis.__seen = {${names.map((n) => `${n}: typeof ${n}`).join(", ")}};`)();
-	await new Promise((r) => setTimeout(r, 300));
+	await settled();
 
 	const missing = names.filter((n) => g.__seen[n] !== "function");
 	assert.deepEqual(missing, [], `every helper the page defines is reachable from the page; missing: ${missing.join(", ")}`);
@@ -1267,14 +1283,15 @@ test("a stale completion answer cannot overwrite a newer one", { timeout: 20_000
 	const g = globalThis as any;
 	const doc = g.document;
 
+	/** One function per completion request, in the order asked: calling it delivers the answer. */
+	const held: Array<() => void> = [];
 	let nth = 0;
 	g.fetch = async (url: unknown, opts: any) => {
 		if (!String(url).includes("/complete")) return { json: async () => ({ success: true }) };
 		const which = nth++;
 		// The older request answers later — with the wider, staler list.
 		const items = which === 0 ? [{ value: "@src/", hint: "dir" }, { value: "@src/args.ts", hint: "file" }] : [{ value: "@src/web.mjs", hint: "file" }];
-		const delay = which === 0 ? 80 : 10;
-		return { json: () => new Promise((r) => setTimeout(() => r({ items }), delay)) };
+		return { json: () => new Promise((r) => void (held[which] = () => r({ items }))) };
 	};
 
 	const input = doc.getElementById("input");
@@ -1285,9 +1302,11 @@ test("a stale completion answer cannot overwrite a newer one", { timeout: 20_000
 	input.value = "@src/we";
 	input.selectionStart = 7;
 	input.oninput();
-	await new Promise((r) => setTimeout(r, 200));
-
-	await new Promise((r) => setTimeout(r, 200));
+	await until(() => held[0] && held[1], "both completion requests are out");
+	held[1]();
+	await settled();
+	held[0]();
+	await settled();
 	// render() empties the popup and appends a div per item, so the markup is on the children.
 	const html = [...doc.getElementById("pop").children].map((c: any) => c.innerHTML).join(" ");
 	assert.match(html, /@src\/web\.mjs/, "the newest answer is the one on screen");
@@ -1339,7 +1358,7 @@ test("a gap in the event stream reloads the conversation instead of leaving a ho
 
 	// 9 means 5 to 8 never arrived.
 	send({ type: "message_end", seq: 9, message: { role: "user", content: [{ type: "text", text: "after the gap" }] } });
-	await new Promise((r) => setTimeout(r, 200));
+	await settled();
 
 	const shown = dom.rendered();
 	assert.match(shown, /the conversation above was reloaded/, "it says what happened");
@@ -1361,7 +1380,7 @@ test("a message carries at most ten images", { timeout: 20_000 }, async () => {
 	};
 	const files = Array.from({ length: 12 }, (_, i) => ({ name: `s${i}.png`, type: "image/png" }));
 	doc.getElementById("file").onchange({ target: { files, value: "" } });
-	await new Promise((r) => setTimeout(r, 100));
+	await settled();
 
 	assert.equal(doc.getElementById("thumbs").children.length, 10, "ten of them");
 	assert.match(dom.rendered(), /up to 10 images per message/, "and it says why the rest are missing");
@@ -1456,7 +1475,7 @@ test("a reply can show a picture, and point at a file you can open", { timeout: 
 	assert.doesNotMatch(html, /href="javascript:/, "while a scheme of its own is not made into one");
 
 	// The picture's address is made once a key is minted for that one path; the key is spent by the load.
-	await new Promise((r) => setTimeout(r, 50));
+	await settled();
 	assert.ok(dom.calls.some((c) => c.url === "/c/test-session/key" && JSON.stringify(c.body) === JSON.stringify({ for: "file", path: "out/chart.png" })), "a key for out/chart.png");
 	const img = dom.made.find((m: any) => m.tag === "img" && m.dataset.file === "out/chart.png") as any;
 	assert.equal(img?.src, "/c/test-session/file?path=out%2Fchart.png&key=test-key", "and the picture is fetched with it");
@@ -1468,7 +1487,7 @@ test("a reply can show a picture, and point at a file you can open", { timeout: 
 	const link = { dataset: { file: "out/report.html" } };
 	let prevented = false;
 	g.document.getElementById("feed")._on.click({ target: { closest: (sel: string) => (sel === "a[data-file]" ? link : null) }, preventDefault: () => { prevented = true; } });
-	await new Promise((r) => setTimeout(r, 50));
+	await settled();
 	assert.ok(prevented, "the link has no address of its own to follow");
 	assert.deepEqual(opened, ["/c/test-session/file?path=out%2Freport.html&key=test-key"], "it opens with a key for that file");
 	delete g.open;
@@ -1507,11 +1526,21 @@ test("the event stream opens with a key minted for it, and a refused stream star
 	assert.equal(first.url, "/c/test-session/events?key=test-key", "and the stream carries it");
 	first.readyState = 0;
 	first.onerror();
-	await new Promise((r) => setTimeout(r, 50));
+	await settled();
 	assert.equal(dom.source(), first, "a stream the browser is still retrying is left to it");
-	first.readyState = 2;
-	first.onerror();
-	await new Promise((r) => setTimeout(r, 3300));
+	// The page waits three seconds before it starts again; the test moves the clock instead.
+	mock.timers.enable({ apis: ["setTimeout"] });
+	try {
+		first.readyState = 2;
+		first.onerror();
+		mock.timers.tick(2_999);
+		await settled();
+		assert.equal(dom.source(), first, "not at once");
+		mock.timers.tick(1);
+	} finally {
+		mock.timers.reset();
+	}
+	await until(() => dom.source() !== first, "the stream is opened again");
 	assert.notEqual(dom.source(), first, "one it gave up on is opened again");
 	assert.equal(dom.calls.filter((c) => c.url === "/c/test-session/key").length, 2, "with a key of its own");
 	dom.dispose();
@@ -1583,20 +1612,21 @@ test("what arrives while the conversation is reloading lands after it, not befor
 	};
 
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 500));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 
 	// A gap starts a reload…
 	send({ type: "message_end", seq: 40, message: { role: "user", content: [{ type: "text", text: "the one that opened the gap" }] } });
 	// …and this arrives while it is happening.
 	send({ type: "message_end", seq: 41, message: { role: "user", content: [{ type: "text", text: "sent during the reload" }] } });
-	await new Promise((r) => setTimeout(r, 400));
-
 	// What is on the screen now, not what was ever created: the whole point is that something was
 	// drawn and then removed.
 	const onScreen = (el: any): string =>
 		[el._text ?? "", el._html ?? "", ...(el.children ?? []).map(onScreen)].join(" ");
-	const rows = (globalThis as any).document.getElementById("feed").children.map(onScreen);
+	const feed = (globalThis as any).document.getElementById("feed");
+	await until(() => asked === 2 && /from the transcript/.test(onScreen(feed)), "the reload drew the transcript again");
+	await settled();
+	const rows = feed.children.map(onScreen);
 	const transcript = rows.findIndex((t: string) => /from the transcript/.test(t));
 	const late = rows.findIndex((t: string) => /sent during the reload/.test(t));
 	assert.ok(transcript >= 0, `the transcript came back; got:\n${rows.join("\n")}`);
@@ -1636,7 +1666,6 @@ test("a page that stops receiving events notices by itself", { timeout: 20_000 }
 
 	// Twice in a row is.
 	await dom.poll();
-	await new Promise((r) => setTimeout(r, 200));
 	assert.match(feedText(), /connection dropped/, "the page says what happened");
 	assert.match(feedText(), /what was there/, "and takes the transcript again");
 
@@ -1644,7 +1673,6 @@ test("a page that stops receiving events notices by itself", { timeout: 20_000 }
 	state.epoch = "bbb";
 	state.seq = 2;
 	await dom.poll();
-	await new Promise((r) => setTimeout(r, 200));
 	assert.match(feedText(), /session restarted/, "a restart needs no second opinion");
 	dom.dispose();
 });
@@ -1850,7 +1878,7 @@ test("clear, resume and compact are typed as well as clicked", { timeout: 20_000
 	const submit = async (text: string) => {
 		doc.getElementById("input").value = text;
 		await doc.getElementById("composer").onsubmit({ preventDefault() {} });
-		await new Promise((r) => setTimeout(r, 60));
+		await settled();
 	};
 	const went = (part: string) => calls.filter((c) => c.url.includes(part));
 
@@ -1867,15 +1895,15 @@ test("clear, resume and compact are typed as well as clicked", { timeout: 20_000
 	// time with a bare "context compacted" — over the top of a manual one that had just said it
 	// failed. The event line is for the compaction nobody asked for.
 	dom.source().onmessage({ data: JSON.stringify({ type: "compaction_end", reason: "manual", result: { tokensBefore: 150_000, estimatedTokensAfter: 32_000 } }) });
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.equal(dom.rendered().match(/context compacted/g)?.length, 1, "said once");
 	// The one that happens on its own is still announced — and truthfully when it did not happen.
 	dom.source().onmessage({ data: JSON.stringify({ type: "compaction_end", reason: "threshold", result: null, aborted: false, errorMessage: "quota exceeded" }) });
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.match(dom.rendered(), /compaction failed: quota exceeded/, "an auto-compaction that failed does not report success");
 	// A summary that came out at 312 tokens is 312, not "0k" — which reads as gone rather than small.
 	dom.source().onmessage({ data: JSON.stringify({ type: "compaction_end", reason: "threshold", result: { tokensBefore: 11_000, estimatedTokensAfter: 312 } }) });
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.match(dom.rendered(), /11k → 312/);
 
 	await submit("/resume");
@@ -1910,7 +1938,7 @@ test("the session you are in is not offered as one to go back to", { timeout: 20
 	await dom.started();
 	const doc = g.document;
 	await doc.getElementById("resume").onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 
 	const rows = doc.getElementById("sessBody").children;
 	assert.equal(rows.length, 2, "both are listed");
@@ -1923,7 +1951,7 @@ test("the session you are in is not offered as one to go back to", { timeout: 20
 	assert.match(shown, /22\+ messages/, "and a count that was cut short says so");
 
 	rows[1].onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.deepEqual(asked, [{ file: "/s/older.jsonl" }]);
 	g.fetch = realFetch;
 	dom.dispose();
@@ -1950,9 +1978,9 @@ test("resuming a conversation that is already open in the page goes to it", { ti
 	await dom.started();
 	const doc = g.document;
 	await doc.getElementById("resume").onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	doc.getElementById("sessBody").children[1].onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.deepEqual(assigned, ["/c/b/"], "the page goes to the conversation's own address");
 	assert.doesNotMatch(dom.rendered(), /already open in the page/, "and does not stop at the refusal");
 	g.fetch = realFetch;
@@ -1981,9 +2009,8 @@ test("the reload after clearing says what was asked for, not that something rest
 	await dom.started();
 
 	g.document.getElementById("newConv").onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	await dom.poll();
-	await new Promise((r) => setTimeout(r, 200));
 
 	const shown = dom.rendered();
 	assert.match(shown, /new conversation — the one you left is in the list/, `it says what happened; got:\n${shown.slice(-400)}`);
@@ -2022,9 +2049,8 @@ test("a swap reloads once, for its reason, under the new id: the new session's e
 	read.length = 0;
 
 	g.document.getElementById("newConv").onclick();
-	await new Promise((r) => setTimeout(r, 300));
+	await settled();
 	await dom.poll();
-	await new Promise((r) => setTimeout(r, 200));
 
 	assert.deepEqual(read.map((u) => u.replace(/\?.*$/, "")), ["/c/new-id/history"], "one reload, of the new id's history");
 	assert.ok(dom.replaced.includes("/c/new-id/"), "and the address moved first");
@@ -2058,7 +2084,7 @@ test("the new session announcing itself does not beat the page to the reason", {
 	await dom.started();
 
 	g.document.getElementById("newConv").onclick();
-	await new Promise((r) => setTimeout(r, 300));
+	await settled();
 
 	const shown = dom.rendered();
 	assert.match(shown, /new conversation — the one you left is in the list/, `it still says what happened; got:\n${shown.slice(-400)}`);
@@ -2078,10 +2104,11 @@ test("a completion answer in flight does not reopen a list the space just closed
 	await dom.started();
 	const doc = g.document;
 	const realFetch = g.fetch;
+	// The answer is slow, which is the only reason the bug was ever visible: the test holds it.
+	let land: (() => void) | undefined;
 	g.fetch = async (url: unknown, opts: any) => {
 		if (!String(url).includes("/complete")) return realFetch(url, opts);
-		// The answer is slow, which is the only reason the bug was ever visible.
-		return { json: () => new Promise((r) => setTimeout(() => r({ items: [{ value: "/compact", hint: "" }] }), 80)) };
+		return { json: () => new Promise((r) => void (land = () => r({ items: [{ value: "/compact", hint: "" }] }))) };
 	};
 
 	const input = doc.getElementById("input");
@@ -2092,7 +2119,9 @@ test("a completion answer in flight does not reopen a list the space just closed
 	input.value = "/compact ";
 	input.selectionStart = 9;
 	input.oninput();
-	await new Promise((r) => setTimeout(r, 250));
+	await until(() => land, "the completion request is out");
+	land?.();
+	await settled();
 
 	assert.equal(doc.getElementById("pop").style.display, "none", "the list stays closed");
 	g.fetch = realFetch;
@@ -2118,7 +2147,7 @@ test("a name cannot reorder the line it is drawn on", { timeout: 20_000 }, async
 	await dom.started();
 
 	await g.document.getElementById("resume").onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	const titles = g.document.getElementById("sessBody").children.map((b: any) => b.children[0].textContent);
 	assert.deepEqual(titles, ["delete evil red", "flipped and embedded"], "drawn in the order it is written in");
 	for (const t of titles) assert.doesNotMatch(t, /[\u202a-\u202e\u2066-\u2069]/, "and with nothing left that could reorder it");
@@ -2238,7 +2267,7 @@ test("undoing the only message empties the conversation and puts the message bac
 	assert.match(dom.rendered(), /the only thing said/, "the message was there to begin with");
 
 	await doc.getElementById("undo").onclick();
-	await new Promise((r) => setTimeout(r, 200));
+	await settled();
 
 	const onScreen = (el: any): string => [el._text ?? "", el._html ?? "", ...(el.children ?? []).map(onScreen)].join(" ");
 	const feed = onScreen(doc.getElementById("feed"));
@@ -2440,11 +2469,11 @@ test("Enter on a command already typed in full sends it instead of completing it
 	input.value = "/inbox";
 	input.selectionStart = 6;
 	input.oninput();
-	await new Promise((r) => setTimeout(r, 120));
+	await settled();
 	assert.equal(doc.getElementById("pop").style.display, "block", "the list is open, as it is in a browser");
 
 	input.onkeydown({ key: "Enter", shiftKey: false, preventDefault() {} });
-	await new Promise((r) => setTimeout(r, 120));
+	await settled();
 	assert.deepEqual(sent.map((p) => p.text), ["/inbox"], `one Enter ran it; got ${JSON.stringify(sent)}`);
 	assert.equal(input.value, "", "and the composer is empty, not holding a completion it accepted");
 	assert.equal(doc.getElementById("pop").style.display, "none", "the list is gone with it");
@@ -2454,9 +2483,9 @@ test("Enter on a command already typed in full sends it instead of completing it
 	input.value = "/inb";
 	input.selectionStart = 4;
 	input.oninput();
-	await new Promise((r) => setTimeout(r, 120));
+	await settled();
 	input.onkeydown({ key: "Enter", shiftKey: false, preventDefault() {} });
-	await new Promise((r) => setTimeout(r, 120));
+	await settled();
 	assert.equal(input.value, "/inbox ", "Enter on a partial word completes it");
 	assert.equal(sent.length, 1, "and sends nothing yet");
 
@@ -2464,9 +2493,9 @@ test("Enter on a command already typed in full sends it instead of completing it
 	input.value = "/inbox";
 	input.selectionStart = 6;
 	input.oninput();
-	await new Promise((r) => setTimeout(r, 120));
+	await settled();
 	input.onkeydown({ key: "Tab", preventDefault() {} });
-	await new Promise((r) => setTimeout(r, 120));
+	await settled();
 	assert.equal(input.value, "/inbox ", "Tab accepts rather than sends");
 	assert.equal(sent.length, 1);
 
@@ -2617,7 +2646,7 @@ test("/sessions and /session export are typed here", { timeout: 20_000 }, async 
 	const submit = async (text: string) => {
 		doc.getElementById("input").value = text;
 		await doc.getElementById("composer").onsubmit({ preventDefault() {} });
-		await new Promise((r) => setTimeout(r, 80));
+		await settled();
 	};
 	const went = (part: string) => calls.filter((c) => c.url.includes(part));
 
@@ -2768,18 +2797,18 @@ test("the queue lists requests from every source, in order", { timeout: 20_000 }
 	assert.equal(lines[0].children[1].className, "qtext", "a queued row is still one line");
 	// The ✕ on the second row cancels that row and no other.
 	lines[1].children.at(-1).onclick();
-	await new Promise((r) => setTimeout(r, 40));
+	await settled();
 	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/queue/cancel")).map((c) => c.body), [{ id: "22222222-bbbb" }]);
 	// A message a previous page left behind is sent only when you say so.
 	lines[3].children[2].onclick();
-	await new Promise((r) => setTimeout(r, 40));
+	await settled();
 	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/queue/send")).map((c) => c.body), [{ id: "44444444-dddd" }]);
 	assert.equal(box.children.some((c: any) => String(c._text).startsWith("send queued")), false, "while a turn runs there is nothing held to send");
 	// After Stop, with pi idle and your messages still queued, nothing has to be sent by hand: the
 	// holder hands the next row over on its own (owner decision 2026-11-02), and each row keeps its ✕.
 	shown.busy = false;
 	dom.source().onmessage({ data: JSON.stringify({ type: "agent_end" }) });
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.equal(doc.getElementById("queued").children.some((c: any) => String(c._text).startsWith("send queued")), false, "no send-queued button: Stop stopped the turn, not the queue");
 	dom.dispose();
 });
@@ -2808,7 +2837,7 @@ test("a message nobody took says why and offers to send it here, unless this pag
 	], "the server's line and its offer, as given; no offer where sending here is unsafe");
 	assert.equal(lines[0].className, "qrow stuck");
 	lines[0].children[2].onclick();
-	await new Promise((r) => setTimeout(r, 40));
+	await settled();
 	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/queue/send-here")).map((c) => c.body), [{ id: "11111111-aaaa" }], "send-here names that row and no other");
 	dom.dispose();
 });
@@ -2821,7 +2850,7 @@ test("a send into a page whose own pi stands aside says so, and that pi reads it
 	const doc = g.document;
 	doc.getElementById("input").value = "hello there";
 	await doc.getElementById("composer").onsubmit({ preventDefault() {} });
-	await new Promise((r) => setTimeout(r, 40));
+	await settled();
 	assert.match(dom.rendered(), /this page shows an older copy of this conversation: your message is answered once it reads the new one/, "the reason and the way out, on the page");
 	assert.doesNotMatch(dom.rendered(), /pid|777/, "where, in the page's words, with no pid");
 	dom.dispose();
@@ -2836,7 +2865,7 @@ test("a send answered elsewhere says so, and one pi refused comes back to the co
 	const input = doc.getElementById("input");
 	input.value = "hello there";
 	await doc.getElementById("composer").onsubmit({ preventDefault() {} });
-	await new Promise((r) => setTimeout(r, 40));
+	await settled();
 	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/prompt")).map((c) => c.body), [{ text: "hello there", images: [] }], "chat text goes to /prompt as text, nothing else");
 	const posted = dom.calls.find((c) => c.url.includes("/prompt"));
 	assert.deepEqual(
@@ -2850,7 +2879,7 @@ test("a send answered elsewhere says so, and one pi refused comes back to the co
 	// The holder found pi refused a message; the server took the row back and says so on the stream.
 	input.value = "typed since";
 	dom.source().onmessage({ data: JSON.stringify({ type: "send_failed", id: "p1", text: "hello there", images: [{ type: "image", data: "AAAA", mimeType: "image/png" }], error: "pi did not start a turn for it" }) });
-	await new Promise((r) => setTimeout(r, 40));
+	await settled();
 	assert.equal(input.value, "hello there\ntyped since", "the text is back in the composer, ahead of what was typed since");
 	assert.equal(doc.getElementById("thumbs").children.length, 1, "with its image");
 	assert.match(dom.rendered(), /pi did not start a turn for it/, "and the error is on the page");
@@ -2867,7 +2896,7 @@ test("a message sent while others are queued is not drawn above them", { timeout
 	const doc = g.document;
 	doc.getElementById("input").value = "gamma";
 	await doc.getElementById("composer").onsubmit({ preventDefault() {} });
-	await new Promise((r) => setTimeout(r, 40));
+	await settled();
 	assert.doesNotMatch(textOf(doc.getElementById("feed")), /gamma/, "beta runs first: gamma is drawn when pi echoes it, not now");
 	dom.dispose();
 });
@@ -3048,7 +3077,7 @@ test("choosing another project asks for that project's list by its cwd", { timeo
 	assert.doesNotMatch(src, /id="cwd"/, "the header does not say the project a second time");
 	picker.value = "/work/web";
 	picker.onchange();
-	await new Promise((r) => setTimeout(r, 50));
+	await settled();
 	assert.equal(dom.calls.filter((c) => c.url.startsWith("/conversations")).at(-1)?.url, `/conversations?session=${SESSION_UNDER_TEST}&cwd=%2Fwork%2Fweb`);
 	dom.dispose();
 });
@@ -3061,7 +3090,7 @@ test("+ New starts the conversation in the project the list shows: a new session
 	g.location.assign = (u: string) => void assigned.push(u);
 	// The open conversation's project: today's new session in this page's pi.
 	g.document.getElementById("newConv").onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.ok(dom.calls.some((c) => c.url.endsWith("/session/new")), "the open project's + New swaps this page's pi");
 	assert.ok(!dom.calls.some((c) => c.url === "/conversations/new"), "and starts no other pi");
 	// Another project picked: the server starts one there, and the page goes to it.
@@ -3069,10 +3098,10 @@ test("+ New starts the conversation in the project the list shows: a new session
 	const picker = g.document.getElementById("project");
 	picker.value = "/work/web";
 	await picker.onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	const swaps = dom.calls.filter((c) => c.url.endsWith("/session/new")).length;
 	g.document.getElementById("newConv").onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	const post = dom.calls.find((c) => c.url === "/conversations/new");
 	assert.deepEqual(post?.body, { cwd: "/work/web" });
 	assert.equal(post?.headers?.["x-pi-web-token"], "test-token");
@@ -3081,7 +3110,7 @@ test("+ New starts the conversation in the project the list shows: a new session
 	// Refused (the page is full): the reason, and the page stays.
 	answers["/conversations/new"] = { __status: 503, __body: { error: "6 conversations are open in the page and none of them is idle; close one to open another" } };
 	g.document.getElementById("newConv").onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.match(dom.rendered(), /No new conversation in web: 6 conversations are open in the page/);
 	assert.deepEqual(assigned, ["/c/new-web/"]);
 	dom.dispose();
@@ -3226,7 +3255,7 @@ test("the open conversation keeps its title while the list shows another project
 	answers["/conversations"] = listAnswer([{ sessionId: "w1", title: "landing page" }], { cwd: "/work/web" });
 	doc.getElementById("project").value = "/work/web";
 	doc.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 50));
+	await settled();
 	assert.deepEqual(rowsOf().map((r) => r.dataset.conv), ["w1"]);
 	assert.equal(doc.getElementById("title")._text, "fix the cache", "still its title, not its id");
 	dom.dispose();
@@ -3246,7 +3275,7 @@ test("a conversation opened from far down the list is scrolled into view, once",
 	await dom.started();
 	assert.deepEqual(scrolled, [SESSION_UNDER_TEST]);
 	g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 50));
+	await settled();
 	assert.deepEqual(scrolled, [SESSION_UNDER_TEST], "a later draw leaves the scroll you chose");
 	dom.dispose();
 });
@@ -3293,7 +3322,7 @@ async function inboxPage(answers: Record<string, unknown> = {}) {
 		const b = button(card, label);
 		assert.ok(b, `a "${label}" button on the card`);
 		card._on.click({ target: b });
-		await new Promise((r) => setTimeout(r, 60));
+		await settled();
 	};
 	return { dom, cards, texts, button, click, answers: all };
 }
@@ -3357,7 +3386,7 @@ test("a card whose conversation is gone runs in this one in its own project, and
 	// The open conversation's project (/work/api): today's words, and Yes claims into this one.
 	const here = await inboxPage({ "/inbox?": { ...INBOX, cards: [gone] }, "/inbox/claim": { ok: true, id: gone.id, delivery: "page", conversation: SESSION_UNDER_TEST, line: "Running in its conversation." } });
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	let card = here.cards().at(-1);
 	assert.ok(here.texts(card).join("|").includes("its conversation is gone; runs here"), here.texts(card).join("|"));
 	await here.click(card, "Yes, do it here");
@@ -3369,14 +3398,14 @@ test("a card whose conversation is gone runs in this one in its own project, and
 	const assigned: string[] = [];
 	g.location.assign = (u: string) => void assigned.push(u);
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	card = there.cards().at(-1);
 	const said = there.texts(card).join("|");
 	assert.ok(said.includes("its conversation is gone; runs in a new conversation in web"), said);
 	assert.ok(!said.includes("in this one"), said);
 	assert.ok(!there.button(card, "Yes, do it here"), "it is not done here");
 	await there.click(card, "Yes, do it");
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	const posts = there.dom.calls.filter((c) => c.url === "/conversations/new" || c.url === "/inbox/claim").map((c) => [c.url, c.body]);
 	assert.deepEqual(posts, [["/conversations/new", { cwd: "/work/web" }], ["/inbox/claim", { id: gone.id, from: "new-web" }]], "the new conversation first, then the claim into it");
 	assert.deepEqual(assigned, ["/c/new-web/"]);
@@ -3384,10 +3413,10 @@ test("a card whose conversation is gone runs in this one in its own project, and
 	// The new conversation cannot start: nothing is claimed, the card says why, and Yes is live again.
 	const full = await inboxPage({ "/inbox?": { ...INBOX, cwd: "/work/web", cards: [{ ...gone, cwd: "/work/web" }] }, "/conversations/new": { __status: 503, __body: { error: "6 conversations are open in the page and none of them is idle; close one to open another" } } });
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	card = full.cards().at(-1);
 	await full.click(card, "Yes, do it");
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.ok(!full.dom.calls.some((c) => c.url === "/inbox/claim"), "nothing claimed");
 	assert.ok(full.texts(card).some((t) => /^Not sent: 6 conversations are open in the page/.test(t)), full.texts(card).join("|"));
 	assert.equal(full.button(card, "Yes, do it").disabled, false);
@@ -3461,14 +3490,14 @@ test("a project-owned card listed for another project runs in a new conversation
 	const assigned: string[] = [];
 	g.location.assign = (u: string) => void assigned.push(u);
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	const card = there.cards().at(-1);
 	const said = there.texts(card).join("|");
 	assert.ok(said.includes("runs in a new conversation in web"), said);
 	assert.ok(!said.includes("runs in the conversation you claim it from"), said);
 	assert.ok(!there.button(card, "Yes, do it here"), "it is not done here");
 	await there.click(card, "Yes, do it");
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	const posts = there.dom.calls.filter((c) => c.url === "/conversations/new" || c.url === "/inbox/claim").map((c) => [c.url, c.body]);
 	assert.deepEqual(posts, [["/conversations/new", { cwd: "/work/web" }], ["/inbox/claim", { id: owned.id, from: "new-web" }]]);
 	assert.deepEqual(assigned, ["/c/new-web/"]);
@@ -3543,7 +3572,7 @@ test("a claim's card follows the server: queued while its row waits, then says i
 	// The server now lists it as handled, with the line of where it waits.
 	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [{ ...DECISION_CARD, status: "claimed", line: "Queued for your terminal." }] };
 	await click(cards()[0], "Yes, do it");
-	await new Promise((r) => setTimeout(r, 200));
+	await settled();
 	const after = dom.calls.slice(before).map((c) => c.url);
 	assert.ok(after.some((u) => u.startsWith("/conversations?")), `the list's counts are asked for again with the cards; got ${after.join(", ")}`);
 	assert.ok(after.some((u) => u.endsWith("/state")), "and the panel's");
@@ -3553,7 +3582,7 @@ test("a claim's card follows the server: queued while its row waits, then says i
 	// The turn ran: the row is gone, the finding is no longer handled.
 	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [] };
 	await (globalThis as any).document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.ok(card() && texts(card()).includes("Handed to that conversation."), "not 'Running in' until a reload");
 	dom.dispose();
 });
@@ -3571,7 +3600,7 @@ test("a claim whose row is taken before the page looks again says it was handed 
 	// The terminal takes the row within a second: the first refresh after the claim no longer lists it.
 	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [] };
 	await click(cards()[0], "Yes, do it");
-	await new Promise((r) => setTimeout(r, 200));
+	await settled();
 	const card = cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);
 	assert.ok(texts(card).includes("Handed to that conversation."), texts(card).filter(Boolean).join(" | "));
 	dom.dispose();
@@ -3589,15 +3618,15 @@ test("a claim cancelled from this page's queue says nothing was sent and the fin
 	const yes = (el: any): any => (el.tag === "button" && el._text === "Yes, do it" ? el : el.children.map((c: any) => (c && typeof c === "object" ? yes(c) : undefined)).find(Boolean));
 	const card = cards().at(-1);
 	card._on.click({ target: yes(card) });
-	await new Promise((r) => setTimeout(r, 100));
+	await settled();
 	// The row leaves the queue by its ✕; the finding stays claimed, so the server lists it nowhere.
 	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [] };
 	const line = g.document.getElementById("queued").children.find((c: any) => String(c.className).startsWith("qrow"));
 	line.children.at(-1).onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/queue/cancel")).map((c) => c.body), [{ id: "claim-1111" }]);
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	const said = texts(cards().at(-1));
 	assert.ok(said.includes("Cancelled; nothing was sent. The finding stays claimed."), said.filter(Boolean).join(" | "));
 	assert.ok(!said.includes("Handed to that conversation."));
@@ -3627,7 +3656,7 @@ test("an open reason box keeps its text, selection and focus across the list's r
 	};
 	// The list's poll draws the cards again.
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	kept("the poll");
 	// So does an action on another card.
 	answers["/inbox?"] = { ...INBOX, cards: [DECISION_CARD], handled: [] };
@@ -3637,7 +3666,7 @@ test("an open reason box keeps its text, selection and focus across the list's r
 	await click(decision(), "Cancel");
 	assert.equal(why(decision()).hidden, true);
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.equal(why(decision()).hidden, true, "a closed box stays closed across a redraw");
 	await click(decision(), "No\u2026");
 	assert.equal(field(decision()).value, "the release is Friday");
@@ -3671,16 +3700,16 @@ test("the away card says what was found since the cursor, leaves runs to the str
 	assert.deepEqual(buttons().map((b: any) => b._text), ["Mark all seen"], "the Needs you heading leads to the decisions");
 	// Mark all seen posts what the card counted, and says so while it is out, across a redraw.
 	buttons()[0].onclick();
-	await new Promise((r) => setTimeout(r, 20));
+	await settled();
 	assert.deepEqual(dom.calls.find((c) => c.url === "/inbox/seen")?.body, { cwd: "/work/api", at: AWAY_AS_OF });
 	assert.equal(buttons()[0]._text, "Marking\u2026");
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.equal(buttons()[0]._text, "Marking\u2026", "a poll in between keeps it");
 	assert.equal(buttons()[0].disabled, true);
 	answers["/inbox?"] = { ...INBOX, away: { ...AWAY, since: AWAY_AS_OF, runs: 0, failedRuns: 0, findings: 0, decisions: 0, fromThisConversation: 0, costUsd: 0 } };
 	release({ since: AWAY_AS_OF });
-	await new Promise((r) => setTimeout(r, 100));
+	await settled();
 	assert.equal(g.document.getElementById("awaySlot").children.length, 0, "the card is gone");
 	assert.ok(dom.made.some((m: any) => m.dataset?.inb === DECISION_CARD.id), "the cards stay: marking moves only the cursor");
 	dom.dispose();
@@ -3698,12 +3727,12 @@ test("the away card is not drawn again when only the answer's asOf moves, and Ma
 	for (const s of [15, 30]) {
 		answers["/inbox?"] = { ...INBOX, away: { ...AWAY, asOf: later(s) } };
 		await g.document.getElementById("project").onchange();
-		await new Promise((r) => setTimeout(r, 60));
+		await settled();
 		assert.equal(slot.children[0], card, `poll at +${s}s: the same card`);
 		assert.equal(g.document.activeElement, mark, `poll at +${s}s: the focus stays on Mark all seen`);
 	}
 	mark.onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.deepEqual(dom.calls.find((c) => c.url === "/inbox/seen")?.body, { cwd: "/work/api", at: later(30) }, "what the latest answer counted");
 	dom.dispose();
 });
@@ -3728,7 +3757,7 @@ test("the away card: the first window's words, nothing without a finding, and a 
 	assert.equal(awayText(card.children[0]), "In the last day · 3 findings");
 	assert.deepEqual(card.children[1].children.map((b: any) => b._text), ["Mark all seen"]);
 	card.children[1].children[0].onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	const after = g.document.getElementById("awaySlot").children[0];
 	assert.ok(after, "the card stays");
 	assert.equal(awayText(after.children[2]), "Not marked: no such project. Try again.");
@@ -3804,16 +3833,16 @@ test("an empty project shows three starters, each its name, one line and Add, an
 	assert.match(awayText(cards()[0]), /^daily-digest≈ \$1\/dayEvery morning, one finding\.Add/, "the name with its cost, one line, and Add");
 	assert.match(awayText(cards()[1]), /≈ \$2\/day/);
 	button(cards()[2], "Add").onclick();
-	await new Promise((r) => setTimeout(r, 20));
+	await settled();
 	const posts = dom.calls.filter((c) => c.url === `/c/${SESSION_UNDER_TEST}/prompt`);
 	assert.deepEqual(posts.map((c) => c.body), [{ text: "/recipe add changelog-draft --level report" }], "exactly what a person may type, at report");
 	assert.ok(button(cards()[2], "Adding\u2026")?.disabled, "Adding\u2026 while the wizard runs");
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.ok(button(cards()[2], "Adding\u2026"), "a poll in between keeps it");
 	assert.ok(button(cards()[0], "Add") && !button(cards()[0], "Add").disabled, "the others stay live");
 	release({ success: true });
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.ok(button(cards()[2], "Add") && !button(cards()[2], "Add").disabled, "closed without installing: Add is live again");
 	assert.ok(!dom.made.some((m: any) => m._text === "or describe a loop"), "+ Watch for… is the one way to describe a loop");
 	dom.dispose();
@@ -3829,7 +3858,7 @@ test("a starter's line shows whole, never cut, and a starter that costs nothing 
 test("a starter the pi refuses says why; a terminal-held conversation shows the terminal command instead of Add", { timeout: 20_000 }, async () => {
 	const refused = await startersPage({ "/prompt": { success: false, error: "/recipe is not a command in this session (pi's terminal commands are not available over rpc)" } });
 	refused.button(refused.cards()[0], "Add").onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.match(awayText(refused.cards()[0]), /Not added: \/recipe is not a command in this session/);
 	refused.dom.dispose();
 	const held = await startersPage({}, { ...STATE, holder: { kind: "terminal", pid: 7, mine: false, delivers: true } });
@@ -3890,7 +3919,7 @@ async function watchPage(answers: Record<string, unknown> = {}, state: Record<st
 	const read = async (sentence: string) => {
 		doc.getElementById("watchText").value = sentence;
 		doc.getElementById("watchRead").onclick();
-		await new Promise((r) => setTimeout(r, 50));
+		await settled();
 	};
 	const ask = (id: string, plan: WatchPlan, over: Record<string, unknown> = {}) => send(watchAsk(id, plan, over));
 	/** The tool's result in the same turn, as pi streams it. */
@@ -4091,7 +4120,7 @@ test("Set it up closes the Watch for… box, gives the composer back and refresh
 	assert.equal(dlg.open, false, "closed once it is set up");
 	assert.equal(doc.activeElement, doc.getElementById("input"), "and the composer has the focus");
 	assert.equal(cardParts(cards("feed")[0]).status, "Set up ~/build.done appears · shows here · once", "the transcript's card keeps the receipt");
-	await new Promise((r) => setTimeout(r, 50));
+	await settled();
 	const fetched = dom.calls.slice(before).map((c) => c.url);
 	assert.ok(fetched.some((u) => /\/state$/.test(u)), `the state was fetched: ${fetched.join(", ")}`);
 	assert.ok(fetched.some((u) => /\/inbox(\?|$)/.test(u)), `the inbox was fetched: ${fetched.join(", ")}`);
@@ -4123,7 +4152,7 @@ test("a question pi answered on its own is not left waiting: the turn's end, or 
 	ended.set.onclick();
 	assert.deepEqual(answered(), [], "an answer to it would go nowhere: none is sent");
 	ask("ask-2", RULE, { timeout: 30 });
-	await new Promise((r) => setTimeout(r, 80));
+	await until(() => cardParts(cards("feed").at(-1)).status !== "", "the question's own time ran out");
 	assert.equal(cardParts(cards("feed").at(-1)).status, "Not set up: nobody answered in time");
 	dom.dispose();
 });
@@ -4429,7 +4458,7 @@ test("a reload that starts while another replays what it held draws each message
 		state.epoch = "bbb";
 		send({ type: "agent_start", seq: 1, epoch: "bbb" });
 		send({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "LATEQ" }] }, seq: 2, epoch: "bbb" });
-		await new Promise((r) => setTimeout(r, 300));
+		await settled();
 		const text = feedText();
 		assert.equal((text.match(/LATEQ/g) ?? []).length, 1, `the held message is drawn once; the feed: ${text.replace(/\s+/g, " ").trim()}`);
 		assert.match(text, /LATE(?!Q)[\s\S]*LATEQ/, "and after the message before it");
@@ -4451,9 +4480,9 @@ test("the terminal's answer arrives as one numbered reread: one reload, with its
 		history.messages = [...history.messages, { role: "assistant", content: [{ type: "text", text: "ANSWER" }] }];
 		history.seq = 4;
 		send({ type: "reread", why: "your terminal answered — the conversation above was read again", seq: 4, epoch: "aaa" });
-		await new Promise((r) => setTimeout(r, 200));
+		await settled();
 		send({ type: "message_start", seq: 5, epoch: "aaa" });
-		await new Promise((r) => setTimeout(r, 200));
+		await settled();
 		const text = feedText();
 		assert.equal(dom.calls.slice(before).filter((c) => c.url.includes("/history")).length, 1, "one reload, and the next event is no gap");
 		assert.match(text, /your terminal answered/);
@@ -4500,7 +4529,7 @@ test("a held conversation read again shows its three run cards, and a card saved
 		const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 		history.seq = 4;
 		send({ type: "reread", why: "your terminal answered — the conversation above was read again", seq: 4, epoch: "aaa" });
-		await new Promise((r) => setTimeout(r, 200));
+		await settled();
 		const text = feedText();
 		assert.equal((text.match(/cron todo/g) ?? []).length, 3, `three cards after the reload; the feed: ${text.replace(/\s+/g, " ").trim()}`);
 		assert.match(text, /start a loop[\s\S]*5s · 0 findings[\s\S]*4s · 1 finding[\s\S]*FAILED · 2s · <b>500<\/b>/, "in file order, as text");
@@ -4510,7 +4539,7 @@ test("a held conversation read again shows its three run cards, and a card saved
 		assert.ok(views.length >= 3, "each card is drawn as a view row");
 		send({ type: "entry_appended", entry: { type: "custom", customType: "pi-loops:view", data: { title: "cron todo · 3s · 2 findings", lines: [] } }, seq: 5, epoch: "aaa" });
 		send({ type: "entry_appended", entry: { type: "custom", customType: "trigger_result", data: { state: "completed" } }, seq: 6, epoch: "aaa" });
-		await new Promise((r) => setTimeout(r, 100));
+		await settled();
 		assert.equal((feedText().match(/cron todo/g) ?? []).length, 4, "the card saved by the page's pi is drawn once; another entry is not");
 	} finally {
 		dom.dispose();
@@ -4540,14 +4569,14 @@ test("a run card in the transcript and replayed as it landed is drawn once, by i
 		const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 		send({ type: "entry_appended", entry: { type: "custom", customType: "pi-loops:view", id: "c9", data: { title: "cron todo · 5s · 0 findings", lines: [] } }, seq: 4, epoch: "aaa" });
 		send({ type: "entry_appended", entry: { type: "custom", customType: "pi-loops:view", id: "c10", data: { title: "cron todo · 4s · 1 finding", lines: [] } }, seq: 5, epoch: "aaa" });
-		await new Promise((r) => setTimeout(r, 100));
+		await settled();
 		const text = feedText();
 		assert.equal((text.match(/5s · 0 findings/g) ?? []).length, 1, "the card already in the transcript is not drawn again");
 		assert.equal((text.match(/4s · 1 finding/g) ?? []).length, 1, "a new card is drawn");
 		history.messages = [...history.messages, { role: "pi-loops:view", id: "c10", title: "cron todo · 4s · 1 finding", lines: [] }];
 		history.seq = 6;
 		send({ type: "reread", why: "your terminal answered — the conversation above was read again", seq: 6, epoch: "aaa" });
-		await new Promise((r) => setTimeout(r, 200));
+		await settled();
 		assert.equal((feedText().match(/cron todo/g) ?? []).length, 2, "a reload draws each card once again");
 	} finally {
 		dom.dispose();
@@ -4611,7 +4640,7 @@ test("Stop it posts the whole run id to /loops/stop; the row says stopping, then
 	try {
 		press(buttonIn(loopSlot(), "Stop this run"));
 		press(buttonIn(loopSlot(), "Stop it"));
-		await new Promise((r) => setTimeout(r, 50));
+		await settled();
 		const sent = dom.calls.filter((c) => c.url.includes("/loops/stop"));
 		assert.deepEqual(sent.map((c) => [c.url, c.body, c.headers?.["x-pi-web-token"]]), [["/loops/stop", { runId: LOOP_RUN }, "test-token"]], "not under /c/<session>/: it starts no pi");
 		assert.match(textOf(loopSlot()), /stopping…/);
@@ -4626,7 +4655,7 @@ test("Stop it posts the whole run id to /loops/stop; the row says stopping, then
 		await dom.poll();
 		press(buttonIn(loopSlot(), "Stop this run"));
 		press(buttonIn(loopSlot(), "Stop it"));
-		await new Promise((r) => setTimeout(r, 50));
+		await settled();
 		state.automation.jobs[0] = { ...state.automation.jobs[0], running: false, run: undefined, lastEnd: { runId: next } };
 		await dom.poll();
 		assert.match(textOf(loopSlot()), /The run ended\./);
@@ -4651,7 +4680,7 @@ test("a run that ends while its confirm is open says so; a stop that came too la
 		await dom.poll();
 		press(buttonIn(loopSlot(), "Stop this run"));
 		press(buttonIn(loopSlot(), "Stop it"));
-		await new Promise((r) => setTimeout(r, 50));
+		await settled();
 		assert.match(textOf(loopSlot()), /It finished before the stop reached it\./);
 	} finally {
 		dom.dispose();
@@ -4665,7 +4694,7 @@ test("a loop row shows its 30-day signal and one suggestion; Keep and the sugges
 		assert.equal(allUnder(loopSlot()).find((e: any) => e.className === "signal")?._text, "6 findings in 30 days · 6 dismissed · quiet ×12", "only the parts that are not zero");
 		assert.ok(buttonIn(loopSlot(), "Run hourly instead"));
 		press(buttonIn(loopSlot(), "Keep"));
-		await new Promise((r) => setTimeout(r, 50));
+		await settled();
 		assert.deepEqual(dom.calls.filter((c) => c.url === "/loops/tune").map((c) => c.body), [{ jobId: "cron-aaaaaaaa", key: suggestion.key, choice: "keep" }]);
 	} finally {
 		dom.dispose();
@@ -4702,7 +4731,7 @@ test("a suggestion that changed under the page says so instead of acting; nothin
 		await dom.poll();
 		assert.equal(dom.calls.filter((c) => c.url === "/loops/tune").length, 0, "drawing a suggestion sends nothing");
 		press(buttonIn(loopSlot(), "Pause"));
-		await new Promise((r) => setTimeout(r, 50));
+		await settled();
 		assert.deepEqual(dom.calls.filter((c) => c.url === "/loops/tune").map((c) => c.body), [{ jobId: "cron-aaaaaaaa", key: suggestion.key, choice: "apply" }]);
 		assert.match(textOf(loopSlot()), /The suggestion changed/);
 	} finally {
@@ -4798,7 +4827,7 @@ test("right after Apply the row's next run and the note say one time, in one for
 		// The answer is in, and the store has the new schedule; next-runs.json still has the old time.
 		state.automation.jobs[0] = { ...state.automation.jobs[0], schedule: "every 1h", suggestion: undefined };
 		press(buttonIn(loopSlot(), "Run hourly instead"));
-		await new Promise((r) => setTimeout(r, 100));
+		await settled();
 		const shown = soonWords(nextAt);
 		const html = (globalThis as any).document.getElementById("auto").innerHTML;
 		assert.ok(html.includes(`next ${shown}`), `the row's next run is the applied one: ${html.slice(0, 400)}`);
@@ -4824,10 +4853,16 @@ test("an applied next run that has passed gives way to the store's, so a row nev
 	try {
 		state.automation.jobs[0] = { ...state.automation.jobs[0], schedule: "every 1h", suggestion: undefined };
 		press(buttonIn(loopSlot(), "Run hourly instead"));
-		await new Promise((r) => setTimeout(r, 100));
+		await settled();
 		assert.ok((globalThis as any).document.getElementById("auto").innerHTML.includes(shown(nextAt)), "the applied time while it is ahead");
-		await new Promise((r) => setTimeout(r, 1200));
-		await dom.poll();
+		// A poll after the applied time has passed.
+		const realNow = Date.now;
+		Date.now = () => realNow() + 1200;
+		try {
+			await dom.poll();
+		} finally {
+			Date.now = realNow;
+		}
 		const html = (globalThis as any).document.getElementById("auto").innerHTML;
 		assert.ok(!html.includes(shown(nextAt)), `a passed time is not a next run: ${html.slice(0, 400)}`);
 		assert.ok(html.includes(shown(stored)), "the store's answer instead");
@@ -4932,7 +4967,7 @@ test("a created watch read back from the transcript settles nothing and fetches 
 	history.messages = [{ role: "toolResult", toolName: "cron_create", toolCallId: "c0", content: [{ type: "text", text: `created cron job cron-${"e".repeat(32)}` }], details: { id: `cron-${"e".repeat(32)}`, stateful: true } }];
 	const before = dom.calls.filter((c) => c.url.includes("/inbox")).length;
 	send({ type: "reread", why: "read again", seq: 99, epoch: "x" });
-	await new Promise((r) => setTimeout(r, 200));
+	await settled();
 	assert.equal(dom.calls.filter((c) => c.url.includes("/inbox")).length, before, "no inbox fetch for a receipt read back");
 	assert.equal(cardParts(cards("feed").at(-1)).status, "", "and the waiting question is still waiting");
 	dom.dispose();
@@ -4968,7 +5003,7 @@ test("+ New starts with an empty, focused composer; the draft stays with the con
 	input.oninput();
 	g.document.activeElement = undefined;
 	g.document.getElementById("newConv").onclick();
-	await new Promise((r) => setTimeout(r, 200));
+	await settled();
 	assert.equal(input.value, "", "the new conversation's box is empty: Enter cannot send the old draft into it");
 	assert.equal(g.document.activeElement, input, "and has the focus");
 	assert.equal(tab.get(`pi-web-draft:${SESSION_UNDER_TEST}`), "half a thought", "the draft is kept for the conversation it was typed in");
@@ -4993,11 +5028,11 @@ test("the first message names the conversation at once, and the list is asked ag
 	g.document.getElementById("input").value = "fix the flaky\n  cache test";
 	await g.document.getElementById("composer").onsubmit({ preventDefault() {} });
 	assert.equal(title._text, "fix the flaky cache test", "the header says what was said, not the id");
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.ok(lists() > before, "the list is asked for now, not at the next poll");
 	const atSend = lists();
 	dom.source().onmessage({ data: JSON.stringify({ type: "agent_end" }) });
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.ok(lists() > atSend, "and again when the turn ends, once pi has written the conversation");
 	dom.dispose();
 });
