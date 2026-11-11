@@ -1433,7 +1433,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							}
 						});
 						cronControlAudit(enable ? "enable" : "disable", "slash", job, after ?? job);
-						ctx.ui.notify(`${enable ? "enabled" : "disabled"} cron job ${job.id}${job.name ? ` "${job.name}"` : ""}`, "info");
+						ctx.ui.notify(`${enable ? "enabled" : "disabled"} cron job ${job.name ? `"${job.name}"` : job.id}`, "info");
 						return;
 					}
 					case "remove":
