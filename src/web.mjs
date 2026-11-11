@@ -109,7 +109,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 #project option{background:Canvas;color:CanvasText}
 #newConv{white-space:nowrap}
 .lscroll{overflow-y:auto;min-height:0;flex:1;padding:0 10px 16px;display:flex;flex-direction:column;gap:2px}
-#awaySlot:empty,#startersSlot:empty,#cardsSlot:empty,#activitySlot:empty{display:none}
+#awaySlot:empty,#needsSlot:empty,#startersSlot:empty,#cardsSlot:empty,#activitySlot:empty{display:none}
 /* Loop activity: one line between the conversation and the composer, a list under it when opened.
    Colour for state only: a failure is the error token, the rest is dim. Nothing scrolls sideways. */
 #activitySlot{flex:none;background:var(--panel2);font-size:12.5px;color:var(--dim);min-width:0;max-width:100%}
@@ -124,7 +124,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 #activitySlot li .t{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;color:var(--fg)}
 #activitySlot li.bad .t,#activitySlot li.bad .mark{color:var(--bad)}
 #activitySlot li .when{flex:none;font-variant-numeric:tabular-nums}
-#cardsSlot{padding:6px 0;font-size:12.5px;color:var(--dim);display:grid;gap:6px;min-width:0}
+#needsSlot,#cardsSlot{padding:6px 0;font-size:12.5px;color:var(--dim);display:grid;gap:6px;min-width:0}
 /* An inbox finding as a card: the second paper on the list's, no border; amber only on the flag and
    on the one button to press. Text wraps whole, whatever is in it: nothing in a card scrolls sideways. */
 .icard{background:var(--panel2);border-radius:10px;padding:10px;display:grid;gap:6px;color:var(--fg);font-size:13px;min-width:0;max-width:100%;overflow-wrap:anywhere}
@@ -178,7 +178,8 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .sbar .st.up{background:var(--ok)}.sbar .st.down{background:var(--bad)}
 .tabs{display:none}
 
-header{display:flex;gap:10px;align-items:center;padding:9px 14px;flex-wrap:wrap;min-height:52px}
+/* The page's own paper, so the feed's top edge reads as the header's edge, not as text cut in half. */
+header{display:flex;gap:10px;align-items:center;padding:9px 14px;flex-wrap:wrap;min-height:52px;background:var(--bg);border-bottom:1px solid var(--line)}
 header b{font-weight:650}
 /* The conversation's title: as much of it as leaves the pickers on the same row. */
 header>b{flex:0 1 auto;min-width:0;max-width:24rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -343,6 +344,7 @@ img.shot{max-width:100%;max-height:26em;height:auto;border:1px solid var(--line)
 #loops.hidden{display:none}
 #loops>div{padding:14px 12px 6px}
 #loops>details{padding:8px 12px}
+#addLoop{width:100%;min-height:36px}
 #loops h2,#loops>details>summary{font-size:12px;font-weight:700;color:var(--ink);margin:0 0 9px;letter-spacing:0;text-transform:none}
 #loops>details>summary{cursor:pointer;margin:0;padding:4px 0}
 #loops>details[open]>summary{margin-bottom:6px}
@@ -508,7 +510,6 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   header .grow *{flex-shrink:0}
   header .grow button{padding:5px 7px}
   #cost{flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  #cost:empty{display:none}
 }}
 /* The loops rail is not dropped when the window narrows, it is put behind the rail's Loops button: it
    slides over the conversation rather than taking a third of it, the way a drawer does elsewhere. */
@@ -537,11 +538,17 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   .composer-row button{flex:1 1 0}
   /* The path is in the switcher. Here it was costing a whole header row, on a screen where the
      header was already taking an eighth of the height. */
-  /* The title gets a row of its own, first: on a phone the list is another pane, and the header is
-     the one place that says which conversation this is. */
-  header>b{flex:1 1 100%;max-width:none;order:-1}
-  header select{max-width:8.5rem}
-  header{min-height:0}
+  /* One row: the title takes what the pickers and buttons leave, and the pickers give up width
+     before the buttons do. */
+  header{min-height:0;flex-wrap:nowrap}
+  header>b{flex:1 1 auto;max-width:none;min-width:4.5em}
+  #model{flex:0 1 auto;min-width:4.5rem;max-width:7rem}
+  #thinking{flex:none}
+  header .grow{flex:none;flex-wrap:nowrap;gap:6px}
+  header .grow button{padding:8px 9px}
+  /* No room beside the title: the cost is in the ⋯ sheet, with the actions, and while a turn runs
+     the stop button in send's place says what the status chip would. */
+  .grow>#cost,main:has(#stop:not([hidden])) #status{display:none}
   button{padding:8px 12px;min-height:40px}
   .card button,.role button{min-height:32px}
 }
@@ -580,9 +587,10 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   </div>
   <div class="lscroll" id="lscroll">
     <div id="awaySlot"></div>
-    <div id="startersSlot"></div>
-    <div id="cardsSlot"></div>
+    <div id="needsSlot"></div>
     <div id="convs"></div>
+    <div id="cardsSlot"></div>
+    <div id="startersSlot"></div>
   </div>
 </nav>
 <main>
@@ -594,7 +602,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
     </select>
     <span class="grow">
       <span class="badge" id="queue" hidden></span>
-      <span class="badge" id="cost" title="Session tokens and cost"></span>
+      <span class="badge" id="cost" title="Session tokens and cost" hidden></span>
       <button id="expand">▸ steps</button>
       <span id="actions">
         <button id="reload">reload</button>
@@ -625,7 +633,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
     <div class="composer-row">
       <textarea id="input" placeholder="Message pi"></textarea>
       <button type="button" id="attach">attach</button>
-      <button type="submit" class="primary">send</button>
+      <button type="submit" id="send" class="primary">send</button>
       <button type="button" id="stop">stop</button>
     </div>
     <input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" multiple hidden>
@@ -634,7 +642,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 <aside id="loops" aria-label="Loops">
   <div><h2>Loops</h2><div id="auto"></div></div>
   <details id="goalBox" hidden><summary>Goal</summary><div id="goal" class="notice"></div></details>
-  <details><summary>pi-loops</summary><div id="runtime" class="notice">—</div></details>
+  <details id="runtimeBox"><summary>pi-loops</summary><div id="runtime" class="notice">—</div></details>
 </aside>
 <footer class="sbar" aria-label="Status"><a id="sbHost" href="/background"></a></footer>
 <nav class="tabs" aria-label="Panes">
@@ -1614,7 +1622,7 @@ function grow(el, delta) {
 function handle(ev) {
   switch (ev.type) {
     case "agent_start": busy = true; setStatus(); break;
-    case "agent_end": busy = false; endOpenCalls(); setStatus(); refresh(); watchTurnEnded(); watchTurnOver(); break;
+    case "agent_end": busy = false; endOpenCalls(); setStatus(); refresh(); refreshList().catch(() => {}); watchTurnEnded(); watchTurnOver(); break;
     case "message_start": blocks = new Map(); break;
     case "message_update": {
       const d = ev.assistantMessageEvent || {};
@@ -1716,6 +1724,7 @@ function renderMessage(message, fromStream) {
     const shown = text + (imgs ? "\n[" + imgs + (imgs === 1 ? " image]" : " images]") : "");
     // The Watch box's sentence, echoed: the turn that carries it is the one whose end counts.
     if (fromStream && watchReading && text === watchReading.text) watchReading.turn = true;
+    saidFirst(text);
     if (fromStream && alreadyDrawn(shown)) return;
     if (text || imgs) {
       const body = row("user", "you", text);
@@ -1787,6 +1796,12 @@ function setStatus() {
   qe.textContent = "queued " + q + " ✕";
   qe.onclick = () => api("/queue/clear", {}).then(refresh);
   statusEl.textContent = busy ? "working…" : "";
+  // One slot: stop while a turn runs, send otherwise. Enter still queues during a turn.
+  $("stop").hidden = !busy;
+  $("send").hidden = busy;
+  // Nothing to undo, compact or go back from in a conversation nothing was said in yet.
+  const empty = !busy && !state.messageCount;
+  for (const id of ["undo", "compact", "resume"]) $(id).hidden = empty;
   drawQueue();
 }
 
@@ -2088,6 +2103,18 @@ function renderSidebar(s) {
       if (d.open) openCards.add(d.dataset.key); else openCards.delete(d.dataset.key);
     });
     box.innerHTML = html;
+    // A project with no loop and no rule: the one thing to do here is make one, not read counters.
+    const none = !a.jobs.length && !a.rules.length;
+    $("runtimeBox").hidden = none;
+    if (none) {
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "primary";
+      add.id = "addLoop";
+      add.textContent = "+ Add a loop";
+      add.onclick = () => openWatch();
+      box.insertBefore(add, box.firstChild);
+    }
     const slots = [...box.querySelectorAll("[data-loopx]")];
     for (const j of a.jobs) {
       const slot = slots.find((el) => el.dataset.loopx === str(j.id));
@@ -2340,6 +2367,7 @@ async function refresh() {
     const pct = st.contextUsage?.percent;
     // Nothing spent yet: no badge, rather than "$0.000 · 0k · ctx 0%".
     $("cost").textContent = !st.tokens?.total ? "" : "$" + (st.cost ?? 0).toFixed(3) + " · " + Math.round(st.tokens.total / 1000) + "k" + (pct == null ? "" : " · ctx " + Math.round(pct) + "%");
+    $("cost").hidden = !$("cost").textContent;
   });
   for (const ask of state.pendingAsks || []) onAsk(ask);
 }
@@ -2490,6 +2518,7 @@ $("composer").onsubmit = async (e) => {
   // instead of being sent: anything attached stays in the tray, and a session about to be replaced
   // is not given a message it would carry nowhere.
   if (pageCommand(text)) return;
+  saidFirst(text);
   // '/session export|import' are the archive commands here. pi's own '/session' is a terminal
   // command that does not exist over rpc, so the two-word spelling is free to mean the extension's.
   text = text.replace(/^\/session\s+(export|import)\b/i, (_m, sub) => "/session-" + sub.toLowerCase());
@@ -2522,6 +2551,7 @@ $("composer").onsubmit = async (e) => {
   // until pi reads it again (the server asks once pi is idle), and the message waits until then.
   else if (r.aside) row("notice", "", "this page shows an older copy of this conversation: your message is answered once it reads the new one");
   else if (r.queued) refresh();
+  refreshList().catch(() => {});
 };
 $("stop").onclick = () => api("/abort", {});
 
@@ -2682,7 +2712,7 @@ async function listSessionsHere() {
 
 $("compact").onclick = () => compactNow("");
 /** A new conversation in this page's pi: + New in this project, and /clear or /new typed. */
-function newHere() { swap("/session/new", {}, "new conversation — the one you left is under resume"); }
+function newHere() { swap("/session/new", {}, "new conversation — the one you left is in the list"); }
 
 /** The sessions of this project, newest first — the conversation, not the filename. */
 async function openSessions() {
@@ -2829,10 +2859,11 @@ for (const dlg of document.querySelectorAll("dialog")) {
  * they live in the header; on a narrow one they are behind ⋯, and this carries them there and back.
  */
 $("more").onclick = () => {
-  $("menuBody").append($("actions"));
+  $("menuBody").append($("cost"), $("actions"));
   $("menu").showModal();
 };
 function closeMenu() {
+  document.querySelector("header .grow").insertBefore($("cost"), $("expand"));
   document.querySelector("header .grow").insertBefore($("actions"), $("status"));
   $("menu").close();
 }
@@ -3178,6 +3209,7 @@ async function resync(why) {
   // A dialog is offered again if the server still has it unanswered, and it does say so in /state.
   asked.clear();
   for (const rec of watchAsks.values()) rec.feed = undefined;
+  firstSaid = "";
   const again = await api("/history");
   for (const m of again.messages || []) renderMessage(m, false);
   seen = again.seq ?? seen;
@@ -3196,11 +3228,20 @@ async function resync(why) {
   refresh();
 }
 
-/** Point the page's routes and address at another conversation; the list marks it at the next poll. */
+/**
+ * Point the page's routes and address at another conversation. The composer, the title and the
+ * list follow at once: what was typed stays with the conversation it was typed in.
+ */
 function moveTo(id) {
   SESSION = id;
   history.replaceState(null, "", "/c/" + SESSION + "/");
-  listAt = 0;
+  openTitle = "";
+  firstSaid = "";
+  drawTitle();
+  $("input").value = savedDraft();
+  autoGrow();
+  $("input").focus();
+  refreshList().catch(() => {});
 }
 
 /**
@@ -3659,11 +3700,14 @@ function onCardClick(c, b, parts) {
   }
 }
 
+/** What needs you goes above the conversations; news, what was handled and the counts go below them. */
 function drawInbox() {
-  const slot = $("cardsSlot");
+  const needs = $("needsSlot");
+  let slot = needs;
   const a = inboxAnswer;
   keepForms();
-  slot.innerHTML = "";
+  needs.innerHTML = "";
+  $("cardsSlot").innerHTML = "";
   if (!a) return;
   const cards = a.cards.filter((c) => c && typeof c === "object" && typeof c.id === "string");
   const listed = new Set([...cards, ...(Array.isArray(a.handled) ? a.handled : [])].map((c) => c && c.id));
@@ -3683,6 +3727,7 @@ function drawInbox() {
   };
   if (decisions.length) group("Needs you");
   decisions.forEach(add);
+  slot = $("cardsSlot");
   if (news.length) group("News");
   (newsOpen ? news : news.slice(0, NEWS_SHOWN)).forEach(add);
   if (!newsOpen && news.length > NEWS_SHOWN) {
@@ -3903,7 +3948,7 @@ function terminalHolds() {
   return h.kind === "terminal" && h.mine !== true && h.delivers === true && h.piLoops !== false;
 }
 
-/** The starter cards, above the inbox's. Drawn again only when what they say changes. */
+/** The starter cards, last in the list. Drawn again only when what they say changes. */
 function drawStarters() {
   const slot = $("startersSlot");
   const list = offeredStarters();
@@ -4026,8 +4071,15 @@ $("railList").onclick = () => moveFocus(focusAt);
  */
 let openTitle = "";
 let shownOpen = false;
+/** The first thing said in this conversation, which the list names it by once pi has written it. */
+let firstSaid = "";
+function saidFirst(text) {
+  if (firstSaid || !text) return;
+  firstSaid = plain(str(text)).replace(/\s+/g, " ").trim();
+  drawTitle();
+}
 function drawTitle() {
-  const title = plain(str(state.sessionName || openTitle)).trim();
+  const title = plain(str(state.sessionName || openTitle || firstSaid)).trim();
   $("title").textContent = title || (state.messageCount ? SESSION.slice(0, 13) : "New conversation");
   $("title").title = SESSION;
 }
@@ -4651,6 +4703,7 @@ $("watchText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.
 (async () => {
   $("input").value = savedDraft();
   autoGrow();
+  if (!phone()) $("input").focus();
   setAllWork(allOpen);
   await refresh();
   const hist = await api("/history");

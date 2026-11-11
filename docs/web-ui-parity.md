@@ -94,8 +94,10 @@ weaker, and worth converting whenever one of them breaks.
       again after every slash command and when it is older than thirty seconds, so `/reload` is seen.
       `test/web.test.ts`: *without pi-loops in the page's pi, chat goes over rpc as before, and no row
       is written*, *a command list that changes is asked for again before a message is routed on it*.
-- [x] Abort stops the current turn. `test/web-page.test.ts`: *the stop button asks the server to abort
-      the turn*; `test/web.test.ts`: *the run button sends pi the job's run command, and refuses an id
+- [x] Abort stops the current turn. **stop** takes the place of **send** while a turn runs, and
+      Enter still queues. `test/web-page.test.ts`: *the stop button asks the server to abort
+      the turn*; *an empty conversation offers no undo, compact or resume, and stop takes send's
+      place while a turn runs*; `test/web.test.ts`: *the run button sends pi the job's run command, and refuses an id
       it cannot use* (which also posts the abort route).
 - [x] Busy, queued count, and "pi exited" are all visible without opening a terminal.
       `test/web-page.test.ts`: *a tool call and a dead pi both reach the page*.
@@ -132,8 +134,10 @@ weaker, and worth converting whenever one of them breaks.
       reload button, the stale-page banner and a phone that discards a backgrounded tab all come
       back to the same text, and a second tab of the same address keeps its own. A draft belongs to
       its conversation too: a row of the list loads another one in the same tab, and the box there
-      starts empty. `test/web-page.test.ts`: *a reload keeps what is in the composer, in that tab
-      only*, *a draft typed in another conversation of this tab stays with that conversation*.
+      starts empty; + New starts with an empty box, and the draft waits in the conversation it was
+      typed in. `test/web-page.test.ts`: *a reload keeps what is in the composer, in that tab
+      only*, *a draft typed in another conversation of this tab stays with that conversation*, *+ New
+      starts with an empty, focused composer; the draft stays with the conversation it was typed in*.
 - [x] The composer grows with what is typed into it, up to the ceiling the stylesheet declares, and
       comes back down when the text goes or is sent — a multi-line prompt is written and read at its
       own height rather than through a one-line slot. `test/web-page.test.ts`: *the composer grows
@@ -226,8 +230,11 @@ weaker, and worth converting whenever one of them breaks.
       conversation.
 - [x] The conversation has a reading width. A line the width of a 27-inch monitor is not readable.
 - [x] An empty conversation is a blank feed above a focused composer, whose placeholder says what
-      to type; the first message is its first row. `test/web-page.test.ts`: *an empty conversation
-      is a blank feed, and the first message is its first row*.
+      to type; the first message is its first row. The composer has the focus on load (not on a
+      phone, where it would open the keyboard), after + New, and after a switch. An empty
+      conversation offers no undo, compact or resume: there is nothing to act on yet.
+      `test/web-page.test.ts`: *an empty conversation is a blank feed, and the first message is its
+      first row*.
 - [x] The conversation's whole id is the last line of the ⋯ sheet, one click to select and copy;
       ⋯ is there at every width. `test/web-page.test.ts`: *the ⋯ sheet ends with the conversation's
       whole id, to copy*.
@@ -323,8 +330,8 @@ weaker, and worth converting whenever one of them breaks.
       model call until the file exists*. `test/web-page.test.ts`: *a rule that waits for a path says
       what it waits for and when it looks next*; `test/page-server.test.ts`: *a rule that waits for a
       path says so on its row, with the next look from the process that checks rules*.
-- [x] The inbox as cards above the conversations: decisions first under **Needs you**, each with
-      **Waiting on** and **If you don't** when the loop said them, then news. A card names its loop
+- [x] The inbox as cards around the conversations: decisions above them under **Needs you**, each with
+      **Waiting on** and **If you don't** when the loop said them, and news below them. A card names its loop
       only when the list holds more than one loop's findings, and says where a claim runs only when
       that is not the conversation on screen (another conversation's or project's finding, or a
       terminal that takes no messages). **See the run** is there only when the finding has a run this page can read
@@ -332,7 +339,8 @@ weaker, and worth converting whenever one of them breaks.
       Every card carries its finding's whole id; no button names a position. `test/web-page.test.ts`:
       *the inbox shows decisions before news, each row only with a value, and where a claim runs
       only when that is not here*. `test/page-server.test.ts`: *GET /inbox: one project's cards, decisions first,
-      fifty at most, a torn line left out, and starts no pi*.
+      fifty at most, a torn line left out, and starts no pi*; `test/web-page.test.ts`: *the list reads
+      what needs you, then the conversations, then news, and the starters last*.
 - [x] **Yes, do it** on a decision and **Look into it** on news claim the finding into the
       conversation that created its loop, and the card says where it runs: queued for your
       terminal, running in a conversation open in the page, starting one, or waiting on pi-loops'
@@ -399,7 +407,7 @@ weaker, and worth converting whenever one of them breaks.
       mark keeps the card and says why. `test/web-page.test.ts`: *the away card: the first window's
       words, nothing without a finding, and a refused mark keeps the card*. `test/page-server.test.ts`: *POST /inbox/seen takes the checks every POST takes, a
       512-byte body, a known project and a time not in the future, and writes only seen.json*.
-- [x] A project with no loop and no rule offers three starters above the cards (daily-digest,
+- [x] A project with no loop and no rule offers three starters last in the list (daily-digest,
       pr-watch, changelog-draft), each its name, a `≈ $N/day` chip when it costs something, its
       recipe's `line` (one sentence of at most twelve words; its summary when it has none), whole, and
       **Add**. Only for the open conversation's project, since Add installs there.
@@ -491,7 +499,10 @@ weaker, and worth converting whenever one of them breaks.
       `test/web-page.test.ts`: *every time on the page is in one format, the away card's 24-hour
       words, ahead as well as behind*.
 - [x] Runtime: MCP servers and their state, hook count and events, tool count, last poll, snapshot
-      age and version. Whether pi-loops is running is the status bar's.
+      age and version, while the project has a loop or a rule. A project with neither shows
+      **+ Add a loop** there instead, which opens the Watch for… box. Whether pi-loops is running is
+      the status bar's. `test/web-page.test.ts`: *a project with no loop shows one way to add one in
+      the Loops pane, and no runtime counters*.
 - [x] A count leads to the list behind it — "24 tools" answers the wrong question on its own.
       `test/web-page.test.ts`: *a count in the panel leads to the list behind it*.
 - [x] Goal state when a goal is set, and pi-loops for the runtime, each one click open.
@@ -507,7 +518,12 @@ weaker, and worth converting whenever one of them breaks.
       whatever is beside it, the ones you reach for mid-conversation (undo, find, compact and resume)
       stay in the header on one row with ⋯, and the header stays two rows at a 1280 or 1440 px
       window; reload, save, share, add device, theme and notifications go behind ⋯. The
-      sheet lists all of them, moved — not copied — into it. On a phone (760 px and less) every one is behind ⋯.
+      sheet lists all of them, moved — not copied — into it. On a phone (760 px and less) every one is
+      behind ⋯, and the header is one row: the title, the pickers, steps and ⋯. There the cost is
+      in the ⋯ sheet, and while a turn runs the stop button in send's place stands for the status
+      chip. The ⋯ sheet carries the cost at every width. The header has the
+      page's paper, so the feed scrolls out under its edge. `test/web-page.test.ts`: *the header is
+      opaque, and on a phone it is one row*.
       `test/web-page.test.ts`: *the header's secondary actions move into a sheet and back*, *below
       1000 px of conversation, undo, find, compact and resume stay in the header and the rest go
       behind ⋯*.
@@ -681,7 +697,9 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Attaching an image is refused, with the reason, by a model that cannot see one.
       `test/web-page.test.ts`: *a model that cannot see images has attach disabled and a pasted image
       refused*.
-- [x] Cost and token counts.
+- [x] Cost and token counts, once something is spent; before that the badge takes no room at any
+      width. `test/web-page.test.ts`: *the cost badge takes no room until something is spent, at
+      every width*.
 - [x] Compact, undo (fork from your last message), find across the whole session including
       abandoned branches, export to HTML, and share as a redacted gist. Undo reloads the
       conversation through the one path every other thing that empties the feed uses, so an undone
@@ -696,7 +714,10 @@ weaker, and worth converting whenever one of them breaks.
       no pi.** Each row is the conversation's title (its `/name`, else the first thing said), when it
       last changed, and who holds it: `terminal`, `open` (the page), `pi-loops` (in the background), or
       no tag; `· open here` when the page also has it. Grouped Today and Earlier when both are there,
-      the open one marked.
+      the open one marked. The header names a new conversation by its first message the moment it
+      is sent, and the list is asked again then, when the turn ends and when + New moves the page,
+      not at the next poll. `test/web-page.test.ts`: *the first message names the conversation at
+      once, and the list is asked again at once*.
       A row loads that conversation's own page, so Back, a new tab and a bookmark work as links do.
       Conversations from before 0.23, or from a pi without pi-loops, are listed and open too: pi's
       own session files are what is read. `test/web-page.test.ts`: *the list shows this project's

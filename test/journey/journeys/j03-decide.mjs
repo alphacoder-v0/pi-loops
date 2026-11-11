@@ -32,7 +32,7 @@ export async function run(ctx) {
 
 	/** A value the page computes, read back through agent-browser's eval (which prints it as JSON). */
 	const page = (expr) => JSON.parse(JSON.parse(ctx.browser("eval", `JSON.stringify(${expr})`).trim()));
-	const cards = () => page(`[...document.querySelectorAll("#cardsSlot [data-inb]")].map((c) => ({ id: c.dataset.inb, text: c.textContent, html: c.innerHTML.includes("<b>bold") }))`);
+	const cards = () => page(`[...document.querySelectorAll(":is(#needsSlot,#cardsSlot) [data-inb]")].map((c) => ({ id: c.dataset.inb, text: c.textContent, html: c.innerHTML.includes("<b>bold") }))`);
 	const shot = (name) => {
 		const file = path.join(ctx.dir, name);
 		ctx.browser("screenshot", file);
@@ -70,7 +70,7 @@ export async function run(ctx) {
 	ctx.browser("click", `[data-inb="${CLAIMED}"] [data-act="claim"]`);
 	await ctx.waitFor("the card says the claim runs here", () => {
 		const now = cards().find((c) => c.id === CLAIMED);
-		return { ok: !!now && /Running in|Starting/.test(now.text), last: now };
+		return { ok: !!now && /Running in|Starting|Handed to that conversation/.test(now.text), last: now };
 	}, 15000);
 	await ctx.waitFor("the claim's turn reaches the model", () => {
 		const asked = requests().map(lastUser);
@@ -86,7 +86,7 @@ export async function run(ctx) {
 	if (reasons() === "none") throw new Error("No… did not show the reason chips");
 	ctx.browser("click", `[data-inb="${DISMISSED}"] [data-act="reason"][data-reason="Not a bug"]`);
 	await ctx.waitFor("the dismiss says where the reason goes", () => {
-		const text = page(`document.getElementById("cardsSlot").textContent`);
+		const text = page(`[...document.querySelectorAll("#needsSlot,#cardsSlot")].map((s) => s.textContent).join(" ")`);
 		return { ok: text.includes("goes to issue-triage's next run"), last: text };
 	}, 15000);
 
@@ -109,7 +109,7 @@ export async function run(ctx) {
 	ctx.browser("set", "viewport", "390", "844");
 	ctx.browser("open", `${ctx.boot.pageUrl}?token=${ctx.boot.token}#inbox`);
 	const phone = await ctx.waitFor("the inbox pane on a phone", () => {
-		const now = page(`{ cards: document.querySelectorAll("#cardsSlot [data-inb]").length, short: [...document.querySelectorAll("#cardsSlot .icard button")].filter((b) => b.offsetParent && b.offsetHeight < 32).map((b) => b.textContent + " " + b.offsetHeight), buttons: [...document.querySelectorAll("#cardsSlot .icard button")].filter((b) => b.offsetParent).length, wide: document.documentElement.scrollWidth, width: window.innerWidth, pane: document.body.dataset.pane }`);
+		const now = page(`{ cards: document.querySelectorAll(":is(#needsSlot,#cardsSlot) [data-inb]").length, short: [...document.querySelectorAll(":is(#needsSlot,#cardsSlot) .icard button")].filter((b) => b.offsetParent && b.offsetHeight < 32).map((b) => b.textContent + " " + b.offsetHeight), buttons: [...document.querySelectorAll(":is(#needsSlot,#cardsSlot) .icard button")].filter((b) => b.offsetParent).length, wide: document.documentElement.scrollWidth, width: window.innerWidth, pane: document.body.dataset.pane }`);
 		return { ok: now.pane === "inbox" && now.cards >= 1 && now.buttons >= 1, last: now, value: now };
 	}, 30000);
 	if (phone.short.length) throw new Error(`inbox buttons under 32 px on a phone: ${phone.short.join(", ")}`);
