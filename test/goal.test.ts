@@ -44,6 +44,18 @@ test("the evaluator's decision drives the turn, with a budget and pause-on-failu
 	assert.equal(goalActive(paused.state), true, "a paused goal is still the session's goal");
 });
 
+test("a goal waiting on a person pauses at once instead of sending the agent back", () => {
+	const decision = parseDecision('{"ok": false, "needs_person": true, "reason": "the agent asked which branch to deploy"}');
+	assert.deepEqual(decision, { ok: false, needsPerson: true, reason: "the agent asked which branch to deploy" });
+	const next = applyDecision(newGoal("the app is deployed"), decision);
+	assert.equal(next.state.status, "paused");
+	assert.equal(next.action.kind, "pause");
+	assert.match((next.action as any).reason, /waiting on you: the agent asked which branch to deploy/);
+	// The evaluator is told the shape, and the agent is told it may stop and ask.
+	assert.match(evaluatorPrompt("c", "t"), /"needs_person": true/);
+	assert.match(continuationPrompt("c", "r"), /only a person can unblock/);
+});
+
 test("parseDecision accepts the shapes it must and refuses everything else", () => {
 	assert.deepEqual(parseDecision('{"ok": true, "reason": "done"}'), { ok: true, reason: "done" });
 	assert.deepEqual(parseDecision('here you go:\n{"ok": false, "reason": "missing X"}\nthanks'), { ok: false, reason: "missing X" });

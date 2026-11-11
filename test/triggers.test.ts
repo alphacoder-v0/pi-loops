@@ -85,7 +85,7 @@ test("controlPlanePreflight: sub-agents are denied fail-closed, no-UI processes 
 	assert.match(controlPlanePreflight({ hop: 1, hasUI: false }, "create dynamic trigger") ?? "", /fail-closed/);
 	assert.match(controlPlanePreflight({ hop: 2, hasUI: true }, "re-enable cron job") ?? "", /fail-closed/);
 	assert.match(controlPlanePreflight({ hop: 0, hasUI: false }, "remove dynamic trigger") ?? "", /interactive confirmation/);
-	assert.equal(controlPlanePreflight({ hop: 1, hasUI: false }, "create dynamic trigger"), "create dynamic trigger requires user confirmation; sub-agents have no control-plane prompt channel (fail-closed deny): report what you would have done, so a person can do it");
+	assert.equal(controlPlanePreflight({ hop: 1, hasUI: false }, "create dynamic trigger"), "create dynamic trigger requires user confirmation; sub-agents have no control-plane prompt channel (fail-closed deny): say what you would have done in your final reply (in a loop run, as one <inbox> line), so a person sees it and can do it");
 	assert.equal(controlPlanePreflight({ hop: 0, hasUI: false }, "remove dynamic trigger"), "remove dynamic trigger requires interactive confirmation; a person can do it with the slash command");
 	assert.equal(controlPlanePreflight({ hop: 0, hasUI: true }, "create dynamic trigger"), undefined);
 });

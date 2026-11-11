@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { composeLoopPrompt, DISMISSED_OPEN, findingKind, DISMISSED_PER_RUN, extractTagAll, extractTagBlock, INBOX_TAGS_PER_RUN, jobTextOf, LOOP_STATE_CLOSE, LOOP_STATE_MAX_CHARS, parseRunOutput, stripProtocolTags } from "../src/protocol.ts";
+import { composeLoopPrompt, DISMISSED_OPEN, findingKind, DISMISSED_PER_RUN, extractTagAll, extractTagBlock, INBOX_TAGS_PER_RUN, INBOX_TEXT_MAX_CHARS, jobTextOf, LOOP_STATE_CLOSE, LOOP_STATE_MAX_CHARS, parseRunOutput, stripProtocolTags } from "../src/protocol.ts";
 
 test("tag extraction: present, absent, truncated, capped", () => {
 	const text = "did work\n<inbox>finding one</inbox>\nmore\n<inbox>finding two</inbox>\n<loop-state>seen: a,b</loop-state>";
@@ -27,6 +27,16 @@ test("parseRunOutput caps and counts drops", () => {
 	assert.equal(parseRunOutput("").state, undefined);
 	// multi-line finding collapses to one line
 	assert.deepEqual(parseRunOutput("<inbox>a\n  b</inbox>").findings, ["a b"]);
+});
+
+test("the loop prompt states the finding caps and the decision shape it is read by", () => {
+	const p = composeLoopPrompt("check", undefined);
+	assert.ok(p.includes(`at most ${INBOX_TAGS_PER_RUN} per run`), "the per-run cap");
+	assert.ok(p.includes(`${INBOX_TEXT_MAX_CHARS} characters each`), "the per-finding cap");
+	// The shape the prompt teaches is the shape findingKind reads as a decision.
+	const shape = /<inbox>(<the decision>.*?)<\/inbox>/.exec(p)?.[1];
+	assert.ok(shape, "the prompt shows the decision shape");
+	assert.equal(findingKind(shape), "checkpoint");
 });
 
 test("composeLoopPrompt injects previous state and protocol", () => {

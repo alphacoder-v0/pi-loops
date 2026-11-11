@@ -5,6 +5,18 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A loop can ask you to decide.** A loop's prompt now shows the shape of a finding that needs a
+  person (`<the decision> · waits: … · if not: …`), which the inbox shows as a decision card, and
+  the caps of 16 findings per run and 500 characters each. Before, only recipe playbooks taught the
+  shape, so a loop you wrote yourself only ever reported news (#161).
+- **A sub-agent refused an action says what it would have done where a person reads it.** The
+  refusal now tells it to put that in its final reply, as one `<inbox>` line in a loop run.
+- **A `/goal` waiting on you pauses at once.** When the agent asked you for something it cannot get
+  alone, the evaluator answers `needs_person` and the goal pauses with `waiting on you: …`, instead
+  of sending the agent back to work up to 8 times.
+
 ## [0.24.2] - 2026-11-11
 
 Fixes from the 0.24.2 milestone and a review of what merged since 0.24.1: a path rule that never
