@@ -28,6 +28,11 @@ const DOW_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 
 const DURATION_RE = /^(\d+(?:\.\d+)?)(ms|s|m|h|d|w)$/;
 const UNIT_MS: Record<string, number> = { ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
+/**
+ * The minimum `every` interval: the tick is 30 s, so a sub-minute interval is due on every tick and
+ * the stated interval stops matching the cadence the job actually runs at.
+ */
+const EVERY_MIN_MS = 60_000;
 
 /** "1h30m" → ms. Throws on malformed input. */
 export function parseDuration(input: string): number {
@@ -73,7 +78,7 @@ export function isValidSchedule(value: unknown): value is Schedule {
 	const candidate = value as any;
 	if (!candidate || typeof candidate !== "object") return false;
 	if (candidate.kind === "cron") return typeof candidate.expr === "string" && isValidCronExpr(candidate.expr);
-	if (candidate.kind === "every") return Number.isFinite(candidate.ms) && candidate.ms >= 60_000;
+	if (candidate.kind === "every") return Number.isFinite(candidate.ms) && candidate.ms >= EVERY_MIN_MS;
 	if (candidate.kind === "once") return Number.isFinite(candidate.at);
 	return false;
 }
@@ -99,7 +104,11 @@ export function parseSchedule(spec: string, now: number = Date.now()): Schedule 
 	const tokens = text.split(/\s+/);
 	if (tokens.length === 2) {
 		const [head, rest] = [tokens[0].toLowerCase(), tokens[1]];
-		if (head === "every") return { kind: "every", ms: parseDuration(rest) };
+		if (head === "every") {
+			const ms = parseDuration(rest);
+			if (ms < EVERY_MIN_MS) throw new Error(`invalid schedule "${spec}": the minimum every interval is 1m`);
+			return { kind: "every", ms };
+		}
 		if (head === "in") return { kind: "once", at: now + parseDuration(rest) };
 		if (head === "at") {
 			const at = Date.parse(rest);
