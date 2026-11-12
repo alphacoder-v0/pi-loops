@@ -9,6 +9,12 @@ test("parseTriggerRule handles english and chinese markers", () => {
 	assert.deepEqual(parseTriggerRule("if the PR is merged then execute notify me"), { condition: "the PR is merged", action: "notify me" });
 	assert.deepEqual(parseTriggerRule("当 $HOME/helloworld 存在的时候，执行 打印它的内容"), { condition: "$HOME/helloworld 存在", action: "打印它的内容" });
 	assert.deepEqual(parseTriggerRule("如果构建失败，则通知我"), { condition: "构建失败", action: "通知我" });
+	assert.deepEqual(parseTriggerRule("when the build lands, run curl it, then tell me the status"), { condition: "the build lands", action: "curl it, then tell me the status" });
+	assert.deepEqual(parseTriggerRule("when the run finishes, run it"), { condition: "the run finishes", action: "it" });
+	assert.deepEqual(parseTriggerRule("如果 规则 R 被违反，执行 Y"), { condition: "规则 R 被违反", action: "Y" });
+	assert.deepEqual(parseTriggerRule("当 规则 R 被违反时 执行 Y"), { condition: "规则 R 被违反", action: "Y" });
+	assert.deepEqual(parseTriggerRule("构建失败则通知我，然后重启服务"), { condition: "构建失败", action: "通知我，然后重启服务" });
+	assert.deepEqual(parseTriggerRule("if the build fails then run notify me, run ticket"), { condition: "the build fails", action: "notify me, run ticket" });
 	assert.throws(() => parseTriggerRule("just some words"), /could not split the trigger into a condition and action/);
 	assert.throws(() => parseTriggerRule("   "), /usage: \/new-trigger/);
 });
