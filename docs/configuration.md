@@ -165,7 +165,8 @@ reported at startup and leaves the default.
 
 ## Per-job options (`/cron add`)
 
-`--name`, `--cwd <dir>`, `--model provider/id`, `--thinking <level>`, `--tools a,b`
+`--name` (without it, the job is named from the first words of its prompt, such as
+`check-new-issues`, with `-2` added when that name is taken), `--cwd <dir>`, `--model provider/id`, `--thinking <level>`, `--tools a,b`
 (allowlist for the sub-agent), `--timeout 20m` (default 15m), `--catchup` / `--no-catchup` (default: loops on, plain jobs off), `--stateful` (or `--loop`),
 `--inject` (a plain job — the default, spelled out), `--verify`, `--checker-model provider/id`. Change model, thinking, timeout or name later with
 `/cron set <id> …` (`-` = follow the running session). Sub-agents run inside the interactive pi

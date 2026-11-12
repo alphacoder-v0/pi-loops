@@ -86,6 +86,7 @@ test("collect(): ok, timed out, aborted, model error, no reply, thrown", () => {
 	assert.deepEqual([noisy.ok, noisy.warning, noisy.retries, noisy.compactions], [true, "model fell back", 5, 2], "a run that retried five times must not look like a clean one");
 	const t = collect(mk([asst("aborted", "partial")]), req, true);
 	assert.deepEqual([t.ok, t.timedOut, t.errorMessage], [false, true, "timed out after 5s"]);
+	assert.notEqual(t.stopReason, "aborted", "a timeout is the job failing, not an interruption: the abort the deadline used is not what it reports");
 	const ctrl = new AbortController();
 	ctrl.abort();
 	const a = collect(mk([asst("aborted")]), { ...req, signal: ctrl.signal }, false);

@@ -40,6 +40,27 @@ function pageScript(served: { token?: string; secret?: string } = {}): string {
 		.replace("__VERSION__", PAGE_UNDER_TEST);
 }
 
+/** Taken before any test can mock the timers, so `settled` works while one does. */
+const realSetTimeout = globalThis.setTimeout;
+
+/**
+ * One turn of the event loop. The stub's fetch answers at once, so all the work the page does with
+ * an answer is promise callbacks, and they all run before the next timer turn.
+ */
+function settled(): Promise<void> {
+	return new Promise((r) => realSetTimeout(r, 1));
+}
+
+/** Waits, a timer turn at a time, until `cond` holds; fails with `what` after `ms`. */
+async function until(cond: () => unknown, what: string, ms = 2000): Promise<void> {
+	const end = Date.now() + ms;
+	for (;;) {
+		await settled();
+		if (cond()) return;
+		if (Date.now() > end) throw new Error(`timed out waiting: ${what}`);
+	}
+}
+
 interface StubElement {
 	_text: string;
 	children: StubElement[];
@@ -256,8 +277,10 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 		/** Run the page's own polling callback, as the eight-second timer would. */
 		poll: async () => {
 			for (const fn of polls) await fn();
-			await new Promise((r) => setTimeout(r, 60));
+			await settled();
 		},
+		/** Resolves when startup is done: opening the event stream is its last step. */
+		started: () => until(() => source !== undefined, "the page opened its event stream"),
 		dispose: () => {
 			g.setInterval = realSetInterval;
 		},
@@ -299,7 +322,7 @@ const STATE = {
 test("the page starts, subscribes, and renders a streamed reply", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 
 	// If startup throws — anywhere, including while drawing the sidebar — there is no subscription,
 	// and the front end silently stops being a front end.
@@ -325,7 +348,7 @@ test("the page starts, subscribes, and renders a streamed reply", { timeout: 20_
 test("a page moved to another conversation asks for that one's routes, at that one's address", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	assert.ok(dom.source().url.startsWith(`/c/${SESSION_UNDER_TEST}/events`), `the stream is the conversation's own; got ${dom.source().url}`);
 	assert.ok(dom.calls.some((c) => c.url === `/c/${SESSION_UNDER_TEST}/state`), "and so is its state");
 
@@ -345,7 +368,7 @@ test("the page takes the open key and the pairing code out of the address it was
 	const dom = stubDom(STATE, { messages: [] });
 	(globalThis as any).location = { ...(globalThis as any).location, search: "?open=k1&pair=123456" };
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	assert.deepEqual(dom.replaced, [`/c/${SESSION_UNDER_TEST}/`]);
 	dom.dispose();
 });
@@ -353,7 +376,7 @@ test("the page takes the open key and the pairing code out of the address it was
 test("a tool call and a dead pi both reach the page", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 
 	// A tool call reaches the page as part of the assistant's stream, not as a separate event.
@@ -393,7 +416,7 @@ test("a capped result counts characters, not the units a string is counted in", 
 	 */
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 
 	const rocket = "\u{1F680}"; // one character, two code units
@@ -420,7 +443,7 @@ test("the thinking-level picker offers every level pi knows, not a list of its o
 	 */
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	// The picker is the one element that remembers the level list it was drawn from.
 	const picker = dom.made.find((e: any) => e.dataset && typeof e.dataset.levels === "string");
 	assert.ok(picker, "the thinking picker was drawn");
@@ -447,7 +470,7 @@ test("a job with the wrong types in it does not blank the sidebar", { timeout: 2
 	};
 	const dom = stubDom({ ...STATE, automation }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 
 	assert.ok(dom.source(), "startup survived the bad job");
 	const shown = dom.rendered();
@@ -468,7 +491,7 @@ test("a job's whole prompt is one click away, and stays open across a redraw", {
 	};
 	const dom = stubDom({ ...STATE, automation }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 
 	const box = (globalThis as any).document.getElementById("auto");
 	assert.ok(dom.rendered().includes(prompt), "the whole prompt is on the page, not a 90-character slice");
@@ -492,7 +515,7 @@ test("a job's skipped overlaps are shown when there are any, and not when there 
 	};
 	const dom = stubDom({ ...STATE, automation }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 
 	const shown = dom.rendered();
 	assert.match(shown, /skipped overlaps 3/, `the count is on the card; got:\n${shown.slice(0, 800)}`);
@@ -511,7 +534,7 @@ test("a rule's condition and action are shown in full", { timeout: 20_000 }, asy
 	};
 	const dom = stubDom({ ...STATE, automation }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 
 	const shown = dom.rendered();
 	assert.ok(shown.includes(condition), "the whole condition is on the page");
@@ -528,7 +551,7 @@ test("a job with a last error says so before it is opened", { timeout: 20_000 },
 	};
 	const dom = stubDom({ ...STATE, automation }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 
 	const box = (globalThis as any).document.getElementById("auto");
 	assert.match(box.innerHTML, /peek failing">boom<\/span>/, `the error hint is in the summary; got:\n${box.innerHTML.slice(0, 800)}`);
@@ -538,7 +561,7 @@ test("a job with a last error says so before it is opened", { timeout: 20_000 },
 test("your own message is drawn once, not once by you and once by pi", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 
 	const doc = (globalThis as any).document;
 	doc.getElementById("input").value = "你好呀";
@@ -563,7 +586,7 @@ test("an update while you are reading back does not yank the page, and the pill 
 	 */
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = (globalThis as any).document;
 	const feed = doc.getElementById("feed");
 	const newer = doc.getElementById("newer");
@@ -599,7 +622,7 @@ test("an update while you are reading back does not yank the page, and the pill 
 test("terminal escape codes do not reach the screen as text", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 	const ESC = "\u001b";
 
@@ -623,7 +646,7 @@ test("Enter while an input method is mid-word does not send", { timeout: 20_000 
 	// posts half a sentence and empties the box you were writing in.
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 
 	const doc = (globalThis as any).document;
 	const input = doc.getElementById("input");
@@ -641,8 +664,13 @@ test("Enter while an input method is mid-word does not send", { timeout: 20_000 
 	assert.equal(submitted, 0, "and so does the one right after it ends");
 
 	// A while later, with nothing being composed, Enter is a person pressing send.
-	await new Promise((r) => setTimeout(r, 80));
-	input.onkeydown({ key: "Enter", shiftKey: false, preventDefault() {} });
+	const realNow = Date.now;
+	Date.now = () => realNow() + 60;
+	try {
+		input.onkeydown({ key: "Enter", shiftKey: false, preventDefault() {} });
+	} finally {
+		Date.now = realNow;
+	}
 	assert.equal(submitted, 1, "then it sends");
 	dom.dispose();
 });
@@ -654,7 +682,7 @@ test("prompt history recalls what was sent, and steps aside on a middle line", {
 	const g = globalThis as any;
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = g.document;
 	const input = doc.getElementById("input");
 
@@ -664,7 +692,7 @@ test("prompt history recalls what was sent, and steps aside on a middle line", {
 		input.selectionStart = text.length;
 		input.oninput();
 		doc.getElementById("composer").requestSubmit();
-		await new Promise((r) => setTimeout(r, 40));
+		await settled();
 	}
 
 	// A draft that is not empty must come back when you walk forward past the newest prompt.
@@ -705,7 +733,7 @@ test("prompt history recalls what was sent, and steps aside on a middle line", {
 test("a reply is rendered as Markdown, and cannot smuggle markup through it", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 	const BT = String.fromCharCode(96);
 
@@ -740,10 +768,30 @@ test("a reply is rendered as Markdown, and cannot smuggle markup through it", { 
 	dom.dispose();
 });
 
+test("a reply's headings come in three levels and its indented list items nest", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await dom.started();
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+	const reply = ["# Plan", "## Steps", "### Detail", "- one", "  - one a", "    1. deep", "  - one b", "- two", "", "1. first", "   - under first", "2. second"].join("\n");
+	send({ type: "message_start" });
+	send({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: reply } });
+	send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: reply }] } });
+	const md = dom.made.find((m: any) => m.className === "md" && String(m._html).includes("Plan"));
+	assert.ok(md, "the reply was drawn as Markdown");
+	assert.equal(
+		md._html,
+		"<h3>Plan</h3><h4>Steps</h4><h5>Detail</h5>" +
+			"<ul><li>one<ul><li>one a<ol><li>deep</li></ol></li><li>one b</li></ul></li><li>two</li></ul>" +
+			"<ol><li>first<ul><li>under first</li></ul></li><li>second</li></ol>",
+	);
+	dom.dispose();
+});
+
 test("a confirmation shows what is about to run, apart from the reasoning", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = (globalThis as any).document;
 
 	// What the danger gate sends: the command, a blank line, then why it was stopped.
@@ -770,16 +818,24 @@ test("a question pi times out closes itself, says it was refused, and a late app
 	const shown: any = { ...STATE, pendingAsks: [] };
 	const dom = stubDom(shown, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = (globalThis as any).document;
 	const ask = doc.getElementById("ask");
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 	const answers = () => dom.calls.filter((c) => c.url.includes("/ui-response")).map((c) => c.body);
 
-	send({ type: "extension_ui_request", id: "q1", method: "confirm", title: "Allow rm?", message: "rm -rf /tmp/x", timeout: 150 });
-	assert.equal(ask.open, true, "the question is on the screen");
-	send({ type: "extension_ui_request", id: "q2", method: "confirm", title: "Allow push?", message: "git push", timeout: 60_000 });
-	await new Promise((r) => setTimeout(r, 300));
+	mock.timers.enable({ apis: ["setTimeout"] });
+	try {
+		send({ type: "extension_ui_request", id: "q1", method: "confirm", title: "Allow rm?", message: "rm -rf /tmp/x", timeout: 150 });
+		assert.equal(ask.open, true, "the question is on the screen");
+		send({ type: "extension_ui_request", id: "q2", method: "confirm", title: "Allow push?", message: "git push", timeout: 60_000 });
+		mock.timers.tick(149);
+		assert.equal(ask.open, true, "not before its time");
+		mock.timers.tick(1);
+	} finally {
+		mock.timers.reset();
+	}
+	await settled();
 	assert.equal(ask.open, false, "it closes when its time is up");
 	assert.match(dom.rendered(), /Allow rm\? → timed out with no answer: refused/);
 	assert.deepEqual(answers(), [], "nothing is posted for a question pi has already answered");
@@ -826,7 +882,7 @@ test("Enter in a confirmation dialog hits cancel, not approve", () => {
 test("a count in the panel leads to the list behind it", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 
 	// "1 tools" is not the question anyone has; which tool is.
 	const panel = (globalThis as any).document.getElementById("runtime");
@@ -845,7 +901,7 @@ test("an MCP server's last error is shown whole, not cut at 120 characters", { t
 	const runtime = { ...STATE.runtime, mcp: [{ name: "hub", state: "down", kind: "stdio", tools: [], lastError: long }] };
 	const dom = stubDom({ ...STATE, runtime }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 
 	const panel = (globalThis as any).document.getElementById("runtime");
 	assert.ok(panel.innerHTML.includes(long), `the whole error is in the Runtime box, ellipsis and all; got:\n${panel.innerHTML}`);
@@ -858,7 +914,7 @@ test("the status bar follows the host file the server reads, not the snapshot th
 	const runtime = { ...STATE.runtime, scheduler: { running: true, host: { running: false } }, counts: { jobs: 1, jobsEnabled: 1, rules: 0, rulesEnabled: 0 } };
 	const dom = stubDom({ ...STATE, runtime, automation: { ...STATE.automation, hostPid: 4242 } }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = () => (globalThis as any).document;
 	assert.match(textOf(doc().getElementById("sbHost")), /pi-loops running in the background/);
 	assert.doesNotMatch(doc().getElementById("runtime").innerHTML, /running in the background|pid 4242/, "one place says it: the status bar");
@@ -866,7 +922,7 @@ test("the status bar follows the host file the server reads, not the snapshot th
 
 	const down = stubDom({ ...STATE, runtime: { ...runtime, scheduler: { running: true, host: { running: true, pid: 7 } } }, automation: { ...STATE.automation, hostPid: undefined, paused: "pi-loops is stopped — /pi-loops start" } }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await down.started();
 	assert.equal(textOf(doc().getElementById("sbHost")).trim(), "loops and checks are paused: pi-loops is stopped — /pi-loops start", "a host that went away is gone from the status bar too, with the reason, said once");
 	down.dispose();
 });
@@ -877,7 +933,7 @@ test("the panel shows the project's last rule check; a loop's runs are the activ
 	const automation = { ...STATE.automation, lastCheck: { state: "completed", at: "2026-10-30T10:00:00Z" }, lastRun: { label: "nightly", ok: false, findings: 0, at: "2026-10-30T10:05:00Z" } };
 	const dom = stubDom({ ...STATE, automation }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const html = (globalThis as any).document.getElementById("auto").innerHTML;
 	assert.match(html, /last check: completed/, `got:\n${html}`);
 	assert.doesNotMatch(html, /last run/);
@@ -892,7 +948,7 @@ test("every time on the page is in one format, the away card's 24-hour words, ah
 	for (const [when, words] of [[at, "15:05"], [new Date(at.getTime() - day), "yesterday 15:05"], [new Date(at.getTime() + day), "tomorrow 15:05"], [april, `Apr 3 ${april.getFullYear()} 09:00`]] as const) {
 		const dom = stubDom({ ...STATE, automation: { ...STATE.automation, lastCheck: { state: "completed", at: when.toISOString() } } }, { messages: [] });
 		await new Function(pageScript())();
-		await new Promise((r) => setTimeout(r, 400));
+		await dom.started();
 		const html = String((globalThis as any).document.getElementById("auto").innerHTML);
 		assert.ok(html.includes("last check: completed · " + words + "</div>"), `${words}: ${html}`);
 		assert.doesNotMatch(html, /\b(AM|PM)\b/);
@@ -962,7 +1018,7 @@ test("the QR encoder still produces the matrix a scanner was shown", () => {
 test("adding a device shows a code and something to point a camera at", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = (globalThis as any).document;
 
 	await doc.getElementById("adddev").onclick();
@@ -977,7 +1033,7 @@ test("on an address only this machine can reach, it says so instead of showing a
 	const dom = stubDom(STATE, { messages: [] });
 	(globalThis as any).location = { origin: "http://127.0.0.1:4173", port: "4173" };
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = (globalThis as any).document;
 
 	await doc.getElementById("adddev").onclick();
@@ -1001,7 +1057,7 @@ test("the page's own helpers are all actually reachable", { timeout: 20_000 }, a
 	const g = globalThis as any;
 	const names = ["plain", "markdownToHtml", "inlineMd", "safeHref", "qrMatrix", "qrSvg", "row", "renderMessage", "renderSidebar", "renderRuntime", "handle", "refresh", "onAsk", "copyBtn", "mdInto", "countOf", "applyTheme"];
 	await new Function(pageScript() + `\n; globalThis.__seen = {${names.map((n) => `${n}: typeof ${n}`).join(", ")}};`)();
-	await new Promise((r) => setTimeout(r, 300));
+	await settled();
 
 	const missing = names.filter((n) => g.__seen[n] !== "function");
 	assert.deepEqual(missing, [], `every helper the page defines is reachable from the page; missing: ${missing.join(", ")}`);
@@ -1011,7 +1067,7 @@ test("the page's own helpers are all actually reachable", { timeout: 20_000 }, a
 test("an empty conversation is a blank feed, and the first message is its first row", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const feed = (globalThis as any).document.getElementById("feed");
 	assert.equal(feed.children.length, 0, "nothing in the feed: the composer below is what to use");
 	dom.source().onmessage({ data: JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "hi" }] } }) });
@@ -1020,19 +1076,64 @@ test("an empty conversation is a blank feed, and the first message is its first 
 	dom.dispose();
 });
 
+test("on a phone the ⋯ sheet carries the model and thinking pickers, and gives them back to the header", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const dom = stubDom(STATE, { messages: [] });
+	g.matchMedia = (q: string) => ({ matches: /max-width:(760|900|1100)px/.test(q), addEventListener() {} });
+	g.location.hash = "#chat";
+	g.history.pushState = () => undefined;
+	await new Function(pageScript())();
+	await dom.started();
+	const byId = (id: string) => g.document.getElementById(id);
+	byId("more").onclick();
+	const first = byId("menuBody").children[1];
+	assert.equal(first.children[0]._text, "Conversation");
+	assert.ok(first.children[1] === byId("model") && first.children[2] === byId("thinking"), "the pickers lead the conversation's group");
+	byId("menuClose").onclick();
+	const grow = g.document.querySelector("header .grow");
+	const header = grow.parentElement.children;
+	assert.ok(header.indexOf(byId("model")) >= 0 && header.indexOf(byId("model")) + 1 === header.indexOf(byId("thinking")), "back in the header, in order");
+	dom.dispose();
+});
+
+test("a page still loading shows no title, no pickers and no turn buttons; the state brings the pickers", { timeout: 20_000 }, async () => {
+	// What the page is served with, before its script has a state: read off the served markup, the
+	// one place it exists before the script runs.
+	const html = PAGE.slice(PAGE.indexOf("<header>"), PAGE.indexOf("</header>")) + PAGE.slice(PAGE.indexOf('<form id="composer">'), PAGE.indexOf("</form>"));
+	const tag = (id: string) => new RegExp(`<[a-z]+ [^>]*id="${id}"[^>]*>`).exec(html)?.[0] ?? "";
+	assert.match(html, /<b id="title"><\/b>/, "no placeholder title");
+	for (const id of ["model", "thinking", "stop", "undo", "compact", "resume"]) assert.match(tag(id), /\bhidden\b/, `${id} waits for the state`);
+	const dom = stubDom(STATE, { messages: [] });
+	const doc = (globalThis as any).document;
+	for (const id of ["model", "thinking"]) doc.getElementById(id).hidden = true;
+	await new Function(pageScript())();
+	await dom.started();
+	assert.deepEqual(["model", "thinking"].map((id) => doc.getElementById(id).hidden), [false, false], "the pickers show with the state");
+	assert.equal(doc.getElementById("model").value, "p/m", "holding its model");
+	dom.dispose();
+});
+
 test("the header's secondary actions move into a sheet and back, once each", { timeout: 20_000 }, async () => {
 	// Moved rather than duplicated: two copies would mean two of every id and one of them going
 	// stale the next time somebody edits the other.
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = (globalThis as any).document;
 
+	const byId = (id: string) => doc.getElementById(id);
 	doc.getElementById("more").onclick();
 	// The cost goes with them: on a phone the header has no room for it.
-	assert.deepEqual(doc.getElementById("menuBody").children, [doc.getElementById("cost"), doc.getElementById("actions")], "the same elements, not copies");
+	const [cost, ...groups] = doc.getElementById("menuBody").children;
+	assert.equal(cost, byId("cost"));
+	const conversation = ["reload", "find", "undo", "save", "share", "compact", "resume"];
+	const settings = ["theme", "notifyMe", "adddev"];
+	assert.deepEqual(groups.map((g: any) => g.children[0]._text), ["Conversation", "Settings"], "two labelled groups");
+	assert.deepEqual(groups.map((g: any) => g.children.slice(1)), [conversation.map(byId), settings.map(byId)], "the same elements, not copies, each in its group");
+	assert.equal(byId("theme")._text, "Theme: system", "in sentence case");
 	doc.getElementById("menuClose").onclick();
 	assert.equal(doc.getElementById("menuBody").children.length, 0, "and came back out");
+	assert.deepEqual(byId("actions").children, [...conversation, ...settings].map(byId), "into the header, in the sheet's order");
 	dom.dispose();
 });
 
@@ -1085,7 +1186,7 @@ test("two calls to the same tool keep their own results, in whatever order they 
 	 */
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 	const tools = () => dom.made.filter((el: any) => el.tag === "details" && String(el.className) === "row tool");
 	const textOf = (el: any) => el.children.filter((c: any) => c.tag === "pre").map((c: any) => c._text).join("|");
@@ -1106,7 +1207,7 @@ test("two calls to the same tool keep their own results, in whatever order they 
 test("a result nobody called for gets its own block and does not break the next pairing", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 	const tools = () => dom.made.filter((el: any) => el.tag === "details" && String(el.className) === "row tool");
 	const textOf = (el: any) => el.children.filter((c: any) => c.tag === "pre").map((c: any) => c._text).join("|");
@@ -1126,7 +1227,7 @@ test("a result nobody called for gets its own block and does not break the next 
 test("a tool call that never returns stops saying it is running", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 
 	send({ type: "agent_start" });
@@ -1167,7 +1268,7 @@ test("events already in the transcript are skipped by number, not by a timer", {
 	 */
 	const dom = stubDom(STATE, { messages: [], seq: 7 });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 
 	// Backlog: already in the transcript we replayed.
@@ -1243,18 +1344,19 @@ test("a stale completion answer cannot overwrite a newer one", { timeout: 20_000
 	 */
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const g = globalThis as any;
 	const doc = g.document;
 
+	/** One function per completion request, in the order asked: calling it delivers the answer. */
+	const held: Array<() => void> = [];
 	let nth = 0;
 	g.fetch = async (url: unknown, opts: any) => {
 		if (!String(url).includes("/complete")) return { json: async () => ({ success: true }) };
 		const which = nth++;
 		// The older request answers later — with the wider, staler list.
 		const items = which === 0 ? [{ value: "@src/", hint: "dir" }, { value: "@src/args.ts", hint: "file" }] : [{ value: "@src/web.mjs", hint: "file" }];
-		const delay = which === 0 ? 80 : 10;
-		return { json: () => new Promise((r) => setTimeout(() => r({ items }), delay)) };
+		return { json: () => new Promise((r) => void (held[which] = () => r({ items }))) };
 	};
 
 	const input = doc.getElementById("input");
@@ -1265,9 +1367,11 @@ test("a stale completion answer cannot overwrite a newer one", { timeout: 20_000
 	input.value = "@src/we";
 	input.selectionStart = 7;
 	input.oninput();
-	await new Promise((r) => setTimeout(r, 200));
-
-	await new Promise((r) => setTimeout(r, 200));
+	await until(() => held[0] && held[1], "both completion requests are out");
+	held[1]();
+	await settled();
+	held[0]();
+	await settled();
 	// render() empties the popup and appends a div per item, so the markup is on the children.
 	const html = [...doc.getElementById("pop").children].map((c: any) => c.innerHTML).join(" ");
 	assert.match(html, /@src\/web\.mjs/, "the newest answer is the one on screen");
@@ -1311,7 +1415,7 @@ test("a gap in the event stream reloads the conversation instead of leaving a ho
 	 */
 	const dom = stubDom(STATE, { messages: [{ role: "assistant", content: [{ type: "text", text: "from the transcript" }] }], seq: 3 });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 
 	send({ type: "message_end", seq: 4, message: { role: "user", content: [{ type: "text", text: "in order" }] } });
@@ -1319,7 +1423,7 @@ test("a gap in the event stream reloads the conversation instead of leaving a ho
 
 	// 9 means 5 to 8 never arrived.
 	send({ type: "message_end", seq: 9, message: { role: "user", content: [{ type: "text", text: "after the gap" }] } });
-	await new Promise((r) => setTimeout(r, 200));
+	await settled();
 
 	const shown = dom.rendered();
 	assert.match(shown, /the conversation above was reloaded/, "it says what happened");
@@ -1331,7 +1435,7 @@ test("a gap in the event stream reloads the conversation instead of leaving a ho
 test("a message carries at most ten images", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = (globalThis as any).document;
 
 	(globalThis as any).FileReader = class {
@@ -1341,7 +1445,7 @@ test("a message carries at most ten images", { timeout: 20_000 }, async () => {
 	};
 	const files = Array.from({ length: 12 }, (_, i) => ({ name: `s${i}.png`, type: "image/png" }));
 	doc.getElementById("file").onchange({ target: { files, value: "" } });
-	await new Promise((r) => setTimeout(r, 100));
+	await settled();
 
 	assert.equal(doc.getElementById("thumbs").children.length, 10, "ten of them");
 	assert.match(dom.rendered(), /up to 10 images per message/, "and it says why the rest are missing");
@@ -1353,7 +1457,7 @@ test("clicking outside a dialog closes it; clicking inside does not", { timeout:
 	// target is the dialog while the point is outside its box.
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const dlg = (globalThis as any).document.getElementById("ask");
 	assert.ok(dlg._on?.click, "the page listened for clicks on it");
 
@@ -1381,7 +1485,7 @@ test("a run of tool calls is one row, and the reply shares it", { timeout: 20_00
 	 */
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 	const groups = () => dom.made.filter((el: any) => String(el.className) === "row work");
 
@@ -1412,7 +1516,7 @@ test("a reply can show a picture, and point at a file you can open", { timeout: 
 	 */
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 	const BT = String.fromCharCode(96);
 
@@ -1436,7 +1540,7 @@ test("a reply can show a picture, and point at a file you can open", { timeout: 
 	assert.doesNotMatch(html, /href="javascript:/, "while a scheme of its own is not made into one");
 
 	// The picture's address is made once a key is minted for that one path; the key is spent by the load.
-	await new Promise((r) => setTimeout(r, 50));
+	await settled();
 	assert.ok(dom.calls.some((c) => c.url === "/c/test-session/key" && JSON.stringify(c.body) === JSON.stringify({ for: "file", path: "out/chart.png" })), "a key for out/chart.png");
 	const img = dom.made.find((m: any) => m.tag === "img" && m.dataset.file === "out/chart.png") as any;
 	assert.equal(img?.src, "/c/test-session/file?path=out%2Fchart.png&key=test-key", "and the picture is fetched with it");
@@ -1448,7 +1552,7 @@ test("a reply can show a picture, and point at a file you can open", { timeout: 
 	const link = { dataset: { file: "out/report.html" } };
 	let prevented = false;
 	g.document.getElementById("feed")._on.click({ target: { closest: (sel: string) => (sel === "a[data-file]" ? link : null) }, preventDefault: () => { prevented = true; } });
-	await new Promise((r) => setTimeout(r, 50));
+	await settled();
 	assert.ok(prevented, "the link has no address of its own to follow");
 	assert.deepEqual(opened, ["/c/test-session/file?path=out%2Freport.html&key=test-key"], "it opens with a key for that file");
 	delete g.open;
@@ -1460,7 +1564,7 @@ test("a page served without the token trades the device secret for it, and a fir
 	const dom = stubDom(STATE, { messages: [] }, new Map(), { "/token": { token: "traded-token" } });
 	(globalThis as any).localStorage.setItem("pi-loops-device", "s".repeat(64));
 	await new Function(pageScript({ token: "", secret: "" }))();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const trade = dom.calls.find((c) => c.url === "/c/test-session/token");
 	assert.ok(trade, "the page asked for the token");
 	assert.equal(trade?.headers?.["x-pi-web-device-secret"], "s".repeat(64), "with the secret it kept");
@@ -1472,7 +1576,7 @@ test("a page served without the token trades the device secret for it, and a fir
 	// A first visit: the token is in the page, and the secret it was handed is kept for next time.
 	const first = stubDom(STATE, { messages: [] });
 	await new Function(pageScript({ secret: "e".repeat(64) }))();
-	await new Promise((r) => setTimeout(r, 400));
+	await first.started();
 	assert.equal((globalThis as any).localStorage.getItem("pi-loops-device"), "e".repeat(64), "the secret is kept");
 	assert.equal(first.calls.some((c) => c.url.endsWith("/token")), false, "and nothing is traded");
 	first.dispose();
@@ -1481,17 +1585,27 @@ test("a page served without the token trades the device secret for it, and a fir
 test("the event stream opens with a key minted for it, and a refused stream starts again with a new one", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	assert.ok(dom.calls.some((c) => c.url === "/c/test-session/key" && JSON.stringify(c.body) === JSON.stringify({ for: "events" })), "a key for the stream");
 	const first = dom.source();
 	assert.equal(first.url, "/c/test-session/events?key=test-key", "and the stream carries it");
 	first.readyState = 0;
 	first.onerror();
-	await new Promise((r) => setTimeout(r, 50));
+	await settled();
 	assert.equal(dom.source(), first, "a stream the browser is still retrying is left to it");
-	first.readyState = 2;
-	first.onerror();
-	await new Promise((r) => setTimeout(r, 3300));
+	// The page waits three seconds before it starts again; the test moves the clock instead.
+	mock.timers.enable({ apis: ["setTimeout"] });
+	try {
+		first.readyState = 2;
+		first.onerror();
+		mock.timers.tick(2_999);
+		await settled();
+		assert.equal(dom.source(), first, "not at once");
+		mock.timers.tick(1);
+	} finally {
+		mock.timers.reset();
+	}
+	await until(() => dom.source() !== first, "the stream is opened again");
 	assert.notEqual(dom.source(), first, "one it gave up on is opened again");
 	assert.equal(dom.calls.filter((c) => c.url === "/c/test-session/key").length, 2, "with a key of its own");
 	dom.dispose();
@@ -1500,7 +1614,7 @@ test("the event stream opens with a key minted for it, and a refused stream star
 test("a preview opens with a key minted for it", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] }, new Map(), { "/preview": { success: true, id: "p1" } });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const reply = ["```html", "<p>hi</p>", "```"].join("\n");
 	dom.source().onmessage({ data: JSON.stringify({ type: "message_start" }) });
 	dom.source().onmessage({ data: JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: reply } }) });
@@ -1520,7 +1634,7 @@ test("a preview opens with a key minted for it", { timeout: 20_000 }, async () =
 test("an image that came back from a tool is shown, not dropped", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 
 	send({ type: "message_start" });
@@ -1563,20 +1677,21 @@ test("what arrives while the conversation is reloading lands after it, not befor
 	};
 
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 500));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 
 	// A gap starts a reload…
 	send({ type: "message_end", seq: 40, message: { role: "user", content: [{ type: "text", text: "the one that opened the gap" }] } });
 	// …and this arrives while it is happening.
 	send({ type: "message_end", seq: 41, message: { role: "user", content: [{ type: "text", text: "sent during the reload" }] } });
-	await new Promise((r) => setTimeout(r, 400));
-
 	// What is on the screen now, not what was ever created: the whole point is that something was
 	// drawn and then removed.
 	const onScreen = (el: any): string =>
 		[el._text ?? "", el._html ?? "", ...(el.children ?? []).map(onScreen)].join(" ");
-	const rows = (globalThis as any).document.getElementById("feed").children.map(onScreen);
+	const feed = (globalThis as any).document.getElementById("feed");
+	await until(() => asked === 2 && /from the transcript/.test(onScreen(feed)), "the reload drew the transcript again");
+	await settled();
+	const rows = feed.children.map(onScreen);
 	const transcript = rows.findIndex((t: string) => /from the transcript/.test(t));
 	const late = rows.findIndex((t: string) => /sent during the reload/.test(t));
 	assert.ok(transcript >= 0, `the transcript came back; got:\n${rows.join("\n")}`);
@@ -1601,7 +1716,7 @@ test("a page that stops receiving events notices by itself", { timeout: 20_000 }
 	Object.defineProperty(history, "epoch", { get: () => state.epoch });
 	const dom = stubDom(state, history);
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = g.document;
 	const feedText = () => {
 		const walk = (el: any): string => [el._text ?? "", el._html ?? "", ...(el.children ?? []).map(walk)].join(" ");
@@ -1616,7 +1731,6 @@ test("a page that stops receiving events notices by itself", { timeout: 20_000 }
 
 	// Twice in a row is.
 	await dom.poll();
-	await new Promise((r) => setTimeout(r, 200));
 	assert.match(feedText(), /connection dropped/, "the page says what happened");
 	assert.match(feedText(), /what was there/, "and takes the transcript again");
 
@@ -1624,7 +1738,6 @@ test("a page that stops receiving events notices by itself", { timeout: 20_000 }
 	state.epoch = "bbb";
 	state.seq = 2;
 	await dom.poll();
-	await new Promise((r) => setTimeout(r, 200));
 	assert.match(feedText(), /session restarted/, "a restart needs no second opinion");
 	dom.dispose();
 });
@@ -1639,7 +1752,7 @@ test("a page left open across an upgrade says so", { timeout: 20_000 }, async ()
 	const state: any = { ...STATE, version: "9.9.9" };
 	const dom = stubDom(state, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = (globalThis as any).document;
 
 	await dom.poll();
@@ -1665,7 +1778,7 @@ test("a stretch of work is one row, and one button opens every one of them", { t
 	 */
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 	const doc = (globalThis as any).document;
 	const work = () => dom.made.filter((el: any) => String(el.className) === "row work");
@@ -1701,7 +1814,7 @@ test("a reply without work keeps its own label row", { timeout: 20_000 }, async 
 	 */
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 
 	send({ type: "message_start" });
@@ -1724,7 +1837,7 @@ test("the work row's live line is cut in characters, not the units a string is c
 	 */
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 
 	send({ type: "message_start" });
@@ -1745,7 +1858,7 @@ test("a path written in prose becomes something to open, and a picture becomes a
 	 */
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 
 	const reply = [
@@ -1787,7 +1900,7 @@ test("an extension speaking mid-work does not cut the stretch in two", { timeout
 	 */
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 	const work = () => dom.made.filter((el: any) => String(el.className) === "row work");
 
@@ -1825,12 +1938,12 @@ test("clear, resume and compact are typed as well as clicked", { timeout: 20_000
 		return realFetch(url, opts);
 	};
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = g.document;
 	const submit = async (text: string) => {
 		doc.getElementById("input").value = text;
 		await doc.getElementById("composer").onsubmit({ preventDefault() {} });
-		await new Promise((r) => setTimeout(r, 60));
+		await settled();
 	};
 	const went = (part: string) => calls.filter((c) => c.url.includes(part));
 
@@ -1847,15 +1960,15 @@ test("clear, resume and compact are typed as well as clicked", { timeout: 20_000
 	// time with a bare "context compacted" — over the top of a manual one that had just said it
 	// failed. The event line is for the compaction nobody asked for.
 	dom.source().onmessage({ data: JSON.stringify({ type: "compaction_end", reason: "manual", result: { tokensBefore: 150_000, estimatedTokensAfter: 32_000 } }) });
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.equal(dom.rendered().match(/context compacted/g)?.length, 1, "said once");
 	// The one that happens on its own is still announced — and truthfully when it did not happen.
 	dom.source().onmessage({ data: JSON.stringify({ type: "compaction_end", reason: "threshold", result: null, aborted: false, errorMessage: "quota exceeded" }) });
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.match(dom.rendered(), /compaction failed: quota exceeded/, "an auto-compaction that failed does not report success");
 	// A summary that came out at 312 tokens is 312, not "0k" — which reads as gone rather than small.
 	dom.source().onmessage({ data: JSON.stringify({ type: "compaction_end", reason: "threshold", result: { tokensBefore: 11_000, estimatedTokensAfter: 312 } }) });
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.match(dom.rendered(), /11k → 312/);
 
 	await submit("/resume");
@@ -1887,10 +2000,10 @@ test("the session you are in is not offered as one to go back to", { timeout: 20
 		return realFetch(url, opts);
 	};
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = g.document;
 	await doc.getElementById("resume").onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 
 	const rows = doc.getElementById("sessBody").children;
 	assert.equal(rows.length, 2, "both are listed");
@@ -1903,7 +2016,7 @@ test("the session you are in is not offered as one to go back to", { timeout: 20
 	assert.match(shown, /22\+ messages/, "and a count that was cut short says so");
 
 	rows[1].onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.deepEqual(asked, [{ file: "/s/older.jsonl" }]);
 	g.fetch = realFetch;
 	dom.dispose();
@@ -1927,12 +2040,12 @@ test("resuming a conversation that is already open in the page goes to it", { ti
 	const assigned: string[] = [];
 	g.location.assign = (u: string) => void assigned.push(u);
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = g.document;
 	await doc.getElementById("resume").onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	doc.getElementById("sessBody").children[1].onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.deepEqual(assigned, ["/c/b/"], "the page goes to the conversation's own address");
 	assert.doesNotMatch(dom.rendered(), /already open in the page/, "and does not stop at the refusal");
 	g.fetch = realFetch;
@@ -1958,12 +2071,11 @@ test("the reload after clearing says what was asked for, not that something rest
 		return realFetch(url, opts);
 	};
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 
 	g.document.getElementById("newConv").onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	await dom.poll();
-	await new Promise((r) => setTimeout(r, 200));
 
 	const shown = dom.rendered();
 	assert.match(shown, /new conversation — the one you left is in the list/, `it says what happened; got:\n${shown.slice(-400)}`);
@@ -1998,13 +2110,12 @@ test("a swap reloads once, for its reason, under the new id: the new session's e
 		return realFetch(url, opts);
 	};
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	read.length = 0;
 
 	g.document.getElementById("newConv").onclick();
-	await new Promise((r) => setTimeout(r, 300));
+	await settled();
 	await dom.poll();
-	await new Promise((r) => setTimeout(r, 200));
 
 	assert.deepEqual(read.map((u) => u.replace(/\?.*$/, "")), ["/c/new-id/history"], "one reload, of the new id's history");
 	assert.ok(dom.replaced.includes("/c/new-id/"), "and the address moved first");
@@ -2035,10 +2146,10 @@ test("the new session announcing itself does not beat the page to the reason", {
 		return realFetch(url, opts);
 	};
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 
 	g.document.getElementById("newConv").onclick();
-	await new Promise((r) => setTimeout(r, 300));
+	await settled();
 
 	const shown = dom.rendered();
 	assert.match(shown, /new conversation — the one you left is in the list/, `it still says what happened; got:\n${shown.slice(-400)}`);
@@ -2055,13 +2166,14 @@ test("a completion answer in flight does not reopen a list the space just closed
 	const g = globalThis as any;
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = g.document;
 	const realFetch = g.fetch;
+	// The answer is slow, which is the only reason the bug was ever visible: the test holds it.
+	let land: (() => void) | undefined;
 	g.fetch = async (url: unknown, opts: any) => {
 		if (!String(url).includes("/complete")) return realFetch(url, opts);
-		// The answer is slow, which is the only reason the bug was ever visible.
-		return { json: () => new Promise((r) => setTimeout(() => r({ items: [{ value: "/compact", hint: "" }] }), 80)) };
+		return { json: () => new Promise((r) => void (land = () => r({ items: [{ value: "/compact", hint: "" }] }))) };
 	};
 
 	const input = doc.getElementById("input");
@@ -2072,7 +2184,9 @@ test("a completion answer in flight does not reopen a list the space just closed
 	input.value = "/compact ";
 	input.selectionStart = 9;
 	input.oninput();
-	await new Promise((r) => setTimeout(r, 250));
+	await until(() => land, "the completion request is out");
+	land?.();
+	await settled();
 
 	assert.equal(doc.getElementById("pop").style.display, "none", "the list stays closed");
 	g.fetch = realFetch;
@@ -2095,10 +2209,10 @@ test("a name cannot reorder the line it is drawn on", { timeout: 20_000 }, async
 	g.fetch = async (url: unknown, opts: any) =>
 		String(url).includes("/sessions") ? { json: async () => ({ sessions }) } : realFetch(url, opts);
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 
 	await g.document.getElementById("resume").onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	const titles = g.document.getElementById("sessBody").children.map((b: any) => b.children[0].textContent);
 	assert.deepEqual(titles, ["delete evil red", "flipped and embedded"], "drawn in the order it is written in");
 	for (const t of titles) assert.doesNotMatch(t, /[\u202a-\u202e\u2066-\u2069]/, "and with nothing left that could reorder it");
@@ -2123,7 +2237,7 @@ test("what the machine has that this project does not is counted, apart", { time
 	};
 	const dom = stubDom({ ...STATE, automation }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 
 	const shown = dom.rendered();
 	assert.match(shown, /nightly-report/, "the job is on the screen at all");
@@ -2159,7 +2273,7 @@ test("a next run in April does not render as a time of day", { timeout: 20_000 }
 	};
 	const dom = stubDom({ ...STATE, automation }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 
 	const shown = dom.rendered();
 	assert.match(shown, /next 12:00</, "today keeps the time on its own");
@@ -2180,7 +2294,7 @@ test("a job name and an approval title cannot reorder the lines they are drawn o
 	};
 	const dom = stubDom({ ...STATE, automation }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 
 	const panel = (globalThis as any).document.getElementById("auto").innerHTML;
 	assert.match(panel, /backup live evil/, `the name is drawn in the order it is written in; got:\n${panel}`);
@@ -2213,12 +2327,12 @@ test("undoing the only message empties the conversation and puts the message bac
 		return realFetch(url, opts);
 	};
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = g.document;
 	assert.match(dom.rendered(), /the only thing said/, "the message was there to begin with");
 
 	await doc.getElementById("undo").onclick();
-	await new Promise((r) => setTimeout(r, 200));
+	await settled();
 
 	const onScreen = (el: any): string => [el._text ?? "", el._html ?? "", ...(el.children ?? []).map(onScreen)].join(" ");
 	const feed = onScreen(doc.getElementById("feed"));
@@ -2247,7 +2361,7 @@ test("a disabled job or rule says so in words, not only by being faint", { timeo
 	};
 	const dom = stubDom({ ...STATE, automation }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const html = dom.rendered();
 	assert.match(html, />0 9 \* \* \* · disabled</, "the disabled job's line says disabled");
 	assert.match(html, />every 1h · in its conversation</, "the plain job is the one marked: it runs in its conversation, not as a loop");
@@ -2265,7 +2379,7 @@ test("every block keeps its time where a touch screen can show it, not only in a
 	 */
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 	send({ type: "message_start" });
 	send({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "hmm" } });
@@ -2289,7 +2403,7 @@ test("the stop button asks the server to abort the turn", { timeout: 20_000 }, a
 	const g = globalThis as any;
 	const dom = stubDom({ ...STATE, busy: true }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const before = dom.calls.length;
 	await g.document.getElementById("stop").onclick();
 	const sent = dom.calls.slice(before).map((c) => c.url);
@@ -2305,13 +2419,13 @@ test("the queue badge shows what is queued and clears it", { timeout: 20_000 }, 
 	const g = globalThis as any;
 	const quiet = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await quiet.started();
 	assert.equal(g.document.getElementById("queue").hidden, true, "nothing queued, no badge");
 	quiet.dispose();
 
 	const dom = stubDom({ ...STATE, busy: true, queue: { steering: ["/compact"], followUp: ["/model"] }, requests: [{ id: "r1", text: "and then this" }] }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const badge = g.document.getElementById("queue");
 	assert.equal(badge.hidden, false, "something queued, the badge is shown");
 	assert.equal(badge.textContent, "queued 3 ✕", "one row of ours and two of pi's");
@@ -2342,7 +2456,7 @@ test("a model that cannot see images has attach disabled and a pasted image refu
 		for (const images of [false, true]) {
 			const dom = stubDom({ ...STATE, modelCatalog: [{ id: "m", provider: "p", name: "M", images }] }, { messages: [] });
 			await new Function(pageScript())();
-			await new Promise((r) => setTimeout(r, 400));
+			await dom.started();
 			const doc = g.document;
 			const attach = doc.getElementById("attach");
 			doc.getElementById("input")._on.paste(paste);
@@ -2379,7 +2493,7 @@ test("an image type the page cannot render is refused rather than sent as a brok
 	};
 	try {
 		await new Function(pageScript())();
-		await new Promise((r) => setTimeout(r, 400));
+		await dom.started();
 		const doc = g.document;
 		const onScreen = (el: any): string => [el._text ?? "", el._html ?? "", ...(el.children ?? []).map(onScreen)].join(" ");
 
@@ -2413,18 +2527,18 @@ test("Enter on a command already typed in full sends it instead of completing it
 		return realFetch(url, opts);
 	};
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = g.document;
 	const input = doc.getElementById("input");
 
 	input.value = "/inbox";
 	input.selectionStart = 6;
 	input.oninput();
-	await new Promise((r) => setTimeout(r, 120));
+	await settled();
 	assert.equal(doc.getElementById("pop").style.display, "block", "the list is open, as it is in a browser");
 
 	input.onkeydown({ key: "Enter", shiftKey: false, preventDefault() {} });
-	await new Promise((r) => setTimeout(r, 120));
+	await settled();
 	assert.deepEqual(sent.map((p) => p.text), ["/inbox"], `one Enter ran it; got ${JSON.stringify(sent)}`);
 	assert.equal(input.value, "", "and the composer is empty, not holding a completion it accepted");
 	assert.equal(doc.getElementById("pop").style.display, "none", "the list is gone with it");
@@ -2434,9 +2548,9 @@ test("Enter on a command already typed in full sends it instead of completing it
 	input.value = "/inb";
 	input.selectionStart = 4;
 	input.oninput();
-	await new Promise((r) => setTimeout(r, 120));
+	await settled();
 	input.onkeydown({ key: "Enter", shiftKey: false, preventDefault() {} });
-	await new Promise((r) => setTimeout(r, 120));
+	await settled();
 	assert.equal(input.value, "/inbox ", "Enter on a partial word completes it");
 	assert.equal(sent.length, 1, "and sends nothing yet");
 
@@ -2444,9 +2558,9 @@ test("Enter on a command already typed in full sends it instead of completing it
 	input.value = "/inbox";
 	input.selectionStart = 6;
 	input.oninput();
-	await new Promise((r) => setTimeout(r, 120));
+	await settled();
 	input.onkeydown({ key: "Tab", preventDefault() {} });
-	await new Promise((r) => setTimeout(r, 120));
+	await settled();
 	assert.equal(input.value, "/inbox ", "Tab accepts rather than sends");
 	assert.equal(sent.length, 1);
 
@@ -2460,7 +2574,7 @@ test("a reload keeps what is in the composer, in that tab only", { timeout: 20_0
 	const tab = new Map<string, string>();
 	const first = stubDom(STATE, { messages: [] }, tab);
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await first.started();
 	const box = (globalThis as any).document.getElementById("input");
 	box.value = "half a thought, not sent";
 	box.oninput();
@@ -2469,7 +2583,7 @@ test("a reload keeps what is in the composer, in that tab only", { timeout: 20_0
 	// The same tab, loaded again.
 	const second = stubDom(STATE, { messages: [] }, tab);
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await second.started();
 	const back = (globalThis as any).document.getElementById("input");
 	assert.equal(back.value, "half a thought, not sent", "and is back in the box afterwards");
 
@@ -2483,7 +2597,7 @@ test("a reload keeps what is in the composer, in that tab only", { timeout: 20_0
 	// A second tab of the same address is a tab, not the same draft: its own box stays empty.
 	const other = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await other.started();
 	assert.equal((globalThis as any).document.getElementById("input").value, "", "another tab is not handed this one's text");
 	other.dispose();
 
@@ -2495,7 +2609,7 @@ test("a reload keeps what is in the composer, in that tab only", { timeout: 20_0
 		removeItem() { throw new Error("denied"); },
 	};
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await denied.started();
 	const typed = (globalThis as any).document.getElementById("input");
 	assert.ok(denied.source(), "the page still comes up");
 	typed.value = "typed anyway";
@@ -2510,7 +2624,7 @@ test("a draft typed in another conversation of this tab stays with that conversa
 	const tab = new Map<string, string>([["pi-web-draft:another-session", "for that one"]]);
 	const dom = stubDom(STATE, { messages: [] }, tab);
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	assert.equal((globalThis as any).document.getElementById("input").value, "", "this conversation's box starts empty");
 	dom.dispose();
 });
@@ -2520,7 +2634,7 @@ test("the composer grows with a multi-line prompt, and shrinks again", { timeout
 	// error — and the box was 46px for all of them, so it was written and read through a slot.
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const input = (globalThis as any).document.getElementById("input");
 	modelComposerHeight(input);
 
@@ -2543,7 +2657,7 @@ test("the composer grows with a multi-line prompt, and shrinks again", { timeout
 	const reloaded = stubDom(STATE, { messages: [] }, tab);
 	modelComposerHeight((globalThis as any).document.getElementById("input"));
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await reloaded.started();
 	assert.equal((globalThis as any).document.getElementById("input").style.height, "62px", "a restored draft comes back as tall as it is");
 	reloaded.dispose();
 });
@@ -2561,7 +2675,7 @@ test("the model in use is in the picker even when the catalog has never heard of
 	};
 	const dom = stubDom(state, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 
 	const picker = g.document.getElementById("model");
 	const options = picker.children.flatMap((c: any) => (c.tag === "optgroup" ? c.children : [c]));
@@ -2592,12 +2706,12 @@ test("/sessions and /session export are typed here", { timeout: 20_000 }, async 
 		return realFetch(url, opts);
 	};
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = g.document;
 	const submit = async (text: string) => {
 		doc.getElementById("input").value = text;
 		await doc.getElementById("composer").onsubmit({ preventDefault() {} });
-		await new Promise((r) => setTimeout(r, 80));
+		await settled();
 	};
 	const went = (part: string) => calls.filter((c) => c.url.includes(part));
 
@@ -2629,7 +2743,7 @@ test("a tab in the background gives its connection back, and takes a new one whe
 		return realFetch(url, opts);
 	};
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const first = dom.source();
 	assert.ok(first, "subscribed on load");
 	const doc = g.document;
@@ -2671,7 +2785,7 @@ test("a tab in the background gives its connection back, and takes a new one whe
 test("the status chip says working… during a turn and nothing while idle", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const status = (globalThis as any).document.getElementById("status");
 	assert.equal(status.textContent, "", "idle is the absence of working…, not a word of its own");
 	assert.match(pageStyle().rest, /#status:empty\{display:none\}/, "and an empty chip takes no room");
@@ -2692,7 +2806,7 @@ test("a send that goes nowhere says so instead of looking alive", { timeout: 20_
 		return realFetch(url, opts);
 	};
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = g.document;
 	mock.timers.enable({ apis: ["setTimeout"] });
 	try {
@@ -2729,7 +2843,7 @@ test("the queue lists requests from every source, in order", { timeout: 20_000 }
 	const shown = { ...STATE, busy: true, requests, queue: { steering: [], followUp: ["/inbox"] } };
 	const dom = stubDom(shown, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = g.document;
 	const box = doc.getElementById("queued");
 	assert.equal(box.hidden, false, "the queue is on the screen");
@@ -2748,18 +2862,18 @@ test("the queue lists requests from every source, in order", { timeout: 20_000 }
 	assert.equal(lines[0].children[1].className, "qtext", "a queued row is still one line");
 	// The ✕ on the second row cancels that row and no other.
 	lines[1].children.at(-1).onclick();
-	await new Promise((r) => setTimeout(r, 40));
+	await settled();
 	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/queue/cancel")).map((c) => c.body), [{ id: "22222222-bbbb" }]);
 	// A message a previous page left behind is sent only when you say so.
 	lines[3].children[2].onclick();
-	await new Promise((r) => setTimeout(r, 40));
+	await settled();
 	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/queue/send")).map((c) => c.body), [{ id: "44444444-dddd" }]);
 	assert.equal(box.children.some((c: any) => String(c._text).startsWith("send queued")), false, "while a turn runs there is nothing held to send");
 	// After Stop, with pi idle and your messages still queued, nothing has to be sent by hand: the
 	// holder hands the next row over on its own (owner decision 2026-11-02), and each row keeps its ✕.
 	shown.busy = false;
 	dom.source().onmessage({ data: JSON.stringify({ type: "agent_end" }) });
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.equal(doc.getElementById("queued").children.some((c: any) => String(c._text).startsWith("send queued")), false, "no send-queued button: Stop stopped the turn, not the queue");
 	dom.dispose();
 });
@@ -2777,7 +2891,7 @@ test("a message nobody took says why and offers to send it here, unless this pag
 	];
 	const dom = stubDom({ ...STATE, busy: false, requests }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = g.document;
 	const lines = doc.getElementById("queued").children.filter((c: any) => String(c.className).startsWith("qrow"));
 	assert.deepEqual(lines.map((l: any) => l.children.map((c: any) => c._text).join(" | ")), [
@@ -2788,7 +2902,7 @@ test("a message nobody took says why and offers to send it here, unless this pag
 	], "the server's line and its offer, as given; no offer where sending here is unsafe");
 	assert.equal(lines[0].className, "qrow stuck");
 	lines[0].children[2].onclick();
-	await new Promise((r) => setTimeout(r, 40));
+	await settled();
 	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/queue/send-here")).map((c) => c.body), [{ id: "11111111-aaaa" }], "send-here names that row and no other");
 	dom.dispose();
 });
@@ -2797,11 +2911,11 @@ test("a send into a page whose own pi stands aside says so, and that pi reads it
 	const g = globalThis as any;
 	const dom = stubDom({ ...STATE, requests: [] }, { messages: [] }, new Map(), { "/prompt": { success: true, queued: "p1", aside: { pid: 777 } } });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = g.document;
 	doc.getElementById("input").value = "hello there";
 	await doc.getElementById("composer").onsubmit({ preventDefault() {} });
-	await new Promise((r) => setTimeout(r, 40));
+	await settled();
 	assert.match(dom.rendered(), /this page shows an older copy of this conversation: your message is answered once it reads the new one/, "the reason and the way out, on the page");
 	assert.doesNotMatch(dom.rendered(), /pid|777/, "where, in the page's words, with no pid");
 	dom.dispose();
@@ -2811,12 +2925,12 @@ test("a send answered elsewhere says so, and one pi refused comes back to the co
 	const g = globalThis as any;
 	const dom = stubDom({ ...STATE, requests: [] }, { messages: [] }, new Map(), { "/prompt": { success: true, queued: "p1", elsewhere: { pid: 4321 } } });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = g.document;
 	const input = doc.getElementById("input");
 	input.value = "hello there";
 	await doc.getElementById("composer").onsubmit({ preventDefault() {} });
-	await new Promise((r) => setTimeout(r, 40));
+	await settled();
 	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/prompt")).map((c) => c.body), [{ text: "hello there", images: [] }], "chat text goes to /prompt as text, nothing else");
 	const posted = dom.calls.find((c) => c.url.includes("/prompt"));
 	assert.deepEqual(
@@ -2830,11 +2944,11 @@ test("a send answered elsewhere says so, and one pi refused comes back to the co
 	// The holder found pi refused a message; the server took the row back and says so on the stream.
 	input.value = "typed since";
 	dom.source().onmessage({ data: JSON.stringify({ type: "send_failed", id: "p1", text: "hello there", images: [{ type: "image", data: "AAAA", mimeType: "image/png" }], error: "pi did not start a turn for it" }) });
-	await new Promise((r) => setTimeout(r, 40));
+	await settled();
 	assert.equal(input.value, "hello there\ntyped since", "the text is back in the composer, ahead of what was typed since");
 	assert.equal(doc.getElementById("thumbs").children.length, 1, "with its image");
 	assert.match(dom.rendered(), /pi did not start a turn for it/, "and the error is on the page");
-	assert.match(dom.rendered(), /\nnot sent\n/, "under its own label");
+	assert.match(dom.rendered(), /\nNot sent\n/, "under its own label");
 	dom.dispose();
 });
 
@@ -2843,11 +2957,11 @@ test("a message sent while others are queued is not drawn above them", { timeout
 	const queued = [{ id: "r1", label: "you", text: "beta", source: "person" }];
 	const dom = stubDom({ ...STATE, requests: queued }, { messages: [] }, new Map(), { "/prompt": { success: true, queued: "p2" } });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = g.document;
 	doc.getElementById("input").value = "gamma";
 	await doc.getElementById("composer").onsubmit({ preventDefault() {} });
-	await new Promise((r) => setTimeout(r, 40));
+	await settled();
 	assert.doesNotMatch(textOf(doc.getElementById("feed")), /gamma/, "beta runs first: gamma is drawn when pi echoes it, not now");
 	dom.dispose();
 });
@@ -2883,11 +2997,11 @@ async function startPage(state: unknown, answers: Record<string, unknown>, store
 		(globalThis as any).localStorage = { getItem: (k: string) => local.get(k) ?? null, setItem: (k: string, v: string) => void local.set(k, v) };
 	}
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	return dom;
 }
 
-test("the list shows this project's conversations, grouped Today and Earlier when both are there, with the open one marked, and each row is its address", { timeout: 20_000 }, async () => {
+test("the list shows this project's conversations under a Conversations heading, grouped Today and Earlier when both are there, with the open one marked, and each row is its address", { timeout: 20_000 }, async () => {
 	const dom = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
 	const call = dom.calls.find((c) => c.url.startsWith("/conversations"));
 	assert.ok(call, "the page asked for the list");
@@ -2898,8 +3012,8 @@ test("the list shows this project's conversations, grouped Today and Earlier whe
 	assert.deepEqual(rows.map((r) => r.href), [`/c/${SESSION_UNDER_TEST}/`, "/c/held-one/", "/c/loop-one/"], "a row loads that conversation's own page");
 	assert.match(rows[0].className, /\bon\b/, "the open conversation is marked");
 	assert.doesNotMatch(rows[1].className, /\bon\b/);
-	const groups = ((globalThis as any).document.getElementById("convs").children as any[]).filter((c) => c.className === "grp").map((c) => c._text);
-	assert.deepEqual(groups, ["Today", "Earlier"]);
+	const headings = () => ((globalThis as any).document.getElementById("convs").children as any[]).filter((c) => /^grp\b/.test(c.className)).map((c) => [c.className, c._text]);
+	assert.deepEqual(headings(), [["grp", "Conversations"], ["grp sub", "Today"], ["grp sub", "Earlier"]], "headed as Needs you and News are, with the days under it");
 	assert.match(textOf(rows[2]), /⚑ 2/, "what needs you is counted on its row");
 	assert.match(textOf(rows[2]), /queued 1/, "and what is queued for it");
 	assert.equal((globalThis as any).document.getElementById("project").value, "/work/api", "the switcher is on this project");
@@ -2907,7 +3021,7 @@ test("the list shows this project's conversations, grouped Today and Earlier whe
 	dom.dispose();
 	const today = await startPage(STATE, { "/conversations": listAnswer(ROWS.slice(0, 2)) });
 	assert.equal(rowsOf().length, 2);
-	assert.deepEqual(((globalThis as any).document.getElementById("convs").children as any[]).filter((c) => c.className === "grp"), [], "one group has no heading");
+	assert.deepEqual(headings(), [["grp", "Conversations"]], "one day has no label of its own");
 	today.dispose();
 });
 
@@ -3028,7 +3142,7 @@ test("choosing another project asks for that project's list by its cwd", { timeo
 	assert.doesNotMatch(src, /id="cwd"/, "the header does not say the project a second time");
 	picker.value = "/work/web";
 	picker.onchange();
-	await new Promise((r) => setTimeout(r, 50));
+	await settled();
 	assert.equal(dom.calls.filter((c) => c.url.startsWith("/conversations")).at(-1)?.url, `/conversations?session=${SESSION_UNDER_TEST}&cwd=%2Fwork%2Fweb`);
 	dom.dispose();
 });
@@ -3041,7 +3155,7 @@ test("+ New starts the conversation in the project the list shows: a new session
 	g.location.assign = (u: string) => void assigned.push(u);
 	// The open conversation's project: today's new session in this page's pi.
 	g.document.getElementById("newConv").onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.ok(dom.calls.some((c) => c.url.endsWith("/session/new")), "the open project's + New swaps this page's pi");
 	assert.ok(!dom.calls.some((c) => c.url === "/conversations/new"), "and starts no other pi");
 	// Another project picked: the server starts one there, and the page goes to it.
@@ -3049,10 +3163,10 @@ test("+ New starts the conversation in the project the list shows: a new session
 	const picker = g.document.getElementById("project");
 	picker.value = "/work/web";
 	await picker.onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	const swaps = dom.calls.filter((c) => c.url.endsWith("/session/new")).length;
 	g.document.getElementById("newConv").onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	const post = dom.calls.find((c) => c.url === "/conversations/new");
 	assert.deepEqual(post?.body, { cwd: "/work/web" });
 	assert.equal(post?.headers?.["x-pi-web-token"], "test-token");
@@ -3061,7 +3175,7 @@ test("+ New starts the conversation in the project the list shows: a new session
 	// Refused (the page is full): the reason, and the page stays.
 	answers["/conversations/new"] = { __status: 503, __body: { error: "6 conversations are open in the page and none of them is idle; close one to open another" } };
 	g.document.getElementById("newConv").onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.match(dom.rendered(), /No new conversation in web: 6 conversations are open in the page/);
 	assert.deepEqual(assigned, ["/c/new-web/"]);
 	dom.dispose();
@@ -3083,7 +3197,7 @@ test("on a phone one pane shows at a time, picked by the Inbox, Chat and Loops t
 	const pushed: string[] = [];
 	g.history.pushState = (_s: unknown, _t: string, url: string) => void pushed.push(url);
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	assert.equal(g.document.body.dataset.pane, "loops", "the address picks the pane");
 	g.document.getElementById("tabInbox").onclick({ preventDefault() {} });
 	assert.equal(g.document.body.dataset.pane, "inbox");
@@ -3142,7 +3256,7 @@ test("a draft kept under the key before 0.24 comes back once, in this conversati
 	const tab = new Map<string, string>([["pi-web-draft", "typed before the upgrade"]]);
 	const dom = stubDom(STATE, { messages: [] }, tab);
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	assert.equal((globalThis as any).document.getElementById("input").value, "typed before the upgrade");
 	assert.equal(tab.has("pi-web-draft"), false, "the old key is gone, so no other conversation is handed it");
 	assert.equal(tab.get(`pi-web-draft:${SESSION_UNDER_TEST}`), "typed before the upgrade");
@@ -3206,7 +3320,7 @@ test("the open conversation keeps its title while the list shows another project
 	answers["/conversations"] = listAnswer([{ sessionId: "w1", title: "landing page" }], { cwd: "/work/web" });
 	doc.getElementById("project").value = "/work/web";
 	doc.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 50));
+	await settled();
 	assert.deepEqual(rowsOf().map((r) => r.dataset.conv), ["w1"]);
 	assert.equal(doc.getElementById("title")._text, "fix the cache", "still its title, not its id");
 	dom.dispose();
@@ -3223,10 +3337,10 @@ test("a conversation opened from far down the list is scrolled into view, once",
 		return e;
 	};
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	assert.deepEqual(scrolled, [SESSION_UNDER_TEST]);
 	g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 50));
+	await settled();
 	assert.deepEqual(scrolled, [SESSION_UNDER_TEST], "a later draw leaves the scroll you chose");
 	dom.dispose();
 });
@@ -3262,7 +3376,7 @@ async function inboxPage(answers: Record<string, unknown> = {}) {
 	const all: Record<string, unknown> = { "/inbox?": INBOX, ...answers };
 	const dom = stubDom(STATE, { messages: [] }, new Map(), all);
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const cards = () => dom.made.filter((m: any) => m.tag === "article" && m.dataset.inb);
 	const texts = (el: any): string[] => [el._text, ...el.children.flatMap((c: any) => (c && typeof c === "object" ? texts(c) : []))];
 	const button = (card: any, label: string): any => {
@@ -3273,7 +3387,7 @@ async function inboxPage(answers: Record<string, unknown> = {}) {
 		const b = button(card, label);
 		assert.ok(b, `a "${label}" button on the card`);
 		card._on.click({ target: b });
-		await new Promise((r) => setTimeout(r, 60));
+		await settled();
 	};
 	return { dom, cards, texts, button, click, answers: all };
 }
@@ -3337,7 +3451,7 @@ test("a card whose conversation is gone runs in this one in its own project, and
 	// The open conversation's project (/work/api): today's words, and Yes claims into this one.
 	const here = await inboxPage({ "/inbox?": { ...INBOX, cards: [gone] }, "/inbox/claim": { ok: true, id: gone.id, delivery: "page", conversation: SESSION_UNDER_TEST, line: "Running in its conversation." } });
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	let card = here.cards().at(-1);
 	assert.ok(here.texts(card).join("|").includes("its conversation is gone; runs here"), here.texts(card).join("|"));
 	await here.click(card, "Yes, do it here");
@@ -3349,14 +3463,14 @@ test("a card whose conversation is gone runs in this one in its own project, and
 	const assigned: string[] = [];
 	g.location.assign = (u: string) => void assigned.push(u);
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	card = there.cards().at(-1);
 	const said = there.texts(card).join("|");
 	assert.ok(said.includes("its conversation is gone; runs in a new conversation in web"), said);
 	assert.ok(!said.includes("in this one"), said);
 	assert.ok(!there.button(card, "Yes, do it here"), "it is not done here");
 	await there.click(card, "Yes, do it");
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	const posts = there.dom.calls.filter((c) => c.url === "/conversations/new" || c.url === "/inbox/claim").map((c) => [c.url, c.body]);
 	assert.deepEqual(posts, [["/conversations/new", { cwd: "/work/web" }], ["/inbox/claim", { id: gone.id, from: "new-web" }]], "the new conversation first, then the claim into it");
 	assert.deepEqual(assigned, ["/c/new-web/"]);
@@ -3364,10 +3478,10 @@ test("a card whose conversation is gone runs in this one in its own project, and
 	// The new conversation cannot start: nothing is claimed, the card says why, and Yes is live again.
 	const full = await inboxPage({ "/inbox?": { ...INBOX, cwd: "/work/web", cards: [{ ...gone, cwd: "/work/web" }] }, "/conversations/new": { __status: 503, __body: { error: "6 conversations are open in the page and none of them is idle; close one to open another" } } });
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	card = full.cards().at(-1);
 	await full.click(card, "Yes, do it");
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.ok(!full.dom.calls.some((c) => c.url === "/inbox/claim"), "nothing claimed");
 	assert.ok(full.texts(card).some((t) => /^Not sent: 6 conversations are open in the page/.test(t)), full.texts(card).join("|"));
 	assert.equal(full.button(card, "Yes, do it").disabled, false);
@@ -3378,7 +3492,7 @@ test("the Loops pane lists loops: no inbox count and no summary line, and its ra
 	const g = globalThis as any;
 	const dom = stubDom({ ...STATE, automation: { ...STATE.automation, inboxNew: 9, inboxDecisions: 4 } }, { messages: [] }, new Map(), { "/inbox?": { ...INBOX, more: 3 } });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const panel = String(g.document.getElementById("auto").innerHTML);
 	assert.doesNotMatch(panel, /inbox <b>|job\(s\)|rule\(s\)/, panel);
 	const src = PAGE;
@@ -3391,7 +3505,7 @@ test("the Loops pane lists loops: no inbox count and no summary line, and its ra
 test("more new findings than the cards show is a count, with no terminal command", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] }, new Map(), { "/inbox?": { ...INBOX, more: 3 } });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	assert.match(dom.rendered(), /^\+ 3 more$/m);
 	assert.doesNotMatch(dom.rendered(), /\/inbox lists/);
 	dom.dispose();
@@ -3412,9 +3526,9 @@ test("a control has a title only when it says what its label does not", { timeou
 	assert.equal(tag("clear"), "#clear missing", "+ New in this project is the new conversation; no second button does it");
 	const dom = await startPage(STATE, {});
 	const doc = (globalThis as any).document;
-	assert.equal(doc.getElementById("theme")._text, "theme: system", "the theme in words, not a glyph");
+	assert.equal(doc.getElementById("theme")._text, "Theme: system", "the theme in words, not a glyph");
 	doc.getElementById("theme").onclick();
-	assert.equal(doc.getElementById("theme")._text, "theme: light");
+	assert.equal(doc.getElementById("theme")._text, "Theme: light");
 	doc.getElementById("expand").onclick();
 	assert.equal(doc.getElementById("theme").title, undefined, "no title written when the theme changes");
 	assert.equal(doc.getElementById("expand").title, undefined, "nor when the steps open");
@@ -3441,14 +3555,14 @@ test("a project-owned card listed for another project runs in a new conversation
 	const assigned: string[] = [];
 	g.location.assign = (u: string) => void assigned.push(u);
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	const card = there.cards().at(-1);
 	const said = there.texts(card).join("|");
 	assert.ok(said.includes("runs in a new conversation in web"), said);
 	assert.ok(!said.includes("runs in the conversation you claim it from"), said);
 	assert.ok(!there.button(card, "Yes, do it here"), "it is not done here");
 	await there.click(card, "Yes, do it");
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	const posts = there.dom.calls.filter((c) => c.url === "/conversations/new" || c.url === "/inbox/claim").map((c) => [c.url, c.body]);
 	assert.deepEqual(posts, [["/conversations/new", { cwd: "/work/web" }], ["/inbox/claim", { id: owned.id, from: "new-web" }]]);
 	assert.deepEqual(assigned, ["/c/new-web/"]);
@@ -3523,7 +3637,7 @@ test("a claim's card follows the server: queued while its row waits, then says i
 	// The server now lists it as handled, with the line of where it waits.
 	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [{ ...DECISION_CARD, status: "claimed", line: "Queued for your terminal." }] };
 	await click(cards()[0], "Yes, do it");
-	await new Promise((r) => setTimeout(r, 200));
+	await settled();
 	const after = dom.calls.slice(before).map((c) => c.url);
 	assert.ok(after.some((u) => u.startsWith("/conversations?")), `the list's counts are asked for again with the cards; got ${after.join(", ")}`);
 	assert.ok(after.some((u) => u.endsWith("/state")), "and the panel's");
@@ -3533,7 +3647,7 @@ test("a claim's card follows the server: queued while its row waits, then says i
 	// The turn ran: the row is gone, the finding is no longer handled.
 	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [] };
 	await (globalThis as any).document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.ok(card() && texts(card()).includes("Handed to that conversation."), "not 'Running in' until a reload");
 	dom.dispose();
 });
@@ -3551,7 +3665,7 @@ test("a claim whose row is taken before the page looks again says it was handed 
 	// The terminal takes the row within a second: the first refresh after the claim no longer lists it.
 	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [] };
 	await click(cards()[0], "Yes, do it");
-	await new Promise((r) => setTimeout(r, 200));
+	await settled();
 	const card = cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);
 	assert.ok(texts(card).includes("Handed to that conversation."), texts(card).filter(Boolean).join(" | "));
 	dom.dispose();
@@ -3563,21 +3677,21 @@ test("a claim cancelled from this page's queue says nothing was sent and the fin
 	const answers: Record<string, unknown> = { "/inbox?": INBOX, "/inbox/claim": { ok: true, id: DECISION_CARD.id, delivery: "page", conversation: SESSION_UNDER_TEST, line: "Running in its conversation." }, "/queue/cancel": { success: true } };
 	const dom = stubDom({ ...STATE, requests: [row] }, { messages: [] }, new Map(), answers);
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const cards = () => dom.made.filter((m: any) => m.tag === "article" && m.dataset.inb === DECISION_CARD.id);
 	const texts = (el: any): string[] => [el._text, ...el.children.flatMap((c: any) => (c && typeof c === "object" ? texts(c) : []))];
 	const yes = (el: any): any => (el.tag === "button" && el._text === "Yes, do it" ? el : el.children.map((c: any) => (c && typeof c === "object" ? yes(c) : undefined)).find(Boolean));
 	const card = cards().at(-1);
 	card._on.click({ target: yes(card) });
-	await new Promise((r) => setTimeout(r, 100));
+	await settled();
 	// The row leaves the queue by its ✕; the finding stays claimed, so the server lists it nowhere.
 	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [] };
 	const line = g.document.getElementById("queued").children.find((c: any) => String(c.className).startsWith("qrow"));
 	line.children.at(-1).onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/queue/cancel")).map((c) => c.body), [{ id: "claim-1111" }]);
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	const said = texts(cards().at(-1));
 	assert.ok(said.includes("Cancelled; nothing was sent. The finding stays claimed."), said.filter(Boolean).join(" | "));
 	assert.ok(!said.includes("Handed to that conversation."));
@@ -3607,7 +3721,7 @@ test("an open reason box keeps its text, selection and focus across the list's r
 	};
 	// The list's poll draws the cards again.
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	kept("the poll");
 	// So does an action on another card.
 	answers["/inbox?"] = { ...INBOX, cards: [DECISION_CARD], handled: [] };
@@ -3617,7 +3731,7 @@ test("an open reason box keeps its text, selection and focus across the list's r
 	await click(decision(), "Cancel");
 	assert.equal(why(decision()).hidden, true);
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.equal(why(decision()).hidden, true, "a closed box stays closed across a redraw");
 	await click(decision(), "No\u2026");
 	assert.equal(field(decision()).value, "the release is Friday");
@@ -3651,16 +3765,16 @@ test("the away card says what was found since the cursor, leaves runs to the str
 	assert.deepEqual(buttons().map((b: any) => b._text), ["Mark all seen"], "the Needs you heading leads to the decisions");
 	// Mark all seen posts what the card counted, and says so while it is out, across a redraw.
 	buttons()[0].onclick();
-	await new Promise((r) => setTimeout(r, 20));
+	await settled();
 	assert.deepEqual(dom.calls.find((c) => c.url === "/inbox/seen")?.body, { cwd: "/work/api", at: AWAY_AS_OF });
 	assert.equal(buttons()[0]._text, "Marking\u2026");
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.equal(buttons()[0]._text, "Marking\u2026", "a poll in between keeps it");
 	assert.equal(buttons()[0].disabled, true);
 	answers["/inbox?"] = { ...INBOX, away: { ...AWAY, since: AWAY_AS_OF, runs: 0, failedRuns: 0, findings: 0, decisions: 0, fromThisConversation: 0, costUsd: 0 } };
 	release({ since: AWAY_AS_OF });
-	await new Promise((r) => setTimeout(r, 100));
+	await settled();
 	assert.equal(g.document.getElementById("awaySlot").children.length, 0, "the card is gone");
 	assert.ok(dom.made.some((m: any) => m.dataset?.inb === DECISION_CARD.id), "the cards stay: marking moves only the cursor");
 	dom.dispose();
@@ -3678,12 +3792,12 @@ test("the away card is not drawn again when only the answer's asOf moves, and Ma
 	for (const s of [15, 30]) {
 		answers["/inbox?"] = { ...INBOX, away: { ...AWAY, asOf: later(s) } };
 		await g.document.getElementById("project").onchange();
-		await new Promise((r) => setTimeout(r, 60));
+		await settled();
 		assert.equal(slot.children[0], card, `poll at +${s}s: the same card`);
 		assert.equal(g.document.activeElement, mark, `poll at +${s}s: the focus stays on Mark all seen`);
 	}
 	mark.onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.deepEqual(dom.calls.find((c) => c.url === "/inbox/seen")?.body, { cwd: "/work/api", at: later(30) }, "what the latest answer counted");
 	dom.dispose();
 });
@@ -3708,7 +3822,7 @@ test("the away card: the first window's words, nothing without a finding, and a 
 	assert.equal(awayText(card.children[0]), "In the last day · 3 findings");
 	assert.deepEqual(card.children[1].children.map((b: any) => b._text), ["Mark all seen"]);
 	card.children[1].children[0].onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	const after = g.document.getElementById("awaySlot").children[0];
 	assert.ok(after, "the card stays");
 	assert.equal(awayText(after.children[2]), "Not marked: no such project. Try again.");
@@ -3768,7 +3882,7 @@ async function startersPage(answers: Record<string, unknown> = {}, state: unknow
 	const all: Record<string, unknown> = { "/inbox?": { ...INBOX, cards: [], starters: STARTERS }, ...answers };
 	const dom = stubDom(state, { messages: [] }, new Map(), all);
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const g = globalThis as any;
 	const cards = () => dom.made.filter((m: any) => m.dataset?.starter && g.document.getElementById("startersSlot").children.includes(m));
 	const button = (el: any, label: string): any => (el.tag === "button" && el._text === label ? el : el.children.map((c: any) => (c && typeof c === "object" ? button(c, label) : undefined)).find(Boolean));
@@ -3784,16 +3898,16 @@ test("an empty project shows three starters, each its name, one line and Add, an
 	assert.match(awayText(cards()[0]), /^daily-digest≈ \$1\/dayEvery morning, one finding\.Add/, "the name with its cost, one line, and Add");
 	assert.match(awayText(cards()[1]), /≈ \$2\/day/);
 	button(cards()[2], "Add").onclick();
-	await new Promise((r) => setTimeout(r, 20));
+	await settled();
 	const posts = dom.calls.filter((c) => c.url === `/c/${SESSION_UNDER_TEST}/prompt`);
 	assert.deepEqual(posts.map((c) => c.body), [{ text: "/recipe add changelog-draft --level report" }], "exactly what a person may type, at report");
 	assert.ok(button(cards()[2], "Adding\u2026")?.disabled, "Adding\u2026 while the wizard runs");
 	await g.document.getElementById("project").onchange();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.ok(button(cards()[2], "Adding\u2026"), "a poll in between keeps it");
 	assert.ok(button(cards()[0], "Add") && !button(cards()[0], "Add").disabled, "the others stay live");
 	release({ success: true });
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.ok(button(cards()[2], "Add") && !button(cards()[2], "Add").disabled, "closed without installing: Add is live again");
 	assert.ok(!dom.made.some((m: any) => m._text === "or describe a loop"), "+ Watch for… is the one way to describe a loop");
 	dom.dispose();
@@ -3809,7 +3923,7 @@ test("a starter's line shows whole, never cut, and a starter that costs nothing 
 test("a starter the pi refuses says why; a terminal-held conversation shows the terminal command instead of Add", { timeout: 20_000 }, async () => {
 	const refused = await startersPage({ "/prompt": { success: false, error: "/recipe is not a command in this session (pi's terminal commands are not available over rpc)" } });
 	refused.button(refused.cards()[0], "Add").onclick();
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.match(awayText(refused.cards()[0]), /Not added: \/recipe is not a command in this session/);
 	refused.dom.dispose();
 	const held = await startersPage({}, { ...STATE, holder: { kind: "terminal", pid: 7, mine: false, delivers: true } });
@@ -3849,28 +3963,29 @@ function cardParts(card: any) {
 	const chip = (key: string) => all.find((b) => b.dataset?.key === key);
 	const foot = card.children.find((c: any) => c.className === "foot");
 	const acts = foot?.children.find((c: any) => c.className === "acts");
-	assert.ok(foot && acts, "the card ends in a footer that holds the status and the buttons");
+	assert.ok(foot, "the card ends in a footer that holds the status and, while it can be answered, the buttons");
 	assert.ok(!treeText(card).includes("Not right?"), "Read it says it: no hint under the card");
 	return {
 		text: treeText(card),
 		chip,
 		on: all.filter((b) => b.className === "on").map((b) => b._text),
-		set: acts.children.find((b: any) => b._text === "Set it up"),
-		cancel: acts.children.find((b: any) => b._text === "Cancel"),
+		buttons: all.length,
+		set: acts?.children.find((b: any) => b._text === "Set it up"),
+		cancel: acts?.children.find((b: any) => b._text === "Cancel"),
 		status: foot.children.find((c: any) => c.className === "cstat")?._text ?? "",
 	};
 }
 async function watchPage(answers: Record<string, unknown> = {}, state: Record<string, unknown> = {}, history: unknown = { messages: [] }) {
 	const dom = stubDom({ ...STATE, cwd: "/work/api", ...state }, history, new Map(), answers);
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = (globalThis as any).document;
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 	const cards = (where: "modal" | "feed") => dom.made.filter((m: any) => m.className === "plan" && (where === "modal") === (m._parent === doc.getElementById("watchCards")));
 	const read = async (sentence: string) => {
 		doc.getElementById("watchText").value = sentence;
 		doc.getElementById("watchRead").onclick();
-		await new Promise((r) => setTimeout(r, 50));
+		await settled();
 	};
 	const ask = (id: string, plan: WatchPlan, over: Record<string, unknown> = {}) => send(watchAsk(id, plan, over));
 	/** The tool's result in the same turn, as pi streams it. */
@@ -3955,6 +4070,9 @@ test("a watch question draws the card from its title and options, in the box whi
 	assert.match(card.text, /Put it in my inbox/);
 	assert.equal(doc.getElementById("watchStatus").hidden, true, "the reading line is gone");
 	assert.ok(card.cancel && card.set, "Cancel and Set it up");
+	const primaries = [doc.getElementById("watchRead"), card.set, card.cancel].filter((b: any) => b.className === "primary");
+	assert.deepEqual(primaries, [card.set], "Set it up is the one primary button while a plan is shown");
+	assert.equal(doc.getElementById("watchEx").hidden, true, "and the examples give the plan their room");
 	assert.deepEqual(cards("modal")[0]._scrolledTo, { block: "start" }, "the card is scrolled to the top of the box, so what it says comes before its buttons");
 	assert.equal(card.cancel._parent.children.indexOf(card.cancel) < card.cancel._parent.children.indexOf(card.set), true, "Cancel first, so Enter hits it");
 
@@ -4037,7 +4155,8 @@ test("the tool's result in the same turn turns every card of the question into a
 	assert.equal(cards("feed").length, 1, "the transcript gets the receipt once the question settles");
 	const receipt = cardParts(cards("feed")[0]);
 	assert.equal(receipt.status, "Set up ~/build.done appears · shows here · once");
-	assert.equal(receipt.set.disabled, true, "settled");
+	assert.equal(receipt.buttons, 0, "a receipt has nothing to press");
+	assert.match(receipt.text, /Result Show it in this conversation Repeats Once, then turn itself off/, "what was chosen, as text");
 	// A loop is named as the Loops pane names it: its name, else the first 13 characters of its id.
 	ask("ask-2", DAILY);
 	result("cron_create", `created cron job cron-${"d".repeat(32)}`, { id: `cron-${"d".repeat(32)}`, stateful: true });
@@ -4071,7 +4190,7 @@ test("Set it up closes the Watch for… box, gives the composer back and refresh
 	assert.equal(dlg.open, false, "closed once it is set up");
 	assert.equal(doc.activeElement, doc.getElementById("input"), "and the composer has the focus");
 	assert.equal(cardParts(cards("feed")[0]).status, "Set up ~/build.done appears · shows here · once", "the transcript's card keeps the receipt");
-	await new Promise((r) => setTimeout(r, 50));
+	await settled();
 	const fetched = dom.calls.slice(before).map((c) => c.url);
 	assert.ok(fetched.some((u) => /\/state$/.test(u)), `the state was fetched: ${fetched.join(", ")}`);
 	assert.ok(fetched.some((u) => /\/inbox(\?|$)/.test(u)), `the inbox was fetched: ${fetched.join(", ")}`);
@@ -4099,11 +4218,10 @@ test("a question pi answered on its own is not left waiting: the turn's end, or 
 	send({ type: "agent_end" });
 	const ended = cardParts(cards("feed")[0]);
 	assert.equal(ended.status, "Not set up");
-	assert.equal(ended.set.disabled, true);
-	ended.set.onclick();
-	assert.deepEqual(answered(), [], "an answer to it would go nowhere: none is sent");
+	assert.equal(ended.buttons, 0, "an answer to it would go nowhere: there is nothing to press");
+	assert.deepEqual(answered(), []);
 	ask("ask-2", RULE, { timeout: 30 });
-	await new Promise((r) => setTimeout(r, 80));
+	await until(() => cardParts(cards("feed").at(-1)).status !== "", "the question's own time ran out");
 	assert.equal(cardParts(cards("feed").at(-1)).status, "Not set up: nobody answered in time");
 	dom.dispose();
 });
@@ -4202,6 +4320,8 @@ test("closing the box moves a waiting card into the conversation, where it can s
 	assert.equal(dlg._on.cancel, undefined, "nothing is designed around Escape");
 	doc.getElementById("watchFor").onclick();
 	assert.equal(doc.getElementById("watchCards").children.length, 0, "the box reopens empty: the question stays in the conversation");
+	assert.equal(doc.getElementById("watchEx").hidden, false, "with its examples");
+	assert.equal(doc.getElementById("watchRead").className, "primary", "and Read it as the button to press");
 	cardParts(waiting).set.onclick();
 	assert.deepEqual(answered(), [{ id: "ask-1", value: "Set it up · this conversation · once" }], "answered from the conversation");
 	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}`, CREATED_RULE);
@@ -4241,7 +4361,7 @@ async function activityPage(answer: any, opts: { secure?: boolean; permission?: 
 	};
 	const dom = stubDom(STATE, { messages: [] }, new Map(), { "/activity": answer });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const doc = g.document;
 	const slot = () => doc.getElementById("activitySlot");
 	const texts = (el: any): string[] => [el._text, ...el.children.flatMap((c: any) => (c && typeof c === "object" ? texts(c) : []))];
@@ -4316,10 +4436,10 @@ test("a notification fires only while the tab is hidden, only once switched on, 
 	try {
 		assert.equal(asked(), 0, "permission is asked only from the click");
 		const toggle = doc.getElementById("notifyMe");
-		assert.equal(toggle._text, "notifications: off");
+		assert.equal(toggle._text, "Notifications: off");
 		await toggle._on.click();
 		assert.equal(asked(), 1);
-		assert.equal(toggle._text, "notifications: on");
+		assert.equal(toggle._text, "Notifications: on");
 		answer.attention = { ...answer.attention, newDecisions: [{ id: "inb-d2", cwd: "/work/web", headline: "Merge it?" }, ...answer.attention.newDecisions] };
 		await dom.poll();
 		assert.equal(fired.length, 0, "a visible tab is not interrupted");
@@ -4348,7 +4468,7 @@ test("on plain http the notification switch says it needs https or localhost and
 	const { doc, asked, done } = await activityPage(activityAnswer(), { secure: false });
 	try {
 		const toggle = doc.getElementById("notifyMe");
-		assert.equal(toggle._text, "notifications need https or localhost");
+		assert.equal(toggle._text, "Notifications need https or localhost");
 		assert.equal(toggle.disabled, true);
 		await toggle._on.click();
 		assert.equal(asked(), 0);
@@ -4400,7 +4520,7 @@ test("a reload that starts while another replays what it held draws each message
 	};
 	try {
 		await new Function(pageScript())();
-		await new Promise((r) => setTimeout(r, 400));
+		await dom.started();
 		const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 		const before = dom.calls.length;
 		answers.push({ ...history, seq: 5, epoch: "aaa" }, { messages: [...history.messages, { role: "user", content: [{ type: "text", text: "LATEQ" }] }], seq: 2, epoch: "bbb" });
@@ -4409,7 +4529,7 @@ test("a reload that starts while another replays what it held draws each message
 		state.epoch = "bbb";
 		send({ type: "agent_start", seq: 1, epoch: "bbb" });
 		send({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "LATEQ" }] }, seq: 2, epoch: "bbb" });
-		await new Promise((r) => setTimeout(r, 300));
+		await settled();
 		const text = feedText();
 		assert.equal((text.match(/LATEQ/g) ?? []).length, 1, `the held message is drawn once; the feed: ${text.replace(/\s+/g, " ").trim()}`);
 		assert.match(text, /LATE(?!Q)[\s\S]*LATEQ/, "and after the message before it");
@@ -4425,15 +4545,15 @@ test("the terminal's answer arrives as one numbered reread: one reload, with its
 	const dom = stubDom(state, history);
 	try {
 		await new Function(pageScript())();
-		await new Promise((r) => setTimeout(r, 400));
+		await dom.started();
 		const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 		const before = dom.calls.length;
 		history.messages = [...history.messages, { role: "assistant", content: [{ type: "text", text: "ANSWER" }] }];
 		history.seq = 4;
 		send({ type: "reread", why: "your terminal answered — the conversation above was read again", seq: 4, epoch: "aaa" });
-		await new Promise((r) => setTimeout(r, 200));
+		await settled();
 		send({ type: "message_start", seq: 5, epoch: "aaa" });
-		await new Promise((r) => setTimeout(r, 200));
+		await settled();
 		const text = feedText();
 		assert.equal(dom.calls.slice(before).filter((c) => c.url.includes("/history")).length, 1, "one reload, and the next event is no gap");
 		assert.match(text, /your terminal answered/);
@@ -4449,7 +4569,7 @@ test("while the terminal answers, the held line says since when", { timeout: 20_
 	const dom = stubDom({ ...STATE, holder: { kind: "terminal", pid: 9, mine: false, delivers: true, aside: false, piLoops: true, turnSince: since } }, { messages: [] });
 	try {
 		await new Function(pageScript())();
-		await new Promise((r) => setTimeout(r, 400));
+		await dom.started();
 		const held = (globalThis as any).document.getElementById("held");
 		const words = [held._text, ...held.children.map((c: any) => c._text)].join(" ");
 		assert.match(words, /answering since \d/);
@@ -4476,11 +4596,11 @@ test("a held conversation read again shows its three run cards, and a card saved
 	const dom = stubDom(state, history);
 	try {
 		await new Function(pageScript())();
-		await new Promise((r) => setTimeout(r, 400));
+		await dom.started();
 		const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 		history.seq = 4;
 		send({ type: "reread", why: "your terminal answered — the conversation above was read again", seq: 4, epoch: "aaa" });
-		await new Promise((r) => setTimeout(r, 200));
+		await settled();
 		const text = feedText();
 		assert.equal((text.match(/cron todo/g) ?? []).length, 3, `three cards after the reload; the feed: ${text.replace(/\s+/g, " ").trim()}`);
 		assert.match(text, /start a loop[\s\S]*5s · 0 findings[\s\S]*4s · 1 finding[\s\S]*FAILED · 2s · <b>500<\/b>/, "in file order, as text");
@@ -4490,7 +4610,7 @@ test("a held conversation read again shows its three run cards, and a card saved
 		assert.ok(views.length >= 3, "each card is drawn as a view row");
 		send({ type: "entry_appended", entry: { type: "custom", customType: "pi-loops:view", data: { title: "cron todo · 3s · 2 findings", lines: [] } }, seq: 5, epoch: "aaa" });
 		send({ type: "entry_appended", entry: { type: "custom", customType: "trigger_result", data: { state: "completed" } }, seq: 6, epoch: "aaa" });
-		await new Promise((r) => setTimeout(r, 100));
+		await settled();
 		assert.equal((feedText().match(/cron todo/g) ?? []).length, 4, "the card saved by the page's pi is drawn once; another entry is not");
 	} finally {
 		dom.dispose();
@@ -4516,18 +4636,18 @@ test("a run card in the transcript and replayed as it landed is drawn once, by i
 	const dom = stubDom(state, history);
 	try {
 		await new Function(pageScript())();
-		await new Promise((r) => setTimeout(r, 400));
+		await dom.started();
 		const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
 		send({ type: "entry_appended", entry: { type: "custom", customType: "pi-loops:view", id: "c9", data: { title: "cron todo · 5s · 0 findings", lines: [] } }, seq: 4, epoch: "aaa" });
 		send({ type: "entry_appended", entry: { type: "custom", customType: "pi-loops:view", id: "c10", data: { title: "cron todo · 4s · 1 finding", lines: [] } }, seq: 5, epoch: "aaa" });
-		await new Promise((r) => setTimeout(r, 100));
+		await settled();
 		const text = feedText();
 		assert.equal((text.match(/5s · 0 findings/g) ?? []).length, 1, "the card already in the transcript is not drawn again");
 		assert.equal((text.match(/4s · 1 finding/g) ?? []).length, 1, "a new card is drawn");
 		history.messages = [...history.messages, { role: "pi-loops:view", id: "c10", title: "cron todo · 4s · 1 finding", lines: [] }];
 		history.seq = 6;
 		send({ type: "reread", why: "your terminal answered — the conversation above was read again", seq: 6, epoch: "aaa" });
-		await new Promise((r) => setTimeout(r, 200));
+		await settled();
 		assert.equal((feedText().match(/cron todo/g) ?? []).length, 2, "a reload draws each card once again");
 	} finally {
 		dom.dispose();
@@ -4591,7 +4711,7 @@ test("Stop it posts the whole run id to /loops/stop; the row says stopping, then
 	try {
 		press(buttonIn(loopSlot(), "Stop this run"));
 		press(buttonIn(loopSlot(), "Stop it"));
-		await new Promise((r) => setTimeout(r, 50));
+		await settled();
 		const sent = dom.calls.filter((c) => c.url.includes("/loops/stop"));
 		assert.deepEqual(sent.map((c) => [c.url, c.body, c.headers?.["x-pi-web-token"]]), [["/loops/stop", { runId: LOOP_RUN }, "test-token"]], "not under /c/<session>/: it starts no pi");
 		assert.match(textOf(loopSlot()), /stopping…/);
@@ -4606,7 +4726,7 @@ test("Stop it posts the whole run id to /loops/stop; the row says stopping, then
 		await dom.poll();
 		press(buttonIn(loopSlot(), "Stop this run"));
 		press(buttonIn(loopSlot(), "Stop it"));
-		await new Promise((r) => setTimeout(r, 50));
+		await settled();
 		state.automation.jobs[0] = { ...state.automation.jobs[0], running: false, run: undefined, lastEnd: { runId: next } };
 		await dom.poll();
 		assert.match(textOf(loopSlot()), /The run ended\./);
@@ -4631,7 +4751,7 @@ test("a run that ends while its confirm is open says so; a stop that came too la
 		await dom.poll();
 		press(buttonIn(loopSlot(), "Stop this run"));
 		press(buttonIn(loopSlot(), "Stop it"));
-		await new Promise((r) => setTimeout(r, 50));
+		await settled();
 		assert.match(textOf(loopSlot()), /It finished before the stop reached it\./);
 	} finally {
 		dom.dispose();
@@ -4645,7 +4765,7 @@ test("a loop row shows its 30-day signal and one suggestion; Keep and the sugges
 		assert.equal(allUnder(loopSlot()).find((e: any) => e.className === "signal")?._text, "6 findings in 30 days · 6 dismissed · quiet ×12", "only the parts that are not zero");
 		assert.ok(buttonIn(loopSlot(), "Run hourly instead"));
 		press(buttonIn(loopSlot(), "Keep"));
-		await new Promise((r) => setTimeout(r, 50));
+		await settled();
 		assert.deepEqual(dom.calls.filter((c) => c.url === "/loops/tune").map((c) => c.body), [{ jobId: "cron-aaaaaaaa", key: suggestion.key, choice: "keep" }]);
 	} finally {
 		dom.dispose();
@@ -4682,7 +4802,7 @@ test("a suggestion that changed under the page says so instead of acting; nothin
 		await dom.poll();
 		assert.equal(dom.calls.filter((c) => c.url === "/loops/tune").length, 0, "drawing a suggestion sends nothing");
 		press(buttonIn(loopSlot(), "Pause"));
-		await new Promise((r) => setTimeout(r, 50));
+		await settled();
 		assert.deepEqual(dom.calls.filter((c) => c.url === "/loops/tune").map((c) => c.body), [{ jobId: "cron-aaaaaaaa", key: suggestion.key, choice: "apply" }]);
 		assert.match(textOf(loopSlot()), /The suggestion changed/);
 	} finally {
@@ -4778,7 +4898,7 @@ test("right after Apply the row's next run and the note say one time, in one for
 		// The answer is in, and the store has the new schedule; next-runs.json still has the old time.
 		state.automation.jobs[0] = { ...state.automation.jobs[0], schedule: "every 1h", suggestion: undefined };
 		press(buttonIn(loopSlot(), "Run hourly instead"));
-		await new Promise((r) => setTimeout(r, 100));
+		await settled();
 		const shown = soonWords(nextAt);
 		const html = (globalThis as any).document.getElementById("auto").innerHTML;
 		assert.ok(html.includes(`next ${shown}`), `the row's next run is the applied one: ${html.slice(0, 400)}`);
@@ -4804,10 +4924,16 @@ test("an applied next run that has passed gives way to the store's, so a row nev
 	try {
 		state.automation.jobs[0] = { ...state.automation.jobs[0], schedule: "every 1h", suggestion: undefined };
 		press(buttonIn(loopSlot(), "Run hourly instead"));
-		await new Promise((r) => setTimeout(r, 100));
+		await settled();
 		assert.ok((globalThis as any).document.getElementById("auto").innerHTML.includes(shown(nextAt)), "the applied time while it is ahead");
-		await new Promise((r) => setTimeout(r, 1200));
-		await dom.poll();
+		// A poll after the applied time has passed.
+		const realNow = Date.now;
+		Date.now = () => realNow() + 1200;
+		try {
+			await dom.poll();
+		} finally {
+			Date.now = realNow;
+		}
 		const html = (globalThis as any).document.getElementById("auto").innerHTML;
 		assert.ok(!html.includes(shown(nextAt)), `a passed time is not a next run: ${html.slice(0, 400)}`);
 		assert.ok(html.includes(shown(stored)), "the store's answer instead");
@@ -4848,7 +4974,7 @@ test("the cost badge waits for a cost, and the composer says only Message pi", {
 	for (const [stats, want] of [[{ cost: 0, tokens: { total: 0 }, contextUsage: { percent: 0 } }, ""], [{ cost: 0.0123, tokens: { total: 4200 }, contextUsage: { percent: 3 } }, "$0.012 · 4k · ctx 3%"]] as const) {
 		const dom = stubDom(STATE, { messages: [] }, new Map(), { "/stats": stats });
 		await new Function(pageScript())();
-		await new Promise((r) => setTimeout(r, 400));
+		await dom.started();
 		await dom.poll();
 		const doc = (globalThis as any).document;
 		assert.equal(doc.getElementById("cost").textContent, want, JSON.stringify(stats));
@@ -4861,14 +4987,14 @@ test("the cost badge waits for a cost, and the composer says only Message pi", {
 test("the cost badge takes no room until something is spent, at every width", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] }, new Map(), { "/stats": { cost: 0, tokens: { total: 0 }, contextUsage: { percent: 0 } } });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	await dom.poll();
 	const doc = (globalThis as any).document;
 	assert.equal(doc.getElementById("cost").hidden, true, "nothing spent: no empty pill");
 	dom.dispose();
 	const spent = stubDom(STATE, { messages: [] }, new Map(), { "/stats": { cost: 0.0123, tokens: { total: 4200 }, contextUsage: { percent: 3 } } });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await spent.started();
 	await spent.poll();
 	assert.equal((globalThis as any).document.getElementById("cost").hidden, false, "a cost: the pill");
 	spent.dispose();
@@ -4912,7 +5038,7 @@ test("a created watch read back from the transcript settles nothing and fetches 
 	history.messages = [{ role: "toolResult", toolName: "cron_create", toolCallId: "c0", content: [{ type: "text", text: `created cron job cron-${"e".repeat(32)}` }], details: { id: `cron-${"e".repeat(32)}`, stateful: true } }];
 	const before = dom.calls.filter((c) => c.url.includes("/inbox")).length;
 	send({ type: "reread", why: "read again", seq: 99, epoch: "x" });
-	await new Promise((r) => setTimeout(r, 200));
+	await settled();
 	assert.equal(dom.calls.filter((c) => c.url.includes("/inbox")).length, before, "no inbox fetch for a receipt read back");
 	assert.equal(cardParts(cards("feed").at(-1)).status, "", "and the waiting question is still waiting");
 	dom.dispose();
@@ -4941,14 +5067,14 @@ test("+ New starts with an empty, focused composer; the draft stays with the con
 	const history: any = { messages: [], epoch: "e1", seq: 0 };
 	const dom = stubDom(state, history, tab, { "/session/new": { success: true, data: { cancelled: false }, sessionId: "new-id" } });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const input = g.document.getElementById("input");
 	assert.equal(g.document.activeElement, input, "the composer has the focus on load");
 	input.value = "half a thought";
 	input.oninput();
 	g.document.activeElement = undefined;
 	g.document.getElementById("newConv").onclick();
-	await new Promise((r) => setTimeout(r, 200));
+	await settled();
 	assert.equal(input.value, "", "the new conversation's box is empty: Enter cannot send the old draft into it");
 	assert.equal(g.document.activeElement, input, "and has the focus");
 	assert.equal(tab.get(`pi-web-draft:${SESSION_UNDER_TEST}`), "half a thought", "the draft is kept for the conversation it was typed in");
@@ -4956,7 +5082,7 @@ test("+ New starts with an empty, focused composer; the draft stays with the con
 	// Going back to that conversation brings the draft back.
 	const back = stubDom(STATE, { messages: [] }, tab);
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await back.started();
 	assert.equal(g.document.getElementById("input").value, "half a thought");
 	back.dispose();
 });
@@ -4965,7 +5091,7 @@ test("the first message names the conversation at once, and the list is asked ag
 	const g = globalThis as any;
 	const dom = stubDom({ ...STATE, sessionName: undefined, messageCount: 0 }, { messages: [] }, new Map(), { "/conversations": listAnswer([]) });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const title = g.document.getElementById("title");
 	assert.equal(title._text, "New conversation");
 	const lists = () => dom.calls.filter((c) => c.url.startsWith("/conversations?")).length;
@@ -4973,11 +5099,11 @@ test("the first message names the conversation at once, and the list is asked ag
 	g.document.getElementById("input").value = "fix the flaky\n  cache test";
 	await g.document.getElementById("composer").onsubmit({ preventDefault() {} });
 	assert.equal(title._text, "fix the flaky cache test", "the header says what was said, not the id");
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.ok(lists() > before, "the list is asked for now, not at the next poll");
 	const atSend = lists();
 	dom.source().onmessage({ data: JSON.stringify({ type: "agent_end" }) });
-	await new Promise((r) => setTimeout(r, 60));
+	await settled();
 	assert.ok(lists() > atSend, "and again when the turn ends, once pi has written the conversation");
 	dom.dispose();
 });
@@ -4986,7 +5112,7 @@ test("an empty conversation offers no undo, compact or resume, and stop takes se
 	const g = globalThis as any;
 	const dom = stubDom({ ...STATE, messageCount: 0 }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await dom.started();
 	const shown = (id: string) => !g.document.getElementById(id).hidden;
 	assert.deepEqual(["undo", "compact", "resume", "send", "stop"].map(shown), [false, false, false, true, false], "nothing said yet: send alone");
 	dom.source().onmessage({ data: JSON.stringify({ type: "agent_start" }) });
@@ -4994,7 +5120,7 @@ test("an empty conversation offers no undo, compact or resume, and stop takes se
 	dom.dispose();
 	const said = stubDom({ ...STATE, messageCount: 4 }, { messages: [] });
 	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
+	await said.started();
 	assert.deepEqual(["undo", "compact", "resume", "send", "stop"].map(shown), [true, true, true, true, false]);
 	said.dispose();
 });
@@ -5004,6 +5130,8 @@ test("the header is opaque, and on a phone it is one row", () => {
 	assert.match(/(?:^|\n)header\{([^}]*)\}/.exec(css)?.[1] ?? "", /background:var\(--bg\)/, "the feed's top edge is the header's edge");
 	const phone = /@media \(max-width:900px\)\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
 	assert.match(phone, /header\{[^}]*flex-wrap:nowrap/, "title, pickers and buttons share one row");
+	const narrow = /@media \(max-width:760px\)\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
+	assert.match(narrow, /header>#model,header>#thinking\{display:none\}/, "on a phone the title has the row: the pickers are in the sheet");
 	assert.doesNotMatch(phone, /header>b\{[^}]*flex:1 1 100%/, "the title has no row of its own");
 });
 
@@ -5027,7 +5155,7 @@ test("the page's text comes in four sizes, each named once on the root", () => {
 	// styles, so the sheet is the only place a size can be read. It checks values, not formatting.
 	const css = fs.readFileSync(path.join(process.cwd(), "src", "web", "page.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 	const tokens = [...css.matchAll(/--fs-([a-z]+):([^;}]+)/g)].map((m) => [m[1], m[2].trim()]);
-	assert.deepEqual(tokens, [["xs", "11px"], ["sm", "13px"], ["md", "15px"], ["lg", "16px"]]);
+	assert.deepEqual(tokens, [["xs", "11px"], ["sm", "13px"], ["md", "15px"], ["lg", "18px"]]);
 	const token = /^var\(--fs-(xs|sm|md|lg)\)$/;
 	const sizes = [...css.matchAll(/font-size:([^;}]+)/g)].map((m) => m[1].trim());
 	// A shorthand's size is the word before the family, with its line height after a slash.
@@ -5039,4 +5167,148 @@ test("the page's text comes in four sizes, each named once on the root", () => {
 	// The pairing code is read off one screen to type into another: twice the large size.
 	const off = [...sizes, ...shorthands].filter((v) => !token.test(v) && v !== "calc(var(--fs-lg) * 2)");
 	assert.deepEqual(off, [], "every font size is one of the four tokens");
+});
+
+test("a paused loop and the slash row the keys are on read at 4.5:1 or more in both themes, and the selected row is not the hover row", () => {
+	// Read from the style sheet, as the placeholder's contrast is: the stub computes no styles.
+	const { tokens, rest } = pageStyle();
+	const scheme = (start: string) => Object.fromEntries([...tokens.slice(tokens.indexOf(start)).split("}")[0].matchAll(/--([a-z0-9-]+):([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
+	const rule = (sel: string) => rest.split("}").map((r) => r.replace(/\/\*[\s\S]*?\*\//g, "").trim()).find((r) => r.startsWith(sel + "{"))?.slice(sel.length + 1) ?? "";
+	const prop = (decl: string, name: string, t: Record<string, string>) => (new RegExp(`(?:^|;)${name}:([^;]+)`).exec(decl)?.[1].trim() ?? "").replace(/var\(--([a-z0-9-]+)\)/g, (_, k) => t[k]);
+	/** An `rgb(r g b / a)` laid over a #rrggbb paper, as #rrggbb. */
+	const over = (c: string, paper: string) => {
+		if (c.startsWith("#")) return c;
+		const [r, g, b, a] = c.replace(/[^\d. ]/g, " ").trim().split(/\s+/).map(Number);
+		return "#" + [r, g, b].map((v, i) => Math.round(v * a + parseInt(paper.slice(1 + 2 * i, 3 + 2 * i), 16) * (1 - a)).toString(16).padStart(2, "0")).join("");
+	};
+	const paused = rule(".card.off,.card.off b,.card.off pre");
+	assert.ok(paused, "a paused card has a rule of its own");
+	assert.doesNotMatch(paused, /opacity/, "and no opacity on its words");
+	const sel = rule("#pop div.sel");
+	const hover = rule("#pop div:hover");
+	const light = scheme(":root{");
+	const dark = { ...light, ...scheme("html[data-theme=dark]{") };
+	for (const [name, t] of [["light", light], ["dark", dark]] as const) {
+		const ratio = contrast(prop(paused, "color", t), t.panel2);
+		assert.ok(ratio >= 4.5, `${name}: a paused card's text is ${ratio.toFixed(2)}:1`);
+		const selBg = over(prop(sel, "background", t), t.panel);
+		assert.ok(contrast(t.fg, selBg) >= 4.5, `${name}: text on the selected row`);
+		assert.notEqual(selBg, over(prop(hover, "background", t), t.panel), `${name}: the selected row is not the hover row`);
+	}
+});
+
+/* ------------------------------------------------------------------ saying what failed */
+
+const FAILED_REPLY = { role: "assistant", content: [], stopReason: "error", errorMessage: "Connection error." };
+/** The error rows in the conversation now, as a person reads them. */
+const errorRows = (dom: { made: any[] }) => dom.made.filter((m: any) => m.className === "row err" && m._parent === (globalThis as any).document.getElementById("feed")).map(textOf);
+
+test("a reply the model call failed on is one error row with the reason, live and from the transcript, and its retries count on that row", { timeout: 20_000 }, async () => {
+	const said = { role: "user", content: [{ type: "text", text: "hello" }] };
+	const live = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await live.started();
+	const end = (message: unknown) => {
+		live.source().onmessage({ data: JSON.stringify({ type: "message_start" }) });
+		live.source().onmessage({ data: JSON.stringify({ type: "message_end", message }) });
+	};
+	end(FAILED_REPLY);
+	assert.deepEqual(errorRows(live), ["Error Connection error."], "the reason, the first time it fails");
+	end(FAILED_REPLY);
+	end(FAILED_REPLY);
+	assert.deepEqual(errorRows(live), ["Error Connection error. (tried 3 times)"], "pi's retries count on the one row");
+	end({ ...FAILED_REPLY, errorMessage: "401 Unauthorized" });
+	end(said);
+	end(FAILED_REPLY);
+	assert.deepEqual(errorRows(live), ["Error Connection error. (tried 3 times)", "Error 401 Unauthorized", "Error Connection error."], "another reason, or a failure after another message, is a row of its own");
+	live.dispose();
+
+	const reloaded = stubDom(STATE, { messages: [said, FAILED_REPLY, FAILED_REPLY, FAILED_REPLY, FAILED_REPLY] });
+	await new Function(pageScript())();
+	await reloaded.started();
+	assert.deepEqual(errorRows(reloaded), ["Error Connection error. (tried 4 times)"], "the same row after a reload");
+	reloaded.dispose();
+});
+
+test("while pi-loops does not answer the page says so once, keeps what it had and turns off what posts to it; it comes back without a reload", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const owned = { ...DECISION_CARD, sessionId: undefined, fromThisConversation: false, owner: { holder: "project" } };
+	const { dom, cards, button } = await inboxPage({ "/inbox?": { ...INBOX, cards: [owned] }, "/conversations": listAnswer(ROWS) });
+	const at = (id: string) => g.document.getElementById(id);
+	await until(() => cards().length > 0 && at("auto").innerHTML.includes("nightly") && textOf(at("convs")) !== "", "the page drew its cards, its loops and its list");
+	assert.equal(button(cards().at(-1), "Yes, do it here").disabled, false);
+	const rail = textOf(at("convs"));
+
+	// pi-loops stops: it tells the page that it stopped this pi itself, and then nothing answers.
+	dom.source().onmessage({ data: JSON.stringify({ type: "pi_exit", code: 143, signal: null, stderr: "", asked: true }) });
+	const answering = g.fetch;
+	g.fetch = async () => { throw new TypeError("Failed to fetch"); };
+	await dom.poll();
+	await until(() => at("held").hidden === false, "the line above the composer");
+	assert.equal(textOf(at("held")), "pi-loops stopped or cannot be reached. Reconnecting…");
+	assert.deepEqual(errorRows(dom), [], "a pi that pi-loops stopped itself is no error in the conversation");
+	assert.match(at("auto").innerHTML, /nightly/, "the loops it knew stay listed");
+	assert.doesNotMatch(at("auto").innerHTML, /not found/);
+	assert.match(at("auto").innerHTML, /<button data-run="cron-a" disabled>/, "run is off");
+	// The end of a turn asks for the list again, and gets no answer either.
+	dom.source().onmessage({ data: JSON.stringify({ type: "agent_end" }) });
+	await settled();
+	assert.equal(textOf(at("convs")), rail, "the list stays, with nothing said about it");
+	assert.equal(textOf(at("sbHost")).trim(), "reconnecting…", "the status bar does not say pi-loops runs");
+	assert.equal(at("status")._text, "", "the header's chip says nothing: the line and the status bar have said it");
+	assert.equal(at("send").disabled, true, "send is off");
+	assert.equal(button(cards().at(-1), "Yes, do it here").disabled, true, "and so is a card's Yes");
+	at("input").value = "typed while it was away";
+	await at("composer").requestSubmit();
+	assert.equal(at("input").value, "typed while it was away", "Enter sends nothing and keeps the text");
+
+	// It answers again: the next poll puts everything back.
+	g.fetch = answering;
+	await dom.poll();
+	await until(() => at("held").hidden === true, "the line goes");
+	assert.equal(at("send").disabled, false);
+	assert.equal(button(cards().at(-1), "Yes, do it here").disabled, false);
+	assert.match(at("auto").innerHTML, /<button data-run="cron-a">/);
+	assert.match(textOf(at("sbHost")), /pi-loops/);
+	dom.dispose();
+});
+
+test("a pi that stopped by itself says so without naming a terminal", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await dom.started();
+	dom.source().onmessage({ data: JSON.stringify({ type: "pi_exit", code: 1, signal: null, stderr: "" }) });
+	assert.deepEqual(errorRows(dom), ["pi exited (code 1) it stopped without saying why"]);
+	dom.dispose();
+});
+
+test("a loop the server calls failing says failing ×N on its card and is listed under Needs you", { timeout: 20_000 }, async () => {
+	const automation = { ...STATE.automation, jobs: [{ ...STATE.automation.jobs[0], failing: 5, lastError: "401 Unauthorized" }, { ...STATE.automation.jobs[0], id: "cron-b", name: "weekly", lastError: "skipped: previous run still active" }] };
+	const dom = stubDom({ ...STATE, automation }, { messages: [] }, new Map(), { "/inbox?": { ...INBOX, cards: [], failing: [{ id: "cron-a", label: "nightly", streak: 5 }] } });
+	await new Function(pageScript())();
+	await dom.started();
+	const doc = (globalThis as any).document;
+	await until(() => textOf(doc.getElementById("needsSlot")).includes("nightly"), "the rail lists the failing loop");
+	assert.equal(textOf(doc.getElementById("needsSlot")).replace(/\s+/g, " ").trim(), "Needs you nightly failing ×5");
+	const cardsHtml = String(doc.getElementById("auto").innerHTML).split("<details");
+	assert.match(cardsHtml.find((c) => c.includes('data-key="job:cron-a"'))!, /<span class="bad">failing ×5<\/span>/);
+	assert.doesNotMatch(cardsHtml.find((c) => c.includes('data-key="job:cron-b"'))!, /failing ×/, "a last error alone is not a failing loop: the server decides");
+	dom.dispose();
+});
+
+test("a send takes the conversation to its end, wherever it was scrolled to", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await dom.started();
+	const doc = (globalThis as any).document;
+	const feed = doc.getElementById("feed");
+	feed.scrollHeight = 2000;
+	feed.clientHeight = 600;
+	feed.scrollTop = 100;
+	feed._on.scroll();
+	doc.getElementById("input").value = "sent while reading back";
+	await doc.getElementById("composer").requestSubmit();
+	assert.equal(feed.scrollTop, 2000, "what was sent is in view");
+	assert.equal(doc.getElementById("newer").hidden, true);
+	dom.dispose();
 });

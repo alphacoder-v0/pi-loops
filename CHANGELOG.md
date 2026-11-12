@@ -7,6 +7,12 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Fixed
 
+- **The page says what failed.** A reply whose model call failed is an error row with the reason,
+  and pi's retries count on that row. While pi-loops does not answer, one line says "pi-loops
+  stopped or cannot be reached. Reconnecting…", the page keeps what it showed, and send and the
+  buttons that post to pi-loops are off until it answers again. A loop that failed three or more
+  times in a row says `failing ×N` on its card and is listed under Needs you. A send takes the
+  conversation to its end.
 - **A loop can ask you to decide.** A loop's prompt now shows the shape of a finding that needs a
   person (`<the decision> · waits: … · if not: …`), which the inbox shows as a decision card, and
   the caps of 16 findings per run and 500 characters each. Before, only recipe playbooks taught the
@@ -16,6 +22,32 @@ All notable changes to pi-loops are documented here. The format follows
 - **A `/goal` waiting on you pauses at once.** When the agent asked you for something it cannot get
   alone, the evaluator answers `needs_person` and the goal pauses with `waiting on you: …`, instead
   of sending the agent back to work up to 8 times.
+- **A loop that times out is a failed run.** A run that passed its timeout was recorded as an
+  interruption, so its slot was given back and the same run started again on the next tick, with
+  no backoff. Now the slot is spent, the failure streak rises, and three in a row back off. The
+  loop's prompt also states the timeout.
+- **A run's summary says what it found.** The summary of a loop run that filed findings is now its
+  first finding. Before, it was the rest of the reply with the findings taken out, which was often
+  only a closing line such as "Filed as #220. Final state:". A run with no finding is unchanged.
+- **An unattended run can search for `shutdown`, `reboot`, `halt` and `poweroff`.** The
+  dangerous-command policy refused these words anywhere, so `grep -rn shutdown src/` was refused.
+  A one-line search is now allowed: each part between `|`, `&&`, `||` and `;` starts with `grep`,
+  `egrep`, `fgrep`, `rg`, `cat`, `wc`, `head`, `tail`, `cut`, `tr`, `cd` or `ls`, and the line has
+  no other shell syntax (no substitution, variable, grouping, backslash or redirection, but for
+  `2>/dev/null` and `2>&1`). Every other use is refused as before, also when the word is only
+  text, as in `git log --grep=reboot`.
+
+- **The page reads better.** A reply's headings come in three levels, none smaller than body text,
+  and indented list items nest. A watch receipt has no dead buttons, and the Watch box has one
+  primary button once a plan shows. A paused loop is set in a readable dim colour, not faded. The
+  slash list's selected row is amber and differs from the hover row. The conversation list is
+  headed **Conversations**. The ⋯ sheet has two labelled groups in sentence case, and on a phone
+  the title has the header: the pickers are at the top of the sheet. A page that is loading shows no placeholder title or
+  empty pickers. While pi-loops is down, the header's chip no longer repeats "reconnecting", and an
+  error row is set in the page's own font.
+- **A loop made without a name gets one.** `/cron add`, `cron_create` and the page's Watch flow
+  name it from the first words of its prompt (`check-new-issues`, then `check-new-issues-2`), so
+  you refer to it by a word and not by a 32-digit id. Loops that exist keep what they have.
 
 ## [0.24.2] - 2026-11-11
 

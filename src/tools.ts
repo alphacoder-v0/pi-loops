@@ -15,6 +15,7 @@ import { previewRedacted } from "./redact.ts";
 import { computeNext, formatLocal, formatSchedule, parseSchedule, stamp } from "./schedule.ts";
 import type { LoopScheduler, SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
+import { jobNameFrom } from "./job-name.ts";
 import { asleepNote, ownerSession, runsSomewhere, whereRuns, type OwnerView } from "./job-owner.ts";
 import { inProject } from "./inbox.ts";
 import { plural } from "./plural.ts";
@@ -158,10 +159,11 @@ export function checkJobInput(input: Pick<CreateJobInput, "schedule" | "prompt" 
 }
 
 export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session" | "ensureHost">, input: CreateJobInput, scope?: JobScope): Promise<LoopJob> {
-	const cwd = checkJobInput(input, host.scheduler.store.load(), host.session());
+	const existing = host.scheduler.store.load();
+	const cwd = checkJobInput(input, existing, host.session());
 	const job: LoopJob = {
 		id: newId("cron"),
-		name: input.name,
+		name: input.name ?? jobNameFrom(input.prompt, existing),
 		schedule: input.schedule,
 		stateful: input.stateful,
 		prompt: input.prompt,
@@ -534,7 +536,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const job = resolveJobRefScoped(host.scheduler.store.load(), params.ref, host.session().cwd);
 			if (!job) return { content: [{ type: "text", text: `no cron job matching '${params.ref}' in this project; cron_list shows the ids and names` }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, audit_entry_id: undefined as string | undefined } };
-			const label = `${job.id}${job.name ? ` "${job.name}"` : ""}`;
+			const label = job.name ? `"${job.name}"` : job.id;
 			// The only control-plane tool that used to skip this gate, so a sub-agent (hop > 0) could
 			// delete any project's job unapproved — and what that costs is the automation itself: the
 			// loop stops running and its id is gone from jobs.json. Its notes and transcripts stay

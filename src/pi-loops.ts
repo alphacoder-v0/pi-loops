@@ -1364,7 +1364,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt) }, Date.now());
 						cronControlAudit("add", "slash", undefined, job);
 						const dropped = toolsDropped(parsed.tools, job.tools);
-						show(ctx, `added cron job ${job.id}${job.name ? ` "${job.name}"` : ""}`, [
+						show(ctx, `added cron job ${job.name ? `"${job.name}"` : job.id}`, [
 							...(dropped.length ? [`  dropped from --tools: ${dropped.join(", ")} (this chat does not have it)`] : []),
 							// A paused background process runs no loop: no next run is promised for a run that will not
 							// happen. This chat's own plain job runs here, paused or not.
@@ -1433,7 +1433,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							}
 						});
 						cronControlAudit(enable ? "enable" : "disable", "slash", job, after ?? job);
-						ctx.ui.notify(`${enable ? "enabled" : "disabled"} cron job ${job.id}${job.name ? ` "${job.name}"` : ""}`, "info");
+						ctx.ui.notify(`${enable ? "enabled" : "disabled"} cron job ${job.name ? `"${job.name}"` : job.id}`, "info");
 						return;
 					}
 					case "remove":
@@ -1462,7 +1462,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						// An exact id may still name another project's job. Say which, so a removal that
 						// reached outside this checkout is never a line that looks like any other.
 						const elsewhere = sameProject(job.cwd, session.cwd) ? "" : ` in ${homeRel(job.cwd)}`;
-						ctx.ui.notify(`removed cron job ${job.id}${job.name ? ` "${job.name}"` : ""}${elsewhere}${kept}${aborted > 0 ? "; aborted its running run" : ""}`, "info");
+						ctx.ui.notify(`removed cron job ${job.name ? `"${job.name}"` : job.id}${elsewhere}${kept}${aborted > 0 ? "; aborted its running run" : ""}`, "info");
 						return;
 					}
 					case "host": {

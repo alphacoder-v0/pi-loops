@@ -2255,6 +2255,29 @@ const RUN = `run-${"c".repeat(32)}`;
 const quietRuns = (jobId: string, n: number) => Array.from({ length: n }, (_, i) => JSON.stringify({ runId: `run-${hex(i + 100)}`, jobId, stateful: true, cwd: "/p", pid: 1, startedAt: new Date(Date.now() - (n - i) * 60_000).toISOString(), finishedAt: new Date(Date.now() - (n - i) * 60_000 + 1000).toISOString(), ok: true, findings: 0, droppedFindings: 0, stateUpdated: true })).join("\n") + "\n";
 const loopJob = (cwd: string, over: Record<string, unknown> = {}) => ({ id: "cron-aaaaaaaa", name: "pr-watch", schedule: { kind: "every", ms: 15 * 60_000 }, stateful: true, prompt: "watch the PRs", cwd, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 86_400_000).toISOString(), runCount: 12, skippedOverlap: 0, ...over });
 
+test("a loop that counts as failing carries its streak on its row and is listed by GET /inbox for its project; a disabled one, one below the threshold and another project's are not", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-failing-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		const [project, other] = ["proj", "other"].map((name) => path.join(dir, name));
+		for (const d of [project, other]) fs.mkdirSync(d);
+		const failing = { consecutiveFailures: 5, lastError: "401 Unauthorized" };
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [
+			loopJob(project, failing),
+			loopJob(project, { id: "cron-bbbbbbbb", name: "twice", consecutiveFailures: 2, lastError: "boom" }),
+			loopJob(project, { id: "cron-cccccccc", name: "off", enabled: false, ...failing }),
+			loopJob(other, { id: "cron-dddddddd", name: "elsewhere", ...failing }),
+		] }));
+		await page.pool.open({ sessionId: "s1", cwd: project, piArgs: [] });
+		const rows = (await page.get("c/s1/state")).body.automation.jobs;
+		assert.deepEqual(rows.map((j: any) => [j.name, j.failing]), [["pr-watch", 5], ["twice", undefined], ["off", undefined]]);
+		assert.deepEqual((await page.get("inbox?session=s1")).body.failing, [{ id: "cron-aaaaaaaa", label: "pr-watch", streak: 5 }]);
+	} finally {
+		await page.stop();
+	}
+});
+
 test("the loop routes take the checks every POST takes, a 1 KB body, exactly their fields, and whole ids; nothing refused writes or starts a pi", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-loops-");
 	const stops: string[] = [];

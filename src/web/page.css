@@ -38,9 +38,10 @@ html[data-theme=dark]{
      composer uses the same figure so the two line up. */
   --pad:max(16px,calc((100% - 58rem) / 2));
   /* Four sizes and no others: meta (times, tags, counts), small (cards, buttons, code), body, and
-     large (a reply's top heading, a figure, and a phone's fields, which iOS zooms under 16px). A
-     section label is body size and heavy, the conversation title's style. */
-  --fs-xs:11px;--fs-sm:13px;--fs-md:15px;--fs-lg:16px;
+     large (a reply's headings, a figure, and a phone's fields, which iOS zooms under 16px). A
+     section label is body size and heavy, the conversation title's style. Large is three steps
+     above body so a heading reads as one at a glance. */
+  --fs-xs:11px;--fs-sm:13px;--fs-md:15px;--fs-lg:18px;
 }
 *{box-sizing:border-box}
 /* dvh, not vh: a phone's address bar slides away and 100vh keeps counting the space it used to
@@ -65,6 +66,8 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .lrow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;min-width:0}
 .lrow>button{flex:1}
 #project{flex:1 1 100%;min-width:0;border:0;border-radius:8px;padding:6px 10px;font-weight:600;background:var(--panel2);color:var(--fg)}
+/* Kept in its place before the list arrives, so nothing below it moves, but not drawn empty. */
+#project:empty{visibility:hidden}
 #project option{background:Canvas;color:CanvasText}
 #newConv{white-space:nowrap}
 .lscroll{overflow-y:auto;min-height:0;flex:1;padding:0 10px 16px;display:flex;flex-direction:column;gap:2px}
@@ -102,6 +105,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .icard .why[hidden]{display:none}
 .icard button{min-height:32px;padding:4px 10px;font-size:var(--fs-sm);border-radius:8px;max-width:100%}
 .icard button:disabled{opacity:.45;cursor:default}
+#send:disabled,#auto button:disabled{opacity:.45;cursor:default}
 .icard button:disabled:not(.primary):hover{background:transparent;color:var(--muted)}
 .icard button.primary:disabled:hover{background:var(--brand);color:var(--brand-ink);filter:none}
 .icard input{flex:1 1 12rem;min-width:0;min-height:32px;border:1px solid var(--line);border-radius:8px;padding:4px 8px;background:var(--panel);color:var(--fg);font:inherit}
@@ -112,6 +116,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .away .sent>span{white-space:nowrap}
 #startersSlot{padding:6px 0;display:grid;gap:6px;min-width:0}
 .grp{font-size:var(--fs-md);color:var(--ink);font-weight:650;padding:10px 4px 2px}
+.grp.sub{font-size:var(--fs-xs);color:var(--dim);font-weight:600;padding:6px 4px 0}
 .conv{display:grid;gap:2px;padding:8px 10px;border-radius:9px;color:var(--fg);text-decoration:none;min-width:0}
 .conv:hover{background:var(--hover)}
 /* The hover paper is lighter than the list's in dark: the dim tag and time would drop under 4.5:1 on it. */
@@ -177,6 +182,7 @@ button.primary:hover{background:var(--brand);color:var(--brand-ink);filter:brigh
 #stale:hover{background:var(--brand);color:var(--brand-ink);filter:brightness(1.08)}
 #stale[hidden]{display:none}
 #findbar{display:flex;gap:8px;align-items:center;padding:7px var(--pad);border-bottom:1px solid var(--line);background:var(--side)}
+header [hidden]{display:none}
 /* The UA rule for [hidden] loses to any author rule that sets display, so this has to say it. */
 #findbar[hidden]{display:none}
 #findbar input{flex:1}
@@ -206,7 +212,11 @@ button.primary:hover{background:var(--brand);color:var(--brand-ink);filter:brigh
 .notice{color:var(--muted);font-size:var(--fs-sm);white-space:pre-wrap}
 /* A view a terminal drew (/cron, /inbox) has columns: it keeps the terminal's font. */
 .notice.view{font-family:var(--font-mono)}
-.err{color:var(--ink);border-left:2px solid var(--bad);padding-left:10px;font-family:var(--font-mono);font-size:var(--fs-sm);white-space:pre-wrap}
+.err{color:var(--ink);border-left:2px solid var(--bad);padding-left:10px;font-size:var(--fs-sm);white-space:pre-wrap}
+/* What failed is a sentence, so its label is too: not the role labels' small capitals. What pi
+   printed on its way out (the pre under it) stays in the terminal's font. */
+.row.err .role{text-transform:none;letter-spacing:0;font-size:var(--fs-sm);font-weight:600;color:var(--bad)}
+.row.err pre{font-family:var(--font-mono);font-size:var(--fs-sm);white-space:pre-wrap;margin:4px 0 0}
 .row>span{white-space:pre-wrap;word-break:break-word}
 /* The markdown body is block-level HTML; pre-wrap there turns the whitespace between tags into
    blank lines. It is set on the span itself, so the selector has to be more specific than .row>span. */
@@ -261,8 +271,14 @@ pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-word;max-height:22em;ov
 
 .md>*:first-child{margin-top:0}.md>*:last-child{margin-bottom:0}
 .md p{margin:0 0 10px}
-.md h3,.md h4,.md h5,.md h6{margin:14px 0 7px;line-height:1.25;font-weight:650}
-.md h3{font-size:var(--fs-lg)}.md h4{font-size:var(--fs-md)}.md h5,.md h6{font-size:var(--fs-sm);color:var(--muted)}
+/* Three heading levels, none smaller or fainter than the text under it: # is large and heavy over a
+   rule, ## large, ### and #### body size and heavy. */
+.md h3,.md h4,.md h5,.md h6{margin:18px 0 8px;line-height:1.3;color:var(--ink)}
+.md h3{font-size:var(--fs-lg);font-weight:700;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.md h4{font-size:var(--fs-lg);font-weight:600}
+.md h5,.md h6{font-size:var(--fs-md);font-weight:700;margin-top:14px}
+.md li>ul,.md li>ol{margin:3px 0 0 20px}
+.md ul ul{list-style-type:circle}.md ul ul ul{list-style-type:square}
 .md ul,.md ol{margin:0 0 10px 22px;padding:0}.md li{margin:3px 0}
 .md blockquote{margin:0 0 10px;padding-left:12px;border-left:2px solid var(--line-strong);color:var(--muted)}
 .md code{border:1px solid var(--line);border-radius:5px;background:var(--side);padding:1px 5px;font-family:var(--font-mono);font-size:var(--fs-sm);overflow-wrap:anywhere}
@@ -298,7 +314,9 @@ img.shot{max-width:100%;max-height:26em;height:auto;border:1px solid var(--line)
 #pop{position:absolute;bottom:100%;left:var(--pad);right:var(--pad);max-height:min(15em,32vh);overflow:auto;border:1px solid var(--line-strong);border-radius:8px;background:var(--field);box-shadow:0 10px 30px var(--shadow);display:none;z-index:5}
 #pop div{padding:8px 11px;cursor:pointer;display:flex;gap:10px;border-bottom:1px solid var(--line)}
 #pop div:last-child{border-bottom:0}
-#pop div.sel,#pop div:hover{background:var(--soft)}
+#pop div:hover{background:var(--soft)}
+/* The row the arrow keys are on: amber, so it is not mistaken for the row under the pointer. */
+#pop div.sel{background:var(--brand-soft);box-shadow:inset 3px 0 0 var(--brand)}
 #pop .h{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 #loops{grid-column:4;grid-row:1;overflow:auto;min-height:0;min-width:0;background:var(--panel);padding:0}
@@ -359,7 +377,9 @@ details.card>summary>.loopx:empty{display:none}
 .loopx .note{border-top:1px solid var(--line);padding-top:4px}
 details.card>summary>.looks{display:block;overflow-wrap:anywhere}
 @media (max-width:420px){.loopx .acts button,.loopx .runline button,.loopx .confirm>button{flex:1 1 100%;min-height:36px}}
-.off{opacity:.5}
+/* A paused loop or rule: its words in the dim colour, which still reads (4.5:1 or more on the card in
+   both themes). Opacity faded them below that. */
+.card.off,.card.off b,.card.off pre{color:var(--dim)}
 .dot{display:inline-block;width:7px;height:7px;border-radius:99px;margin-right:6px;vertical-align:middle}
 .up{background:var(--ok)}.down{background:var(--bad)}.idle{background:var(--quiet)}
 /* Words in a state: a fault, or a quiet aside. */
@@ -393,13 +413,14 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 #watch label{display:block;font-size:var(--fs-sm);color:var(--dim);margin:0 0 6px}
 #watch textarea{width:100%;box-sizing:border-box;min-height:4.5em;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;background:var(--panel);color:var(--fg);resize:vertical}
 #watchEx{display:flex;flex-wrap:wrap;gap:5px;align-items:center;font-size:var(--fs-sm);margin:6px 0 0}
+#watchEx[hidden]{display:none}
 #watchEx button{border:0;background:var(--hover);border-radius:999px;padding:4px 10px;min-height:32px;font-size:var(--fs-sm);color:var(--fg);text-align:left;max-width:100%;overflow-wrap:anywhere;white-space:normal}
 #watchEx button:hover{color:var(--brand)}
 #watchStatus{margin-top:10px}
 #watchStatus.bad{color:var(--bad)}
 #watchCards{display:grid;gap:10px;margin-top:10px}
 .plan{background:var(--panel2);border-radius:12px;padding:12px 14px;display:grid;gap:10px;font-size:var(--fs-sm);min-width:0;max-width:100%;overflow-wrap:anywhere}
-.plan.done,.plan.stale{opacity:.7}
+.plan.stale{opacity:.7}
 .plan .planh{font-weight:600}
 .plan .planh.bad,.plan .bad{color:var(--bad)}
 .plan dl{margin:0;display:grid;grid-template-columns:88px minmax(0,1fr);gap:8px 10px}
@@ -418,7 +439,9 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 .plan .acts{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
 .plan .acts button{min-height:32px;padding:4px 12px;border-radius:8px;font-size:var(--fs-sm)}
 .plan .acts button:disabled{opacity:.45;cursor:default}
-.row.plan{max-width:min(100%,44rem)}
+/* The row only carries the card into the conversation: one box, the card's, not a box around a box. */
+.row.plan{max-width:min(100%,44rem);background:none;padding:0;border-radius:0}
+.row.plan>span:empty{display:none}
 @media (max-width:420px){.plan dl{grid-template-columns:minmax(0,1fr)}.plan dt{margin-top:2px}.plan .acts button.primary{flex:1 1 100%}}
 #pairPick{width:100%;margin-bottom:8px}
 .qr{display:flex;justify-content:center;padding:6px 0}
@@ -450,8 +473,11 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 #scrim{display:none}
 #actions{display:contents}
 /* In the sheet they are a list, not a row, and each one is a full-width target. */
-#menuBody #actions{display:flex;flex-direction:column;gap:8px}
-#menuBody #actions button{width:100%;text-align:left;min-height:44px}
+#menuBody{display:grid;gap:14px}
+#menuBody .mgrp{display:flex;flex-direction:column;gap:6px}
+#menuBody .mgrp h4{margin:0 0 2px;font-size:var(--fs-md);font-weight:650;color:var(--ink)}
+#menuBody .mgrp button,#menuBody .mgrp select{width:100%;max-width:none;text-align:left;min-height:44px}
+#menuBody .mgrp button[hidden]{display:none}
 /* Thirteen controls do not fit across a narrow conversation. The ones you reach for mid-conversation
    (undo, find, compact, resume) stay; the rest are one tap away behind ⋯, which lists all of them.
    Asked of the conversation's own width, which the list and the loops rail beside it take from:
@@ -517,6 +543,9 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
    kept in the address (#inbox, #chat, #loops), so Back goes to the pane before and a reload keeps it. */
 @media (max-width:760px){
   .grow>#actions{display:none}
+  /* The title has the header: the pickers are in the ⋯ sheet, and steps shows its arrow alone. */
+  header>#model,header>#thinking{display:none}
+  #expand .lbl{display:none}
   body,body:has(#loops.hidden){grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) calc(52px + env(safe-area-inset-bottom))}
   #rail,#scrim{display:none}
   #scrim:not([hidden]){display:none}

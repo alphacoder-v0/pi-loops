@@ -48,6 +48,8 @@ export interface PageChildOptions {
 	version: string;
 	log: (line: string) => void;
 	onExit: (code: number | null, signal: NodeJS.Signals | null) => void;
+	/** Whether pi-loops asked this pi to stop: its exit is then no fault, and the page is told so. */
+	stopAsked?: () => boolean;
 	/** Every event pi prints that is not the answer to a command, before it is folded and broadcast. */
 	onNote?: (msg: any) => void;
 	ring: () => Promise<unknown>;
@@ -359,7 +361,7 @@ export class PageChild {
 				// The page has to be told *why*. pi's own reasons for refusing to start — a duplicate extension,
 				// a provider that will not authenticate — are on its stderr, and a browser tab that just says
 				// "pi exited" sends you to the terminal to find out what a terminal already knew.
-				this.broadcast({ type: "pi_exit", code, signal, stderr: this.recentStderr() });
+				this.broadcast({ type: "pi_exit", code, signal, stderr: this.recentStderr(), ...(this.opts.stopAsked?.() ? { asked: true } : {}) });
 				this.opts.onExit(code, signal);
 			}),
 		);
@@ -1202,6 +1204,7 @@ export class ChildPool {
 			ring: () => this.opts.ring(child),
 			onNote: this.opts.onNote ? (msg) => this.opts.onNote?.(child, msg) : undefined,
 			onExit: (code, signal) => this.exited(child, code, signal),
+			stopAsked: () => this.asked.has(child),
 		});
 		const key = how.sessionId ?? `new-${child.pid}`;
 		this.children.set(key, child);

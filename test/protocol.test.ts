@@ -39,6 +39,11 @@ test("the loop prompt states the finding caps and the decision shape it is read 
 	assert.equal(findingKind(shape), "checkpoint");
 });
 
+test("a loop is told its time budget when the run has one", () => {
+	assert.match(composeLoopPrompt("check", undefined, { timeoutMs: 15 * 60_000 }), /stopped after 15m and counted as a failure/);
+	assert.doesNotMatch(composeLoopPrompt("check", undefined), /stopped after/);
+});
+
 test("composeLoopPrompt injects previous state and protocol", () => {
 	const p = composeLoopPrompt("check the issues", "baseline: #1 #2", { name: "issues" });
 	assert.ok(p.includes("[loop-state]"));

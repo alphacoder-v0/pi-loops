@@ -95,6 +95,22 @@ test("checkJobInput refuses what createLoopJob refuses, and creates nothing", as
 	}
 });
 
+test("a loop made without a name gets one from its prompt, and says it", async () => {
+	const f = fixture();
+	try {
+		const create = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_create")!;
+		const first = await create.execute("i", { schedule: "every 5m", action: "Check the open pull requests", stateful: true }, undefined, undefined, ctx);
+		const second = await create.execute("i", { schedule: "every 5m", action: "check open pull requests", stateful: true }, undefined, undefined, ctx);
+		assert.deepEqual(f.scheduler.store.load().map((j) => j.name), ["check-open-pull", "check-open-pull-2"]);
+		assert.match(first.content[0].text, /"check-open-pull"/, "the reply names it");
+		assert.equal(second.details.name, "check-open-pull-2");
+		const named = await createLoopJob(f.host, { schedule: { kind: "every", ms: 60_000 }, prompt: "anything", stateful: true, name: "mine" });
+		assert.equal(named.name, "mine", "a name given is kept");
+	} finally {
+		await f.scheduler.stop();
+	}
+});
+
 test("with no session project a job's cwd must be absolute: a relative one has nothing to resolve against", async () => {
 	// The headless host and `--no-session` have no cwd of their own, and the host's process cwd is
 	// $HOME — so resolving `cwd: "code/piz"` there silently pinned the job to a real, unrelated
@@ -199,7 +215,7 @@ test("cron_remove's description promises only the deletion the store performs", 
 		const remove = automationTools({ hop: 0, actor: "tool" }, { ...f.host, confirmTool: async (c, req, hop) => (asked.push(req.label), f.host.confirmTool(c, req, hop)) }).find((t) => t.name === "cron_remove")!;
 		await remove.execute("i", { ref: job.id }, undefined, undefined, ctx);
 		assert.equal(f.scheduler.store.load().length, 0, "the job is gone");
-		assert.deepEqual(asked, [`remove cron job ${job.id}`], "after one question");
+		assert.deepEqual(asked, [`remove cron job "${job.name}"`], "after one question, naming the loop as a person knows it");
 		assert.equal("confirm" in (remove.parameters as any).properties, false, "and there is no preview step to call first");
 		// The tool passes no `purge`, so both of these outlive it — `/cron gc --purge` is what clears them.
 		assert.ok(fs.existsSync(f.scheduler.store.statePath(job.id)), "the loop's notes are still on disk");
