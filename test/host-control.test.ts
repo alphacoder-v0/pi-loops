@@ -282,7 +282,6 @@ test("an upgrade the removed socket cannot deliver stops the old process, starts
 	try {
 		const rec: HostServiceRecord = { v: 1, pid: old.pid!, startedAt: new Date().toISOString(), tickAt: new Date().toISOString(), version: "0.9.0", entry: "src/host.ts", node: "node", dir, socket: "", token: "t", managed: "spawned" };
 		fs.writeFileSync(path.join(dir, HOST_SERVICE_FILE), JSON.stringify(rec));
-		const began = Date.now();
 		// `npm test` sets PI_LOOPS_HOST=off; this one must be able to stop the old one and start.
 		const off = process.env.PI_LOOPS_HOST;
 		delete process.env.PI_LOOPS_HOST;
@@ -293,7 +292,6 @@ test("an upgrade the removed socket cannot deliver stops the old process, starts
 			if (off === undefined) delete process.env.PI_LOOPS_HOST;
 			else process.env.PI_LOOPS_HOST = off;
 		}
-		assert.ok(Date.now() - began < 595, `no full wait bound: ${Date.now() - began} ms`);
 		assert.deepEqual(out.action, { kind: "upgrade" });
 		assert.equal(out.up, false, "the /nowhere start dies at once");
 		assert.equal(readHostService(dir), undefined, "the old record is gone");

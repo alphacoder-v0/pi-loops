@@ -580,13 +580,16 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
  * the host runs (an OS temp cleaner, a manual cleanup) leaves the server listening on the deleted
  * inode, where no control op reaches it. That server is closed and the startup bind runs again.
  * "re-bound" is said only when the new server listens. A bind that fails says why once: the
- * retries of a server that does not listen are silent.
+ * retries of a server that does not listen are silent. A path that now holds something that is
+ * not a socket is left as it is.
  */
 export function healHostChannel(dir: string, current: net.Server | undefined, handlers: HostChannelHandlers, log: (message: string) => void): net.Server | undefined {
 	const socketPath = hostSocketPath(dir);
 	let present = false;
 	try {
 		present = fs.lstatSync(socketPath).isSocket();
+		// Not a socket, so not ours to replace: closing the old server would unlink it.
+		if (!present) return current;
 	} catch {
 		/* removed */
 	}

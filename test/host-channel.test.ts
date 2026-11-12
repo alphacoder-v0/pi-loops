@@ -492,30 +492,26 @@ test("a control socket removed while pi-loops runs is bound again by the tick's 
 	}
 });
 
-test("a re-bind that fails says why once, never says re-bound, and binds when the path is free again", async () => {
+test("a path that holds something that is not a socket is left as it is, and is bound when the path is free again", async () => {
 	const dir = tmp("pi-loops-chan-");
 	const handlers = { status: snapshot, abortRun: () => true, abortCheck: () => false, stop: () => {} };
 	const logs: string[] = [];
 	const log = (m: string) => logs.push(m);
 	const first = serveHostChannel(dir, handlers, log);
 	await once(first, "listening");
-	// Something that is not a socket takes the path after the socket is removed: the bind is refused.
+	// A file takes the path after the socket is removed. Closing the old server would unlink it.
 	fs.rmSync(hostSocketPath(dir));
-	fs.mkdirSync(hostSocketPath(dir));
-	const refused = healHostChannel(dir, first, handlers, log)!;
-	assert.equal(refused.listening, false);
-	assert.equal(logs.length, 1);
-	assert.match(logs[0], /exists and is not ours/);
-	const again = healHostChannel(dir, refused, handlers, log)!;
-	assert.equal(again.listening, false);
-	assert.equal(logs.length, 1, "the same failure on the next tick is not said again");
+	fs.writeFileSync(hostSocketPath(dir), "not a socket");
+	assert.equal(healHostChannel(dir, first, handlers, log), first, "the server is kept");
+	assert.equal(fs.readFileSync(hostSocketPath(dir), "utf8"), "not a socket", "the file is not removed");
+	assert.deepEqual(logs, []);
 
-	fs.rmdirSync(hostSocketPath(dir));
-	const bound = healHostChannel(dir, again, handlers, log)!;
+	fs.rmSync(hostSocketPath(dir));
+	const bound = healHostChannel(dir, first, handlers, log)!;
 	try {
 		await once(bound, "listening");
 		assert.equal((await askHost(dir, { op: "status" }))?.ok, true);
-		assert.deepEqual(logs.slice(1), ["control socket was removed or stale; re-bound"]);
+		assert.deepEqual(logs, ["control socket was removed or stale; re-bound"]);
 	} finally {
 		bound.close();
 	}

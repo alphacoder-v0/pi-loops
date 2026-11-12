@@ -672,7 +672,7 @@ export async function ensureHost(opts: EnsureHostOptions): Promise<{ action: Ens
 		// SIGTERM needs no socket. Without it, each tick waits the whole bound for a process that never
 		// got the request. Not a crash: the process was working, so the crash budget is not touched.
 		const old = rec!;
-		if (upgradeNeedsSignal({ answered: upgradeAnswered !== undefined, socketOurs: ownedSocket(hostSocketPath(opts.dir)), ticked: old.tickAt !== undefined })) await terminateHost(opts.dir, old.pid, { alive: () => hostServiceAlive(old) });
+		if (upgradeNeedsSignal({ answered: upgradeAnswered !== undefined, socketOurs: ownedSocket(old.socket || hostSocketPath(opts.dir)), ticked: old.tickAt !== undefined })) await terminateHost(opts.dir, old.pid, { alive: () => hostServiceAlive(old) });
 		// Wait for it to go and start this version at once: the gap until the next tick is where an
 		// older window used to start the old code again. It may first let a turn in the page finish.
 		const began = Date.now();
