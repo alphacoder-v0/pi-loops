@@ -194,7 +194,17 @@ test("a pi that dies mid-turn leaves no record, counts toward the crash budget, 
 	assert.match(p.lastWords("s1"), /the provider hung up/);
 	const exit = child.backlog.find((e) => e.type === "pi_exit");
 	assert.equal(exit?.code, 1);
+	assert.equal(exit?.asked, undefined, "nobody asked it to stop");
 	assert.ok(child.backlog.some((e) => e.type === "agent_start"), "it was in a turn");
+});
+
+test("a pi that pi-loops stops tells its page the stop was asked for", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-pages-");
+	const { pool: p } = pool(dir, fakePi(dir));
+	const child = await p.open({ sessionId: "s1", sessionFile: path.join(dir, "s1"), cwd: dir, piArgs: [] });
+	await p.stopAll();
+	assert.equal(child.backlog.find((e) => e.type === "pi_exit")?.asked, true);
+	assert.equal(p.crashes("s1").length, 0);
 });
 
 test("the sweep stops an idle child; opening one past the cap stops the least recently used", { timeout: 30_000 }, async () => {

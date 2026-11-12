@@ -768,6 +768,26 @@ test("a reply is rendered as Markdown, and cannot smuggle markup through it", { 
 	dom.dispose();
 });
 
+test("a reply's headings come in three levels and its indented list items nest", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await dom.started();
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+	const reply = ["# Plan", "## Steps", "### Detail", "- one", "  - one a", "    1. deep", "  - one b", "- two", "", "1. first", "   - under first", "2. second"].join("\n");
+	send({ type: "message_start" });
+	send({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: reply } });
+	send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: reply }] } });
+	const md = dom.made.find((m: any) => m.className === "md" && String(m._html).includes("Plan"));
+	assert.ok(md, "the reply was drawn as Markdown");
+	assert.equal(
+		md._html,
+		"<h3>Plan</h3><h4>Steps</h4><h5>Detail</h5>" +
+			"<ul><li>one<ul><li>one a<ol><li>deep</li></ol></li><li>one b</li></ul></li><li>two</li></ul>" +
+			"<ol><li>first<ul><li>under first</li></ul></li><li>second</li></ol>",
+	);
+	dom.dispose();
+});
+
 test("a confirmation shows what is about to run, apart from the reasoning", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
@@ -1056,6 +1076,43 @@ test("an empty conversation is a blank feed, and the first message is its first 
 	dom.dispose();
 });
 
+test("on a phone the ⋯ sheet carries the model and thinking pickers, and gives them back to the header", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const dom = stubDom(STATE, { messages: [] });
+	g.matchMedia = (q: string) => ({ matches: /max-width:(760|900|1100)px/.test(q), addEventListener() {} });
+	g.location.hash = "#chat";
+	g.history.pushState = () => undefined;
+	await new Function(pageScript())();
+	await dom.started();
+	const byId = (id: string) => g.document.getElementById(id);
+	byId("more").onclick();
+	const first = byId("menuBody").children[1];
+	assert.equal(first.children[0]._text, "Conversation");
+	assert.ok(first.children[1] === byId("model") && first.children[2] === byId("thinking"), "the pickers lead the conversation's group");
+	byId("menuClose").onclick();
+	const grow = g.document.querySelector("header .grow");
+	const header = grow.parentElement.children;
+	assert.ok(header.indexOf(byId("model")) >= 0 && header.indexOf(byId("model")) + 1 === header.indexOf(byId("thinking")), "back in the header, in order");
+	dom.dispose();
+});
+
+test("a page still loading shows no title, no pickers and no turn buttons; the state brings the pickers", { timeout: 20_000 }, async () => {
+	// What the page is served with, before its script has a state: read off the served markup, the
+	// one place it exists before the script runs.
+	const html = PAGE.slice(PAGE.indexOf("<header>"), PAGE.indexOf("</header>")) + PAGE.slice(PAGE.indexOf('<form id="composer">'), PAGE.indexOf("</form>"));
+	const tag = (id: string) => new RegExp(`<[a-z]+ [^>]*id="${id}"[^>]*>`).exec(html)?.[0] ?? "";
+	assert.match(html, /<b id="title"><\/b>/, "no placeholder title");
+	for (const id of ["model", "thinking", "stop", "undo", "compact", "resume"]) assert.match(tag(id), /\bhidden\b/, `${id} waits for the state`);
+	const dom = stubDom(STATE, { messages: [] });
+	const doc = (globalThis as any).document;
+	for (const id of ["model", "thinking"]) doc.getElementById(id).hidden = true;
+	await new Function(pageScript())();
+	await dom.started();
+	assert.deepEqual(["model", "thinking"].map((id) => doc.getElementById(id).hidden), [false, false], "the pickers show with the state");
+	assert.equal(doc.getElementById("model").value, "p/m", "holding its model");
+	dom.dispose();
+});
+
 test("the header's secondary actions move into a sheet and back, once each", { timeout: 20_000 }, async () => {
 	// Moved rather than duplicated: two copies would mean two of every id and one of them going
 	// stale the next time somebody edits the other.
@@ -1064,11 +1121,19 @@ test("the header's secondary actions move into a sheet and back, once each", { t
 	await dom.started();
 	const doc = (globalThis as any).document;
 
+	const byId = (id: string) => doc.getElementById(id);
 	doc.getElementById("more").onclick();
 	// The cost goes with them: on a phone the header has no room for it.
-	assert.deepEqual(doc.getElementById("menuBody").children, [doc.getElementById("cost"), doc.getElementById("actions")], "the same elements, not copies");
+	const [cost, ...groups] = doc.getElementById("menuBody").children;
+	assert.equal(cost, byId("cost"));
+	const conversation = ["reload", "find", "undo", "save", "share", "compact", "resume"];
+	const settings = ["theme", "notifyMe", "adddev"];
+	assert.deepEqual(groups.map((g: any) => g.children[0]._text), ["Conversation", "Settings"], "two labelled groups");
+	assert.deepEqual(groups.map((g: any) => g.children.slice(1)), [conversation.map(byId), settings.map(byId)], "the same elements, not copies, each in its group");
+	assert.equal(byId("theme")._text, "Theme: system", "in sentence case");
 	doc.getElementById("menuClose").onclick();
 	assert.equal(doc.getElementById("menuBody").children.length, 0, "and came back out");
+	assert.deepEqual(byId("actions").children, [...conversation, ...settings].map(byId), "into the header, in the sheet's order");
 	dom.dispose();
 });
 
@@ -2883,7 +2948,7 @@ test("a send answered elsewhere says so, and one pi refused comes back to the co
 	assert.equal(input.value, "hello there\ntyped since", "the text is back in the composer, ahead of what was typed since");
 	assert.equal(doc.getElementById("thumbs").children.length, 1, "with its image");
 	assert.match(dom.rendered(), /pi did not start a turn for it/, "and the error is on the page");
-	assert.match(dom.rendered(), /\nnot sent\n/, "under its own label");
+	assert.match(dom.rendered(), /\nNot sent\n/, "under its own label");
 	dom.dispose();
 });
 
@@ -2936,7 +3001,7 @@ async function startPage(state: unknown, answers: Record<string, unknown>, store
 	return dom;
 }
 
-test("the list shows this project's conversations, grouped Today and Earlier when both are there, with the open one marked, and each row is its address", { timeout: 20_000 }, async () => {
+test("the list shows this project's conversations under a Conversations heading, grouped Today and Earlier when both are there, with the open one marked, and each row is its address", { timeout: 20_000 }, async () => {
 	const dom = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
 	const call = dom.calls.find((c) => c.url.startsWith("/conversations"));
 	assert.ok(call, "the page asked for the list");
@@ -2947,8 +3012,8 @@ test("the list shows this project's conversations, grouped Today and Earlier whe
 	assert.deepEqual(rows.map((r) => r.href), [`/c/${SESSION_UNDER_TEST}/`, "/c/held-one/", "/c/loop-one/"], "a row loads that conversation's own page");
 	assert.match(rows[0].className, /\bon\b/, "the open conversation is marked");
 	assert.doesNotMatch(rows[1].className, /\bon\b/);
-	const groups = ((globalThis as any).document.getElementById("convs").children as any[]).filter((c) => c.className === "grp").map((c) => c._text);
-	assert.deepEqual(groups, ["Today", "Earlier"]);
+	const headings = () => ((globalThis as any).document.getElementById("convs").children as any[]).filter((c) => /^grp\b/.test(c.className)).map((c) => [c.className, c._text]);
+	assert.deepEqual(headings(), [["grp", "Conversations"], ["grp sub", "Today"], ["grp sub", "Earlier"]], "headed as Needs you and News are, with the days under it");
 	assert.match(textOf(rows[2]), /⚑ 2/, "what needs you is counted on its row");
 	assert.match(textOf(rows[2]), /queued 1/, "and what is queued for it");
 	assert.equal((globalThis as any).document.getElementById("project").value, "/work/api", "the switcher is on this project");
@@ -2956,7 +3021,7 @@ test("the list shows this project's conversations, grouped Today and Earlier whe
 	dom.dispose();
 	const today = await startPage(STATE, { "/conversations": listAnswer(ROWS.slice(0, 2)) });
 	assert.equal(rowsOf().length, 2);
-	assert.deepEqual(((globalThis as any).document.getElementById("convs").children as any[]).filter((c) => c.className === "grp"), [], "one group has no heading");
+	assert.deepEqual(headings(), [["grp", "Conversations"]], "one day has no label of its own");
 	today.dispose();
 });
 
@@ -3461,9 +3526,9 @@ test("a control has a title only when it says what its label does not", { timeou
 	assert.equal(tag("clear"), "#clear missing", "+ New in this project is the new conversation; no second button does it");
 	const dom = await startPage(STATE, {});
 	const doc = (globalThis as any).document;
-	assert.equal(doc.getElementById("theme")._text, "theme: system", "the theme in words, not a glyph");
+	assert.equal(doc.getElementById("theme")._text, "Theme: system", "the theme in words, not a glyph");
 	doc.getElementById("theme").onclick();
-	assert.equal(doc.getElementById("theme")._text, "theme: light");
+	assert.equal(doc.getElementById("theme")._text, "Theme: light");
 	doc.getElementById("expand").onclick();
 	assert.equal(doc.getElementById("theme").title, undefined, "no title written when the theme changes");
 	assert.equal(doc.getElementById("expand").title, undefined, "nor when the steps open");
@@ -3898,14 +3963,15 @@ function cardParts(card: any) {
 	const chip = (key: string) => all.find((b) => b.dataset?.key === key);
 	const foot = card.children.find((c: any) => c.className === "foot");
 	const acts = foot?.children.find((c: any) => c.className === "acts");
-	assert.ok(foot && acts, "the card ends in a footer that holds the status and the buttons");
+	assert.ok(foot, "the card ends in a footer that holds the status and, while it can be answered, the buttons");
 	assert.ok(!treeText(card).includes("Not right?"), "Read it says it: no hint under the card");
 	return {
 		text: treeText(card),
 		chip,
 		on: all.filter((b) => b.className === "on").map((b) => b._text),
-		set: acts.children.find((b: any) => b._text === "Set it up"),
-		cancel: acts.children.find((b: any) => b._text === "Cancel"),
+		buttons: all.length,
+		set: acts?.children.find((b: any) => b._text === "Set it up"),
+		cancel: acts?.children.find((b: any) => b._text === "Cancel"),
 		status: foot.children.find((c: any) => c.className === "cstat")?._text ?? "",
 	};
 }
@@ -4004,6 +4070,9 @@ test("a watch question draws the card from its title and options, in the box whi
 	assert.match(card.text, /Put it in my inbox/);
 	assert.equal(doc.getElementById("watchStatus").hidden, true, "the reading line is gone");
 	assert.ok(card.cancel && card.set, "Cancel and Set it up");
+	const primaries = [doc.getElementById("watchRead"), card.set, card.cancel].filter((b: any) => b.className === "primary");
+	assert.deepEqual(primaries, [card.set], "Set it up is the one primary button while a plan is shown");
+	assert.equal(doc.getElementById("watchEx").hidden, true, "and the examples give the plan their room");
 	assert.deepEqual(cards("modal")[0]._scrolledTo, { block: "start" }, "the card is scrolled to the top of the box, so what it says comes before its buttons");
 	assert.equal(card.cancel._parent.children.indexOf(card.cancel) < card.cancel._parent.children.indexOf(card.set), true, "Cancel first, so Enter hits it");
 
@@ -4086,7 +4155,8 @@ test("the tool's result in the same turn turns every card of the question into a
 	assert.equal(cards("feed").length, 1, "the transcript gets the receipt once the question settles");
 	const receipt = cardParts(cards("feed")[0]);
 	assert.equal(receipt.status, "Set up ~/build.done appears · shows here · once");
-	assert.equal(receipt.set.disabled, true, "settled");
+	assert.equal(receipt.buttons, 0, "a receipt has nothing to press");
+	assert.match(receipt.text, /Result Show it in this conversation Repeats Once, then turn itself off/, "what was chosen, as text");
 	// A loop is named as the Loops pane names it: its name, else the first 13 characters of its id.
 	ask("ask-2", DAILY);
 	result("cron_create", `created cron job cron-${"d".repeat(32)}`, { id: `cron-${"d".repeat(32)}`, stateful: true });
@@ -4148,9 +4218,8 @@ test("a question pi answered on its own is not left waiting: the turn's end, or 
 	send({ type: "agent_end" });
 	const ended = cardParts(cards("feed")[0]);
 	assert.equal(ended.status, "Not set up");
-	assert.equal(ended.set.disabled, true);
-	ended.set.onclick();
-	assert.deepEqual(answered(), [], "an answer to it would go nowhere: none is sent");
+	assert.equal(ended.buttons, 0, "an answer to it would go nowhere: there is nothing to press");
+	assert.deepEqual(answered(), []);
 	ask("ask-2", RULE, { timeout: 30 });
 	await until(() => cardParts(cards("feed").at(-1)).status !== "", "the question's own time ran out");
 	assert.equal(cardParts(cards("feed").at(-1)).status, "Not set up: nobody answered in time");
@@ -4251,6 +4320,8 @@ test("closing the box moves a waiting card into the conversation, where it can s
 	assert.equal(dlg._on.cancel, undefined, "nothing is designed around Escape");
 	doc.getElementById("watchFor").onclick();
 	assert.equal(doc.getElementById("watchCards").children.length, 0, "the box reopens empty: the question stays in the conversation");
+	assert.equal(doc.getElementById("watchEx").hidden, false, "with its examples");
+	assert.equal(doc.getElementById("watchRead").className, "primary", "and Read it as the button to press");
 	cardParts(waiting).set.onclick();
 	assert.deepEqual(answered(), [{ id: "ask-1", value: "Set it up · this conversation · once" }], "answered from the conversation");
 	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}`, CREATED_RULE);
@@ -4365,10 +4436,10 @@ test("a notification fires only while the tab is hidden, only once switched on, 
 	try {
 		assert.equal(asked(), 0, "permission is asked only from the click");
 		const toggle = doc.getElementById("notifyMe");
-		assert.equal(toggle._text, "notifications: off");
+		assert.equal(toggle._text, "Notifications: off");
 		await toggle._on.click();
 		assert.equal(asked(), 1);
-		assert.equal(toggle._text, "notifications: on");
+		assert.equal(toggle._text, "Notifications: on");
 		answer.attention = { ...answer.attention, newDecisions: [{ id: "inb-d2", cwd: "/work/web", headline: "Merge it?" }, ...answer.attention.newDecisions] };
 		await dom.poll();
 		assert.equal(fired.length, 0, "a visible tab is not interrupted");
@@ -4397,7 +4468,7 @@ test("on plain http the notification switch says it needs https or localhost and
 	const { doc, asked, done } = await activityPage(activityAnswer(), { secure: false });
 	try {
 		const toggle = doc.getElementById("notifyMe");
-		assert.equal(toggle._text, "notifications need https or localhost");
+		assert.equal(toggle._text, "Notifications need https or localhost");
 		assert.equal(toggle.disabled, true);
 		await toggle._on.click();
 		assert.equal(asked(), 0);
@@ -5059,6 +5130,8 @@ test("the header is opaque, and on a phone it is one row", () => {
 	assert.match(/(?:^|\n)header\{([^}]*)\}/.exec(css)?.[1] ?? "", /background:var\(--bg\)/, "the feed's top edge is the header's edge");
 	const phone = /@media \(max-width:900px\)\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
 	assert.match(phone, /header\{[^}]*flex-wrap:nowrap/, "title, pickers and buttons share one row");
+	const narrow = /@media \(max-width:760px\)\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
+	assert.match(narrow, /header>#model,header>#thinking\{display:none\}/, "on a phone the title has the row: the pickers are in the sheet");
 	assert.doesNotMatch(phone, /header>b\{[^}]*flex:1 1 100%/, "the title has no row of its own");
 });
 
@@ -5082,7 +5155,7 @@ test("the page's text comes in four sizes, each named once on the root", () => {
 	// styles, so the sheet is the only place a size can be read. It checks values, not formatting.
 	const css = fs.readFileSync(path.join(process.cwd(), "src", "web", "page.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 	const tokens = [...css.matchAll(/--fs-([a-z]+):([^;}]+)/g)].map((m) => [m[1], m[2].trim()]);
-	assert.deepEqual(tokens, [["xs", "11px"], ["sm", "13px"], ["md", "15px"], ["lg", "16px"]]);
+	assert.deepEqual(tokens, [["xs", "11px"], ["sm", "13px"], ["md", "15px"], ["lg", "18px"]]);
 	const token = /^var\(--fs-(xs|sm|md|lg)\)$/;
 	const sizes = [...css.matchAll(/font-size:([^;}]+)/g)].map((m) => m[1].trim());
 	// A shorthand's size is the word before the family, with its line height after a slash.
@@ -5094,4 +5167,148 @@ test("the page's text comes in four sizes, each named once on the root", () => {
 	// The pairing code is read off one screen to type into another: twice the large size.
 	const off = [...sizes, ...shorthands].filter((v) => !token.test(v) && v !== "calc(var(--fs-lg) * 2)");
 	assert.deepEqual(off, [], "every font size is one of the four tokens");
+});
+
+test("a paused loop and the slash row the keys are on read at 4.5:1 or more in both themes, and the selected row is not the hover row", () => {
+	// Read from the style sheet, as the placeholder's contrast is: the stub computes no styles.
+	const { tokens, rest } = pageStyle();
+	const scheme = (start: string) => Object.fromEntries([...tokens.slice(tokens.indexOf(start)).split("}")[0].matchAll(/--([a-z0-9-]+):([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
+	const rule = (sel: string) => rest.split("}").map((r) => r.replace(/\/\*[\s\S]*?\*\//g, "").trim()).find((r) => r.startsWith(sel + "{"))?.slice(sel.length + 1) ?? "";
+	const prop = (decl: string, name: string, t: Record<string, string>) => (new RegExp(`(?:^|;)${name}:([^;]+)`).exec(decl)?.[1].trim() ?? "").replace(/var\(--([a-z0-9-]+)\)/g, (_, k) => t[k]);
+	/** An `rgb(r g b / a)` laid over a #rrggbb paper, as #rrggbb. */
+	const over = (c: string, paper: string) => {
+		if (c.startsWith("#")) return c;
+		const [r, g, b, a] = c.replace(/[^\d. ]/g, " ").trim().split(/\s+/).map(Number);
+		return "#" + [r, g, b].map((v, i) => Math.round(v * a + parseInt(paper.slice(1 + 2 * i, 3 + 2 * i), 16) * (1 - a)).toString(16).padStart(2, "0")).join("");
+	};
+	const paused = rule(".card.off,.card.off b,.card.off pre");
+	assert.ok(paused, "a paused card has a rule of its own");
+	assert.doesNotMatch(paused, /opacity/, "and no opacity on its words");
+	const sel = rule("#pop div.sel");
+	const hover = rule("#pop div:hover");
+	const light = scheme(":root{");
+	const dark = { ...light, ...scheme("html[data-theme=dark]{") };
+	for (const [name, t] of [["light", light], ["dark", dark]] as const) {
+		const ratio = contrast(prop(paused, "color", t), t.panel2);
+		assert.ok(ratio >= 4.5, `${name}: a paused card's text is ${ratio.toFixed(2)}:1`);
+		const selBg = over(prop(sel, "background", t), t.panel);
+		assert.ok(contrast(t.fg, selBg) >= 4.5, `${name}: text on the selected row`);
+		assert.notEqual(selBg, over(prop(hover, "background", t), t.panel), `${name}: the selected row is not the hover row`);
+	}
+});
+
+/* ------------------------------------------------------------------ saying what failed */
+
+const FAILED_REPLY = { role: "assistant", content: [], stopReason: "error", errorMessage: "Connection error." };
+/** The error rows in the conversation now, as a person reads them. */
+const errorRows = (dom: { made: any[] }) => dom.made.filter((m: any) => m.className === "row err" && m._parent === (globalThis as any).document.getElementById("feed")).map(textOf);
+
+test("a reply the model call failed on is one error row with the reason, live and from the transcript, and its retries count on that row", { timeout: 20_000 }, async () => {
+	const said = { role: "user", content: [{ type: "text", text: "hello" }] };
+	const live = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await live.started();
+	const end = (message: unknown) => {
+		live.source().onmessage({ data: JSON.stringify({ type: "message_start" }) });
+		live.source().onmessage({ data: JSON.stringify({ type: "message_end", message }) });
+	};
+	end(FAILED_REPLY);
+	assert.deepEqual(errorRows(live), ["Error Connection error."], "the reason, the first time it fails");
+	end(FAILED_REPLY);
+	end(FAILED_REPLY);
+	assert.deepEqual(errorRows(live), ["Error Connection error. (tried 3 times)"], "pi's retries count on the one row");
+	end({ ...FAILED_REPLY, errorMessage: "401 Unauthorized" });
+	end(said);
+	end(FAILED_REPLY);
+	assert.deepEqual(errorRows(live), ["Error Connection error. (tried 3 times)", "Error 401 Unauthorized", "Error Connection error."], "another reason, or a failure after another message, is a row of its own");
+	live.dispose();
+
+	const reloaded = stubDom(STATE, { messages: [said, FAILED_REPLY, FAILED_REPLY, FAILED_REPLY, FAILED_REPLY] });
+	await new Function(pageScript())();
+	await reloaded.started();
+	assert.deepEqual(errorRows(reloaded), ["Error Connection error. (tried 4 times)"], "the same row after a reload");
+	reloaded.dispose();
+});
+
+test("while pi-loops does not answer the page says so once, keeps what it had and turns off what posts to it; it comes back without a reload", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const owned = { ...DECISION_CARD, sessionId: undefined, fromThisConversation: false, owner: { holder: "project" } };
+	const { dom, cards, button } = await inboxPage({ "/inbox?": { ...INBOX, cards: [owned] }, "/conversations": listAnswer(ROWS) });
+	const at = (id: string) => g.document.getElementById(id);
+	await until(() => cards().length > 0 && at("auto").innerHTML.includes("nightly") && textOf(at("convs")) !== "", "the page drew its cards, its loops and its list");
+	assert.equal(button(cards().at(-1), "Yes, do it here").disabled, false);
+	const rail = textOf(at("convs"));
+
+	// pi-loops stops: it tells the page that it stopped this pi itself, and then nothing answers.
+	dom.source().onmessage({ data: JSON.stringify({ type: "pi_exit", code: 143, signal: null, stderr: "", asked: true }) });
+	const answering = g.fetch;
+	g.fetch = async () => { throw new TypeError("Failed to fetch"); };
+	await dom.poll();
+	await until(() => at("held").hidden === false, "the line above the composer");
+	assert.equal(textOf(at("held")), "pi-loops stopped or cannot be reached. Reconnecting…");
+	assert.deepEqual(errorRows(dom), [], "a pi that pi-loops stopped itself is no error in the conversation");
+	assert.match(at("auto").innerHTML, /nightly/, "the loops it knew stay listed");
+	assert.doesNotMatch(at("auto").innerHTML, /not found/);
+	assert.match(at("auto").innerHTML, /<button data-run="cron-a" disabled>/, "run is off");
+	// The end of a turn asks for the list again, and gets no answer either.
+	dom.source().onmessage({ data: JSON.stringify({ type: "agent_end" }) });
+	await settled();
+	assert.equal(textOf(at("convs")), rail, "the list stays, with nothing said about it");
+	assert.equal(textOf(at("sbHost")).trim(), "reconnecting…", "the status bar does not say pi-loops runs");
+	assert.equal(at("status")._text, "", "the header's chip says nothing: the line and the status bar have said it");
+	assert.equal(at("send").disabled, true, "send is off");
+	assert.equal(button(cards().at(-1), "Yes, do it here").disabled, true, "and so is a card's Yes");
+	at("input").value = "typed while it was away";
+	await at("composer").requestSubmit();
+	assert.equal(at("input").value, "typed while it was away", "Enter sends nothing and keeps the text");
+
+	// It answers again: the next poll puts everything back.
+	g.fetch = answering;
+	await dom.poll();
+	await until(() => at("held").hidden === true, "the line goes");
+	assert.equal(at("send").disabled, false);
+	assert.equal(button(cards().at(-1), "Yes, do it here").disabled, false);
+	assert.match(at("auto").innerHTML, /<button data-run="cron-a">/);
+	assert.match(textOf(at("sbHost")), /pi-loops/);
+	dom.dispose();
+});
+
+test("a pi that stopped by itself says so without naming a terminal", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await dom.started();
+	dom.source().onmessage({ data: JSON.stringify({ type: "pi_exit", code: 1, signal: null, stderr: "" }) });
+	assert.deepEqual(errorRows(dom), ["pi exited (code 1) it stopped without saying why"]);
+	dom.dispose();
+});
+
+test("a loop the server calls failing says failing ×N on its card and is listed under Needs you", { timeout: 20_000 }, async () => {
+	const automation = { ...STATE.automation, jobs: [{ ...STATE.automation.jobs[0], failing: 5, lastError: "401 Unauthorized" }, { ...STATE.automation.jobs[0], id: "cron-b", name: "weekly", lastError: "skipped: previous run still active" }] };
+	const dom = stubDom({ ...STATE, automation }, { messages: [] }, new Map(), { "/inbox?": { ...INBOX, cards: [], failing: [{ id: "cron-a", label: "nightly", streak: 5 }] } });
+	await new Function(pageScript())();
+	await dom.started();
+	const doc = (globalThis as any).document;
+	await until(() => textOf(doc.getElementById("needsSlot")).includes("nightly"), "the rail lists the failing loop");
+	assert.equal(textOf(doc.getElementById("needsSlot")).replace(/\s+/g, " ").trim(), "Needs you nightly failing ×5");
+	const cardsHtml = String(doc.getElementById("auto").innerHTML).split("<details");
+	assert.match(cardsHtml.find((c) => c.includes('data-key="job:cron-a"'))!, /<span class="bad">failing ×5<\/span>/);
+	assert.doesNotMatch(cardsHtml.find((c) => c.includes('data-key="job:cron-b"'))!, /failing ×/, "a last error alone is not a failing loop: the server decides");
+	dom.dispose();
+});
+
+test("a send takes the conversation to its end, wherever it was scrolled to", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await dom.started();
+	const doc = (globalThis as any).document;
+	const feed = doc.getElementById("feed");
+	feed.scrollHeight = 2000;
+	feed.clientHeight = 600;
+	feed.scrollTop = 100;
+	feed._on.scroll();
+	doc.getElementById("input").value = "sent while reading back";
+	await doc.getElementById("composer").requestSubmit();
+	assert.equal(feed.scrollTop, 2000, "what was sent is in view");
+	assert.equal(doc.getElementById("newer").hidden, true);
+	dom.dispose();
 });

@@ -340,7 +340,8 @@ A schedule is a 5-field cron expression, or one of `hourly` / `daily` / `weekly`
 too, and they are not the same thing: `daily` is 09:00, `@daily` is midnight. All of it runs on this
 machine's clock ([which clock, and what the twice-yearly change does to
 it](docs/loops.md#time-and-which-clock-it-is)). A `<ref>` is the number on screen, the job id, an
-unambiguous prefix of it, or the `--name` you gave it — and `/crontab` and `/loop` are aliases of
+unambiguous prefix of it, or its name: the `--name` you gave it, else the one made from the
+first words of its prompt (`check-new-issues`) — and `/crontab` and `/loop` are aliases of
 `/cron`.
 
 Tools for the model: `cron_create`, `cron_list`, `cron_remove`, `set_cron_job_state`,

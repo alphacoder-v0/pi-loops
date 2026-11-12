@@ -1142,9 +1142,11 @@ export class LoopScheduler {
 		// `job` is the pre-claim snapshot, so its `lastFiredAt` is when the previous run started —
 		// a reason given before that was already in front of that run.
 		const dismissed = this.inbox.feedbackFor(job.id, job.lastFiredAt).map((e) => ({ text: String(e.text), reason: String(e.dismiss_reason ?? "") }));
+		const timeoutMs = job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
 		const prompt = composeLoopPrompt(job.prompt, previousState, {
 			name: job.name,
 			dismissed,
+			timeoutMs,
 			// Zoned, unlike everything shown on a screen: this one goes into a sub-agent's prompt,
 			// where a model is asked to reason about how long ago the last run was and has no
 			// surrounding context to tell it which clock this came off. It used to be a bare local
@@ -1163,7 +1165,7 @@ export class LoopScheduler {
 				thinking,
 				tools: job.tools,
 				builtinTools: job.builtinTools,
-				timeoutMs: job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS,
+				timeoutMs,
 				signal: ctrl.signal,
 				sessionDir: this.store.sessionDirFor(job.id),
 				hop: this.hop + 1,
@@ -1262,7 +1264,9 @@ export class LoopScheduler {
 			warning: result.warning,
 			retries: result.retries,
 			compactions: result.compactions,
-			summary: previewRedacted(stripProtocolTags(result.text), 400) || undefined,
+			// What the run found, when it found something: the reply around the tags is the model signing
+			// off ("Filed as #220. Final state:"), which tells a person who reads the run nothing.
+			summary: previewRedacted(findings[0] ?? stripProtocolTags(result.text), 400) || undefined,
 			sessionId: result.sessionId,
 			sessionFile: result.sessionFile,
 			checker,
