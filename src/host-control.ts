@@ -11,7 +11,7 @@ import * as path from "node:path";
 import { pidAlive, withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { procStart } from "./lease.ts";
 import { compareVersions } from "./pi-floor.ts";
-import { askHost, type StopReason } from "./host-control-channel.ts";
+import { askHost, hostSocketPath, ownedSocket, type StopReason } from "./host-control-channel.ts";
 import { formatLocal, stamp } from "./schedule.ts";
 import { previewRedacted } from "./redact.ts";
 import { readUiPrefs } from "./ui-prefs.ts";
@@ -523,7 +523,8 @@ export function heartbeatFresh(rec: Pick<HostServiceRecord, "tickAt">, now: numb
 	return !!rec.tickAt && now - Date.parse(rec.tickAt) < 3 * tickMs;
 }
 
-export async function evictHost(dir: string, pid: number, opts: { graceMs?: number; kill?: (pid: number, signal: NodeJS.Signals) => void; alive?: (pid: number) => boolean } = {}): Promise<void> {
+/** SIGTERM, then SIGKILL after the grace, and the record removed. Records nothing: the caller says what this was. */
+async function terminateHost(dir: string, pid: number, opts: { graceMs?: number; kill?: (pid: number, signal: NodeJS.Signals) => void; alive?: (pid: number) => boolean } = {}): Promise<void> {
 	const kill = opts.kill ?? ((target, signal) => process.kill(target, signal));
 	const alive = opts.alive ?? pidAlive;
 	try {
@@ -543,12 +544,26 @@ export async function evictHost(dir: string, pid: number, opts: { graceMs?: numb
 		}
 	}
 	removeHostService(dir, pid);
+}
+
+export async function evictHost(dir: string, pid: number, opts: Parameters<typeof terminateHost>[2] = {}): Promise<void> {
+	await terminateHost(dir, pid, opts);
 	// Every window counts its own unanswered probes, so several evict one wedged process together:
 	// the first to get here counts the crash, once per pid. Who removed the record says nothing, since
 	// a process that still turns removes its own on SIGTERM.
 	if (!claimEviction(dir, pid)) return;
 	recordSpawn(dir, { kind: "outcome", by: process.pid, outcome: "evicted" });
 	recordCrash(dir, `pi-loops (pid ${pid}) stopped answering and its heartbeat stopped; it was replaced`);
+}
+
+/**
+ * Pure. Whether an upgrade that got no answer stops the old process with a signal. Only when its
+ * control socket is not there as ours, so the request can never arrive, and the process has ticked.
+ * A process with no tick yet is still starting: it binds its socket before its first tick. A socket
+ * that is there but did not answer is a busy process, and the next tick asks again.
+ */
+export function upgradeNeedsSignal(input: { answered: boolean; socketOurs: boolean; ticked: boolean }): boolean {
+	return !input.answered && !input.socketOurs && input.ticked;
 }
 
 /**
@@ -650,19 +665,22 @@ export async function ensureHost(opts: EnsureHostOptions): Promise<{ action: Ens
 	});
 	if (action.kind === "upgrade") {
 		recordUpgrader(opts.dir, { pid: process.pid, version: opts.myVersion, procStart: procStart(process.pid) });
-		await askHost(opts.dir, { op: "upgrade" });
+		const upgradeAnswered = await askHost(opts.dir, { op: "upgrade" });
 		// A quitting window asks and goes. The claim above holds older windows back; the next window,
 		// or the next `pi-loops`, starts this version once the old process has left.
 		if (opts.wait === false) return { action };
+		// SIGTERM needs no socket. Without it, each tick waits the whole bound for a process that never
+		// got the request. Not a crash: the process was working, so the crash budget is not touched.
+		const old = rec!;
+		if (upgradeNeedsSignal({ answered: upgradeAnswered !== undefined, socketOurs: ownedSocket(old.socket || hostSocketPath(opts.dir)), ticked: old.tickAt !== undefined })) await terminateHost(opts.dir, old.pid, { alive: () => hostServiceAlive(old) });
 		// Wait for it to go and start this version at once: the gap until the next tick is where an
 		// older window used to start the old code again. It may first let a turn in the page finish.
-		const old = rec!.pid;
 		const began = Date.now();
 		const deadline = began + (opts.leaveWaitMs ?? LEAVE_WAIT_MS);
 		let told = false;
 		while (Date.now() < deadline) {
 			const now = readHostService(opts.dir);
-			if (!now || now.pid !== old || !hostServiceAlive(now)) break;
+			if (!now || now.pid !== old.pid || !hostServiceAlive(now)) break;
 			if (!told && Date.now() - began >= (opts.leaveNoticeMs ?? 2_000)) {
 				told = true;
 				opts.onLeaveWait?.();

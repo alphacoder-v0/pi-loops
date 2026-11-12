@@ -6,9 +6,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as net from "node:net";
+import { once } from "node:events";
 import { execFile } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { ALREADY_LEAVING, API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, HOST_SOCKET, type HostRequest, type HostSnapshot, askHost, hostSocketPath, recentRun, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, stopRun, type Notice } from "../src/host-control-channel.ts";
+import { ALREADY_LEAVING, API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, HOST_SOCKET, type HostRequest, type HostSnapshot, askHost, channelNeedsRebind, healHostChannel, hostSocketPath, recentRun, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, stopRun, type Notice } from "../src/host-control-channel.ts";
 
 const snapshot = (): HostSnapshot => ({
 	pid: 4242,
@@ -456,4 +457,62 @@ test("pi-loops status names an unnamed loop by its label, as every other surface
 	assert.match(lines, /  cron-01234567\b/, "a recent run");
 	assert.match(lines, /! cron-01234567: boom/, "a failing loop");
 	assert.match(renderHostSnapshot({ ...snapshot(), failing: [{ job: "pr-watch", error: "boom" }] }).join("\n"), /! pr-watch: boom/, "a name stays a name");
+});
+
+test("a live and healthy socket is left alone; a removed one, a stale one of ours and no server at all re-bind; someone else's keeps the degrade", () => {
+	assert.equal(channelNeedsRebind({ present: true, ours: true, listening: true }), false, "live and healthy");
+	assert.equal(channelNeedsRebind({ present: false, ours: false, listening: true }), true, "removed while running: the server is on the deleted inode");
+	assert.equal(channelNeedsRebind({ present: false, ours: false, listening: false }), true, "no server at all (a degraded startup bind)");
+	assert.equal(channelNeedsRebind({ present: true, ours: true, listening: false }), true, "a stale one of ours after a degraded bind");
+	assert.equal(channelNeedsRebind({ present: true, ours: false, listening: true }), false, "someone else's socket: re-binding would only be refused again");
+});
+
+test("a control socket removed while pi-loops runs is bound again by the tick's check, and a healthy one is left alone", async () => {
+	const dir = tmp("pi-loops-chan-");
+	const handlers = { status: snapshot, abortRun: () => true, abortCheck: () => false, stop: () => {} };
+	const logs: string[] = [];
+	const log = (m: string) => logs.push(m);
+	const first = serveHostChannel(dir, handlers, log);
+	await once(first, "listening");
+	assert.equal(healHostChannel(dir, first, handlers, log), first, "a healthy socket keeps its server");
+	assert.deepEqual(logs, [], "and nothing is said");
+
+	fs.rmSync(hostSocketPath(dir));
+	assert.equal(await askHost(dir, { op: "status" }), undefined, "a removed socket answers no one");
+	const second = healHostChannel(dir, first, handlers, log)!;
+	try {
+		assert.notEqual(second, first);
+		await once(second, "listening");
+		assert.equal((await askHost(dir, { op: "status" }))?.ok, true, "the channel answers again");
+		assert.deepEqual(logs, ["control socket was removed or stale; re-bound"]);
+		assert.equal(healHostChannel(dir, second, handlers, log), second, "the next tick leaves it alone");
+		assert.equal(logs.length, 1);
+	} finally {
+		second.close();
+	}
+});
+
+test("a path that holds something that is not a socket is left as it is, and is bound when the path is free again", async () => {
+	const dir = tmp("pi-loops-chan-");
+	const handlers = { status: snapshot, abortRun: () => true, abortCheck: () => false, stop: () => {} };
+	const logs: string[] = [];
+	const log = (m: string) => logs.push(m);
+	const first = serveHostChannel(dir, handlers, log);
+	await once(first, "listening");
+	// A file takes the path after the socket is removed. Closing the old server would unlink it.
+	fs.rmSync(hostSocketPath(dir));
+	fs.writeFileSync(hostSocketPath(dir), "not a socket");
+	assert.equal(healHostChannel(dir, first, handlers, log), first, "the server is kept");
+	assert.equal(fs.readFileSync(hostSocketPath(dir), "utf8"), "not a socket", "the file is not removed");
+	assert.deepEqual(logs, []);
+
+	fs.rmSync(hostSocketPath(dir));
+	const bound = healHostChannel(dir, first, handlers, log)!;
+	try {
+		await once(bound, "listening");
+		assert.equal((await askHost(dir, { op: "status" }))?.ok, true);
+		assert.deepEqual(logs, ["control socket was removed or stale; re-bound"]);
+	} finally {
+		bound.close();
+	}
 });

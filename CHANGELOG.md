@@ -51,6 +51,12 @@ All notable changes to pi-loops are documented here. The format follows
 - **A loop made without a name gets one.** `/cron add`, `cron_create` and the page's Watch flow
   name it from the first words of its prompt (`check-new-issues`, then `check-new-issues-2`), so
   you refer to it by a word and not by a 32-digit id. Loops that exist keep what they have.
+- **A removed control socket comes back.** When the socket file is removed while pi-loops runs (a
+  temp cleaner, a manual cleanup), pi-loops binds it again on its next 30 s tick and `host.log`
+  says so. Before, `pi-loops status`, `run` and `abort` got no answer until a restart, and an
+  upgrade waited 180 s on every tick for a process that could not receive the request. A window
+  with a newer version now stops such a process with SIGTERM, only when the socket file is not
+  there and the process has finished starting, and does not count a crash (#224).
 
 ## [0.24.2] - 2026-11-11
 

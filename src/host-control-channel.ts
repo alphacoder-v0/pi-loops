@@ -83,7 +83,7 @@ function prepareSocketDir(socketPath: string, log?: (message: string) => void): 
  * access is the directory — 0700 and ownership-checked — plus this uid comparison, which is what
  * stops another account's socket from answering for the host.
  */
-function ownedSocket(socketPath: string): boolean {
+export function ownedSocket(socketPath: string): boolean {
 	try {
 		// lstat, so a symlink pointing at someone else's socket is rejected rather than followed.
 		const st = fs.lstatSync(socketPath);
@@ -91,6 +91,19 @@ function ownedSocket(socketPath: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * Whether the host re-binds its control channel this tick. A socket file removed while the host
+ * runs (an OS temp cleaner, a manual cleanup) leaves the server listening on the deleted inode:
+ * the host keeps turning, but every control op fails, and its fresh heartbeat keeps the window
+ * from evicting it. A stale one of our own is the leftover of a degraded bind. Someone else's
+ * socket keeps the startup degrade: re-binding would only be refused again.
+ */
+export function channelNeedsRebind(input: { present: boolean; ours: boolean; listening: boolean }): boolean {
+	if (input.present && !input.ours) return false;
+	if (input.present && input.ours && input.listening) return false;
+	return true;
 }
 
 /** One of the last few runs. `stopped`: a person, a quit or a restart stopped it; `byPerson`: a person did. */
@@ -560,6 +573,32 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 	});
 	server.unref();
 	return server;
+}
+
+/**
+ * The tick's check of the control channel: returns the server to keep. A socket file removed while
+ * the host runs (an OS temp cleaner, a manual cleanup) leaves the server listening on the deleted
+ * inode, where no control op reaches it. That server is closed and the startup bind runs again.
+ * "re-bound" is said only when the new server listens. A bind that fails says why once: the
+ * retries of a server that does not listen are silent. A path that now holds something that is
+ * not a socket is left as it is.
+ */
+export function healHostChannel(dir: string, current: net.Server | undefined, handlers: HostChannelHandlers, log: (message: string) => void): net.Server | undefined {
+	const socketPath = hostSocketPath(dir);
+	let present = false;
+	try {
+		present = fs.lstatSync(socketPath).isSocket();
+		// Not a socket, so not ours to replace: closing the old server would unlink it.
+		if (!present) return current;
+	} catch {
+		/* removed */
+	}
+	const listening = current?.listening ?? false;
+	if (!channelNeedsRebind({ present, ours: ownedSocket(socketPath), listening })) return current;
+	if (listening) current!.close();
+	const next = serveHostChannel(dir, handlers, listening ? log : undefined);
+	next.once("listening", () => log("control socket was removed or stale; re-bound"));
+	return next;
 }
 
 /** Ask a running host something. Returns undefined when no host is listening. */
