@@ -556,7 +556,9 @@ export function collect(
 		// model was in the middle of: the schedulers read `aborted` as "this was not the job failing"
 		// — the slot goes back, the failure streak is untouched and a one-shot is not retired — which
 		// is exactly right for a run the cap ended, and is what an abort mid-call reports anyway.
-		stopReason: budgetStopMessage ? "aborted" : stopReason,
+		// A timeout is the opposite: the job did fail, so it must not report the abort that the
+		// deadline used to stop it. The slot is spent and the failure is counted.
+		stopReason: budgetStopMessage ? "aborted" : timedOut ? "error" : stopReason,
 		warning: telemetry?.warning,
 		model: assistant ? `${assistant.provider}/${assistant.model}` : undefined,
 		// A run that silently retried five times or compacted twice must not look like a clean one.

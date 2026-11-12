@@ -8,6 +8,7 @@ import * as path from "node:path";
 import { LoopScheduler } from "../src/scheduler.ts";
 import { asleepNote, runsHere } from "../src/job-owner.ts";
 import { fakeRunner } from "./fake-runner.ts";
+import { collect } from "../src/sdk-runner.ts";
 import { JobStore, type LoopJob } from "../src/store.ts";
 import { LeaseBinding, LeaseStore } from "../src/lease.ts";
 import { failedRun, type RunnerResult } from "../src/runner.ts";
@@ -788,6 +789,47 @@ test("a run aborted by a quit or a session swap gives its slot back instead of l
 		}
 	} finally {
 		delete process.env.FAKE_PI_SLEEP;
+	}
+});
+
+test("a run that timed out is a failed run: its slot is spent and the failure streak rises", async () => {
+	const dir = tmp("pi-loops-timeout-slot-");
+	// What the runner reports when the deadline aborts the sub-session in the middle of a reply.
+	const partial = { role: "assistant", provider: "p", model: "m", stopReason: "aborted", content: [{ type: "text", text: "partial" }] };
+	const session = { messages: [{ role: "user" }, partial], sessionId: "sid", sessionFile: undefined, getSessionStats: () => ({ tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, cost: 0.01, assistantMessages: 1 }), agent: { state: {} } };
+	const sched = new LoopScheduler({ dir, runner: async (req) => collect(session as any, req, true), getSession: () => ({ cwd: dir }) });
+	try {
+		const job = await sched.store.add(makeJob({ cwd: dir }));
+		await sched.tick();
+		await sched.drain(10_000);
+		const after = sched.store.load()[0];
+		const [record] = sched.store.listRuns(job.id);
+		assert.deepEqual([record.ok, record.error, record.aborted], [false, "timed out after 900s", undefined]);
+		assert.deepEqual([after.runCount, after.consecutiveFailures], [1, 1], "the run is counted, and so is the failure");
+		assert.ok(after.lastFiredAt, "the slot is not given back");
+		await sched.tick();
+		await sched.drain(10_000);
+		assert.equal(sched.store.listRuns(job.id).length, 1, "the next tick does not run the same slot again");
+	} finally {
+		await sched.stop();
+	}
+});
+
+test("the run summary is the first finding when the run filed one, and the reply when it filed none", async () => {
+	const dir = tmp("pi-loops-summary-");
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
+	try {
+		const job = await sched.store.add(makeJob({ cwd: dir }));
+		process.env.FAKE_PI_REPLY = "Looked at CI.\n<inbox>main is red: test/x.test.ts fails</inbox>\n<inbox>second</inbox>\nFiled as #220. Final state:\n<loop-state>seen: 1</loop-state>";
+		assert.equal(await sched.runNow(job.id), true);
+		await sched.drain(10_000);
+		process.env.FAKE_PI_REPLY = "Nothing new since the last run.\n<loop-state>seen: 1</loop-state>";
+		assert.equal(await sched.runNow(job.id), true);
+		await sched.drain(10_000);
+		assert.deepEqual(sched.store.listRuns(job.id).map((r) => r.summary), ["main is red: test/x.test.ts fails", "Nothing new since the last run."]);
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		await sched.stop();
 	}
 });
 

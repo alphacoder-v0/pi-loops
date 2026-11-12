@@ -108,10 +108,10 @@ tools of the chat the loop was made in (or its `--tools`), the MCP servers it co
 conversation history, its own transcript file. It does not get the window's `-e` extensions, flags
 or live MCP connections. Every run gets the same prompt: the output
 protocol, preceded by one line of context (the job's name, when the run started, whether it is a
-catch-up):
+catch-up, the job's timeout):
 
 ```text
-You are running the recurring loop "<name>" (current run started <when it started, on the clock of the machine running it, with that machine's offset>; write any time in your notes with its offset, as that one has). This is a background run: nobody is watching, and your final reply is parsed by a program.
+You are running the recurring loop "<name>" (current run started <when it started, on the clock of the machine running it, with that machine's offset>; write any time in your notes with its offset, as that one has). This is a background run: nobody is watching, and your final reply is parsed by a program. The run is stopped after <the job's timeout> and counted as a failure, so finish inside that time.
 
 [loop-state] (your notes from the previous run of this recurring job)
 <contents of the state file, or "(first run)">
@@ -454,7 +454,7 @@ admitted in the same tick would each be free to. A run is measured once per mode
 today's recorded spend plus everything this process has in flight — its own cost so far, the runs
 beside it, and, with `verify = true`, the maker whose findings its checker is reviewing. When that
 total reaches the cap the run is stopped the way the run timeout stops one: pi aborts the
-sub-session and the run is recorded with what it had spent. It is treated as an interruption rather
+sub-session and the run is recorded with what it had spent. Unlike a timeout, a budget stop is treated as an interruption rather
 than as a job that failed — the concurrency slot is released, the tick stays owed, the job's
 failure streak is untouched and a one-shot is not retired — so the loop simply resumes when the day
 rolls over or the cap is raised, held back until then by the check at dispatch.
@@ -496,6 +496,10 @@ tick. A stop is not a failure, so the run does not count toward `runs` or the fa
 one-shot loop you stop is turned off with `last error: stopped by a person; /cron run <ref> runs it
 now`, and keeps its notes. A run stopped by quitting, an upgrade or the daily budget gives its slot
 back and runs again on the next tick, as before.
+
+A run that passes its timeout (`--timeout`, default 15m) is a failed run, `timed out after <n>s`:
+its slot is spent, it counts toward `runs` and the failure streak, and the loop runs again at its
+next scheduled time.
 
 A job that fails three times in a row is retried on a widening gap (5 minutes, doubling, up to six
 hours) instead of at every due tick, and says so; one success clears the streak.
@@ -568,13 +572,603 @@ before the run ends. A loop's run in the background gets pi's default tools, or 
 own project.
 
 An unattended run refuses a corpus of dangerous commands: sudo, `curl … | sh`, writing to a block
-device, `mkfs`, `chmod 777 /`, shutdown/reboot/halt as the command (also through `systemctl`; as an
-argument, `git log --grep=reboot`, they are words), `git push --force` on main/master, pipes into
+device, `mkfs`, `chmod 777 /`, shutdown/reboot/halt/poweroff anywhere in the command (after `sudo`,
+`systemctl`, `timeout` or `sh -c` too; the exception is a search, described below), `git push --force` on main/master, pipes into
 `eval`, the fork bomb, `rm -r -f` aimed at `/`, an absolute path or `$HOME`, and `pi-loops abort`,
 `stop` or `restart` as a command (after `env`, `npx`, a path or `sh -c` too, and with a verb the shell
 expands, `pi-loops $V`; `git add -A && git commit -m "pi-loops: stop retrying"` only mentions it). The model is told
 why and can do the safe part. A plain job's turn in an open window meets the same corpus, and asks
 you instead of refusing outright (see "Plain cron jobs" above).
+
+A search for one of the words shutdown, reboot, halt and poweroff is not refused, when the command
+is no more than a search: `grep -rn shutdown src/`, `rg -n "halt" src | wc -l`,
+`cd src && grep -n halt host.ts`. The command must be one line. Each part of it, between `|`,
+`&&`, `||` and `;`, must start with the bare name of one of `grep`, `egrep`, `fgrep`, `rg`, `cat`,
+`wc`, `head`, `tail`, `cut`, `tr`, `cd` and `ls`. The line must have no parenthesis, brace,
+backtick, `# Cron jobs, stateful loops, the inbox, maker/checker
+
+Everything here is `/cron`; `/crontab` and `/loop` are the same command under other names.
+
+## Plain cron jobs
+
+```text
+/cron add "*/30 * * * *" summarize the repo state
+```
+
+When due, the prompt is written as a request addressed to the session that created the job
+(`requests/<session>.jsonl`), and the window holding that session hands it to the agent as a user
+message with the engine prefix `[Trigger <run-id>] ` once the agent is idle; the agent runs one turn
+(an *inject-and-run* job). While the agent is busy the prompt waits in the queue, where Esc cannot
+drop it and a window that quits leaves it for the next one, and runs once the agent is idle, as a
+message you queued in a chat does: Esc, and the browser's Stop, end the current turn only. In
+exchange the queue is visible and cancellable: the window says `queued: cron <name> runs after the
+current turn` when the prompt is queued behind a busy turn, the status line shows `queued N` while
+rows wait for this conversation, and `/cron queue` lists them numbered with their source, age and
+text; `/cron queue cancel <n|id>` takes one out and `/cron queue clear` all of them, each cancel
+audited. While the prompt waits, `/cron` marks the job `[queued <how long>]`,
+with the reason when the queue knows one (`backing off until <when>` after a hand-over that failed),
+and `cron_list` reports `queued` with `since`. A hand-over pi does not take (no model, no
+credentials, another extension's input handler swallowing it: pi starts no turn and tells the
+extension nothing) is judged ten seconds after pi's last input event, with pi idle, and offered
+again after a minute, then five; the third refusal makes the prompt a finding in the inbox and frees
+the job, and a slot due while a refused prompt waits replaces it instead of being skipped onto it,
+so one refusal costs one slot, as it did in 0.22. A prompt pi dropped before writing it (Esc, or an
+input handler that rewrote the `[Trigger <id>] ` prefix away) is offered again at most three times,
+each turn under the job's cap, then goes to the inbox the same way. The prompt of a job you disabled
+waits in the queue until you enable it again; a prompt `/cron run` queued runs even if the job was
+disabled since, because you asked for it. A one-shot job is removed once its prompt is in the
+conversation, not when it is queued. A plain job belongs to the session that created it:
+its result is a message in that conversation, so it fires only in the process holding that session.
+One window holds a conversation at a time. Open the same conversation in a second window and that
+window is a viewer: it fires none of the conversation's plain jobs, `/cron` there marks each one
+`[session <id> — open in a terminal]` (or `in the page`) with its next run, and `/cron run` says
+where to run it.
+When the holding window closes, the viewer takes the conversation over on its next tick. If the
+other window added turns after the viewer opened the conversation, the viewer's copy is older than
+the file, and a turn fired there would leave those turns on a dead branch. So that window says to
+`/resume` the conversation, and its plain jobs and rule results wait until you do: `/cron` there
+marks each one `[session <id> — this window shows an older copy; /resume it to run here]`, and
+`/cron run` says the same.
+When no window holds the conversation, pi-loops fires the job in it: it takes the conversation for
+that one turn, runs the prompt there on the conversation's own model (a plain job pins none, and a
+`model` a 0.22 chat stored on one is ignored) as the conversation's own turn, so `cron_create`,
+`cron_list all_projects` and the other tools act for that conversation and a control-plane confirm
+is refused with a sentence that says the turn ran in the background with nobody to ask,
+and gives it back, so the answer is in the conversation when you resume it. `/cron` in another
+window marks such a job `[session <id> — in the background]`, with its next run. pi-loops leaves a
+conversation alone while someone else has written its file in the last two minutes (its own last
+write does not count). A window that opens the conversation during pi-loops' turn takes it back at
+once: the turn stops at its next step, the slot is owed, and that window runs the job straight away,
+even long after its due time and with catch-up off, because the slot was tried, not missed. A turn
+pi-loops stops itself (`pi-loops stop`, an upgrade, the daily budget) is owed the same way and runs
+on pi-loops' next tick. A turn you stop (`/triggers abort`, `pi-loops abort`) is done: the slot is
+spent and the prompt does not run again. Each turn is a run: it appears in `/cron runs` with its
+cost, a failure sets the job's error and the same backoff a loop gets, and a one-shot that fails is
+tried once more before it is retired. A conversation pi-loops has never seen open in a window (its
+file is unknown) is asleep: `[session <id> — resume it to run]` with no next run, and `/cron run`
+refuses it. When pi-loops is not running, the job shows `paused: <why>` instead. The daily budget (`[limits] daily_budget_usd`) covers these
+turns as it covers loop runs, counting only what each turn adds, not the conversation's history. The
+pi-loops loads a conversation's extensions once for its turns and releases them after an hour without
+one. Something whose result should not land in a conversation (a nightly
+digest, a watch) is a loop: `--stateful`, with the inbox as its outlet.
+
+A plain job's turn is a scheduled turn wherever it runs, and it runs under the job's own `--tools`
+and the dangerous-command policy (below) in an open window as in the background. So does the turn an
+MCP server's `inject_and_run` push starts ([mcp.md](mcp.md)), with no declared tools: the
+dangerous-command policy alone. The difference is
+who answers. In the background a call outside them is refused. In a window, while the job's turn
+runs, such a call asks you first: a question with a 60-second countdown and two answers, `No, refuse
+it` focused and `Yes, run it once` under it, so Enter refuses. The yes answer runs it this once;
+anything else, Escape or no answer refuses it and tells the model why, so it does the safe part and reports:
+your No is reported as your refusal, no answer as nobody being there. A
+message you send into that turn makes the rest of it yours and nothing asks again. Your own turns, a
+`/goal` continuation, a claimed finding, a recipe hand-off, `/new-trigger` and `/cron run` never ask.
+pi-loops' own tools are not asked about a second time: `cron_create` in such a turn makes a job
+capped to the turn's tools, as a job a background run makes is capped to that run's, and
+`new_trigger`, the trigger tools, `cron_remove` and `set_cron_job_state` ask through their own
+confirm, once, where the background would refuse.
+With you present, in your own turn, `cron_create` asks you before it creates anything: pi's selector
+in a terminal, the same question drawn as a card in the browser page. The first answer is the
+model's own choice: *Put it in my inbox* (a loop, with its notes between runs, with or without a
+checker) or *Show it in this conversation* (a plain job of this conversation). The tool returns
+`created cron job …` or `cancelled: …` in the same call; Cancel, Esc and thirty minutes with no
+answer write nothing. The question shows no directory, so a `cwd` outside this project is refused
+before it is asked ([design.md](design.md), decision 24).
+`[engine] window_guard = false` in `config.toml` turns the cap off in windows
+([configuration.md](configuration.md)).
+
+Schedules are local time: 5-field cron (`*/n`, ranges, lists, `mon-fri`, `jan`), the aliases
+(`hourly` / `every hour` / `once an hour` → `0 * * * *`; `daily` / `every day` → `0 9 * * *`;
+`weekly` → `0 9 * * 1`; `每小时`, `每天`, `每周`), and crontab's `@hourly` / `@daily` / `@weekly` /
+`@monthly`. `daily` means 09:00 local; `@daily` means midnight. Also `every 30m`, `in 10m` and
+`at 2026-09-08T18:00` (one-shot jobs are removed after they fire).
+
+## Stateful loops
+
+```text
+/cron add --stateful "0 9 * * *" check the repo issues and report anything new since the last run
+```
+
+Each run is a fresh sub-session in pi-loops in the background, through pi's SDK: the built-in
+tools of the chat the loop was made in (or its `--tools`), the MCP servers it connects itself from
+`mcp.toml` and the project, the model and thinking level of the chat it was made in, no
+conversation history, its own transcript file. It does not get the window's `-e` extensions, flags
+or live MCP connections. Every run gets the same prompt: the output
+protocol, preceded by one line of context (the job's name, when the run started, whether it is a
+catch-up, the job's timeout):
+
+```text
+You are running the recurring loop "<name>" (current run started <when it started, on the clock of the machine running it, with that machine's offset>; write any time in your notes with its offset, as that one has). This is a background run: nobody is watching, and your final reply is parsed by a program. The run is stopped after <the job's timeout> and counted as a failure, so finish inside that time.
+
+[loop-state] (your notes from the previous run of this recurring job)
+<contents of the state file, or "(first run)">
+[/loop-state]
+
+<your prompt>
+
+Output protocol (mandatory):
+- End your reply with <loop-state>notes for the next run</loop-state> — it REPLACES the saved state; keep it under 2000 characters and make it the information your next run needs (baselines, ids already seen, watermarks).
+- For each finding a human should act on, emit <inbox>one concise line</inbox>, at most 16 per run and 500 characters each. No findings → no inbox tags; do not invent work.
+- When a finding needs a person to decide, write it as <inbox><the decision> · waits: <what waits on it> · if not: <what happens if nobody acts></inbox>.
+- Keep everything after the last tool call short so the tags are not truncated.
+```
+
+Then:
+
+- the last `<loop-state>` block replaces `state/<id>.md` (capped at 2000 characters);
+- up to 16 `<inbox>` tags (each ≤500 characters) are appended to the inbox; extras are counted as dropped
+  — the count is exact up to the first 1000 tags, past which a reply is a runaway rather than a report;
+- missing or malformed tags never fail a run: the state stays untouched, nothing enters the inbox;
+- a run that is still going when the next tick arrives is skipped and counted (`skipped overlaps`).
+
+Every run leaves a trail: the sub-agent's full transcript (`/cron trace <job> [k]`, 20 per job) and
+a run log with exit code, duration, cost and finding counts (`/cron runs`). Prompts are capped at 8 KB.
+
+### Run cards
+
+A run writes into the conversation that created its loop only when there is something to see:
+
+- a loop's first three runs each get one compact card, so you see that it works and what it reports;
+- every failed run gets a card, and a terminal also shows it as a warning;
+- a run a person asked for (`/cron run <loop>`, or the run button in the page) gets a card in the
+  conversation that asked, whatever its place among the loop's runs and whichever conversation created
+  the loop. Its card also shows the first line of the run's reply, cut at 120 characters, with escape
+  codes and bidi controls taken out;
+- a terminal and the page's pi save a card the same way: the page draws it when it is saved and when
+  it reads the conversation again. A window that does not hold the conversation only shows the line.
+  The page does not draw the cards of a conversation whose session file is over 32 MB: reading its
+  entries would hold up every page. A conversation a terminal holds also shows, in the page, the
+  pi-loops views that terminal wrote into it (`/cron`, `/inbox`), redacted and cut at 4000 characters;
+- every other run writes nothing into the conversation. A terminal lists the latest three loop runs of
+  the project in the panel above the editor (`Runs`), the page lists the project's runs and rule results
+  of the last day in its loop activity strip above the composer, and `/cron runs` has them all.
+
+A card is one line: `todo · 5s · $0.003 · 1 finding`, or `todo FAILED · 4s · <error>`; a loop with no name is labelled by the first 13 characters of its id (`cron-15c11c9f`), as every surface but `/cron`, `cron_list` and `inbox --json` labels it. It
+is saved in the conversation, so a resumed conversation still shows how its loop started, and
+`/session-share` leaves it out. A run that was stopped (by a person, a quit or a restart) is not a
+failure and gets no card. When more than five carded runs finish between two looks at the run log,
+five are shown and the rest is one line: `+4 more runs finished (4 failed) — /cron runs`.
+
+Who asked for a run is in its run log record as `requestedBy: { sessionId }`. A scheduled run, and a
+record written before 0.24.0, has none.
+
+A run's place among its loop's runs is in its run log record (`ordinal`). A stopped run does not
+count, so the run after it has the same place. A record written before 0.24 has no place and is not
+one of the first three.
+
+## The inbox
+
+Global JSONL, shared by every session and project. Each line is one finding in the shape
+[CONTRACT.md](../CONTRACT.md) §2.2 fixes, followed by pi-loops' own fields. Job ids are
+`cron-<32 hex>`; prefixes, names and list numbers resolve.
+
+```text
+/inbox                 Inbox (<project>, N new, K need a decision, times <offset>): "<n>. [<id prefix>] <finding>  (<project>, <loop label or source>, <created_at>)"
+                       a decision is listed on up to three lines, its clauses under it:
+                       "<n>. [<id prefix>] ⚑ <decision>  (<project>, <source>, <created_at>)"
+                       "       waiting on: <what waits on it>"
+                       "       if you don't: <what happens if nobody acts>"   (left out when the loop left it out)
+/inbox --all           the same, every project on this machine
+/inbox all [--all]     history including claimed and dismissed
+/inbox claim <n|id>    mark claimed and queue a real agent turn, run once the agent is idle:
+                       "<finding>\n\n(from loop <label> in <project>; investigate and address it)"
+                       (the finding comes first, so a conversation the claim starts is titled by it;
+                       <label> is the loop's name, else its 13-character id, and <project> the last
+                       part of its cwd; a checker-kept finding adds a line saying so)
+/inbox dismiss <n|id> [reason]   mark dismissed; the reason, if you give one, is shown to the loop's next run
+/inbox clear [--all]
+```
+
+A dismiss with words after the number — `/inbox dismiss 2 that file is generated, ignore it` — is
+the one way a person talks back to a loop. The reason is stored on the entry and put in front of
+the **next run of the loop that reported it**, between its notes and its task, in a `[dismissed]`
+block that says not to report the finding again unless what it describes has changed, and to carry
+into the notes whatever it needs to remember that. It is shown to that one run only: a loop has
+nothing but its notes between runs, and a second memory the notes cap does not bound would be one
+the loop could not edit or forget. Up to eight reasons per run, the newest kept. A bare
+`/inbox dismiss 2` and `/inbox clear` stay silent, as before — "not interesting" is not something
+the next run can act on. `/inbox all` shows the reason on the dismissed line. For a dismiss,
+`--all` counts only before the reason begins (`/inbox dismiss --all 3 …` or `/inbox dismiss 3 --all …`);
+a reason that mentions `--all` in passing does not re-number the list you were looking at.
+
+The file is machine-wide because loops are; triage is not. `/inbox` lists this project's findings
+the way `/cron` lists its jobs, names the project on every line, and says how many are waiting
+elsewhere; `--all` lifts the filter. Numbers are the numbers on screen — `/inbox claim 3` claims
+the third line of *this* project's list, never another repository's finding run in this directory —
+while an id or an id prefix still resolves machine-wide. `/inbox clear` dismisses what it listed,
+not the unread findings of four other projects. A finding stored without a cwd belongs to no
+project and is listed in all of them.
+
+A loop's finding names the conversation that created the loop and the transcript of the run that
+filed it. What happened while nobody looked is counted per project: when a conversation starts,
+one line counts the project's loop runs and new findings since `/inbox` was last listed in any
+conversation of the project, or the page's **Mark all seen** was pressed for it:
+`[inbox] since you last looked (yesterday 23:10): 41 loop runs (3 failed), 3 new findings (1 from
+this conversation) — /inbox`. Every loop of the project counts, a recipe's included, whichever
+conversation created it; `from this conversation` counts the findings whose loop or rule was made
+in this one, and is said only when that is not every finding. A loop that belongs to its project rather than a conversation (a recipe installed in
+a conversation pi had not saved yet, [recipes.md](recipes.md)) is counted in the project and is
+from no conversation; its finding runs in the conversation you claim it from (**Yes, do it here**), and
+`pi-loops inbox claim` marks it claimed with no conversation to act on it, so the caller handles it
+([cli.md](cli.md#inbox)). Such a loop is stored with `owner:
+"project"` and no `createdBy`, and a `.pisession` archive keeps it the project's on import. A
+rule check that filed a finding for two conversations is one finding. A stopped run
+is a run, not a failure. A finding counts while it is new, and a finding stored without a cwd
+counts in every project, as `/inbox` lists it. The time is local: `09:14` today, `yesterday
+23:10`, a weekday within the week, a date before that.
+
+Listing `/inbox` clears the line for the project, in every conversation of it and in the page;
+`/inbox --all` clears it for every project. The page's away card counts the same way, from the
+same function (it says the findings and leaves the runs to the activity strip), and its **Mark all seen** clears the terminal's line too: the next session start
+says nothing until something new happens. Marking moves only the cursor; the findings stay new.
+The terminal's `/inbox` marks the time it finished listing, so a finding filed in the milliseconds
+while it listed counts as seen; the page sends the time of the answer its card shows, so what
+arrived after that is still counted.
+The cursors are in `seen.json`, one per project. When nobody has looked yet (a new project, or the
+first start after an upgrade from 0.22.x, which kept no cursor), the line counts the last day
+(`(in the last day)`), never the whole run log. A cursor from an older 0.24 build, kept per
+conversation, counts for the project its conversation's records are in, so nothing is counted
+twice. A cursor more than five minutes ahead of the clock counts as none, and the next look
+replaces it. A clock moved back can hide records written in the gap until the next look.
+
+`/inbox open <n|id>` starts a new conversation from the run that filed the finding: pi copies the
+run's transcript into a new session and switches to it, and the run's own transcript is never
+written. A transcript a new finding points at is kept when older runs are pruned, up to 100 per
+loop; one that is gone anyway is reported as such.
+
+A finding that asks for a decision is a **checkpoint**, and the inbox knows one by its shape:
+the ` · waits: … · if not: …` clauses every packaged playbook writes
+([recipes.md](recipes.md#checkpoints)). The run's text is read once, when its findings are
+appended, and the entry carries `kind: "checkpoint"` from then on; news carries nothing. `/inbox`
+lists checkpoints first, marked `⚑`, and says how many there are in its header (`3 new, 1 needs a
+decision`); the numbers on screen are the numbers `claim` and `dismiss` take, so the order is
+decided in one place. Claiming a checkpoint tells the turn that the claim is the person's approval
+of the decision the finding recommends, and to carry it out rather than investigate it again.
+`/inbox`, `pi-loops inbox list` and the page read a finding through one parser
+(`src/inbox-card.ts`): a checkpoint's headline is the text before `· waits:`, and its two clauses
+are shown apart as **waiting on** and **if you don't**; a clause the loop left out is not shown.
+The stored line does not change. `pi-loops inbox list --json` prints the stored fields, unsplit.
+
+The browser page shows this project's findings as cards above its conversations, decisions first.
+**Yes, do it** (on news, **Look into it**) queues the claim in the conversation that created the
+loop, as the same `inbox:<id>` row `/inbox claim` writes: a terminal that holds that conversation
+answers it under the danger check, a conversation open in the page runs it as your turn, and one
+nobody holds is started. When that conversation is gone, the claim goes to the conversation open
+on the page, if it is in the finding's project. **No…** (on news, **Dismiss…**) takes a reason
+chip or a typed reason of up to 500 characters, which goes to the loop's next run as the terminal's
+reason does; with none it is a silent dismiss. **See the run**, on a finding that names its run,
+shows the run's transcript, read-only. A card names its loop only when the list holds more than one
+loop's findings, and says where a claim runs only when that is not the conversation on screen.
+
+Claim and dismiss each succeed once, and only on a finding that is still new: two windows, a
+window and a shell, or two pages that both listed it get one success between them, and the other
+is told the finding was already claimed or dismissed. A claim queues its hand-off under the inbox's
+lock, only once it has found the finding still new, so a claim that loses queues nothing and the
+finding's turn runs once, also while another process holds the lock.
+
+Corrupt lines are skipped on read and never deleted: a claim, a dismiss, `/inbox clear` and
+rotation write them back as they were, in their place. The footer shows `Inbox: N new`, with
+`(K decisions)` after it when any are checkpoints (the whole machine, as the badge always has), and `N loops failing (<worst> ×<count>)` once a loop has failed
+often enough for the scheduler to start backing off; the same clause is on the `[cron] … active
+here` line at session start, for this project. Until then a job that has failed forty nights in a
+row looked exactly like a healthy one. Entries kept by
+the checker carry a `✓`.
+
+## Maker/checker (`--verify`)
+
+With `--verify` (implies
+`--stateful`; `--checker-model provider/id` picks another model) the maker's findings do not go to
+the inbox directly. A second sub-agent receives the loop goal, the maker's notes and the numbered
+findings and is told to assume each may be wrong, stale, duplicated or trivial, verify with tools,
+and answer with one `<verdict n="i">keep|drop — reason</verdict>` per finding (plus an optional
+`<rewrite n="i">…</rewrite>`).
+
+- Kept findings enter the inbox marked verified; the checker's reason travels with the claim.
+- Dropped findings and their reasons go to the run log; `/cron trace <job> <k> checker` shows the checker's transcript.
+- Findings without a verdict enter unverified.
+- **Fail-open:** if the checker fails or times out, every finding enters the inbox marked unverified. A broken checker must not silence the loop.
+- The checker never touches the state spine.
+
+## Restart behavior
+
+Jobs live in `~/.pi/agent/loops/jobs.json` and survive pi restarts. Stateful loops run in one
+always-on process ([pi-loops in the background](#pi-loops-in-the-background)), which ticks every 30 seconds. A loop tick that was
+missed while pi-loops was not running is fired once when it starts (collapsed, not replayed) unless
+`[cron] catch_up = false`; a loop that does not catch up records `missed <time> while pi-loops was
+not running (catch-up disabled)`. Plain inject jobs do not catch up unless created with `--catchup`
+(`--no-catchup` turns it off for loops), and a missed one records `missed <time> while no pi was
+running (catch-up disabled)` in a window, or `while pi-loops was not running` in the background. A run that died with its process is retried on the next tick; at most
+`[cron] max_concurrent_runs` (3) run at once. Trigger checks share `[cron] max_concurrent_runs`, so
+a server pushing many distinct events cannot open one sub-agent per event.
+Jobs run with the model and thinking level recorded
+on them (`/cron set <id> --model … --thinking … --timeout …`; `-` clears one: a loop then uses pi's
+default, a plain job its conversation's).
+`/cron scheduler` shows this window (its pid, and whether its conversation's plain jobs run here),
+pi-loops (pid, version, start time), the store and the log. `/cron` marks another conversation's plain
+job `open in a terminal`, `in the page`, `in the background`, `paused: <why>`, or `resume it to run` (pi-loops never saw its file), parks it as disabled once that session's file has been
+deleted (`/cron gc` removes it), and marks a loop `[orphan: cwd missing]` when its checkout is gone
+— disabled half an hour later, since a mount can be late at boot. A job created by a sub-agent
+belongs to the session that ran it.
+
+pi-loops runs on one machine. Two machines syncing one `$HOME` would both run every job; that is
+not supported (until 0.19.0 a hostname stamp on each job half-handled it, and is now ignored). To
+reach a running pi from elsewhere, use the browser front end over your tailnet ([cli.md](cli.md));
+the loops keep running where pi runs.
+
+## Time, and which clock it is
+
+**Everything is this machine's clock.** Cron expressions are matched against local time — `0 9 * * *`
+is nine in the morning where the machine is, not 09:00 UTC — and there is no per-job timezone. Move
+the machine, or change its `TZ`, and the jobs move with it.
+
+Timestamps are written the same way, with the offset that makes them unambiguous — this is what a
+machine at `+08:00` writes; yours writes its own:
+
+```json
+{"startedAt": "2026-09-11T20:37:59.405+08:00", "finishedAt": "2026-09-11T20:38:12.880+08:00"}
+```
+
+That is the same instant `2026-09-11T12:37:59.405Z` names, and anything that parsed one parses the
+other — including what earlier versions wrote. The difference is that opening
+`runs.jsonl` shows the hour you were at your desk, and it agrees with the `next` on the `/cron` line
+that sent you there. `/cron` and `/inbox` say the offset in their header; a timestamp that travels
+somewhere without one — into a sub-agent's prompt, into a tool result a model reads — carries its
+own.
+
+Two things are deliberately still UTC, because neither is a time anybody reads: the name of a
+session file, which cannot hold the `+` and `:` an offset brings, and pi's own session header, whose
+format is pi's to decide.
+
+The offset in the run line above is the offset of the machine **at the time it ran**, not a fixed
+part of the prompt. A machine's clock is not a constant: `TZ` gets set, a laptop travels, a
+container is rebuilt in UTC. A loop's notes are free text the model writes — watermarks,
+"everything up to here has been seen" — and a watermark without an offset is a watermark the next
+run cannot read once the clock has moved. The prompt asks for the offset for that reason. Notes
+written before 0.14.1 do not have it; a loop that keeps a watermark on a machine whose timezone has
+changed is worth one look at `/cron state <id>`.
+
+### Daylight saving
+
+Local time means the clock does what the clock does, and twice a year it does something strange.
+Measured, not assumed (`America/New_York`, 2026) — and pinned by `test/dst.test.ts`, which sets the
+zone it needs rather than reading the one the machine happens to have.
+
+| | what happens |
+|---|---|
+| Spring forward — `0 2 * * *` on 8 March | 02:00 does not exist that day, so the job **does not run**. It runs again the next day. |
+| Fall back — `0 1 * * *` on 1 November | 01:00 happens twice, so the job **runs twice**. |
+
+Vixie cron special-cases both (it runs a skipped job once, and a repeated one once). pi-loops does
+not: it matches the wall clock, and the wall clock is what it is. If a job must run exactly once a
+day whatever the clock does, `every 24h` is immune — it counts elapsed time and never consults a
+calendar.
+
+### `in` and `at`
+
+`every 30m` is an interval: no timezone, no DST, no wall clock at all.
+
+`in 10m` and `at <ISO time>` are resolved **once, when the job is created**, and stored as the
+instant they landed on. Changing the machine's timezone afterwards does not move them. Note what
+JavaScript does with the text you give `at`, which is the standard's rule rather than ours:
+
+```text
+at 2026-09-08T18:00    → 18:00 local
+at 2026-09-08T18:00Z   → 18:00 UTC
+at 2026-09-08          → midnight UTC   ← a date with no time is UTC, not local
+```
+
+Write the time if you mean a time.
+
+## Changing a job in place
+
+```text
+/cron set <ref> --prompt "check the CI and report only what changed"
+/cron set <ref> --schedule "0 9 * * 1-5"
+```
+
+The first version of a loop's prompt is always slightly wrong, and the fix used to be
+remove-and-re-add — which mints a new job id and leaves the loop's notes behind at the old
+`state/<id>.md`. `--prompt` and `--schedule` edit the job in place, so the id, the notes and the
+run history stay. Both values are one token: quote anything with spaces in it. Unlike the pins,
+neither takes `-` — a job always has a prompt and a schedule, so `-` would have nothing to fall
+back to and is refused rather than silently emptying the prompt (`--prompt "-"`, quoted, is the
+literal text). The previous wording goes to the loops log, so a loop that starts behaving
+differently can be traced to the edit that caused it.
+
+The new schedule is parsed before it is stored: a typo leaves the job untouched, and so does an
+expression that can never match (`0 0 30 2 *`). The confirmation prints the next run time, which is
+where a plausible-but-wrong expression shows itself. Changing the schedule does not backfill: a
+cron job's clock restarts at the edit, so slots that only exist retroactively under the new
+expression are not owed. An `every <dur>` job is still measured from its last run — if it last ran
+longer ago than the new interval, it is genuinely overdue and the confirmation says `due now`
+instead of promising a later time. One-shots (`in 10m`, `at <ISO>`) are refused here: the scheduler
+deletes a `once` job after it fires, notes included, and records the removal in the control-plane
+audit like any other.
+
+`/cron run <ref>` fires a job now instead of at its next due time, and that run counts as a run: a
+`once` job is fired and then removed (an enabled job with nothing left to fire is worse than none),
+an `every <dur>` job's interval restarts from now, and a `cron` job's next run is unchanged — the
+expression says when it runs, not the last run. A disabled plain job is refused rather than run: its
+prompt would land in whichever chat is open now rather than the one it was written for, and a job the
+dead-session sweep parked has to keep the marker `/cron gc` collects it by. A plain job's `/cron run`
+is your own turn: it runs uncapped and goes before anything the clock queued. Left queued when you
+quit, it waits for a window, and the job's
+schedule goes on in the background as if it were not there.
+
+A project is matched by realpath and containment, so a pi opened in a subdirectory, a worktree or
+through a symlink sees and runs that project's automation.
+
+## What it costs, and capping it
+
+`/cron cost [today|7d|all]` adds up the run log by job, and shows today's spend against the budget
+if one is set. Every loop run, its checker and every trigger check is counted; so is the `/goal`
+evaluator.
+
+```toml
+[limits]
+daily_budget_usd = 5.0   # 0 (the default) means no cap
+```
+
+Once today's automation has cost that much, nothing more is dispatched: loop runs, plain jobs and
+trigger checks stop, the job's `last_error` says so, and the slot stays owed rather than being
+skipped, so work resumes when the day rolls over or the cap is raised. The run log is rotated by
+size, so what it drops is folded into a small per-day ledger first — a cap that forgot yesterday's
+busy morning would stop capping halfway through the day.
+
+The cap is also checked **while a run is in flight**, not only before it is dispatched: a run
+admitted at $4.99 of a $5.00 budget would otherwise be free to spend any amount, and three runs
+admitted in the same tick would each be free to. A run is measured once per model turn against
+today's recorded spend plus everything this process has in flight — its own cost so far, the runs
+beside it, and, with `verify = true`, the maker whose findings its checker is reviewing. When that
+total reaches the cap the run is stopped the way the run timeout stops one: pi aborts the
+sub-session and the run is recorded with what it had spent. Unlike a timeout, a budget stop is treated as an interruption rather
+than as a job that failed — the concurrency slot is released, the tick stays owed, the job's
+failure streak is untouched and a one-shot is not retired — so the loop simply resumes when the day
+rolls over or the cap is raised, held back until then by the check at dispatch.
+
+A stopped run is a failed run in `/cron runs` and `/cron trace`, but never an unexplained one — its
+error is the reason, and the reason leads with the cap:
+
+```
+FAILED: stopped by today's $5.00 daily budget ($4.62 already spent, $0.41 in flight); raise…
+```
+
+The same line lands in the job's `last_error` and in the diagnostics log. A run stopped this way
+keeps its transcript, and its findings up to that point are not written to the inbox — the run did
+not finish, so its `<loop-state>` and `<inbox>` tags are not trusted.
+
+## Stopping, removing, and jobs that keep failing
+
+`/cron disable --all` pauses every job in this project (`--all-projects` for the machine) and
+`/cron enable --all` resumes them. Closing every pi window stops nothing, because pi-loops keeps
+running, so this is how you actually go quiet; `/pi-loops stop` pauses every loop and check on the
+machine until `/pi-loops start`.
+
+If a loop is stuck showing `running` after a process was killed and its pid reused, `/cron clear
+<ref>` releases the marker (it asks first).
+
+`/cron remove` takes a name of this project, a number from its listing, or the exact id of a job
+anywhere — the rule `cron_remove` follows, because a removal cannot be undone and a name this
+project does not have should not reach another checkout. A job removed by its exact id from outside
+this project is named with the project it was in.
+
+`/cron remove` keeps the loop's notes (to change a prompt or a schedule, edit the job in place with
+`/cron set` instead); `--purge` deletes them. `/cron gc` collects this project's jobs whose session
+is gone — `--all` every project's, `--purge` also the loop state and transcripts left behind by jobs that are gone.
+
+A loop run you stop (`pi-loops abort <run-id>`, `/triggers abort <run-id>`, or the page) ends with a
+run log record (`runs.jsonl`) that says `aborted` and `stoppedBy: "person"`. The
+slot it was running is spent: the loop runs again at its next scheduled time, not on the next
+tick. A stop is not a failure, so the run does not count toward `runs` or the failure streak. A
+one-shot loop you stop is turned off with `last error: stopped by a person; /cron run <ref> runs it
+now`, and keeps its notes. A run stopped by quitting, an upgrade or the daily budget gives its slot
+back and runs again on the next tick, as before.
+
+A run that passes its timeout (`--timeout`, default 15m) is a failed run, `timed out after <n>s`:
+its slot is spent, it counts toward `runs` and the failure streak, and the loop runs again at its
+next scheduled time.
+
+A job that fails three times in a row is retried on a widening gap (5 minutes, doubling, up to six
+hours) instead of at every due tick, and says so; one success clears the streak.
+
+## Was it worth running
+
+A loop was judged, until now, by whether it ran: `runs 42`, a last error, the failing badge. None
+of that says whether anyone wanted what it found. So `/cron` puts two more facts on a loop's lines,
+both computed from the run log and the inbox and nothing else:
+
+```text
+ 3. cron-b91def87c2a04e5f9d3b6a7e1c0f4d28 "pr-watch"  */15 * * * *  [stateful]  [quiet ×12]
+    next 2026-09-15 10:15 · runs 412 · 30d: 6 findings · 6 dismissed (4 with a reason)
+```
+
+`30d: 6 findings · 6 dismissed` is the last thirty days: findings filed, and of those still in the
+inbox, how many a person claimed and how many they dismissed (with how many reasons). A loop whose
+findings are all dismissed is noise at any price; one whose findings are all claimed is the one to
+keep. `/cron cost` shows the same counts beside each job's spend, for its own window, so
+`$0.410  28 run(s)  pr-watch  —  6 findings · 6 dismissed` is a line that answers itself.
+
+`[quiet ×12]` means the twelve newest runs found nothing, whatever the window. It is not a fault —
+a watch on a quiet thing is supposed to be quiet — and pi-loops does not slow the job down for it:
+the schedule is the schedule. It is the number to read before deciding that a fifteen-minute
+watch could be hourly (`/cron set <ref> --schedule "0 * * * *"`), or that the loop is looking at
+the wrong thing. `cron_list` gives the model both facts (`signal_30d`, `quiet_streak`), so asking
+"which of my loops are worth keeping" gets an answer from the numbers rather than the names.
+
+The page's loop row shows the same numbers, only those that are not zero (`6 findings in 30 days · 6
+dismissed · quiet ×12`), and at most one suggestion, which never applies itself:
+
+- **Run hourly instead**, when the quiet streak is at least 12 and the loop runs more often than
+  hourly. An `every` loop becomes `every 1h`; a cron loop becomes `0 * * * *`. A cron loop's
+  clock restarts at the change, as `/cron set --schedule`'s does; an `every` loop's next run is
+  counted from its last run, so one that last ran more than an hour ago runs at the next tick. The
+  row says the new schedule and the next run, in the browser's local time.
+- **Pause**, when the last thirty days have at least 5 findings and 5 dismissed, and none claimed.
+
+A disabled loop, a plain job, a one-shot or a running loop gets none. Applying one changes the loop
+and writes a `cron_control_plane` audit row (`set` for the schedule, `disable` for Pause, source
+`page`). `/cron set --schedule` in a terminal writes the same `set` row (source `slash`) in
+`triggers-audit.jsonl`; an edit that leaves the schedule alone writes none. **Keep** leaves the loop as it is and
+records the answer on the job (`tuneKept`), so the same suggestion is not offered again. The
+suggestion is named with the schedule it was made for, so a loop whose schedule changes can get a
+new one.
+
+A running loop's row has **Stop this run**, with a confirm in the row; see "Stopping, removing, and
+jobs that keep failing" for what a stop does to the loop.
+
+## When something looks wrong
+
+Every diagnostic a pi process produces is written to `logs/pi-<pid>.log` in the loops directory —
+jobs that were disabled, writes that failed, sub-agent warnings. `/cron scheduler` prints the path.
+pi-loops writes `host.log`; both logs are rotated.
+
+`PI_LOOPS_DEBUG=1` adds a line per tool call, provider retry and compaction to that log, which is
+the quickest way to tell a stuck run from a busy one.
+
+`/cron snapshot` writes a `pi_loops_snapshot` entry into the session: which MCP servers connected
+and what they exposed, the active tools, the hooks, whether pi-loops is running and its pid, the last
+check. One is written automatically whenever that state changes. The TUI panel is not the same:
+it lists rules, loops, the latest runs, MCP servers and hooks; it shows no pid, and shows the last
+check only when it went wrong. The entry is for a front end that is not a terminal — the browser one in
+[src/web.mjs](../src/web.mjs) reads it, and so can anything else that speaks to a session.
+
+`/triggers running` shows how long each run has been going and, for loop runs, the transcript that
+is being written right now (`pi --session <file>`), so "is it stuck or is it working" is answerable
+before the run ends. A loop's run in the background gets pi's default tools, or exactly the ones its
+`--tools` names, plus its own project's MCP servers, and the automation tools it calls act in its
+own project.
+
+An unattended run refuses a corpus of dangerous commands: sudo, `curl … | sh`, writing to a block
+device, `mkfs`, `chmod 777 /`, shutdown/reboot/halt/poweroff anywhere in the command (after `sudo`,
+`systemctl`, `timeout` or `sh -c` too; the exception is a search, described below), `git push --force` on main/master, pipes into
+`eval`, the fork bomb, `rm -r -f` aimed at `/`, an absolute path or `$HOME`, and `pi-loops abort`,
+`stop` or `restart` as a command (after `env`, `npx`, a path or `sh -c` too, and with a verb the shell
+expands, `pi-loops $V`; `git add -A && git commit -m "pi-loops: stop retrying"` only mentions it). The model is told
+why and can do the safe part. A plain job's turn in an open window meets the same corpus, and asks
+, backslash, `<` or `>` (`2>/dev/null` and `2>&1` are permitted), no `&` that runs a
+command in the background, and no quote left open. `rg --pre` and `rg --hostname-bin` are refused,
+because they run a program. Every other command that has one of the words is refused, also when
+the word is only text: `git log --grep=reboot`, `echo reboot`, `grep "reboot()" src`.
 
 ## pi-loops in the background
 
