@@ -1196,9 +1196,11 @@ parked after three such runs, each the only run in flight when pi-loops stopped,
 probes only when pi-loops' heartbeat has stopped as well (SIGTERM, then SIGKILL after 10 seconds); a
 pi-loops process that is still ticking but does not answer on its socket is left running and reported as not
 answering, and a starting pi-loops process is not killed. A control socket that is removed while pi-loops
-runs (an OS temp cleaner, a manual cleanup) is re-bound by pi-loops within the next 30 s tick, and a
-window whose upgrade the socket cannot deliver evicts the old process (SIGTERM needs no socket) instead
-of waiting the leave bound for an answer it will never get. pi-loops needs node: under bun it uses the `node` on
+runs (an OS temp cleaner, a manual cleanup) is re-bound by pi-loops within the next 30 s tick. A
+window with a newer version stops the old process with SIGTERM only when the socket file is not there
+and the old process has ticked at least once: the upgrade request can then never arrive. This is not
+counted as a crash. When the socket file is there and the old process does not answer in 2 seconds,
+the window sends no signal and asks again on its next tick. pi-loops needs node: under bun it uses the `node` on
 your PATH.
 After a reboot, nothing runs until a pi opens. What pi-loops is doing is the Background view of the browser page, at `http://127.0.0.1:4173/background`;
 `pi-loops status --url` prints the page's address with the token ([cli.md](cli.md#the-background-view)).

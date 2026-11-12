@@ -575,6 +575,29 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 	return server;
 }
 
+/**
+ * The tick's check of the control channel: returns the server to keep. A socket file removed while
+ * the host runs (an OS temp cleaner, a manual cleanup) leaves the server listening on the deleted
+ * inode, where no control op reaches it. That server is closed and the startup bind runs again.
+ * "re-bound" is said only when the new server listens. A bind that fails says why once: the
+ * retries of a server that does not listen are silent.
+ */
+export function healHostChannel(dir: string, current: net.Server | undefined, handlers: HostChannelHandlers, log: (message: string) => void): net.Server | undefined {
+	const socketPath = hostSocketPath(dir);
+	let present = false;
+	try {
+		present = fs.lstatSync(socketPath).isSocket();
+	} catch {
+		/* removed */
+	}
+	const listening = current?.listening ?? false;
+	if (!channelNeedsRebind({ present, ours: ownedSocket(socketPath), listening })) return current;
+	if (listening) current!.close();
+	const next = serveHostChannel(dir, handlers, listening ? log : undefined);
+	next.once("listening", () => log("control socket was removed or stale; re-bound"));
+	return next;
+}
+
 /** Ask a running host something. Returns undefined when no host is listening. */
 export function askHost(dir: string, request: HostRequest, timeoutMs = 2000): Promise<HostResponse | undefined> {
 	const socketPath = hostSocketPath(dir);

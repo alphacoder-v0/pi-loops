@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
-import { HOST_SERVICE_FILE, type HostServiceRecord, LEAVE_WAIT_MS, PAGE_TURN_WAIT_MS, decideEnsure, ensureHost, stopWaitsForPage, waitForPageTurns, hostPushWork, hostServiceAlive, hostSpawnArgs, piPackageDir, readHostService, readSpawnLog, spawnHost } from "../src/host-control.ts";
+import { HOST_SERVICE_FILE, type HostServiceRecord, LEAVE_WAIT_MS, PAGE_TURN_WAIT_MS, decideEnsure, ensureHost, upgradeNeedsSignal, stopWaitsForPage, waitForPageTurns, hostPushWork, hostServiceAlive, hostSpawnArgs, piPackageDir, readHostService, readSpawnLog, spawnHost } from "../src/host-control.ts";
 import { hostSocketPath } from "../src/host-control-channel.ts";
 import { pidAlive } from "../src/lock.ts";
 import { procStart } from "../src/lease.ts";
@@ -244,16 +244,46 @@ test("the side that asked waits longer than the page's turns may take, and repor
 	}
 });
 
-test("an upgrade the socket cannot deliver evicts the old process and starts the new one", async () => {
+test("an upgrade signals the old process only when its socket is gone and it has finished starting", () => {
+	assert.equal(upgradeNeedsSignal({ answered: false, socketOurs: false, ticked: true }), true, "the socket was removed while it ran");
+	assert.equal(upgradeNeedsSignal({ answered: false, socketOurs: true, ticked: true }), false, "a busy process: the socket is there, the answer was late");
+	assert.equal(upgradeNeedsSignal({ answered: false, socketOurs: false, ticked: false }), false, "a starting process has not bound yet");
+	assert.equal(upgradeNeedsSignal({ answered: true, socketOurs: false, ticked: true }), false, "it answered, and removed its socket as it left");
+});
+
+test("an upgrade does not kill a process that is still starting and has not bound its socket", async () => {
 	const dir = tmp("pi-loops-host-");
-	// The older process never binds the control socket: a removed socket, a channel no one answers.
+	// No heartbeat in the record: the process has not reached its first tick.
 	const old = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)", "src/host.ts"], { stdio: "ignore" });
 	try {
-		await new Promise((r) => setTimeout(r, 100));
 		const rec: HostServiceRecord = { v: 1, pid: old.pid!, startedAt: new Date().toISOString(), version: "0.9.0", entry: "src/host.ts", node: "node", dir, socket: "", token: "t", managed: "spawned" };
 		fs.writeFileSync(path.join(dir, HOST_SERVICE_FILE), JSON.stringify(rec));
+		const off = process.env.PI_LOOPS_HOST;
+		delete process.env.PI_LOOPS_HOST;
+		let out: Awaited<ReturnType<typeof ensureHost>>;
+		try {
+			out = await ensureHost({ dir, packageDir: "/nowhere", automation: { loops: 1, rules: 0, pushServers: 0 }, auto: true, stopped: false, myVersion: "1.0.0", leaveWaitMs: 300 });
+		} finally {
+			if (off === undefined) delete process.env.PI_LOOPS_HOST;
+			else process.env.PI_LOOPS_HOST = off;
+		}
+		assert.deepEqual(out, { action: { kind: "upgrade" } });
+		assert.equal(pidAlive(old.pid!), true, "the starting process is left running");
+		assert.equal(readHostService(dir)?.pid, old.pid);
+	} finally {
+		old.kill();
+	}
+});
+
+test("an upgrade the removed socket cannot deliver stops the old process, starts the new one, and counts no crash", async () => {
+	const dir = tmp("pi-loops-host-");
+	// The older process has ticked (its record has a heartbeat) and its control socket is not there.
+	const old = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)", "src/host.ts"], { stdio: "ignore" });
+	try {
+		const rec: HostServiceRecord = { v: 1, pid: old.pid!, startedAt: new Date().toISOString(), tickAt: new Date().toISOString(), version: "0.9.0", entry: "src/host.ts", node: "node", dir, socket: "", token: "t", managed: "spawned" };
+		fs.writeFileSync(path.join(dir, HOST_SERVICE_FILE), JSON.stringify(rec));
 		const began = Date.now();
-		// `npm test` sets PI_LOOPS_HOST=off; this one must be able to evict and start.
+		// `npm test` sets PI_LOOPS_HOST=off; this one must be able to stop the old one and start.
 		const off = process.env.PI_LOOPS_HOST;
 		delete process.env.PI_LOOPS_HOST;
 		let out: Awaited<ReturnType<typeof ensureHost>>;
@@ -266,9 +296,11 @@ test("an upgrade the socket cannot deliver evicts the old process and starts the
 		assert.ok(Date.now() - began < 595, `no full wait bound: ${Date.now() - began} ms`);
 		assert.deepEqual(out.action, { kind: "upgrade" });
 		assert.equal(out.up, false, "the /nowhere start dies at once");
-		assert.equal(readSpawnLog(dir).attempts.at(-1)?.outcome, "died");
-		assert.equal(readHostService(dir), undefined, "the evicted record is gone");
-		assert.equal(pidAlive(old.pid!), false, "the old process was evicted");
+		assert.equal(readHostService(dir), undefined, "the old record is gone");
+		assert.equal(pidAlive(old.pid!), false, "the old process was stopped");
+		const spawns = readSpawnLog(dir);
+		assert.deepEqual(spawns.attempts.map((a) => a.outcome), ["died"], "the one start, and no eviction beside it");
+		assert.deepEqual(spawns.crashes ?? [], [], "a working process stopped for an upgrade is not a crash");
 	} finally {
 		try { process.kill(old.pid!, "SIGKILL"); } catch { /* already gone */ }
 	}

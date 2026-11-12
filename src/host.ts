@@ -18,7 +18,7 @@ import { ModelRuntime, ProjectTrustStore, SettingsManager, VERSION as PI_VERSION
 import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig, pageBindPort } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
-import { channelNeedsRebind, hostSocketPath, ownedSocket, recentRun, requestQueues, serveHostChannel, stopRunFrom, type HostChannelHandlers } from "./host-control-channel.ts";
+import { healHostChannel, hostSocketPath, recentRun, requestQueues, serveHostChannel, stopRunFrom, type HostChannelHandlers } from "./host-control-channel.ts";
 import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, leavesWithWindows, openWindows, stopWaitsForPage, waitForPageTurns, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
 import { ChildPool, piCommand } from "./page-children.ts";
 import { type HostStatus, lanAddresses, openForLaunch, type PageServer, ring as ringChild, sessionRows, startPageServer, unsentPersonRows, webToken } from "./page-server.ts";
@@ -513,7 +513,7 @@ function everyTick(now: number): void {
 		log(`heartbeat: ${err?.message ?? err}`);
 	}
 	try {
-		healControlChannel();
+		channel = healHostChannel(dir, channel, channelHandlers, log);
 	} catch (err: any) {
 		log(`control channel heal: ${err?.message ?? err}`);
 	}
@@ -531,28 +531,6 @@ function serveHostChannelSafely(...args: Parameters<typeof serveHostChannel>): R
 		log(`control channel unavailable: ${err?.message ?? err}`);
 		return undefined;
 	}
-}
-
-/**
- * A control socket removed while the host runs (an OS temp cleaner for the temp fallback path,
- * a manual cleanup) leaves the server listening on the deleted inode: the host keeps turning,
- * but status, run, abort, page-open and pair all stop reaching it, and its fresh heartbeat keeps
- * the window from evicting it. Re-bind the way startup does: the bind handles a stale one of
- * ours, and degrades with a log line when the path is someone else's. The server is unref'd, so
- * a re-bind cannot keep the process alive.
- */
-function healControlChannel(): void {
-	const socketPath = hostSocketPath(dir);
-	let present = false;
-	try {
-		present = fs.lstatSync(socketPath).isSocket();
-	} catch {
-		/* removed */
-	}
-	if (!channelNeedsRebind({ present, ours: ownedSocket(socketPath), listening: channel?.listening ?? false })) return;
-	if (channel?.listening) channel.close(); // the server on the deleted inode
-	channel = serveHostChannelSafely(dir, channelHandlers, log);
-	log("control socket removed or stale; re-bound");
 }
 
 /** The rules, or none when triggers.json cannot be read: a status must not fail with the file it reports on. */
