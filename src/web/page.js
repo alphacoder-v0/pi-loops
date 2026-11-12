@@ -511,10 +511,13 @@ function cells(line) {
 function markdownToHtml(src) {
   const lines = String(src ?? "").split("\n");
   const html = [];
-  let list = "";
+  // The lists open at this point, outermost first, each with the indent of its items: an item
+  // indented past the innermost one opens a list inside that item.
+  const lists = [];
   let para = [];
   const flushPara = () => { if (para.length) { html.push("<p>" + inlineMd(para.join("\n")) + "</p>"); para = []; } };
-  const flushList = () => { if (list) { html.push("</" + list + ">"); list = ""; } };
+  const closeList = () => html.push("</li></" + lists.pop().tag + ">");
+  const flushList = () => { while (lists.length) closeList(); };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const fence = RE_FENCE.exec(line);
@@ -550,9 +553,15 @@ function markdownToHtml(src) {
     const item = /^\s*(?:([-*+])|(\d+)[.)])\s+(.*)$/.exec(line);
     if (item) {
       flushPara();
-      const want = item[1] ? "ul" : "ol";
-      if (list !== want) { flushList(); html.push("<" + want + ">"); list = want; }
-      html.push("<li>" + inlineMd(item[3]) + "</li>");
+      const tag = item[1] ? "ul" : "ol";
+      const indent = /^\s*/.exec(line)[0].replace(/\t/g, "    ").length;
+      while (lists.length && indent < lists[lists.length - 1].indent) closeList();
+      const top = lists[lists.length - 1];
+      if (top && indent === top.indent && top.tag !== tag) closeList();
+      const open = lists[lists.length - 1];
+      if (open && indent <= open.indent) html.push("</li>");
+      else { html.push("<" + tag + ">"); lists.push({ tag, indent }); }
+      html.push("<li>" + inlineMd(item[3]));
       continue;
     }
     if (!line.trim()) { flushPara(); flushList(); continue; }
@@ -653,9 +662,9 @@ function mdInto(el, text) {
     b.textContent = "preview";
     b.onclick = async () => {
       const r = await api("/preview", { html: source });
-      if (!r.success) return row("err", "error", r.error || "could not open a preview");
+      if (!r.success) return row("err", "Error", r.error || "could not open a preview");
       const k = await api("/key", { for: "preview", path: r.id });
-      if (!k.key) return row("err", "error", k.error || "could not open a preview");
+      if (!k.key) return row("err", "Error", k.error || "could not open a preview");
       window.open("/preview/" + r.id + "?key=" + k.key, "_blank", "noopener");
     };
     pre.append(b);
@@ -683,7 +692,7 @@ function failedReply(why) {
     failed.el.textContent = text + " (tried " + ++failed.tries + " times)";
     return;
   }
-  const el = row("err", "error", text);
+  const el = row("err", "Error", text);
   failed = { el, text, tries: 1 };
 }
 function row(cls, role, text) {
@@ -804,7 +813,9 @@ function setAllWork(open) {
   remember("work", open ? "open" : "closed");
   for (const d of feed.querySelectorAll?.("details.work") ?? []) d.open = open;
   const b = $("expand");
-  b.textContent = open ? "▾ steps" : "▸ steps";
+  // The word is its own span, so a phone, short of room for the title, can show the arrow alone.
+  b.textContent = open ? "▾" : "▸";
+  b.append(textEl("span", "lbl", " steps"));
 }
 
 /**
@@ -969,7 +980,7 @@ function handle(ev) {
       const input = $("input");
       input.value = ev.text + (input.value ? "\n" + input.value : "");
       images = ev.images || []; drawThumbs(); autoGrow(); saveDraft();
-      row("err", "not sent", ev.error || "pi did not take it");
+      row("err", "Not sent", ev.error || "pi did not take it");
       refresh();
       break;
     }
@@ -1126,7 +1137,9 @@ function setStatus() {
   qe.hidden = !q;
   qe.textContent = "queued " + q + " ✕";
   qe.onclick = () => api("/queue/clear", {}).then(refresh);
-  statusEl.textContent = down ? "reconnecting…" : busy ? "working…" : "";
+  // While pi-loops does not answer, the line above the composer and the status bar say so; a third
+  // copy here pushed ⋯ out of a phone's header.
+  statusEl.textContent = busy && !down ? "working…" : "";
   // One slot: stop while a turn runs, send otherwise. Enter still queues during a turn.
   $("stop").hidden = !busy;
   $("send").hidden = busy;
@@ -1700,6 +1713,8 @@ async function refresh() {
   drawModels(state.modelCatalog || [], state.model?.label);
   if (state.model) $("model").value = state.model.label;
   drawThinking(state.thinkingLevels, state.thinkingLevel);
+  // Hidden in the page as served, so a page that is still loading shows no empty pickers.
+  $("model").hidden = $("thinking").hidden = false;
   // Whether this model can look at an image is something pi knows and the button was guessing at.
   const currentModel = (state.modelCatalog || []).find((m) => state.model && m.provider + "/" + m.id === state.model.label);
   takesImages = currentModel?.images !== false;
@@ -1900,7 +1915,7 @@ $("composer").onsubmit = async (e) => {
     clearTimeout(slow);
     if (statusEl.textContent.startsWith("still sending")) statusEl.textContent = busy ? "working…" : "";
   }
-  if (!r.success) row("err", "error", r.error || JSON.stringify(r));
+  if (!r.success) row("err", "Error", r.error || JSON.stringify(r));
   // The session is open in a terminal, which holds it: that terminal answers (owner decision O2).
   else if (r.elsewhere) row("notice", "", "open in a terminal: answered there");
   // This page's own pi holds the session but shows an older copy of it: nothing may write into it
@@ -1933,7 +1948,7 @@ $("findq").oninput = () => {
 };
 $("undo").onclick = async () => {
   const r = await api("/undo", {});
-  if (!r.success) return row("err", "error", r.error || "cannot undo");
+  if (!r.success) return row("err", "Error", r.error || "cannot undo");
   if (r.data?.cancelled) return row("notice", "", "undo was cancelled by an extension");
   // pi hands back the forked message; put it where it came from.
   $("input").value = r.data?.text ?? "";
@@ -2120,7 +2135,7 @@ $("model").onchange = async (e) => {
   const was = remembered("models", "").split(",").filter(Boolean);
   remember("models", [e.target.value, ...was.filter((m) => m !== e.target.value)].slice(0, 5).join(","));
   const r = await api("/model", { model: e.target.value });
-  if (!r.success) row("err", "error", r.error || "model not available — check credentials");
+  if (!r.success) row("err", "Error", r.error || "model not available — check credentials");
   refresh();
 };
 $("thinking").onchange = (e) => api("/thinking", { level: e.target.value }).then(refresh);
@@ -2147,7 +2162,7 @@ function qrSvg(q) {
 
 $("adddev").onclick = async () => {
   const r = await api("/pair", {});
-  if (!r.success) { row("err", "error", r.error || "could not make a pairing code"); return; }
+  if (!r.success) { row("err", "Error", r.error || "could not make a pairing code"); return; }
 
   // The address this browser reached, first: under tailscale serve that is the tailnet name, and
   // it is the only one anybody had to configure. Then whatever else the machine can see — which is
@@ -2209,18 +2224,36 @@ for (const dlg of document.querySelectorAll("dialog")) {
 }
 
 /* ---------------- the actions sheet ---------------- */
+/** The sheet's two groups: what acts on this conversation, and what sets up this browser. */
+const MENU_GROUPS = [
+  ["Conversation", ["reload", "find", "undo", "save", "share", "compact", "resume"]],
+  ["Settings", ["theme", "notifyMe", "adddev"]],
+];
+/** On a phone the title has the header to itself: the pickers are at the top of the sheet's first group. */
+const PICKERS = ["model", "thinking"];
 /**
  * The same buttons, moved rather than duplicated: a second copy means two of every id, two
  * handlers, and one of them going stale the next time somebody edits the other. On a wide screen
  * they live in the header; on a narrow one they are behind ⋯, and this carries them there and back.
  */
 $("more").onclick = () => {
-  $("menuBody").append($("cost"), $("actions"));
+  const body = $("menuBody");
+  body.append($("cost"));
+  for (const [label, ids] of MENU_GROUPS) {
+    const group = document.createElement("section");
+    group.className = "mgrp";
+    group.append(textEl("h4", "", label), ...(label === "Conversation" && phone() ? PICKERS : []).map($), ...ids.map($));
+    body.append(group);
+  }
   $("menu").showModal();
 };
 function closeMenu() {
-  document.querySelector("header .grow").insertBefore($("cost"), $("expand"));
-  document.querySelector("header .grow").insertBefore($("actions"), $("status"));
+  const grow = document.querySelector("header .grow");
+  for (const id of PICKERS) grow.parentElement.insertBefore($(id), grow);
+  grow.insertBefore($("cost"), $("expand"));
+  // Back into the header in its own order, which is the sheet's order too.
+  for (const [, ids] of MENU_GROUPS) $("actions").append(...ids.map($));
+  $("menuBody").innerHTML = "";
   $("menu").close();
 }
 $("menuClose").onclick = closeMenu;
@@ -2324,7 +2357,7 @@ function applyTheme(theme) {
   const root = document.documentElement;
   if (theme === "system") root.removeAttribute("data-theme");
   else root.setAttribute("data-theme", theme);
-  $("theme").textContent = "theme: " + theme;
+  $("theme").textContent = "Theme: " + theme;
 }
 let theme = remembered("theme", "system");
 applyTheme(THEMES.includes(theme) ? theme : "system");
@@ -2792,14 +2825,16 @@ function drawList() {
   convRows.length = 0;
   const today = new Date().toDateString();
   const groupOf = (r) => (new Date(r.lastActivityAt).toDateString() === today ? "Today" : "Earlier");
-  // A heading over the only group says nothing.
+  // Named as Needs you and News are, so the list is found between them; Today and Earlier sit under
+  // it, and only when both are there: a label over the only group says nothing.
+  if (rows.length) box.append(Object.assign(document.createElement("div"), { className: "grp", textContent: "Conversations" }));
   const grouped = new Set(rows.map(groupOf)).size > 1;
   let group;
   for (const r of rows) {
     const g = groupOf(r);
     if (grouped && g !== group) {
       group = g;
-      box.append(Object.assign(document.createElement("div"), { className: "grp", textContent: g }));
+      box.append(Object.assign(document.createElement("div"), { className: "grp sub", textContent: g }));
     }
     const el = convRow(r);
     box.append(el);
@@ -3671,17 +3706,17 @@ function notifyFrom(att) {
 function drawNotifyToggle() {
   const b = $("notifyMe");
   if (!window.isSecureContext || typeof Notification !== "function") {
-    b.textContent = "notifications need https or localhost";
+    b.textContent = "Notifications need https or localhost";
     b.disabled = true;
     return;
   }
   if (Notification.permission === "denied") {
-    b.textContent = "notifications are blocked for this site";
+    b.textContent = "Notifications are blocked for this site";
     b.disabled = true;
     return;
   }
   b.disabled = false;
-  b.textContent = "notifications: " + (notifyOn && Notification.permission === "granted" ? "on" : "off");
+  b.textContent = "Notifications: " + (notifyOn && Notification.permission === "granted" ? "on" : "off");
 }
 $("notifyMe").addEventListener("click", async () => {
   if (!window.isSecureContext || typeof Notification !== "function") return;
@@ -3763,6 +3798,7 @@ function openWatch(prefill) {
     b.onclick = () => { $("watchText").value = e; $("watchText").focus(); };
     ex.append(b);
   }
+  watchPlanShown(false);
   if (prefill !== undefined) $("watchText").value = prefill;
   // A settled card, or the now card, goes. A card that still waits for its click is never here
   // while the box is closed: closing the box moved it into the conversation.
@@ -3770,6 +3806,11 @@ function openWatch(prefill) {
   watchSay("");
   if (!dlg.open) dlg.showModal();
   $("watchText").focus();
+}
+/** With a plan in the box, its Set it up is the one button to press, and the examples have done their job. */
+function watchPlanShown(shown) {
+  $("watchEx").hidden = shown;
+  $("watchRead").className = shown ? "" : "primary";
 }
 /** The "now" card: nothing is sent, and the box stays. */
 function nowCard() {
@@ -3805,6 +3846,7 @@ async function readWatch() {
   if (!text) return;
   const cards = $("watchCards");
   cards.innerHTML = "";
+  watchPlanShown(false);
   watchSay("");
   if (readsLikeNow(text)) { cards.append(nowCard()); return; }
   if (watchReading) clearTimeout(watchReading.timer);
@@ -3892,7 +3934,10 @@ function watchAskOf(req) {
 function chipRow(options, current, onPick) {
   const wrap = document.createElement("div");
   wrap.className = "chips";
-  const draw = (key) => { for (const b of wrap.children) { b.className = b.dataset.key === key ? "on" : ""; b.setAttribute("aria-pressed", b.dataset.key === key ? "true" : "false"); } };
+  const draw = (key) => {
+    wrap.chosen = options.find((o) => o[0] === key)?.[1] ?? "";
+    for (const b of wrap.children) { b.className = b.dataset.key === key ? "on" : ""; b.setAttribute("aria-pressed", b.dataset.key === key ? "true" : "false"); }
+  };
   for (const [key, label, sub] of options) {
     const b = document.createElement("button");
     b.type = "button";
@@ -3930,6 +3975,9 @@ function watchCardEl(rec) {
     dl.append(dt, dd);
     return [dt, dd];
   };
+  /** The chip rows, each with its cell: a receipt shows what was chosen as text, not as buttons. */
+  const chipCells = [];
+  const chipsIn = (label, chips) => { const cells = rowOf(label, chips); chipCells.push([cells[1], chips]); return cells; };
   const textOf = (text, cls) => { const s = document.createElement(cls === "pre" ? "pre" : "span"); if (cls && cls !== "pre") s.className = cls; s.textContent = plain(String(text ?? "")); return s; };
   // The rows are the plan: the terminal's question keeps the Command line, the card does not repeat it.
   for (const [label, value] of ask.rows) {
@@ -3939,7 +3987,7 @@ function watchCardEl(rec) {
   /** The rows that hold only for a result in the inbox: a stateful loop's notes, and its checker. */
   const inboxRows = [];
   const showInboxRows = () => { for (const el of inboxRows) el.hidden = choice.where !== "inbox"; };
-  rowOf("Result", chipRow(
+  chipsIn("Result", chipRow(
     rule
       ? [["chat", "Show it in this conversation"], ["inbox", "Put it in my inbox"]]
       : [["inbox", "Put it in my inbox"], ["chat", "Show it in this conversation"]],
@@ -3948,10 +3996,10 @@ function watchCardEl(rec) {
   ));
   if (!rule) {
     inboxRows.push(...rowOf("Remembers", textOf("what changed since the last run")));
-    if (ask.options.some((o) => watchChoiceOf(o)?.checks)) inboxRows.push(...rowOf("Checks", chipRow([["none", "None"], ["checks", "Each finding, before the inbox"]], choice.checks ? "checks" : "none", (k) => { choice.checks = k === "checks"; })));
+    if (ask.options.some((o) => watchChoiceOf(o)?.checks)) inboxRows.push(...chipsIn("Checks", chipRow([["none", "None"], ["checks", "Each finding, before the inbox"]], choice.checks ? "checks" : "none", (k) => { choice.checks = k === "checks"; })));
     showInboxRows();
   }
-  if (rule) rowOf("Repeats", chipRow([["once", "Once, then turn itself off"], ["every", "Every time it happens"]], choice.once ? "once" : "every", (k) => { choice.once = k === "once"; }));
+  if (rule) chipsIn("Repeats", chipRow([["once", "Once, then turn itself off"], ["every", "Every time it happens"]], choice.once ? "once" : "every", (k) => { choice.once = k === "once"; }));
   const status = document.createElement("div");
   status.className = "cstat";
   const acts = document.createElement("div");
@@ -3976,8 +4024,9 @@ function watchCardEl(rec) {
   card.wait = (text) => { cancel.disabled = set.disabled = true; status.textContent = text; };
   card.settle = (line) => {
     card.pending = false;
-    cancel.disabled = set.disabled = true;
     card.classList.add("done");
+    acts.remove();
+    for (const [dd, chips] of chipCells) { chips.remove(); dd.append(textOf(chips.chosen)); }
     status.textContent = line;
   };
   if (rec.answered) card.wait(rec.answered);
@@ -4018,6 +4067,7 @@ function watchAsked(ask) {
   watchSay("");
   rec.modal = card;
   $("watchCards").append(card);
+  watchPlanShown(true);
   // What the card says comes before its buttons: scrolled to the top of the box, on a short screen too.
   if (card.scrollIntoView) card.scrollIntoView({ block: "start" });
 }
@@ -4156,7 +4206,6 @@ $("watchText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.
     opening = false;
     if (es) return;
     if (!k.key) {
-      statusEl.textContent = "reconnecting…";
       setTimeout(() => openStream().catch(() => {}), 3000);
       return;
     }
@@ -4168,7 +4217,6 @@ $("watchText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.
       applyEvent(ev);
     };
     source.onerror = () => {
-      statusEl.textContent = "reconnecting…";
       // The stream broke: ask now whether pi-loops still answers, not at the next poll.
       refresh().catch(() => {});
       if (es !== source || source.readyState !== 2) return;
