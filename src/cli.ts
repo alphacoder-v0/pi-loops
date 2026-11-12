@@ -341,7 +341,11 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		const rules = new TriggerStore(loopsDir).load();
 		for (const s of here.slice(0, limit)) {
 			const badge = automationBadge(s.id, jobs, rules);
-			out(`${s.id.slice(0, 16)}  ${flags.has("all") ? `${s.cwd}  ` : ""}${(s.startedAt ?? stamp(s.mtimeMs)).slice(0, 16)}${badge ? `  [${badge}]` : ""}  ${s.preview ? previewText(s.preview) : ""}`.trimEnd());
+			// The header is pi's raw UTC; the file mtime and the header say the same instant, so both
+			// read through the machine's clock: a UTC machine is the only one that saw the same
+			// number either way, and the page and the status line beside this one are local.
+			const started = s.startedAt !== undefined ? Date.parse(s.startedAt) : NaN;
+			out(`${s.id.slice(0, 16)}  ${flags.has("all") ? `${s.cwd}  ` : ""}${formatLocal(Number.isFinite(started) ? started : s.mtimeMs)}${badge ? `  [${badge}]` : ""}  ${s.preview ? previewText(s.preview) : ""}`.trimEnd());
 		}
 		return 0;
 	}
