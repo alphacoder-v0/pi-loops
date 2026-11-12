@@ -249,8 +249,9 @@ test("pi-loops inbox: list, claim and dismiss with no pi open, as JSON a program
 			`${news.id}  a TODO went stale  (project, watch, ${formatLocal(Date.parse(news.created_at))})`,
 		], "one line per finding, the id first, as docs/cli.md says: a script reads the ids with awk; the loop by its label, the time in local time");
 		// `--json` before the id: the id is still the id, and a prefix will do.
-		assert.equal(await runCli(["inbox", "claim", "--json", decision.id.slice(0, 12)], out), 0);
-		assert.equal(last().finding.status, "claimed");
+		// A plain claim hands the finding to the caller: the list's one line, prefixed with what was done.
+		assert.equal(await runCli(["inbox", "claim", decision.id.slice(0, 12)], out), 0);
+		assert.equal(lines[lines.length - 1], `${"claimed"} ${decision.id}  ⚑ ✓ #4 brief posted · waiting on: your label  (project, watch, ${formatLocal(Date.parse(decision.created_at))})`, "the caller sees the finding it acts on; once decided it leaves every list, so this line is the record");
 		assert.equal(await runCli(["inbox", "claim", decision.id, "--json"], out), 1, "a finding is decided once");
 		assert.match(last().error, /no new inbox entry/);
 		// A number is a position on a screen there is none of here; a --reason without text is not a silent bare dismiss.
@@ -259,8 +260,8 @@ test("pi-loops inbox: list, claim and dismiss with no pi open, as JSON a program
 		assert.match(last().error, /not a number/);
 		assert.equal(await runCli(["inbox", "dismiss", news.id, "--reason", "--json"], out), 1);
 		assert.match(last().error, /--reason needs a text/);
-		assert.equal(await runCli(["inbox", "dismiss", news.id, "--reason", "that file is generated", "--json"], out), 0);
-		assert.equal(last().finding.dismiss_reason, "that file is generated");
+		assert.equal(await runCli(["inbox", "dismiss", news.id, "--reason", "that file is generated"], out), 0);
+		assert.equal(lines[lines.length - 1], `dismissed ${news.id}  a TODO went stale  (project, watch, ${formatLocal(Date.parse(news.created_at))})`, "a plain dismiss shows the finding too");
 		assert.equal(inbox.feedbackFor("cron-1").length, 1, "the reason reaches the loop's next run, as /inbox dismiss does");
 		assert.equal(await runCli(["inbox", "list", "--cwd", project], out), 0);
 		assert.match(lines[lines.length - 1], /nothing new/);
