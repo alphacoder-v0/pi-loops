@@ -29,6 +29,9 @@ All notable changes to pi-loops are documented here. The format follows
 - **A run's summary says what it found.** The summary of a loop run that filed findings is now its
   first finding. Before, it was the rest of the reply with the findings taken out, which was often
   only a closing line such as "Filed as #220. Final state:". A run with no finding is unchanged.
+- **An `every` interval under 1m is refused when you type it.** `every 30s` was accepted, and the
+  first tick then disabled the job with `unusable schedule`. `/cron add`, `/cron set` and
+  `cron_create` now answer `the minimum every interval is 1m`. `in 30s` is unchanged (#220).
 - **An unattended run can search for `shutdown`, `reboot`, `halt` and `poweroff`.** The
   dangerous-command policy refused these words anywhere, so `grep -rn shutdown src/` was refused.
   A one-line search is now allowed: each part between `|`, `&&`, `||` and `;` starts with `grep`,
