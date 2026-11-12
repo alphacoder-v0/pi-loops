@@ -468,6 +468,9 @@ async function inboxCommand(positional: string[], opts: { all: boolean; json: bo
 async function inboxCommandBody(positional: string[], opts: { all: boolean; json: boolean; reason?: string | true }, cwd: string, loopsDir: string, out: (line: string) => void, fail: (why: string) => number): Promise<number> {
 	const sub = positional[0] ?? "list";
 	const inbox = new Inbox(loopsDir);
+	// A finding's line names its loop by its label, as every surface but `inbox --json` does.
+	const names = new Map(new JobStore(loopsDir).load().map((j) => [j.id, j.name]));
+	const ctx = { loopName: (id: string) => names.get(id) };
 	if (sub === "list") {
 		const entries = opts.all ? inbox.listNew() : inProject(inbox.listNew(), cwd, sameProject);
 		if (opts.json) {
@@ -475,8 +478,6 @@ async function inboxCommandBody(positional: string[], opts: { all: boolean; json
 			return 0;
 		}
 		if (!entries.length) out(opts.all ? "inbox: nothing new on this machine" : `inbox: nothing new in ${cwd} (--all lists every project)`);
-		const names = new Map(new JobStore(loopsDir).load().map((j) => [j.id, j.name]));
-		const ctx = { loopName: (id: string) => names.get(id) };
 		for (const e of entries) {
 			const card = inboxCard(e, ctx);
 			if (card) out(plain(cardLine(card, `${e.id}  `, `  (${path.basename(e.cwd) || e.cwd || "—"}, ${cardOrigin(card)}, ${formatLocal(Date.parse(e.created_at))})`)));
@@ -499,7 +500,16 @@ async function inboxCommandBody(positional: string[], opts: { all: boolean; json
 		if ("missing" in decided) return fail(`inbox entry ${entry.id} is gone`);
 		if ("already" in decided) return fail(`inbox entry ${entry.id} is already ${decided.already}`);
 		const updated = decided.ok;
-		out(opts.json ? JSON.stringify({ finding: findingJson(updated) }) : `${updated.status} ${updated.id}`);
+		if (opts.json) {
+			out(JSON.stringify({ finding: findingJson(updated) }));
+			return 0;
+		}
+		// The caller acts on the finding, so the hand-over shows it: the finding's one line from
+		// `list`, prefixed with what was done. Once the entry is decided it leaves every CLI list,
+		// so this line is the only record the CLI gives of it.
+		const card = inboxCard(updated, ctx);
+		if (card) out(plain(cardLine(card, `${updated.status} ${updated.id}  `, `  (${path.basename(updated.cwd) || updated.cwd || "—"}, ${cardOrigin(card)}, ${formatLocal(Date.parse(updated.created_at))})`)));
+		else out(`${updated.status} ${updated.id}`);
 		return 0;
 	}
 	return fail(`unknown inbox command ${JSON.stringify(sub)} (list | claim <id> | dismiss <id> [--reason <text>])`);
