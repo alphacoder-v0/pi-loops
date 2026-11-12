@@ -1045,12 +1045,13 @@ test("pi-loops sessions prints one line a person can tell sessions apart by", as
 		assert.deepEqual(limited, lines);
 	});
 	assert.equal(lines.length, 1);
-	assert.equal(lines[0], "01a08416-1111-22  2026-09-14T13:48  [1 cron]  check the login flow, please, and tell me what is off about the redirect after a…");
+	const startedLocal = formatLocal(Date.parse("2026-09-14T13:48:39.061Z"));
+	assert.equal(lines[0], `01a08416-1111-22  ${startedLocal}  [1 cron]  check the login flow, please, and tell me what is off about the redirect after a…`, "the header is UTC, but the line says it in the machine's clock, as the mtime fallback does");
 	const all: string[] = [];
 	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: agent }, async () => {
 		assert.equal(await runCli(["sessions", "--all"], (l) => all.push(l)), 0);
 	});
-	assert.match(all[0], /^01a08416-1111-22  \/work\/api  2026-09-14T13:48/, "--all puts the cwd after the id");
+	assert.match(all[0], new RegExp(`^01a08416-1111-22  /work/api  ${startedLocal}`), "--all puts the cwd after the id");
 });
 
 test("pi-loops sessions refuses a --limit that is not a whole number of sessions", async () => {
