@@ -20,7 +20,7 @@ result says exactly what the latest new finding of the same rule and project say
 more. The check records on its result's audit row whether it filed the finding or skipped it as a
 repeat; when the promotion falls back to the inbox, or its row dies, nothing more is filed for that
 check. A result that no check decided, such as a push with no rule, is filed once by its trace id.
-Time-based requests ("every hour", "daily", "定时任务") are refused and routed to `cron_create`.
+Time-based requests ("every hour", "daily", "定时任务") are refused and routed to `cron_create`; a condition that merely names a routine ("when the daily build fails") is an event, and is accepted.
 
 Tools: `new_trigger` (condition, action, spec, fire_once, promote_to_chat), `list_triggers`,
 `remove_trigger` (id | all), `set_trigger_state`. Removing and re-enabling ask the user to
