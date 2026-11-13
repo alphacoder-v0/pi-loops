@@ -128,7 +128,7 @@ export function resolveJobRefScoped(jobs: LoopJob[], ref: string, cwd: string): 
  */
 export function checkJobName(name: string | undefined, existing: LoopJob[]): void {
 	if (!name) return;
-	if (!/^[\w.-]{1,40}$/.test(name)) throw new Error("name must be 1-40 chars of letters, digits, . _ -");
+	if (!/^[\p{L}\p{N}._-]{1,40}$/u.test(name)) throw new Error("name must be 1-40 chars of letters, digits, . _ -");
 	if (existing.some((j) => j.name === name)) throw new Error(`a cron job named "${name}" already exists`);
 }
 

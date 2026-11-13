@@ -167,5 +167,6 @@ test("a job's name has to be usable as a reference, on the edit path as much as 
 	// Renaming a job to what it is already called is not a collision: the caller excludes it.
 	assert.doesNotThrow(() => checkJobName("ci", jobs.filter((j: any) => j.id !== "cron-a")));
 	assert.doesNotThrow(() => checkJobName("build.2_x-y", jobs));
+	assert.doesNotThrow(() => checkJobName("检查新issue", jobs));
 	assert.doesNotThrow(() => checkJobName(undefined, jobs));
 });

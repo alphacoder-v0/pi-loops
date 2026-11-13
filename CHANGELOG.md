@@ -7,6 +7,10 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Fixed
 
+- **A loop made without a name gets one, in the prompt's script.** A prompt with no Latin word
+  (Chinese, Japanese, Korean) was named `loop`, then `loop-2`, and a `--name` in the same script
+  was refused. The name now takes the prompt's first CJK runs, and `--name` accepts letters of any
+  writing system: still 1-40 chars, no spaces (#240).
 - **A one-line trigger splits at the first boundary, not the first keyword.** `new_trigger`'s
   `spec` split "when X, run Y, then Z" at the later "then" (and a 则 inside 规则), so the rule
   checked the action and ran the last clause. The split now takes the earliest boundary in the
