@@ -17,8 +17,21 @@ test("a name made from a prompt is one /cron add --name would accept", () => {
 	}
 });
 
-test("a prompt with no word in Latin letters is named loop", () => {
-	assert.equal(jobNameFrom("每天早上检查一下", []), "loop");
+test("a prompt with no word in Latin letters is named by its first CJK runs", () => {
+	assert.equal(jobNameFrom("每天早上检查一下", []), "每天早上检查一下");
+	assert.equal(jobNameFrom("每天早上 检查一下 新的 问题", []), "每天早上-检查一下-新的");
+	assert.equal(jobNameFrom("毎朝チェックする", []), "毎朝チェックする");
+	assert.equal(jobNameFrom("오전마다 점검하고 보고해", []), "오전마다-점검하고-보고해");
+	assert.equal(jobNameFrom("!!!!", []), "loop");
+});
+
+test("a CJK name another loop has is not reused: a number goes on the end", () => {
+	assert.equal(jobNameFrom("每天早上检查一下", [{ name: "每天早上检查一下" }]), "每天早上检查一下-2");
+});
+
+test("a CJK name is one /cron add --name accepts", () => {
+	assert.doesNotThrow(() => checkJobName("每天早上检查一下", []));
+	assert.throws(() => checkJobName("检查 新issue", []), /1-40 chars/);
 });
 
 test("a name another loop has is not reused: a number goes on the end", () => {
