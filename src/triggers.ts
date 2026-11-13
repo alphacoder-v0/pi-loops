@@ -162,12 +162,18 @@ function cleanAction(raw: string): string {
 	return s;
 }
 
-/** A time-based request belongs to cron, not here. */
+/**
+ * Whether the text asks for a fixed schedule (which belongs to cron) rather than naming an event.
+ * "every hour", "每天" and the like ask for one in every position; "cron", "daily", "hourly" and
+ * "weekly" also name a routine ("when the daily build fails"), so they count only whole-word and
+ * only while no condition clause ("when", "if", "当", "如果") is present.
+ */
 export function looksLikeFixedScheduleRequest(text: string): boolean {
 	const lower = text.toLowerCase();
-	const english = ["every hour", "hourly", "every day", "daily", "every week", "weekly", "scheduled job", "cron", "crontab"];
-	if (english.some((n) => lower.includes(n))) return true;
-	return ["定时任务", "定時任務", "每小时", "每小時", "每天", "每日", "每周", "每週"].some((n) => text.includes(n));
+	const unambiguous = ["every hour", "every day", "every week", "scheduled job", "crontab", "定时任务", "定時任務", "每小时", "每小時", "每天", "每日", "每周", "每週"];
+	if (unambiguous.some((n) => lower.includes(n))) return true;
+	if (/\b(when|whenever|if)\b/.test(lower) || lower.includes("如果") || text.startsWith("当")) return false;
+	return /\b(cron|daily|hourly|weekly)\b/.test(lower);
 }
 
 /* --------------------------------------------------------------- prompt */

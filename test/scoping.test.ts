@@ -539,6 +539,16 @@ test("new_trigger stores a condition the model wrote as \"when …\" the way /ne
 	}
 });
 
+test("a condition that names a routine (the daily build, a cron file) stays a trigger, and an action is never a schedule", async () => {
+	const f = askFixture();
+	try {
+		const out = await f.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "when the daily build fails", action: "post the daily error report", promote_to_chat: false }, undefined, undefined, f.person);
+		assert.match(String(out.content[0].text), /^created dynamic trigger dyn-/, "a routine word in the condition and in the action no longer routes to cron_create");
+	} finally {
+		await f.scheduler.stop();
+	}
+});
+
 test("Cancel, Esc, a timeout and an abort all return cancelled in the same call and leave jobs.json and triggers.json as they were", async () => {
 	for (const [answer, reason, abort] of [["Cancel", "Cancel", false], [undefined, "Cancel", false], ["Set it up · nowhere", "Cancel", false], [undefined, "aborted", true]] as const) {
 		const f = askFixture(() => answer);

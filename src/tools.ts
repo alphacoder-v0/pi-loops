@@ -358,18 +358,21 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			{ additionalProperties: false },
 		),
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			if ([params.condition, params.action, params.spec].some((t) => t && looksLikeFixedScheduleRequest(t))) return deny("fixed scheduled jobs must use cron_create, not new_trigger");
 			let condition = cleanCondition(params.condition ?? "");
 			let action = params.action?.trim() ?? "";
 			const fromSpec = !condition || !action;
 			if (fromSpec) {
 				if (!params.spec) return deny("missing required args: provide condition and action");
+				// On the raw spec, so a schedule it cannot split ("every day at 9:00 remind me") gets the cron pointer, not the split error.
+				if (looksLikeFixedScheduleRequest(params.spec)) return deny("fixed scheduled jobs must use cron_create, not new_trigger");
 				try {
 					({ condition, action } = parseTriggerRule(params.spec));
 				} catch (err: any) {
 					return deny(err?.message ?? String(err));
 				}
 			}
+			// The condition alone is where a schedule request lives: an action that names a routine ("post the daily report") is never one.
+			if (!fromSpec && looksLikeFixedScheduleRequest(params.condition ?? "")) return deny("fixed scheduled jobs must use cron_create, not new_trigger");
 			const s = host.session();
 			const draft = { condition, action, cwd: s.cwd, sessionId: s.sessionId, model: s.model, thinking: s.thinking };
 			if (asking(scope, host, ctx)) {

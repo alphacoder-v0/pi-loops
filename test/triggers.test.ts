@@ -22,7 +22,13 @@ test("parseTriggerRule handles english and chinese markers", () => {
 test("looksLikeFixedScheduleRequest", () => {
 	assert.ok(looksLikeFixedScheduleRequest("check every hour"));
 	assert.ok(looksLikeFixedScheduleRequest("每天九点看一下"));
+	assert.ok(looksLikeFixedScheduleRequest("daily"));
+	assert.ok(looksLikeFixedScheduleRequest("run the tests weekly"));
 	assert.ok(!looksLikeFixedScheduleRequest("when the file appears"));
+	// A schedule word that names a routine is an event, not a schedule request.
+	assert.ok(!looksLikeFixedScheduleRequest("when the daily build fails"));
+	assert.ok(!looksLikeFixedScheduleRequest("when the weekly release ships"));
+	assert.ok(!looksLikeFixedScheduleRequest("when the cron file changes"));
 });
 
 test("prompt rendering and id extraction", () => {
