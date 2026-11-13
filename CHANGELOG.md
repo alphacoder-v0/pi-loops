@@ -7,6 +7,10 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Fixed
 
+- **A one-line trigger splits at the first boundary, not the first keyword.** `new_trigger`'s
+  `spec` split "when X, run Y, then Z" at the later "then" (and a 则 inside 规则), so the rule
+  checked the action and ran the last clause. The split now takes the earliest boundary in the
+  line, and a "run" inside the condition (when the run finishes, run it) is not a boundary (#234).
 - **The page says what failed.** A reply whose model call failed is an error row with the reason,
   and pi's retries count on that row. While pi-loops does not answer, one line says "pi-loops
   stopped or cannot be reached. Reconnecting…", the page keeps what it showed, and send and the

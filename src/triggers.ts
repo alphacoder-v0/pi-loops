@@ -99,19 +99,39 @@ export interface ParsedTriggerRule {
 	action: string;
 }
 
+/** A 则 inside another word (规则, 否则, 原则, 准则, 法则, 细则, 定则, 条则) is not a boundary. */
+const ZE_BEFORE = "规否原准法细定条";
+
+/** The first occurrence of the marker that is not part of another word. */
+function markerIndex(text: string, marker: string): number {
+	let idx = text.indexOf(marker);
+	while (idx >= 0) {
+		if (!(marker === "则" && ZE_BEFORE.includes(text[idx - 1] ?? ""))) return idx;
+		idx = text.indexOf(marker, idx + 1);
+	}
+	return -1;
+}
+
 /** Split "when X, run Y" / "当 X 时，执行 Y" into condition + action. Throws on malformed input. */
 export function parseTriggerRule(spec: string): ParsedTriggerRule {
 	const text = spec.trim();
 	if (!text) throw new Error("usage: /new-trigger <when condition, run action>");
 	const lower = text.toLowerCase();
+	// The boundary is the earliest marker in the text, not the first marker in the list: "when X,
+	// run Y, then Z" splits at ", run", not at the later "then". A marker with a comma or a
+	// "then" is tried before a bare one: a "run" inside the condition (when the run finishes,
+	// run it) is not a boundary while ", run" is.
 	let split: { idx: number; marker: string } | undefined;
-	for (const marker of MARKERS) {
-		const haystack = /^[\x00-\x7f]*$/.test(marker) ? lower : text;
-		const idx = haystack.indexOf(marker);
-		if (idx >= 0) {
-			split = { idx, marker };
-			break;
+	for (const primary of [true, false]) {
+		for (const marker of MARKERS) {
+			const isPrimary = marker.includes(",") || marker.includes("，") || marker.startsWith(" then");
+			if (primary !== isPrimary) continue;
+			const idx = markerIndex(/^[\x00-\x7f]*$/.test(marker) ? lower : text, marker);
+			if (idx >= 0 && (!split || idx < split.idx || (idx === split.idx && marker.length > split.marker.length))) {
+				split = { idx, marker };
+			}
 		}
+		if (split) break;
 	}
 	if (!split) throw new Error("could not split the trigger into a condition and action. In normal chat, ask pi to create the trigger so the model can extract them, or use `/new-trigger if condition, then action`.");
 	const condition = cleanCondition(text.slice(0, split.idx));
