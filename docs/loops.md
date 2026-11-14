@@ -503,8 +503,9 @@ A run that passes its timeout (`--timeout`, default 15m) is a failed run, `timed
 its slot is spent, it counts toward `runs` and the failure streak, and the loop runs again at its
 next scheduled time.
 
-A job that fails three times in a row is retried on a widening gap (5 minutes, doubling, up to six
-hours) instead of at every due tick, and says so; one success clears the streak.
+A job that fails three times in a row is not retried at every due tick: it waits 1 minute after
+the third failure, then 5 minutes, 30 minutes, 2 hours, and 6 hours from the seventh failure on, and
+says so. One success clears the streak.
 
 ## Was it worth running
 

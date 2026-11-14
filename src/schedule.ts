@@ -443,17 +443,3 @@ export function computeNext(input: DueInput, now: number): number | undefined {
 			return input.lastFiredAt === undefined && schedule.at > now ? schedule.at : undefined;
 	}
 }
-
-/**
- * How long something that has failed `failures` times in a row waits before the next attempt:
- * nothing until `after` failures, then `baseMs` doubling with each further failure, capped at
- * `maxMs` (and at eight doublings, so the arithmetic cannot run away).
- *
- * One function for both pipelines because docs/triggers.md promises the same numbers: a loop run
- * that keeps failing and a trigger check that keeps failing are the same problem — it will not fix
- * itself by the next tick, and every attempt bills a sub-agent.
- */
-export function backoffWaitMs(failures: number, after: number, baseMs: number, maxMs: number): number {
-	if (failures < after) return 0;
-	return Math.min(maxMs, baseMs * 2 ** Math.min(failures - after, 8));
-}

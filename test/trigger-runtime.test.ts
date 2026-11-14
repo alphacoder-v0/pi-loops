@@ -564,19 +564,20 @@ test("a rule whose check keeps failing is polled with a widening gap instead of 
 		await rt.store.add({ condition: "c", action: "a", cwd: dir, fireOnce: false });
 		for (let i = 0; i < 3; i++) {
 			await poll();
-			clock += 60_000;
+			if (i < 2) clock += 60_000;
 		}
 		assert.equal(calls.length, 3);
 		assert.equal(rt.store.load()[0].consecutiveFailures, 3);
 		assert.ok(rt.store.listAudit(50).some((a) => a.state === "backoff"), "the audit says why the rule went quiet");
 
+		clock += 30_000;
 		await rt.tick(clock, true);
 		await new Promise((r) => setTimeout(r, 50));
-		assert.equal(calls.length, 3, "the next interval is skipped instead of billing a fourth failing check");
+		assert.equal(calls.length, 3, "not started 30 seconds after the last failure");
 
-		clock += 5 * 60_000;
+		clock += 30_000;
 		await poll();
-		assert.equal(calls.length, 4, "after the backoff window it is checked again");
+		assert.equal(calls.length, 4, "started once one minute has passed");
 
 		failing = false;
 		clock += 20 * 60_000;

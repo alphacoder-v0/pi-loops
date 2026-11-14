@@ -6,9 +6,8 @@
  * what the badge, the session-start line and `/cron` print instead — a question about a list of jobs,
  * answerable without a scheduler, a session or a clock.
  */
-import { FAILURE_BACKOFF_AFTER } from "./scheduler.ts";
+import { FAILING_AFTER } from "./backoff.ts";
 import type { LoopJob } from "./store.ts";
-import { CHECK_FAILURE_BACKOFF_AFTER } from "./trigger-runtime.ts";
 import type { DynamicTriggerRule } from "./triggers.ts";
 
 /**
@@ -17,7 +16,7 @@ import type { DynamicTriggerRule } from "./triggers.ts";
  * already started widening the gap.
  */
 export function failingJobs(jobs: LoopJob[]): LoopJob[] {
-	return jobs.filter((j) => j.enabled && (j.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER).sort((a, b) => (b.consecutiveFailures ?? 0) - (a.consecutiveFailures ?? 0));
+	return jobs.filter((j) => j.enabled && (j.consecutiveFailures ?? 0) >= FAILING_AFTER).sort((a, b) => (b.consecutiveFailures ?? 0) - (a.consecutiveFailures ?? 0));
 }
 
 /** `2 loops failing (check-issues ×7)` — one clause, the worst one named, whatever the count. */
@@ -36,5 +35,5 @@ export function failingSummary(jobs: LoopJob[]): string | undefined {
  */
 export function ruleFailureMark(rule: Pick<DynamicTriggerRule, "enabled" | "consecutiveFailures">): string | undefined {
 	const n = rule.consecutiveFailures ?? 0;
-	return rule.enabled && n >= CHECK_FAILURE_BACKOFF_AFTER ? `[failing ×${n}]` : undefined;
+	return rule.enabled && n >= FAILING_AFTER ? `[failing ×${n}]` : undefined;
 }

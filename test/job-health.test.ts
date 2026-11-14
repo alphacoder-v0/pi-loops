@@ -1,16 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { failingJobs, failingSummary, ruleFailureMark } from "../src/job-health.ts";
-import { CHECK_FAILURE_BACKOFF_AFTER } from "../src/trigger-runtime.ts";
-import { FAILURE_BACKOFF_AFTER } from "../src/scheduler.ts";
+import { FAILING_AFTER } from "../src/backoff.ts";
 import type { LoopJob } from "../src/store.ts";
 
 const job = (over: Partial<LoopJob>): LoopJob => ({ id: "j-1", schedule: { kind: "every", everyMs: 60_000 } as any, stateful: true, prompt: "p", cwd: "/p", enabled: true, catchUp: true, createdAt: new Date().toISOString(), ...over });
 
 test("a loop is reported as failing once the scheduler has started backing it off", () => {
 	const jobs = [
-		job({ id: "fine", consecutiveFailures: FAILURE_BACKOFF_AFTER - 1 }),
-		job({ id: "bad-night", consecutiveFailures: FAILURE_BACKOFF_AFTER }),
+		job({ id: "fine", consecutiveFailures: FAILING_AFTER - 1 }),
+		job({ id: "bad-night", consecutiveFailures: FAILING_AFTER }),
 		job({ id: "hopeless", name: "check-issues", consecutiveFailures: 7 }),
 		job({ id: "paused", enabled: false, consecutiveFailures: 40 }),
 		job({ id: "ours", consecutiveFailures: 4 }),
@@ -32,9 +31,9 @@ test("the failing summary names the worst loop and counts the rest", () => {
 });
 
 test("a rule is marked failing in /triggers rules once its checks are being backed off, and not before", () => {
-	// The runtime polls a rule less often from CHECK_FAILURE_BACKOFF_AFTER failures on; the listing
-	// used to read the same as a healthy rule's while that gap widened to six hours.
-	assert.equal(CHECK_FAILURE_BACKOFF_AFTER, 3);
+	// The runtime polls a rule less often from FAILING_AFTER failures on; the listing
+	// used to read the same as a healthy rule's while its checks were backed off.
+	assert.equal(FAILING_AFTER, 3);
 	assert.equal(ruleFailureMark({ enabled: true, consecutiveFailures: 3 }), "[failing ×3]");
 	assert.equal(ruleFailureMark({ enabled: true, consecutiveFailures: 12 }), "[failing ×12]");
 	assert.equal(ruleFailureMark({ enabled: true, consecutiveFailures: 2 }), undefined, "a bad check or two is not a failing rule");

@@ -14,21 +14,18 @@ import { composeCheckerPrompt, composeLoopPrompt, findingKind, parseCheckerOutpu
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
-import { backoffWaitMs, computeDue, computeNext, formatLocal, formatLocalZoned, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
+import { computeDue, computeNext, formatLocal, formatLocalZoned, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
+import { backoffFor, FAILING_AFTER, failurePause } from "./backoff.ts";
 import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, type RunRequester, newId } from "./store.ts";
 import { openWhere, ownerSession, runsHere, whereRuns, type OwnerView } from "./job-owner.ts";
 import { shortSessionId } from "./session-head.ts";
-import { DEAD_AFTER_ATTEMPTS, backoffFor, plainCollapseKey, plainJobRow, plainRunId, sessionFileHas } from "./engine.ts";
+import { DEAD_AFTER_ATTEMPTS, plainCollapseKey, plainJobRow, plainRunId, sessionFileHas } from "./engine.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 
 export const DEFAULT_TICK_MS = 30_000;
 /** Interrupted runs in a row (a process that died mid-run) after which a job is parked. */
 export const INTERRUPTIONS_BEFORE_PARKING = 3;
-/** Consecutive failures before a job is retried on a widening gap rather than every due tick. */
-export const FAILURE_BACKOFF_AFTER = 3;
-export const FAILURE_BACKOFF_BASE_MS = 5 * 60_000;
-export const FAILURE_BACKOFF_MAX_MS = 6 * 60 * 60_000;
 export const DEFAULT_RUN_TIMEOUT_MS = 15 * 60_000;
 export const MAX_CONCURRENT_RUNS = 3;
 /**
@@ -706,8 +703,8 @@ export class LoopScheduler {
 		// A failing job is retried with a widening gap instead of at every due tick: a loop whose
 		// sub-agent kills the process used to re-fire on the very next start, in a loop.
 		const failures = job.consecutiveFailures ?? 0;
-		if (failures >= FAILURE_BACKOFF_AFTER && job.lastCompletedAt) {
-			const wait = backoffWaitMs(failures, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS);
+		if (failures >= FAILING_AFTER && job.lastCompletedAt) {
+			const wait = failurePause(failures);
 			if (now - Date.parse(job.lastCompletedAt) < wait) return;
 		}
 		// The counter is shared with trigger checks and the /goal evaluator (src/slots.ts): the cap is
@@ -1016,7 +1013,7 @@ export class LoopScheduler {
 				return;
 			}
 			if (stopped) this.log(`cron ${job.name ?? job.id}: turn stopped; it is done`, "info");
-			if (updated && !result.ok && !stopped && (updated.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER) {
+			if (updated && !result.ok && !stopped && (updated.consecutiveFailures ?? 0) >= FAILING_AFTER) {
 				this.hooks.onSchedulerError?.(`${updated.name ?? updated.id} has failed ${updated.consecutiveFailures} times in a row; backing off (last: ${record.error ?? "unknown"})`, updated);
 			}
 			// A one-shot is retired once it ran, was stopped, or failed twice (the retry above was its second chance).
@@ -1315,7 +1312,7 @@ export class LoopScheduler {
 		} catch (err: any) {
 			this.log(`loop ${job.id}: could not write the store after the run (${err?.message ?? err})`, undefined, job);
 		}
-		if (updated && !result.ok && !byPerson && (updated.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER) {
+		if (updated && !result.ok && !byPerson && (updated.consecutiveFailures ?? 0) >= FAILING_AFTER) {
 			this.hooks.onSchedulerError?.(`${updated.name ?? updated.id} has failed ${updated.consecutiveFailures} times in a row; backing off (last: ${record.error ?? "unknown"})`, updated);
 		}
 		// Only now: while the run id is in `inflight`, `clearStaleRunning` treats the job as alive,

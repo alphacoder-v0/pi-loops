@@ -20,20 +20,15 @@ import { type LeaseHolder, type LeaseStore, type ProcessProbe, type SessionLease
 import { withinProject } from "./paths.ts";
 import { type ImageContent, type RequestMode, type RequestStore, type SessionRequest, imageRef } from "./requests.ts";
 import type { LockOptions } from "./lock.ts";
+import { backoffFor } from "./backoff.ts";
 import { stamp } from "./schedule.ts";
 import { type LoopJob, newId } from "./store.ts";
 import { type TriggerStore, checkDecidedFinding } from "./triggers.ts";
 
 /** Failures of one row before it is a dead letter. */
 export const DEAD_AFTER_ATTEMPTS = 3;
-/** The wait after the first, second and later failures. */
-export const BACKOFF_MS: readonly number[] = [60_000, 5 * 60_000, 30 * 60_000];
 /** How much of a dead row's text the finding carries. */
 export const DEAD_LETTER_CHARS = 400;
-
-export function backoffFor(attempts: number): number {
-	return BACKOFF_MS[Math.min(Math.max(attempts, 1), BACKOFF_MS.length) - 1];
-}
 
 /**
  * The mode a source gets (design §6.2): the producer writes it, the executor recomputes it. Attended

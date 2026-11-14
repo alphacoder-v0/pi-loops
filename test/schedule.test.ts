@@ -1,8 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { backoffWaitMs, clampFuture, computeDue, computeNext, cronLatestBetween, cronMatches, cronNextAfter, localOffset, parseCron, parseDuration, parseSchedule, scheduleWords, stamp } from "../src/schedule.ts";
-import { FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS } from "../src/scheduler.ts";
-import { CHECK_FAILURE_BACKOFF_AFTER, CHECK_FAILURE_BACKOFF_BASE_MS, CHECK_FAILURE_BACKOFF_MAX_MS } from "../src/trigger-runtime.ts";
+import { clampFuture, computeDue, computeNext, cronLatestBetween, cronMatches, cronNextAfter, localOffset, parseCron, parseDuration, parseSchedule, scheduleWords, stamp } from "../src/schedule.ts";
 
 const local = (y: number, mo: number, d: number, h = 0, mi = 0, s = 0) => new Date(y, mo - 1, d, h, mi, s).getTime();
 
@@ -103,23 +101,6 @@ test("skipping by the day finds exactly what a minute-by-minute walk finds", () 
 			if (brute !== undefined) assert.equal(cronNextAfter(fields, at), brute, `${expr} after ${new Date(at).toISOString()}`);
 		}
 	}
-});
-
-test("the loop backoff and the trigger-check backoff really are the same numbers", () => {
-	// docs/triggers.md promises "the scheduler's job backoff, same numbers", which was two copies of
-	// the formula with two sets of constants and nothing keeping them together.
-	for (let failures = 1; failures <= 10; failures++) {
-		assert.equal(
-			backoffWaitMs(failures, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS),
-			backoffWaitMs(failures, CHECK_FAILURE_BACKOFF_AFTER, CHECK_FAILURE_BACKOFF_BASE_MS, CHECK_FAILURE_BACKOFF_MAX_MS),
-			`failures=${failures}`,
-		);
-	}
-	// Nothing for the first three, then 5 minutes, 10, 20, … up to 6 hours — as the doc says.
-	assert.equal(backoffWaitMs(2, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS), 0);
-	assert.equal(backoffWaitMs(3, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS), 5 * 60_000);
-	assert.equal(backoffWaitMs(4, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS), 10 * 60_000);
-	assert.equal(backoffWaitMs(30, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS), 6 * 3_600_000);
 });
 
 test("computeDue collapses missed cron ticks into one", () => {

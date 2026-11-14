@@ -91,8 +91,8 @@ Pushed MCP notifications (see [mcp.md](mcp.md)) enter the same runtime and are e
 the rules unless the server is configured as an `inject_summary` / `inject_and_run` feed.
 
 A rule whose check keeps failing is polled with a widening gap instead of at every interval: after
-three failed checks in a row the rule waits 5 minutes, then 10, 20, … up to 6 hours (the scheduler's
-job backoff, same numbers — literally the same function, `backoffWaitMs` in `src/schedule.ts`).
+three failed checks in a row it waits 1 minute, then 5 minutes, 30 minutes, 2 hours and 6 hours from
+the seventh failure on. Loops and rule checks use the same table in `src/backoff.ts`.
 The count lives on the rule (`consecutive_failures`,
 `last_check_failed_at`), a check that completes clears it — including `/triggers run <id>`, which is
 the way to retry a backed-off rule now — and entering the backoff is audited as `backoff` with the

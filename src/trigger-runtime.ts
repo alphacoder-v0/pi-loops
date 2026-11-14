@@ -15,7 +15,8 @@ import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import type { JobStore } from "./store.ts";
 import type { Inbox } from "./inbox.ts";
-import { backoffWaitMs, stamp } from "./schedule.ts";
+import { failurePause, FAILING_AFTER } from "./backoff.ts";
+import { stamp } from "./schedule.ts";
 import { type Look, PathLooks, watchOf } from "./path-precheck.ts";
 import {
 	DEFAULT_TRIGGER_POLL_INTERVAL_SECS,
@@ -128,15 +129,6 @@ const POLL_TICK_MS = 30_000;
  * is dropped, with an audit row, instead of the list growing until the process dies.
  */
 export const MAX_PENDING_PUSHES = 32;
-
-/**
- * Backoff for a rule whose check keeps failing — the same shape and numbers as the scheduler's job
- * backoff (`FAILURE_BACKOFF_*` in scheduler.ts), which exists for exactly this: a check that failed
- * three times in a row is failing for a reason the next poll will not fix, and each attempt bills.
- */
-export const CHECK_FAILURE_BACKOFF_AFTER = 3;
-export const CHECK_FAILURE_BACKOFF_BASE_MS = 5 * 60_000;
-export const CHECK_FAILURE_BACKOFF_MAX_MS = 6 * 60 * 60_000;
 
 /**
  * Transcripts are kept per project, not in one directory for the machine: a shared budget meant
@@ -563,13 +555,14 @@ export class TriggerRuntime {
 
 	/**
 	 * Whether `rule`'s next poll is still inside its failure backoff. A check that has failed three
-	 * times in a row is failing for a reason ten minutes will not fix, and every attempt bills a
-	 * sub-agent; pushes still reach the rule, because an event is worth one attempt.
+	 * times in a row is failing for a reason the next poll will not fix, and every attempt bills a
+	 * sub-agent; pushes still reach the rule, because an event is worth one attempt. The wait is in
+	 * `src/backoff.ts`.
 	 */
 	private inBackoff(rule: DynamicTriggerRule, now: number): boolean {
 		const failures = rule.consecutiveFailures ?? 0;
-		if (failures < CHECK_FAILURE_BACKOFF_AFTER || !rule.lastCheckFailedAt) return false;
-		const wait = backoffWaitMs(failures, CHECK_FAILURE_BACKOFF_AFTER, CHECK_FAILURE_BACKOFF_BASE_MS, CHECK_FAILURE_BACKOFF_MAX_MS);
+		if (failures < FAILING_AFTER || !rule.lastCheckFailedAt) return false;
+		const wait = failurePause(failures);
 		return now - Date.parse(rule.lastCheckFailedAt) < wait;
 	}
 
@@ -593,7 +586,7 @@ export class TriggerRuntime {
 			}
 			return out;
 		});
-		const backing = failed.filter((r) => (r.consecutiveFailures ?? 0) >= CHECK_FAILURE_BACKOFF_AFTER);
+		const backing = failed.filter((r) => (r.consecutiveFailures ?? 0) >= FAILING_AFTER);
 		if (!backing.length) return;
 		const worst = Math.max(...backing.map((r) => r.consecutiveFailures ?? 0));
 		this.store.appendAudit({ cwd, type: "trigger", traceId: newTraceId(), state: "backoff", sourceLabel: "local:dynamic", eventLabel: backing.map((r) => r.id).join(" "), summary: `${backing.length} rule(s) checked with a widening gap after ${worst} failed check(s) in a row`, details: { rule_ids: backing.map((r) => r.id), consecutive_failures: worst } });

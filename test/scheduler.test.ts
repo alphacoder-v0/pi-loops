@@ -14,7 +14,8 @@ import { LeaseBinding, LeaseStore } from "../src/lease.ts";
 import { failedRun, type RunnerResult } from "../src/runner.ts";
 import { stamp } from "../src/schedule.ts";
 import { RequestStore, type SessionRequest } from "../src/requests.ts";
-import { BACKOFF_MS, type EngineSinks, PERSON_SEND_GRACE_MS, drain, plainJobRow, plainRunId, typedByPerson } from "../src/engine.ts";
+import { BACKOFF_MS } from "../src/backoff.ts";
+import { type EngineSinks, PERSON_SEND_GRACE_MS, drain, plainJobRow, plainRunId, typedByPerson } from "../src/engine.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
 import { TriggerStore } from "../src/triggers.ts";
 
@@ -1102,29 +1103,50 @@ test("a job that keeps failing backs off instead of re-firing at every due tick"
 	const dir = tmp("pi-loops-backoff-");
 	const fake = fakeRunner();
 	const warnings: string[] = [];
-	const s = new LoopScheduler({ dir, runner: fake, getSession: () => ({ cwd: dir }), hooks: { onSchedulerError: (m) => void warnings.push(m) } });
+	let clock = Date.now();
+	const s = new LoopScheduler({ dir, runner: fake, getSession: () => ({ cwd: dir }), now: () => clock, hooks: { onSchedulerError: (m) => void warnings.push(m) } });
 	const due = () => s.store.update("cron-flaky", (j) => {
-		j.lastFiredAt = new Date(Date.now() - 120_000).toISOString();
+		j.lastFiredAt = new Date(clock - 120_000).toISOString();
 		j.lastDueAt = undefined;
 	});
 	process.env.FAKE_PI_FAIL = "1";
 	try {
-		await s.store.add({ id: "cron-flaky", name: "flaky", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: dir, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await s.store.add({ id: "cron-flaky", name: "flaky", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: dir, enabled: true, catchUp: true, createdAt: new Date(clock - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		// The first three failures are retried at the normal cadence.
 		for (let i = 0; i < 3; i++) {
 			await s.tick();
 			await s.drain(10_000);
 			await due();
+			if (i < 2) clock += 60_000;
 		}
 		assert.equal(s.store.load()[0].consecutiveFailures, 3);
 		assert.equal(s.store.listRuns("cron-flaky").length, 3);
 		assert.equal(warnings.length, 1, "and the user is told once the streak is established");
 		assert.match(warnings[0], /failed 3 times in a row/);
 
-		// The fourth is held back even though the job is due.
+		// The fourth waits one minute after the third failure.
+		clock += 30_000;
+		await due();
 		await s.tick();
 		await s.drain(10_000);
-		assert.equal(s.store.listRuns("cron-flaky").length, 3, "backed off rather than run");
+		assert.equal(s.store.listRuns("cron-flaky").length, 3, "not started 30 seconds after the last failure");
+		clock += 30_000;
+		await due();
+		await s.tick();
+		await s.drain(10_000);
+		assert.equal(s.store.listRuns("cron-flaky").length, 4, "started once one minute has passed");
+
+		// The fifth waits five minutes after the fourth failure.
+		clock += 5 * 60_000 - 1_000;
+		await due();
+		await s.tick();
+		await s.drain(10_000);
+		assert.equal(s.store.listRuns("cron-flaky").length, 4, "four failures wait five minutes, not one");
+		clock += 1_000;
+		await due();
+		await s.tick();
+		await s.drain(10_000);
+		assert.equal(s.store.listRuns("cron-flaky").length, 5);
 
 		// One success clears the streak and normal cadence resumes.
 		delete process.env.FAKE_PI_FAIL;
@@ -1135,7 +1157,7 @@ test("a job that keeps failing backs off instead of re-firing at every due tick"
 		await due();
 		await s.tick();
 		await s.drain(10_000);
-		assert.equal(s.store.listRuns("cron-flaky").length, 4);
+		assert.equal(s.store.listRuns("cron-flaky").length, 6);
 		assert.equal(s.store.load()[0].consecutiveFailures, undefined, "a success clears the streak");
 	} finally {
 		delete process.env.FAKE_PI_FAIL;

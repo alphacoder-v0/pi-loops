@@ -38,6 +38,7 @@ src/cli-entry.mjs           the bin that loads it
 src/ts-entry.mjs            how an .mjs entry point imports this package's .ts: Node's type stripping, or pi's jiti under node_modules
 
 the pipelines
+src/backoff.ts              the one table of waits after a failure: a row, a loop, a rule check
 src/scheduler.ts            tick loop, due/catch-up/overlap, sub-agent runs, checker; pi-loops runs loops, a window its conversation's plain jobs
 src/trigger-runtime.ts      dynamic-rule evaluation, deliveries, promotion, audit
 src/triggers.ts             rule store, parsing, prompt, dedup window

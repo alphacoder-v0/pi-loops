@@ -66,6 +66,12 @@ All notable changes to pi-loops are documented here. The format follows
   with a newer version now stops such a process with SIGTERM, only when the socket file is not
   there and the process has finished starting, and does not count a crash (#224).
 
+### Changed
+
+- **A loop or a rule check that keeps failing waits 1 minute after the third failure, then 5
+  minutes, 30 minutes, 2 hours and 6 hours.** It waited 5 minutes after the third and doubled to
+  6 hours. One table now gives every wait after a failure, the one a queued prompt already used.
+
 ## [0.24.2] - 2026-11-11
 
 Fixes from the 0.24.2 milestone and a review of what merged since 0.24.1: a path rule that never
