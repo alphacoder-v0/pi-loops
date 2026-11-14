@@ -33,10 +33,10 @@ const SCHEDULES = setting("SIM_SCHEDULES", 2000);
 const STEPS = setting("SIM_STEPS", 40);
 /** The exits a full run must have taken at least once each: a generator that stopped reaching one checks nothing about it. */
 const EXITS = ["delivered", "dead", "cancelled", "stale", "refused", "job-removed", "done"];
-/** How many seeds a known defect is looked for in: the first that shows it is enough. */
-const KNOWN_SEEDS = 300;
+/** The first seed of this run that showed each known defect: the main test finds them, the `todo` tests show them. */
+const firstSeedOf = new Map<string, number>();
 
-type Play = (p: Plan, all?: boolean) => Promise<Run>;
+type Play = (p: Plan, enforce?: string) => Promise<Run>;
 
 /**
  * What a simulated run needs from the test it is in: a clock that only the schedule moves, a disk
@@ -63,9 +63,9 @@ function simulator(t: TestContext, keep: boolean): Play {
 	});
 	const time = { setTime: (ms: number) => t.mock.timers.setTime(ms), tick: (ms: number) => t.mock.timers.tick(ms) };
 	let worlds = 0;
-	return async (p, all = false) => {
+	return async (p, enforce) => {
 		const dir = path.join(root, `${p.seed}-${++worlds}`);
-		const ran = await run(p, dir, time, all);
+		const ran = await run(p, dir, time, enforce);
 		if (!ran.violation || !keep) fs.rmSync(dir, { recursive: true, force: true });
 		return ran;
 	};
@@ -125,6 +125,7 @@ test("the request engine keeps its invariants through seeded schedules of append
 		const ran = await play(planned);
 		if (SCHEDULES === 1) console.log([`schedule of seed ${seed} (${worldOf(planned)}):`, ...ran.lines.map((line) => `  ${line}`)].join("\n"));
 		if (ran.violation) assert.fail(await failure(planned, ran, play));
+		for (const invariant of Object.keys(ran.known)) if (!firstSeedOf.has(invariant)) firstSeedOf.set(invariant, seed);
 		steps += planned.steps.length;
 		crashes += ran.crashes;
 		handOvers += ran.coverage.handOvers;
@@ -141,15 +142,17 @@ test("the request engine keeps its invariants through seeded schedules of append
 	}
 });
 
-// A check today's engine fails is not left out in silence: it runs here under `todo`, so the output
-// shows the defect with a seed and a schedule, and shows the day it passes too.
-for (const [invariant, defect] of Object.entries(KNOWN)) {
-	test(`known defect: ${invariant}`, { todo: defect }, async (t) => {
+// A check today's engine fails is not left out in silence: it runs here under `todo`, on the first
+// seed of the run above that broke it, so the output shows the defect with a seed and a schedule,
+// and shows the day that seed breaks it no more.
+for (const [invariant, known] of Object.entries(KNOWN)) {
+	test(`known defect: ${invariant}`, { todo: known.defect }, async (t) => {
+		// A run of chosen seeds shows what those seeds show; the usual run falls back on the seed the defect was found with.
+		const seed = firstSeedOf.get(invariant) ?? (process.env.SIM_SEED ? undefined : known.seed);
+		if (seed === undefined) return;
 		const play = simulator(t, false);
-		for (let seed = FIRST_SEED; seed < FIRST_SEED + Math.min(SCHEDULES, KNOWN_SEEDS); seed++) {
-			const planned = plan(seed, STEPS);
-			const ran = await play(planned, true);
-			if (ran.violation?.invariant === invariant) assert.fail(await failure(planned, ran, (p) => play(p, true), false));
-		}
+		const planned = plan(seed, STEPS);
+		const ran = await play(planned, invariant);
+		if (ran.violation?.invariant === invariant) assert.fail(await failure(planned, ran, (p) => play(p, invariant), false));
 	});
 }

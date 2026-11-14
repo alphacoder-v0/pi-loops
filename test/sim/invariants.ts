@@ -7,7 +7,7 @@
  * these checks see.
  */
 import type { SessionRequest } from "../../src/requests.ts";
-import { type Conversation, type Removal, type World, everyProcess, failedHandOvers, held, label, timesWritten, who } from "./world.ts";
+import { type Conversation, type Copy, type Removal, type World, everyProcess, failedHandOvers, held, label, who } from "./world.ts";
 
 /** Failures of one row before it is a dead letter (docs/design.md), stated apart from the engine's constant on purpose. */
 const DEAD_AT = 3;
@@ -27,8 +27,8 @@ interface Memory {
 	exited: Set<string>;
 	/** Each finding's status when it was last read. */
 	findings: Map<string, string>;
-	/** Each conversation's queue as last read from its file. */
-	rows: Map<string, SessionRequest[]>;
+	/** Hand-overs of a row that has left its queue since: what a stop asked of them is over. */
+	released: Set<Copy>;
 }
 
 /** How often each exit was taken and how many rows were handed over, for the test's summary: a schedule that exercises nothing proves nothing. */
@@ -68,12 +68,15 @@ function namedExit(world: World, memory: Memory, queues: Queues, coverage: Cover
 		if (gone.proved) gone.exit = "delivered";
 		else if (gone.findings > spent.findings) gone.exit = "dead";
 		else if (gone.audited.length > spent.audited) gone.exit = gone.audited[0];
+		// The window's word that the row's turn ran, which no file proves: an exit the engine has, held under `KNOWN`.
+		else if (gone.ranUnproved) gone.exit = "ran";
 		memory.spent.set(key, { findings: gone.findings, audited: gone.audited.length });
 		if (gone.exit === undefined) {
 			out.push(`${name} left the queue of ${row.session_id} with nothing to account for it: its words are not in the conversation, no finding carries its id, no audit line names it`);
 			continue;
 		}
 		memory.exited.add(key);
+		for (const copy of world.copies) if (copy.sessionId === row.session_id && copy.rowId === row.id) memory.released.add(copy);
 		coverage.exits[gone.exit] = (coverage.exits[gone.exit] ?? 0) + 1;
 		const why = notItsExit(world, gone, gone.exit);
 		if (why) out.push(`${name} left the queue of ${row.session_id} as ${gone.exit}, but ${why}`);
@@ -90,6 +93,8 @@ function notItsExit(world: World, gone: Removal, exit: string): string | undefin
 	const { row } = gone;
 	const input = row.kind === "input";
 	switch (exit) {
+		case "ran":
+			return undefined;
 		case "delivered":
 			return world.tampered.has(row.id) ? "its mode was widened in the file: such a row is refused, never run" : undefined;
 		case "dead":
@@ -111,6 +116,16 @@ function notItsExit(world: World, gone: Removal, exit: string): string | undefin
 		default:
 			return `the audit knows no exit called ${exit}`;
 	}
+}
+
+/**
+ * I2, for the one exit no file proves: the window removes a row as done because a turn began with
+ * a message that carried no prefix, which it takes for the row's own prompt, rewritten by another
+ * extension. Nothing rewrites a prompt in the simulation, so every such exit is a row removed that
+ * pi had not written.
+ */
+function doneOnlyByProof(world: World): string[] {
+	return world.facts.removals.filter((gone) => gone.exit === "ran").map((gone) => `${label(world, gone.row.id)} left the queue of ${gone.row.session_id} as done on the window's word that its turn ran, and pi had not written it`);
 }
 
 /**
@@ -145,7 +160,8 @@ function oneTurnFromTheHolder(world: World, _memory: Memory, _queues: Queues, co
  * I3, for the rows only their text proves (a person's message, a claim, a goal's continuation).
  * The engine says such a turn, handed over and not yet written, has the lane (src/engine.ts
  * `landed`: "one lane hands over one such row at a time"), because a second message with the same
- * words would be proved by the first one's. This holds it to that.
+ * words would be proved by the first one's. This holds it to that, for a turn still inside the
+ * grace after its hand-over: past it a tick may call the hand-over refused, which ends the claim.
  */
 function noTurnBesideATextProvedTurn(world: World): string[] {
 	return world.facts.handOvers.filter((h) => h.wake === "turn" && h.textTurnsHeld > 0).map((h) => `${who(h.process)} handed the turn ${label(world, h.row.id)} to a pi that still held an unwritten turn only its text will prove`);
@@ -154,11 +170,12 @@ function noTurnBesideATextProvedTurn(world: World): string[] {
 /**
  * I6, the part that holds at every step: a row pi was handed and has not written is still in its
  * queue file (or left it by a named exit, as a cancel from the holder can make it), so killing the
- * process loses nothing the files do not say. The other part is done, not argued: every schedule
- * ends with every process killed and started again (schedule.ts, `AFTER_RESTART`).
+ * process loses nothing the files do not say; and a row is in its queue when it is handed over.
+ * The other part is done, not argued: every schedule ends with every process killed and started
+ * again (schedule.ts, `AFTER_RESTART`).
  */
 function heldIsStillOwed(world: World, memory: Memory): string[] {
-	const out: string[] = [];
+	const out: string[] = world.facts.handOvers.filter((h) => !h.queued).map((h) => `${who(h.process)} handed ${label(world, h.row.id)} over, and the row is not in its queue`);
 	for (const proc of everyProcess(world)) {
 		for (const copy of held(proc)) {
 			const key = keyOf(copy.sessionId, copy.rowId);
@@ -168,21 +185,63 @@ function heldIsStillOwed(world: World, memory: Memory): string[] {
 	return out;
 }
 
-/** I7. A finding goes from `new` to `claimed` or `dismissed` once and never back or away; two decisions at once give one `ok`, and a claim that lost queues no hand-off. */
-function decidedOnce(world: World, memory: Memory, _queues: Queues, coverage: Coverage): string[] {
+/**
+ * I7. A finding goes from `new` to `claimed` or `dismissed` once and never back or away; two
+ * decisions at once give one `ok`; and the hand-off of a claim (src/engine.ts `handOver`, which the
+ * schedule calls) is queued only for a finding that is claimed, so a claim that lost queued nothing.
+ */
+function decidedOnce(world: World, memory: Memory, queues: Queues, coverage: Coverage): string[] {
 	const out: string[] = [];
-	const entries = world.facts.inboxWritten ? world.inbox.list() : [];
+	const entries = world.inbox.list();
 	for (const [index, entry] of entries.entries()) {
 		const was = memory.findings.get(entry.id);
 		if (was !== undefined && was !== "new" && was !== entry.status) out.push(`finding ${index + 1} went from ${was} to ${entry.status}`);
 		memory.findings.set(entry.id, entry.status);
 	}
-	if (world.facts.inboxWritten && entries.length < memory.findings.size) out.push(`the inbox holds ${entries.length} findings and held ${memory.findings.size}: one is gone`);
+	if (entries.length < memory.findings.size) out.push(`the inbox holds ${entries.length} findings and held ${memory.findings.size}: one is gone`);
 	for (const decided of world.facts.decided) {
 		coverage.decisions++;
 		const expected = decided.was === "new" ? 1 : 0;
 		if (decided.ok !== expected) out.push(`two decisions at once on a ${decided.was} finding gave ${decided.ok} ok, not ${expected}`);
-		if (decided.stray > 0) out.push(`${decided.stray} hand-off of a claim that lost is queued`);
+	}
+	for (const rows of queues.values()) {
+		for (const row of rows) {
+			if (!row.source.startsWith("inbox:")) continue;
+			const status = memory.findings.get(row.source.slice("inbox:".length));
+			if (status !== "claimed") out.push(`${label(world, row.id)}, the hand-off of a claim, is queued and its finding is ${status ?? "not in the inbox"}`);
+		}
+	}
+	return out;
+}
+
+/**
+ * A stop and a cancel do what they name. When one leaves the queue, the row it named is not left
+ * queued and undelivered, unless a pi was handed that row's turn already: then a cancel does
+ * nothing, and a stop has the turn aborted as it starts. A stop that named the turn pi is running
+ * (by its row, or as "the turn running now" when that turn began before the stop was asked for)
+ * has asked pi to abort it. Afterwards the named turn, when pi begins it, is aborted there; and one
+ * pi dropped instead (Esc) leaves as cancelled at that window's next drain, never offered again.
+ *
+ * Which turn pi runs or begins is asked for prefixed rows only: the window knows a text-proved
+ * turn by its words, which two rows can share. And a turn pi kept queued behind an aborted turn is
+ * left out: the window takes it for dropped, which is the known defect `KNOWN` names.
+ */
+function stopsAndCancelsWork(world: World, memory: Memory): string[] {
+	const out: string[] = [];
+	for (const { row, named, removerPi: pi } of world.facts.removals) {
+		const target = row.target;
+		if (row.kind === "input" || !target) continue;
+		if (named?.queued && !named.inFlight && "id" in target) out.push(`${label(world, row.id)} left the queue, and ${label(world, target.id)}, which it named, is still queued with no pi holding its turn`);
+		if (row.kind !== "stop" || !pi?.running || pi.aborted) continue;
+		const runs = "id" in target ? pi.turnOf === target.id : pi.startedAt !== undefined && pi.startedAt < Date.parse(target.started_before);
+		if (runs) out.push(`${label(world, row.id)} named the turn pi was running, and pi was not asked to abort it`);
+	}
+	for (const copy of world.facts.written) {
+		if (copy.stopNamed && !copy.provedByText && copy.gaveUp !== "stop" && !copy.abortedAtStart) out.push(`pi began the turn ${label(world, copy.rowId)}, which a stop had named while pi held it unstarted, and was not asked to abort it`);
+	}
+	for (const copy of world.copies) {
+		if (!copy.stopNamed || copy.state !== "dropped" || copy.gaveUp || memory.released.has(copy) || !world.facts.drained.includes(copy.process)) continue;
+		out.push(`${label(world, copy.rowId)} is still queued after ${who(copy.process)} drained: a stop named it, pi dropped it, and it was to leave as cancelled`);
 	}
 	return out;
 }
@@ -214,64 +273,103 @@ function attemptsCountFailures(world: World, _memory: Memory, queues: Queues): s
 	return out;
 }
 
-/**
- * Delivered once per proof. The brief's statement ("twice only when a crash fell between pi's write
- * and the removal") is not what today's engine does, in both directions. A crash there delivers
- * once: the proof is in the conversation, and the next process removes the row by it. What does
- * deliver twice is a hand-over the engine gave up while pi still held it, when pi then sends it
- * late: a tick judged it refused after the grace, or the lease went to another window. So the true
- * statement, checked here: a row is never handed over once its words are in the conversation, and
- * its words are there at most once, plus once for each hand-over the engine had given up.
- */
-function deliveredOnce(world: World): string[] {
+/** Why a hand-over the engine gave up while pi still held it, written late, may be a second delivery of its row. */
+type Excuse = "refused" | "refused, proved by its text" | "stop" | "lease";
+
+/** A person's message pi refused is never offered again, so nothing excuses a second delivery of one after a refusal. */
+const excuseOf = (copy: Copy): Excuse | undefined => (copy.gaveUp !== "refused" ? copy.gaveUp : copy.person ? undefined : copy.provedByText ? "refused, proved by its text" : "refused");
+
+/** The rows pi wrote in this step that are now written more often than once plus their excused late sends. */
+function writtenTooOften(world: World, excused: ReadonlySet<Excuse>): string[] {
 	const out: string[] = [];
-	for (const h of world.facts.handOvers) if (h.proved) out.push(`${label(world, h.row.id)} was handed over with its words already in the conversation`);
 	const rows = new Map(world.facts.written.map((copy) => [keyOf(copy.sessionId, copy.rowId), copy]));
-	for (const copy of rows.values()) {
-		const times = timesWritten(conversationOf(world, copy.sessionId), copy.text);
-		const late = world.copies.filter((other) => other.sessionId === copy.sessionId && other.rowId === copy.rowId && other.state === "written" && other.late).length;
-		if (times > 1 + late) out.push(`${label(world, copy.rowId)} is in ${copy.sessionId} ${times} times, and only ${late} of those is a hand-over the engine had given up`);
+	for (const [key, { sessionId, rowId }] of rows) {
+		const written = world.copies.filter((copy) => keyOf(copy.sessionId, copy.rowId) === key && copy.state === "written");
+		const late = written.filter((copy) => excused.has(excuseOf(copy)!)).length;
+		if (written.length > 1 + late) out.push(`pi wrote ${label(world, rowId)} into ${sessionId} ${written.length} times (${written.map((copy) => `${who(copy.process)}${copy.gaveUp ? `, given up: ${copy.gaveUp}` : ""}`).join("; ")})`);
 	}
 	return out;
 }
 
 /**
- * A check today's engine fails, by name, with what it fails on: a defect of src/ the simulation
- * found, which this change does not fix. `createChecker` leaves such a check out unless asked for
- * all of them, and test/sim.test.ts runs it under `todo` on a seed that breaks it.
+ * Delivered once per proof. A row is never handed over once pi has written it, and a person's
+ * message pi refused is never handed over again (docs/design.md decision 23: "A person row gets
+ * `last_error` and is never handed over again"). Pi writes a row once. The design accepts one
+ * second delivery: "A pi-loops row, proved by its prefix, counts an attempt and is offered again
+ * after the backoff" (decision 23), so when a tick judged such a hand-over refused and pi then
+ * sends it late, the row is there twice. Every other second delivery the simulation finds is a
+ * defect; those today's engine has are excused here and held, one by one, under `KNOWN`.
+ *
+ * The brief expected two deliveries "when a crash fell between pi's write and the removal". The
+ * simulation finds one: the proof is in the conversation and the next process removes the row by
+ * it. That says little about the real engine, because here every process sees a write at once; a
+ * second real pi reads its own copy of the conversation, which need not show what the first wrote.
  */
-export const KNOWN: Readonly<Record<string, string>> = {
-	"I3 no turn beside an unwritten turn only its text proves": "decideDrain gives the lane to an in-flight text-proved turn only against the rows after it in queue order: a turn row that sorts before it is handed over beside it (#245)",
+function deliveredOnce(world: World): string[] {
+	const out = writtenTooOften(world, new Set<Excuse>(["refused", ...Object.values(KNOWN_SECOND_DELIVERIES)]));
+	for (const h of world.facts.handOvers) {
+		if (h.written) out.push(`${label(world, h.row.id)} was handed over after pi had written it`);
+		if (h.row.source === "person" && h.row.last_error !== undefined) out.push(`${label(world, h.row.id)}, a person's message pi refused (${h.row.last_error}), was handed over again`);
+	}
+	return out;
+}
+
+/** The second deliveries today's engine makes that the design does not accept, by the name of the check that fails on each. */
+const KNOWN_SECOND_DELIVERIES: Readonly<Record<string, Excuse>> = {
+	"a row is delivered once when the lease moves while pi holds its turn unstarted": "lease",
+	"a row is delivered once after a stop": "stop",
+	"a claim or a goal's continuation pi was slow to start is delivered once": "refused, proved by its text",
+};
+
+/**
+ * A check today's engine fails, by name: the defect of src/ the simulation found, which this change
+ * does not fix, and a seed that showed it when it was found. Such a check does not fail a schedule
+ * (unless `createChecker` is told to enforce it); what it finds is reported beside, and
+ * test/sim.test.ts shows it under `todo` on the first seed of its run that breaks it, or on this one.
+ */
+export const KNOWN: Readonly<Record<string, { defect: string; seed: number }>> = {
+	"I3 no turn beside an unwritten turn only its text proves": { seed: 177, defect: "decideDrain gives the lane to an in-flight text-proved turn only against the rows after it in queue order: a turn row that sorts before it is handed over beside it (#245)" },
+	"I2 a row is done only by its proof": { seed: 3346, defect: "a message without a prefix that no handed-over row claims (a text-proved row's late send, once that row has left the queue) is taken for the oldest prefixed turn pi was handed and has not started: that row is removed as done while pi still holds it unwritten" },
+	"a row is delivered once when the lease moves while pi holds its turn unstarted": { seed: 618, defect: "a window takes the lease while the holder's pi holds a turn it was handed and has not started (the lease says a turn runs only from agent_start): the new holder hands the row over again, and both pis write it; for a person's message that is one prompt answered twice" },
+	"a row is delivered once after a stop": { seed: 1736, defect: "after a stop aborts a turn, the window takes what pi still queues behind it for dropped (pi's abort keeps its queue; only Esc clears it): the row is handed over again and pi writes both" },
+	"a claim or a goal's continuation pi was slow to start is delivered once": { seed: 3865, defect: "a turn only its text proves (a claim, a goal's continuation), judged refused after the grace and offered again after its backoff, is written twice when pi sends the first late: the design accepts a second offer for a row proved by its prefix" },
 };
 
 export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
 	["I2 a row leaves its queue only by a named exit", namedExit],
+	["I2 a row is done only by its proof", doneOnlyByProof],
 	["I3 one turn at a time, handed over by the holder", oneTurnFromTheHolder],
 	["I3 no turn beside an unwritten turn only its text proves", noTurnBesideATextProvedTurn],
 	["I6 what pi holds unwritten is still owed on disk", heldIsStillOwed],
 	["I7 a finding is decided once", decidedOnce],
+	["a stop and a cancel do what they name", stopsAndCancelsWork],
 	["I8 attempts count failed hand-overs, a backoff is waited out, and three failures make a dead letter", attemptsCountFailures],
 	["a row is delivered once per proof", deliveredOnce],
+	...Object.entries(KNOWN_SECOND_DELIVERIES).map(([name, excuse]): [string, Invariant] => [name, (world) => writtenTooOften(world, new Set<Excuse>(["refused", ...Object.values(KNOWN_SECOND_DELIVERIES).filter((other) => other !== excuse)]))]),
 ];
 
-/** The checks for one world: `check()` after every step returns the first thing broken, or undefined. `all` includes the `KNOWN` ones. */
-export function createChecker(world: World, all = false): { check(): Violation | undefined; coverage: Coverage } {
-	const memory: Memory = { queued: new Map(), spent: new Map(), exited: new Set(), findings: new Map(), rows: new Map() };
+/**
+ * The checks for one world. `check()` after every step returns the first thing broken, or
+ * undefined, and beside it what the `KNOWN` checks found; `enforce` names one of those to treat
+ * as any other check.
+ */
+export function createChecker(world: World, enforce?: string): { check(): { violation?: Violation; known: Violation[] }; coverage: Coverage } {
+	const memory: Memory = { queued: new Map(), spent: new Map(), exited: new Set(), findings: new Map(), released: new Set() };
 	const coverage: Coverage = { exits: {}, handOvers: 0, turnsBesideATurn: 0, decisions: 0 };
 	return {
 		coverage,
 		check() {
-			// A queue file nothing wrote to in this step is as it was read last (`Facts.queuesWritten`).
-			for (const c of world.conversations) if (!memory.rows.has(c.id) || world.facts.queuesWritten.has(c.id)) memory.rows.set(c.id, world.store.list(c.id));
-			const queues = memory.rows;
-			let first: Violation | undefined;
+			const queues = new Map(world.conversations.map((c) => [c.id, world.store.list(c.id)]));
+			let violation: Violation | undefined;
+			const known: Violation[] = [];
 			// Every check runs even after one failed: each also updates what it remembers.
 			for (const [invariant, holds] of INVARIANTS) {
-				if (!all && invariant in KNOWN) continue;
 				const broken = holds(world, memory, queues, coverage);
-				if (broken.length && !first) first = { invariant, message: broken.join("; ") };
+				if (!broken.length) continue;
+				if (invariant in KNOWN && invariant !== enforce) known.push({ invariant, message: broken.join("; ") });
+				else violation ??= { invariant, message: broken.join("; ") };
 			}
-			return first;
+			return { violation, known };
 		},
 	};
 }

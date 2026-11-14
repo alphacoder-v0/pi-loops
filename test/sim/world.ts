@@ -10,17 +10,21 @@
  *   throws before any run.
  * - A turn starts (`agent_start`), writes the message it began with (`message_start`, then the
  *   entry) and settles (`agent_end`, `agent_settled`). What it was handed meanwhile is written as
- *   follow-ups when it settles, unless the person pressed Esc or a stop aborted the turn: then the
- *   queue is dropped unwritten.
+ *   follow-ups when it settles. Esc drops that queue unwritten (the terminal clears pi's queues,
+ *   then aborts). A stop does not: `ctx.abort()` is `AgentSession.abort()`, which ends the turn and
+ *   leaves what is queued behind it, so pi is idle and still holds it, and writes it in its next
+ *   run. Here the schedule starts that run as it starts any turn pi was handed.
  * - A custom message with no turn asked for is written at once.
  * - The person types into the window: a turn of their own, in words no row has.
  * - A hand-over can throw (no model, no credentials).
  *
  * What it does not do:
  * - A conversation is one list of entries, durable the moment an entry is written, and every process
- *   sees it at once. A real second pi reads its own copy, which can be behind the file.
+ *   sees it at once. A real second pi reads its own copy, which can be behind the file, so nothing
+ *   here speaks for what a process does with a write it has not read (a crash between pi's write
+ *   and the removal, then another window: src/engine.ts `releaseLocalRows`).
  * - No model, no tools, no compaction, no images, no MCP server. No extension rewrites a prompt, so
- *   `ExecutorView.ran` stays empty. No window leaves a conversation and lives on
+ *   whatever the window puts in `ExecutorView.ran` it took for a rewritten prompt by mistake. No window leaves a conversation and lives on
  *   (`created_by.left`), stands aside or runs `pi -p`, so `holderDelivers` is never false.
  * - The lease is a field, not src/lease.ts. It moves as the real one does: from a dead holder to any
  *   live process, from the background process to a window, and between two live windows only while
@@ -58,22 +62,33 @@ type Entry = { type: "message"; timestamp: string; message: { role: "user"; cont
 
 /**
  * One hand-over, as the simulated pi knows it: which row, to which process, and what became of it.
- * `held` while pi has it unwritten; then `written`, `dropped` (Esc, an aborted turn), `refused`
+ * `held` while pi has it unwritten; then `written`, `dropped` (Esc), `refused`
  * (pi threw before a run) or `died` (its process was killed).
  */
 export interface Copy {
 	rowId: string;
 	sessionId: string;
+	/** The process whose pi was handed it. */
+	process: Process;
 	text: string;
 	wake: "turn" | "append";
-	/** The row carries no `[Trigger <id>]`: only a message with its words proves it. */
+	/** The row carries no `[Trigger <id>]`: only a message with its words proves it. And whether it is a person's message. */
 	provedByText: boolean;
+	person: boolean;
 	handedAt: number;
 	state: "held" | "written" | "dropped" | "refused" | "died";
 	/** When pi took it up, or let it go: until then it sat unstarted. */
 	leftQueueAt?: number;
-	/** The engine gave it up while pi still held it (a refusal judged, the lease moved away): a write after that is a late send. */
-	late: boolean;
+	/**
+	 * Why the engine stopped waiting for it while pi still held it: a tick judged the hand-over
+	 * refused (`refused`); pi kept it queued behind a turn a stop aborted, and the window took it for
+	 * dropped (`stop`); the lease went to another process (`lease`). A write after that is a late send.
+	 */
+	gaveUp?: "refused" | "stop" | "lease";
+	/** A stop named the row while pi held this turn unstarted: pi is to abort it as it starts. */
+	stopNamed?: boolean;
+	/** `ctx.abort()` was called as pi began this message. */
+	abortedAtStart?: boolean;
 }
 
 interface Item {
@@ -88,9 +103,14 @@ export interface Pi {
 	current?: Item;
 	/** Handed over and not taken up: prompts before a run while idle, follow-ups while a turn runs. */
 	queue: Item[];
-	/** `ctx.abort()` was called in this turn: its follow-ups are dropped when it settles. */
-	aborted: boolean;
+	/** How often `ctx.abort()` was called in the running turn: once is enough to end it with its follow-ups still queued. */
+	aborts: number;
+	/** When the running turn started, and the row whose message it last began. */
+	startedAt?: number;
+	turnOf?: string;
 }
+
+const idlePi = (): Pi => ({ running: false, queue: [], aborts: 0 });
 
 export interface Process {
 	pid: number;
@@ -125,6 +145,12 @@ export interface Removal {
 	buried: boolean;
 	/** The pi of the process that removes the row holds its turn, handed over and unwritten. */
 	heldByRemover: boolean;
+	/** The window that removes the row says its turn ran under a message that lost its prefix (`ExecutorView.ran`); asked only of an unproved input. */
+	ranUnproved?: boolean;
+	/** For a stop or a cancel that names a row: whether that row is still queued with no proof of it in the conversation, and whether a live pi was handed it and has neither written nor lost it. */
+	named?: { queued: boolean; inFlight: boolean };
+	/** For a stop a window removes: that window's pi at this instant. */
+	removerPi?: { running: boolean; startedAt?: number; turnOf?: string; aborted: boolean };
 	/** Set by the check that names the exit (invariants.ts). */
 	exit?: string;
 }
@@ -136,21 +162,25 @@ export interface HandOver {
 	row: SessionRequest;
 	wake: "turn" | "append";
 	holds: boolean;
+	/** The row is in its queue file. */
+	queued: boolean;
 	/** The row is one a window runs itself (a claim, its goal's continuation), and the window that produced it is alive. */
 	producerRunsIt: boolean;
 	piRunning: boolean;
-	/** Turns this pi held unwritten and the engine had not given up: all of them, and those proved only by their text. */
+	/**
+	 * Turns this pi held unwritten and the engine had not given up: all of them, and those only their
+	 * text proves that are still inside the grace (past it a tick may call one refused, in this very drain).
+	 */
 	turnsHeld: number;
 	textTurnsHeld: number;
-	proved: boolean;
+	/** Pi wrote this row already. */
+	written: boolean;
 }
 
-/** Two decisions on one finding at once. */
+/** Two decisions on one finding at once: its status before, and how many of the two were told `ok`. */
 export interface Decided {
 	was: string;
 	ok: number;
-	/** Hand-off rows that are queued though their claim lost. */
-	stray: number;
 }
 
 /** What happened in the step being applied, as it happened; the invariants read it after the step. */
@@ -159,14 +189,8 @@ export interface Facts {
 	handOvers: HandOver[];
 	written: Copy[];
 	decided: Decided[];
-	/**
-	 * The conversations whose queue file something wrote to, and whether anything wrote to the inbox.
-	 * Every write of a schedule goes through a producer of schedule.ts or the watched store and sinks
-	 * below, so a file nobody touched is read again by no check: reading two queues and the inbox
-	 * after each of eighty thousand steps was a third of the run.
-	 */
-	queuesWritten: Set<string>;
-	inboxWritten: boolean;
+	/** The processes that held the conversation from the start of a drain to its end, and did not die in it. */
+	drained: Process[];
 }
 
 export interface World {
@@ -184,6 +208,8 @@ export interface World {
 	labels: Map<string, string>;
 	/** The last slot the clock queued for each conversation and job: the clock can write the same slot again. */
 	lastSlot: Map<string, number>;
+	/** What the person last said in each conversation: they can say the same words again. */
+	lastWords: Map<string, string>;
 	/** Every hand-over there was, and the hand-overs that threw (with the failures a row arrived with), by row id. */
 	copies: Copy[];
 	threw: Map<string, number>;
@@ -213,6 +239,7 @@ export function createWorld(dir: string, time: Timers, seconds: ReadonlyArray<{ 
 		made: 0,
 		labels: new Map(),
 		lastSlot: new Map(),
+		lastWords: new Map(),
 		copies: [],
 		threw: new Map(),
 		targeted: new Set(),
@@ -233,7 +260,7 @@ export function createWorld(dir: string, time: Timers, seconds: ReadonlyArray<{ 
 	return world;
 }
 
-export const noFacts = (): Facts => ({ removals: [], handOvers: [], written: [], decided: [], queuesWritten: new Set(), inboxWritten: false });
+export const noFacts = (): Facts => ({ removals: [], handOvers: [], written: [], decided: [], drained: [] });
 
 export function advance(world: World, ms: number): void {
 	world.clock += ms;
@@ -247,12 +274,20 @@ export const everyProcess = (world: World): Process[] => world.conversations.fla
 const pidAlive = (world: World, pid: number): boolean => pid === PAGE_PID || everyProcess(world).some((p) => p.pid === pid && p.alive);
 
 const textOf = (entry: Entry): string => (entry.type === "message" ? entry.message.content[0].text : entry.content);
+/** The sources whose rows carry no `[Trigger <id>]`: only a message with the row's words proves one. */
+const provedByText = (source: string): boolean => source === "goal" || source === "person" || source.startsWith("inbox:");
 /**
- * How many entries of the conversation carry exactly `text`. Every row of a schedule has words of
- * its own that end in a full stop, so none is the start of another's (the engine proves a
- * text-proved row by a message that starts with its text), and this counts the row's deliveries.
+ * Whether `row`'s delivery is in the conversation, as the design states the proof (§2.2), written
+ * here apart from the engine's `landed`: an entry with a prefixed row's words; for a row only its
+ * text proves, a message with its words written at or after its hand-over stamp. A row's words end
+ * in a full stop, so none is the start of another's; two messages of the person can be the same words.
  */
-export const timesWritten = (conversation: Conversation, text: string): number => conversation.entries.filter((entry) => textOf(entry) === text).length;
+export function proofIn(conversation: Conversation, row: SessionRequest): boolean {
+	const byText = provedByText(row.source);
+	if (byText && row.handed_at === undefined) return false;
+	const floor = byText ? Date.parse(row.handed_at!) : -Infinity;
+	return conversation.entries.some((entry) => textOf(entry) === (row.payload?.text ?? "") && Date.parse(entry.timestamp) >= floor);
+}
 export const findingsFor = (world: World, rowId: string): number => world.inbox.list().filter((entry) => entry.run_id === rowId).length;
 /** The states the audit's `request` lines give row `rowId`, newest first, without `failed` and `dead`: those two are not exits a line alone proves. */
 export const auditedExits = (world: World, rowId: string): string[] => world.audit.listAudit(Number.MAX_SAFE_INTEGER, (r) => r.type === "request" && r.traceId === rowId && r.state !== "failed" && r.state !== "dead").map((r) => r.state);
@@ -263,10 +298,12 @@ export const held = (proc: Process): Copy[] => [proc.pi.current, ...proc.pi.queu
 /**
  * The hand-overs of row `rowId` that failed, as the simulated pi saw them: one that threw, one pi
  * dropped or refused, and a turn that sat unstarted for `GRACE_MS`, which a tick may judge
- * refused. The engine's `attempts` may count these and nothing else.
+ * refused. The engine's `attempts` may count these and nothing else. One more is counted here
+ * though pi did not fail: a row pi kept queued behind an aborted turn, which the window takes for
+ * dropped (the known defect `KNOWN` names in invariants.ts).
  */
 export function failedHandOvers(world: World, rowId: string): number {
-	const failed = (copy: Copy) => copy.state === "dropped" || copy.state === "refused" || (copy.wake === "turn" && (copy.leftQueueAt ?? world.clock) - copy.handedAt >= GRACE_MS);
+	const failed = (copy: Copy) => copy.state === "dropped" || copy.state === "refused" || copy.gaveUp === "stop" || (copy.wake === "turn" && (copy.leftQueueAt ?? world.clock) - copy.handedAt >= GRACE_MS);
 	return (world.threw.get(rowId) ?? 0) + world.copies.filter((copy) => copy.rowId === rowId && failed(copy)).length;
 }
 
@@ -275,7 +312,7 @@ export function failedHandOvers(world: World, rowId: string): number {
 /** A new process in slot `index` of `conversation`. It takes the lease when no live process has it, and a window takes it from the background process; otherwise it is a viewer. */
 export function start(world: World, conversation: Conversation, index: number): Process {
 	const slot = conversation.slots[index];
-	const base = { pid: world.nextPid++, conversation, alive: true, pi: { running: false, queue: [], aborted: false } };
+	const base = { pid: world.nextPid++, conversation, alive: true, pi: idlePi() };
 	const proc = slot.kind === "window" ? windowProcess(world, { ...base, name: `w${index}`, kind: "window" }) : backgroundProcess(world, { ...base, name: "bg", kind: "background" });
 	slot.process = proc;
 	if (!conversation.holder?.alive || (conversation.holder.kind === "background" && proc.kind === "window")) conversation.holder = proc;
@@ -286,7 +323,7 @@ export function start(world: World, conversation: Conversation, index: number): 
 export function kill(world: World, proc: Process): void {
 	proc.alive = false;
 	for (const copy of held(proc)) leave(copy, "died", world.clock);
-	proc.pi = { running: false, queue: [], aborted: false };
+	proc.pi = idlePi();
 }
 
 /** Whether `to` can take the lease now: from a dead holder always, from the background process when `to` is a window, from a live window when `to` is a window and that holder's pi runs no turn. */
@@ -300,7 +337,7 @@ export function leaseMayMove(conversation: Conversation, to: Process): boolean {
 
 /** The lease goes to `to`. What the old holder's pi still holds is nobody's to wait for now: the new holder cannot see it. */
 export function moveLease(conversation: Conversation, to: Process): void {
-	if (conversation.holder?.alive) for (const copy of held(conversation.holder)) copy.late = true;
+	if (conversation.holder?.alive) for (const copy of held(conversation.holder)) copy.gaveUp ??= "lease";
 	conversation.holder = to;
 }
 
@@ -316,18 +353,20 @@ const stampOf = (at: number): string => new Date(at).toISOString(); // pi's own 
 function copyFor(world: World, proc: Process, text: string): Copy | undefined {
 	const sending = world.sending;
 	if (!sending) return undefined;
-	const source = sending.row.source;
-	const copy: Copy = { rowId: sending.row.id, sessionId: proc.conversation.id, text, wake: sending.wake, provedByText: source === "goal" || source === "person" || source.startsWith("inbox:"), handedAt: world.clock, state: "held", late: false };
+	const copy: Copy = { rowId: sending.row.id, sessionId: proc.conversation.id, process: proc, text, wake: sending.wake, provedByText: provedByText(sending.row.source), person: sending.row.source === "person", handedAt: world.clock, state: "held" };
 	world.copies.push(copy);
 	return copy;
 }
 
 function write(world: World, proc: Process, item: Item): void {
 	const at = world.clock;
+	const aborts = proc.pi.aborts;
 	// `message_start` first, then the entry: pi's agent loop emits the two back to back.
 	if (!item.custom) proc.window?.messageStarted({ role: "user", content: item.text }, at);
 	proc.conversation.entries.push(item.custom ? { type: "custom_message", timestamp: stampOf(at), content: item.text } : { type: "message", timestamp: stampOf(at), message: { role: "user", content: [{ type: "text", text: item.text }] } });
 	if (!item.copy) return;
+	if (!item.custom) proc.pi.turnOf = item.copy.rowId;
+	item.copy.abortedAtStart = proc.pi.aborts > aborts;
 	leave(item.copy, "written", at);
 	world.facts.written.push(item.copy);
 }
@@ -351,7 +390,7 @@ function windowProcess(world: World, base: Omit<Process, "executor">): Process {
 		hasUI: false,
 		ui: { notify: () => undefined },
 		sessionManager: { getEntries: () => conversation.entries },
-		abort: () => void (proc.pi.aborted = proc.pi.running),
+		abort: () => void (proc.pi.aborts += proc.pi.running ? 1 : 0),
 	};
 	type Args = ConstructorParameters<typeof WindowExecutor>;
 	const window = new WindowExecutor(pi as unknown as Args[0], { here: () => ({ sessionId: conversation.id, holds: conversation.holder === proc }) }, () => ctx as unknown as ReturnType<Args[2]>, { pid: proc.pid }, (row) => row.created_by.left === undefined && pidAlive(world, row.created_by.pid), () => world.store.list(conversation.id));
@@ -386,8 +425,8 @@ export type PiMove = "start" | "write" | "settle" | "esc" | "refuse" | "type";
 /** What `process`'s pi can do next; a move listed twice is twice as likely. */
 export function piMoves(proc: Process): PiMove[] {
 	const pi = proc.pi;
-	if (pi.running) return pi.current ? ["write", "write", "settle", "esc"] : ["settle", "settle", "esc"];
-	return pi.queue.length ? ["start", "start", "start", "refuse", "type"] : ["type"];
+	if (pi.running) return pi.current ? ["write", "write", "settle", "esc"] : ["settle", "esc"];
+	return pi.queue.length ? ["start", "start", "start", "refuse", "type", "type"] : ["type"];
 }
 
 export function piMove(world: World, proc: Process, move: PiMove): void {
@@ -397,6 +436,7 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 	switch (move) {
 		case "start":
 			pi.running = true;
+			pi.startedAt = at;
 			pi.current = pi.queue.shift();
 			if (pi.current?.copy) pi.current.copy.leftQueueAt ??= at;
 			window.agentStarted(at);
@@ -413,6 +453,7 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			window.inputSeen(at);
 			window.personInput();
 			pi.running = true;
+			pi.startedAt = at;
 			window.agentStarted(at);
 			write(world, proc, { text: `typed #${++world.made}.`, custom: false });
 			break;
@@ -420,13 +461,17 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 		case "esc":
 			if (pi.current) write(world, proc, pi.current);
 			pi.current = undefined;
-			// Follow-ups are written in order; Esc, or an abort (which one of them can ask for as it starts), drops the rest.
+			// Follow-ups are written in order. Esc drops them. An abort (which one of them can ask for as
+			// it starts) ends the turn with the rest still queued: pi holds them, and the window, which
+			// reads a settled pi's unwritten rows as dropped, stops waiting for them.
 			for (const item of pi.queue.splice(0)) {
-				if (move === "esc" || pi.aborted) leave(item.copy, "dropped", at);
-				else write(world, proc, item);
+				if (move === "esc") leave(item.copy, "dropped", at);
+				else if (pi.aborts) {
+					pi.queue.push(item);
+					if (item.copy) item.copy.gaveUp ??= "stop";
+				} else write(world, proc, item);
 			}
-			pi.running = false;
-			pi.aborted = false;
+			Object.assign(pi, { running: false, aborts: 0, startedAt: undefined, turnOf: undefined });
 			window.agentEnded();
 			window.settled();
 			break;
@@ -473,17 +518,26 @@ function watchedStore(world: World, fuse: Fuse, remover?: Process, removed: () =
 	const watched: RequestStore = Object.create(real);
 	watched.update = (sessionId, id, patch) => {
 		fuse.write();
-		world.facts.queuesWritten.add(sessionId);
 		return real.update(sessionId, id, patch);
 	};
 	watched.remove = (sessionId, ids) => {
 		const gone = [...ids];
 		fuse.write();
-		world.facts.queuesWritten.add(sessionId);
 		const conversation = world.conversations.find((c) => c.id === sessionId)!;
-		for (const row of real.list(sessionId)) {
+		const rows = real.list(sessionId);
+		for (const row of rows) {
 			if (!gone.includes(row.id)) continue;
-			world.facts.removals.push({ row, proved: row.kind === "input" && timesWritten(conversation, row.payload?.text ?? "") > 0, findings: findingsFor(world, row.id), audited: auditedExits(world, row.id), failures: failedHandOvers(world, row.id), buried: conversation.deleted, heldByRemover: !!remover && held(remover).some((copy) => copy.rowId === row.id && !copy.late) });
+			const removal: Removal = { row, proved: row.kind === "input" && proofIn(conversation, row), findings: findingsFor(world, row.id), audited: auditedExits(world, row.id), failures: failedHandOvers(world, row.id), buried: conversation.deleted, heldByRemover: !!remover && held(remover).some((copy) => copy.rowId === row.id && !copy.gaveUp) };
+			if (row.kind === "input" && !removal.proved) removal.ranUnproved = remover?.window?.view(sessionId).ran?.has(row.id) ?? false;
+			const target = row.kind !== "input" && row.target && "id" in row.target ? row.target.id : undefined;
+			// A pi was handed the named row and has neither written nor lost it; one that refused it in silence counts until a tick judges the refusal: its window cannot know before.
+			if (target !== undefined) removal.named = { queued: rows.some((r) => r.id === target && r.kind === "input" && !proofIn(conversation, r)), inFlight: world.copies.some((c) => c.sessionId === sessionId && c.rowId === target && c.process.alive && (c.state === "held" || (c.state === "refused" && c.gaveUp !== "refused"))) };
+			if (row.kind === "stop" && remover?.window) {
+				const pi = remover.pi;
+				removal.removerPi = { running: pi.running, startedAt: pi.startedAt, turnOf: pi.turnOf, aborted: pi.aborts > 0 };
+				for (const item of [pi.current, ...pi.queue]) if (item?.copy && item.copy.rowId === target && item.copy.wake === "turn" && !item.copy.gaveUp) item.copy.stopNamed = true;
+			}
+			world.facts.removals.push(removal);
 		}
 		real.remove(sessionId, gone);
 		removed();
@@ -497,12 +551,10 @@ function watchedSinks(world: World, fuse: Fuse): EngineSinks {
 		inbox: {
 			append: async (entry) => {
 				fuse.write();
-				world.facts.inboxWritten = true;
 				return world.inbox.append(entry);
 			},
 			appendOnce: async (entry, key, opts) => {
 				fuse.write();
-				world.facts.inboxWritten = true;
 				return world.inbox.appendOnce(entry, key, opts);
 			},
 		},
@@ -541,9 +593,9 @@ export async function drainAs(world: World, proc: Process, tick: boolean, fault:
 	};
 	const handOver = (row: SessionRequest, wake: "turn" | "append", call: () => void): void => {
 		crash.write();
-		const turns = held(proc).filter((copy) => copy.wake === "turn" && !copy.late);
+		const turns = held(proc).filter((copy) => copy.wake === "turn" && !copy.gaveUp);
 		const local = row.source === "goal" || row.source.startsWith("inbox:");
-		world.facts.handOvers.push({ drain: number, process: proc, row, wake, holds: conversation.holder === proc, producerRunsIt: local && row.created_by.left === undefined && pidAlive(world, row.created_by.pid), piRunning: proc.pi.running, turnsHeld: turns.length, textTurnsHeld: turns.filter((copy) => copy.provedByText).length, proved: timesWritten(conversation, row.payload?.text ?? "") > 0 });
+		world.facts.handOvers.push({ drain: number, process: proc, row, wake, holds: conversation.holder === proc, queued: world.store.list(conversation.id).some((queued) => queued.id === row.id), producerRunsIt: local && row.created_by.left === undefined && pidAlive(world, row.created_by.pid), piRunning: proc.pi.running, turnsHeld: turns.length, textTurnsHeld: turns.filter((copy) => copy.provedByText && world.clock - copy.handedAt < GRACE_MS).length, written: world.copies.some((copy) => copy.sessionId === conversation.id && copy.rowId === row.id && copy.state === "written") });
 		world.sending = { row, wake };
 		world.handOverThrows = fault.handOverThrows === true;
 		try {
@@ -570,12 +622,15 @@ export async function drainAs(world: World, proc: Process, tick: boolean, fault:
 		abortWhenStarted: (id) => inner.abortWhenStarted(id),
 		refused: (id) => {
 			// The engine stops waiting for this hand-over; if pi still has it, pi may yet send it late.
-			for (const copy of held(proc)) if (copy.rowId === id) copy.late = true;
+			for (const copy of held(proc)) if (copy.rowId === id) copy.gaveUp ??= "refused";
 			inner.refused(id);
 		},
 	};
+	const holder = conversation.holder === proc;
 	try {
-		return await drain(conversation.id, watchedStore(world, crash, proc, rowSettled), executor, world.clock, watchedSinks(world, crash), { tick });
+		const out = await drain(conversation.id, watchedStore(world, crash, proc, rowSettled), executor, world.clock, watchedSinks(world, crash), { tick });
+		if (holder && conversation.holder === proc && !crash.blown) world.facts.drained.push(proc);
+		return out;
 	} catch (err) {
 		if (!crash.blown) throw err;
 		return undefined;
@@ -600,15 +655,13 @@ export async function buryAs(world: World, conversation: Conversation, crashAfte
 }
 
 /**
- * Two decisions on one finding at once. The first call runs its critical section before it returns
- * its promise; the second finds the lock taken and sleeps on a timer, which the simulated clock ends.
+ * Two things done to the inbox at once. The first runs its critical section before it returns its
+ * promise; the second finds the lock taken and sleeps on a timer, which the simulated clock ends.
  */
-export async function decideTwice(world: World, entryId: string, decisions: ReadonlyArray<{ to: "claimed" | "dismissed"; by?: string; before?: () => void }>): Promise<number> {
-	world.facts.inboxWritten = true;
-	const calls = decisions.map((d) => world.inbox.decide(entryId, d.to, { by: d.by, before: d.before }));
-	const results = [await calls[0]];
+export async function atOnce<T>(world: World, acts: ReadonlyArray<() => Promise<T>>): Promise<T[]> {
+	const calls = acts.map((act) => act());
+	const first = await calls[0];
 	world.time.tick(LOCK_WAIT_MS);
 	world.clock += LOCK_WAIT_MS;
-	results.push(await calls[1]);
-	return results.filter((result) => "ok" in result).length;
+	return [first, await calls[1]];
 }

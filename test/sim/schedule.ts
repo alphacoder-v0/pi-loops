@@ -5,12 +5,12 @@
  * of the seed alone, and a step can be taken out of it without changing what the others mean. That
  * is what lets a failing schedule be cut down to the steps that matter.
  */
-import { CLAIM_QUEUE_LOCK, type DrainResult, cancelRow, conversationHas, enqueue, goalRow, inboxClaimRow, personRow, plainJobRow, plainRunId, requestFingerprint, ringProduced, ruleResultRow, stopRow } from "../../src/engine.ts";
+import { type DrainResult, cancelRow, conversationHas, enqueue, goalRow, handOver, inboxClaimRow, personRow, plainJobRow, plainRunId, requestFingerprint, ringProduced, ruleResultRow, stopRow } from "../../src/engine.ts";
 import type { SessionRequest } from "../../src/requests.ts";
 import { stamp } from "../../src/schedule.ts";
 import { type Violation, createChecker, type Coverage } from "./invariants.ts";
 import { pick, prng, weighted } from "./prng.ts";
-import { type Conversation, type Fault, PAGE_PID, type PiMove, type Process, type Timers, type World, advance, buryAs, createWorld, decideTwice, drainAs, everyProcess, kill, label, leaseMayMove, live, moveLease, noFacts, piMove, piMoves, start, who } from "./world.ts";
+import { type Conversation, type Fault, PAGE_PID, type PiMove, type Process, type Timers, type World, advance, atOnce, buryAs, createWorld, drainAs, everyProcess, held, kill, label, leaseMayMove, live, moveLease, noFacts, piMove, piMoves, start, who } from "./world.ts";
 
 type Kind = "produce" | "drain" | "pi" | "clock" | "process" | "lease" | "setting" | "inbox" | "delete";
 
@@ -26,6 +26,8 @@ export interface Plan {
 	/** One conversation or two; for each, whether its second process is a viewer window or the background process, and whether it runs from the start. */
 	seconds: Array<{ kind: Process["kind"]; running: boolean }>;
 	steps: Step[];
+	/** The numbers the restart that ends the schedule draws its crashes from. */
+	closing: number[];
 }
 
 const WEIGHTS: ReadonlyArray<readonly [Kind, number]> = [["produce", 25], ["drain", 30], ["pi", 20], ["clock", 9], ["process", 6], ["inbox", 5], ["lease", 2], ["setting", 2], ["delete", 1]];
@@ -41,7 +43,7 @@ const CLI = { pid: 1, instance: "cli", version: "sim" };
 export function plan(seed: number, steps: number): Plan {
 	const next = prng(seed);
 	const seconds = Array.from({ length: 1 + (next() % 2) }, () => ({ kind: pick<Process["kind"]>(["window", "background"], next()), running: next() % 2 === 0 }));
-	return { seed, seconds, steps: Array.from({ length: steps }, () => ({ kind: weighted(WEIGHTS, next()), a: next(), b: next(), c: next() })) };
+	return { seed, seconds, steps: Array.from({ length: steps }, () => ({ kind: weighted(WEIGHTS, next()), a: next(), b: next(), c: next() })), closing: Array.from({ length: 6 }, next) };
 }
 
 const signedBy = (proc: Process | undefined): SessionRequest["created_by"] => (proc ? { pid: proc.pid, instance: proc.name, version: "sim" } : CLI);
@@ -60,19 +62,14 @@ function arrives(row: SessionRequest, c: number): SessionRequest {
 	return before ? { ...row, attempts: before } : row;
 }
 
-function queuedNow(world: World, row: SessionRequest): boolean {
-	return world.store.list(row.session_id).some((queued) => queued.id === row.id);
-}
-
 /** A producer appends one row to `conversation`'s queue. */
 function produce(world: World, conversation: Conversation, b: number, c: number): string {
 	const at = world.clock;
 	const n = ++world.made;
 	const processes = live(conversation);
 	const windows = processes.filter((p) => p.window);
-	const inputs = world.store.list(conversation.id).filter((row) => row.kind === "input");
+	const queued = () => world.store.list(conversation.id).filter((row) => row.kind === "input");
 	const to = conversation.id;
-	world.facts.queuesWritten.add(to);
 	const history = (row: SessionRequest): string => {
 		if (!row.attempts) return "";
 		world.threw.set(row.id, (world.threw.get(row.id) ?? 0) + row.attempts);
@@ -122,16 +119,22 @@ function produce(world: World, conversation: Conversation, b: number, c: number)
 		case 8: {
 			const id = `person-${n}`;
 			world.labels.set(id, `person#${n}`);
-			const row = personRow(id, `the person says ${n}.`, undefined, { sessionId: to, cwd: CWD, createdBy: PAGE }, at);
+			// One message in four says what the last one said: the stamp of its hand-over is all that tells the two apart.
+			const again = (c >>> 6) % 4 === 0 ? world.lastWords.get(to) : undefined;
+			const row = personRow(id, again ?? `the person says ${n}.`, undefined, { sessionId: to, cwd: CWD, createdBy: PAGE }, at);
+			world.lastWords.set(to, row.payload!.text);
 			world.store.append(row);
 			const rung = c % 2 === 0 && windows.length ? (conversation.holder && windows.includes(conversation.holder) ? conversation.holder : pick(windows, c >>> 4)) : undefined;
 			if (rung) ringProduced(world.store.list(to), id, requestFingerprint(row), (queued) => rung.window!.produced(queued));
-			return `the page queues person#${n} for ${to}${rung ? ` and rings ${rung.name}` : ", and no ring comes"}`;
+			return `the page queues person#${n} for ${to}${again ? " in the words of the message before it" : ""}${rung ? `, and rings ${rung.name}` : ", and no ring comes"}`;
 		}
 		case 9: {
 			const id = `stop-${n}`;
 			world.labels.set(id, `stop#${n}`);
-			const target: NonNullable<SessionRequest["target"]> = c % 3 === 0 || !inputs.length ? { current: true, started_before: stamp(at) } : { id: pick(inputs, c >>> 2).id };
+			// A stop is for something that runs or is about to: half of those that name a row name one pi already holds.
+			const inputs = queued();
+			const handed = inputs.filter((row) => everyProcess(world).some((p) => held(p).some((copy) => copy.rowId === row.id)));
+			const target: NonNullable<SessionRequest["target"]> = c % 3 === 0 || !inputs.length ? { current: true, started_before: stamp(at) } : { id: pick(handed.length && (c >>> 2) % 2 === 0 ? handed : inputs, c >>> 3).id };
 			if ("id" in target) world.targeted.add(target.id);
 			world.store.append({ ...stopRow(to, target, "cli", CLI, at), id });
 			return `stop#${n} is queued for ${to}, naming ${"id" in target ? label(world, target.id) : "the turn running now"}`;
@@ -139,6 +142,7 @@ function produce(world: World, conversation: Conversation, b: number, c: number)
 		default: {
 			const id = `cancel-${n}`;
 			world.labels.set(id, `cancel#${n}`);
+			const inputs = queued();
 			const target = inputs.length && c % 5 !== 0 ? pick(inputs, c >>> 3).id : "a-row-that-is-not-there";
 			world.targeted.add(target);
 			world.store.append({ ...cancelRow(to, { id: target }, "cli", CLI, at), id });
@@ -147,11 +151,14 @@ function produce(world: World, conversation: Conversation, b: number, c: number)
 	}
 }
 
-/** A loop's run files a finding, or two people decide one finding at once: each claims it from a window, which queues the hand-off, or dismisses it. */
+/**
+ * A loop's run files a finding, or two people decide one finding at once. A claim is the engine's
+ * own (`handOver`): made in a window, it queues the hand-off under the inbox lock once the finding
+ * is found new, and that window drains. A dismiss goes to the inbox alone.
+ */
 async function inbox(world: World, b: number, c: number): Promise<string> {
 	const n = ++world.made;
 	const findings = world.inbox.list();
-	world.facts.inboxWritten = true;
 	if (b % 3 === 0 || !findings.length) {
 		await world.inbox.append({ source: "cron:loop", run_id: `loop-${n}`, cwd: CWD, text: `finding ${n}` });
 		return `a loop files a finding (number ${findings.length + 1} in the inbox)`;
@@ -159,33 +166,37 @@ async function inbox(world: World, b: number, c: number): Promise<string> {
 	const index = c % findings.length;
 	const entry = findings[index];
 	const windows = everyProcess(world).filter((p) => p.alive && p.window);
-	const decisions = [0, 1].map((i): { to: "claimed" | "dismissed"; says: string; by?: string; row?: SessionRequest; window?: Process; before?: () => void } => {
-		if ((b >>> (3 + i)) % 2 === 0) return { to: "dismissed", says: "a dismiss" };
-		const window = windows.length ? pick(windows, c >>> (4 + 8 * i)) : undefined;
-		if (!window) return { to: "claimed", by: "cli", says: "a claim from the command line" };
-		const row = { ...inboxClaimRow(`address finding ${index + 1} (claim ${n}.${i})`, entry.id, { sessionId: window.conversation.id, cwd: CWD, createdBy: signedBy(window) }, world.clock), id: `claim-${n}.${i}` };
+	const says: string[] = [];
+	const acts = [0, 1].map((i) => {
+		const proc = (b >>> (3 + i)) % 2 === 0 || !windows.length ? undefined : pick(windows, c >>> (4 + 8 * i));
+		if (!proc) {
+			says.push("a dismiss");
+			return async () => "ok" in (await world.inbox.decide(entry.id, "dismissed"));
+		}
+		const window = proc.window!;
+		const row = { ...inboxClaimRow(`address finding ${index + 1} (claim ${n}.${i}).`, entry.id, { sessionId: proc.conversation.id, cwd: CWD, createdBy: signedBy(proc) }, world.clock), id: `claim-${n}.${i}` };
 		world.labels.set(row.id, `claim#${n}.${i}`);
-		world.facts.queuesWritten.add(row.session_id);
-		// The hand-off is queued under the inbox lock, once the finding is found still new (src/engine.ts handOver).
-		return { to: "claimed", by: window.conversation.id, says: `a claim in ${who(window)}`, row, window, before: () => void enqueue(world.store, row, (queued) => window.window!.delivered(queued), CLAIM_QUEUE_LOCK) };
+		says.push(`a claim in ${who(proc)}`);
+		const deps = { store: world.store, delivered: (id: string) => window.delivered(id), produced: (queued: SessionRequest) => window.produced(queued), drain: () => drainAs(world, proc, false) };
+		// A claim that won has drained, so it has a result; one that lost queued nothing and has none.
+		return async () => (await handOver(deps, row, { inbox: world.inbox, entryId: entry.id })).result !== undefined;
 	});
-	const ok = await decideTwice(world, entry.id, decisions);
-	let handOffs = 0;
-	for (const decision of decisions) {
-		if (!decision.row || !queuedNow(world, decision.row)) continue;
-		handOffs++;
-		decision.window?.window?.produced(decision.row);
-	}
-	const claimed = entry.status === "new" && world.inbox.list()[index]?.status === "claimed";
-	world.facts.decided.push({ was: entry.status, ok, stray: Math.max(0, handOffs - (claimed ? 1 : 0)) });
-	return `finding ${index + 1} (${entry.status}) gets ${decisions[0].says} and ${decisions[1].says} at once: ${ok} ok`;
+	const ok = (await atOnce(world, acts)).filter(Boolean).length;
+	world.facts.decided.push({ was: entry.status, ok });
+	return `finding ${index + 1} (${entry.status}) gets ${says[0]} and ${says[1]} at once: ${ok} ok`;
 }
+
+/**
+ * How many writes a process makes before it dies, from one number: any count up to eleven, which is
+ * past a third dead letter of one drain, the low counts more often, since most drains write little.
+ */
+const writesBeforeACrash = (n: number): number => (n >>> 4) % (2 + (n % 11));
 
 /** What goes wrong in a drain, drawn from one number: in four drains of ten, nothing. */
 function faultOf(c: number): { fault: Fault; says: string } {
 	const nth = 1 + ((c >>> 4) % 3);
 	// A crash can fall before any write of the drain; between any two of its rows the lease can leave, or another window's pi can write.
-	if (c % 10 === 0) return { fault: { crashAfter: (c >>> 4) % 5 }, says: `, and may die before write ${1 + ((c >>> 4) % 5)}` };
+	if (c % 10 === 0) return { fault: { crashAfter: writesBeforeACrash(c >>> 4) }, says: `, and may die before write ${1 + writesBeforeACrash(c >>> 4)}` };
 	if (c % 10 === 1) return { fault: { leaseLeavesAfter: nth }, says: `, and may lose the lease after row ${nth}` };
 	if (c % 10 === 2) return { fault: { handOverThrows: true }, says: ", and pi throws at every hand-over" };
 	if (c % 10 <= 5) return { fault: { othersWriteBefore: nth }, says: `, and another window's pi may write before row ${nth}` };
@@ -286,7 +297,7 @@ export async function apply(world: World, step: Step): Promise<string> {
 			if (conversation.deleted || c % 3 !== 0) return `${conversation.id}: its file stays`;
 			for (const proc of live(conversation)) kill(world, proc);
 			conversation.deleted = true;
-			const buried = await buryAs(world, conversation, (c >>> 4) % 4 === 0 ? (c >>> 6) % 4 : undefined);
+			const buried = await buryAs(world, conversation, (c >>> 4) % 4 === 0 ? writesBeforeACrash(c >>> 6) : undefined);
 			return `the file of ${conversation.id} is deleted and its processes end; pi-loops buries its queue: ${buried ? `${buried.length} rows` : "the process died in it"}`;
 		}
 	}
@@ -296,27 +307,34 @@ export const AFTER_RESTART = "I6 after every process is killed and started again
 
 /**
  * I6, done: kill every process, start one window per conversation from the files alone, and let it
- * work with a pi that takes every turn, a clock past every wait and job j1 enabled. Every row then
- * ends by a named exit. What may stay: a person's message pi refused, which keeps its error for the
- * page to take back. `check` runs after each conversation's restart, over everything that happened in it; false stops the run.
- * Returns the rows left over.
+ * work with a pi that takes every turn, a clock past every wait and job j1 enabled. A crash can
+ * fall here too, after any write of the first drains (`numbers` say where); the window then starts
+ * again. Every row then ends by a named exit. What may stay: a person's message pi refused, which
+ * keeps its error for the page to take back. `check` runs after each conversation's restart, over
+ * everything that happened in it; false stops the run. Returns the rows left over.
  */
-async function killEveryProcessAndFinish(world: World, check: () => boolean): Promise<string[]> {
+async function killEveryProcessAndFinish(world: World, numbers: readonly number[], check: () => boolean): Promise<string[]> {
 	for (const proc of everyProcess(world)) if (proc.alive) kill(world, proc);
 	world.jobs.get("j1")!.enabled = true;
 	const left: string[] = [];
+	let drawn = 0;
+	const crash = (): number | undefined => {
+		const n = numbers[drawn++ % numbers.length];
+		return n % 3 === 0 ? writesBeforeACrash(n >>> 4) : undefined;
+	};
 	for (const conversation of world.conversations) {
 		const owed = () => world.store.list(conversation.id).filter((row) => !(row.source === "person" && row.last_error !== undefined));
 		// One set of facts for the conversation's whole restart: the checks read them once, after it.
 		world.facts = noFacts();
-		world.facts.queuesWritten.add(conversation.id);
 		let rows = owed();
-		if (conversation.deleted) await buryAs(world, conversation);
-		else {
-			const window = start(world, conversation, 0);
-			for (let round = 2 * rows.length + 6; round > 0 && rows.length; round--) {
+		if (conversation.deleted) {
+			if (!(await buryAs(world, conversation, crash()))) await buryAs(world, conversation);
+		} else {
+			let window = start(world, conversation, 0);
+			for (let round = 0, rounds = 2 * rows.length + 9; round < rounds && rows.length; round++) {
 				advance(world, PAST_EVERY_WAIT_MS);
-				await drainAs(world, window, true);
+				await drainAs(world, window, true, round < 3 ? { crashAfter: crash() } : {});
+				if (!window.alive) window = start(world, conversation, 0);
 				while (window.pi.running || window.pi.queue.length) piMove(world, window, !window.pi.running ? "start" : window.pi.current ? "write" : "settle");
 				rows = owed();
 			}
@@ -331,16 +349,27 @@ export interface Run {
 	/** One line per step, as it happened. */
 	lines: string[];
 	violation?: Violation & { step: number | "end" };
+	/** What the checks today's engine is known to fail found first, by check. */
+	known: Record<string, { step: number | "end"; message: string }>;
 	crashes: number;
 	coverage: Coverage;
 }
 
-/** Run `plan` in a new world under `dir`, checking every invariant after every step and after the restart that ends it; `all` includes the checks today's engine is known to fail. */
-export async function run(plan: Plan, dir: string, time: Timers, all = false): Promise<Run> {
+/**
+ * Run `plan` in a new world under `dir`, checking every invariant after every step and after the
+ * restart that ends it. A check `KNOWN` names does not end the run, unless it is the one to `enforce`.
+ */
+export async function run(plan: Plan, dir: string, time: Timers, enforce?: string): Promise<Run> {
 	const world = createWorld(dir, time, plan.seconds);
-	const checker = createChecker(world, all);
+	const checker = createChecker(world, enforce);
 	const lines: string[] = [];
-	const done = (violation?: Run["violation"]): Run => ({ lines, violation, crashes: world.crashes, coverage: checker.coverage });
+	const known: Run["known"] = {};
+	const done = (violation?: Run["violation"]): Run => ({ lines, violation, known, crashes: world.crashes, coverage: checker.coverage });
+	const check = (step: number | "end"): Violation | undefined => {
+		const found = checker.check();
+		for (const { invariant, message } of found.known) known[invariant] ??= { step, message };
+		return found.violation;
+	};
 	for (const [index, step] of plan.steps.entries()) {
 		world.facts = noFacts();
 		try {
@@ -349,13 +378,13 @@ export async function run(plan: Plan, dir: string, time: Timers, all = false): P
 			lines.push(`${index + 1}. ${step.kind}: threw`);
 			return done({ step: index + 1, invariant: "no step throws", message: String(err?.stack ?? err) });
 		}
-		const violation = checker.check();
+		const violation = check(index + 1);
 		if (violation) return done({ step: index + 1, ...violation });
 	}
 	lines.push("end. every process is killed; one window per conversation starts again and works until its queue is empty");
 	let violation: Violation | undefined;
 	try {
-		const left = await killEveryProcessAndFinish(world, () => (violation = checker.check()) === undefined);
+		const left = await killEveryProcessAndFinish(world, plan.closing, () => (violation = check("end")) === undefined);
 		if (!violation && left.length) violation = { invariant: AFTER_RESTART, message: `still queued, neither delivered nor reported: ${left.join(", ")}` };
 	} catch (err: any) {
 		violation = { invariant: "no step throws", message: String(err?.stack ?? err) };
