@@ -10,7 +10,7 @@ import type { SessionRequest } from "../../src/requests.ts";
 import { stamp } from "../../src/schedule.ts";
 import { type Violation, createChecker, type Coverage } from "./invariants.ts";
 import { pick, prng, weighted } from "./prng.ts";
-import { type Conversation, type Fault, PAGE_PID, type PiMove, type Process, type Timers, type World, advance, atOnce, buryAs, createWorld, drainAs, everyProcess, held, kill, label, leaseMayMove, live, moveLease, noFacts, piMove, piMoves, start, who } from "./world.ts";
+import { type Conversation, type Fault, PAGE_PID, type Mode, type PiMove, type Process, type Timers, type World, advance, atOnce, buryAs, createWorld, drainAs, everyProcess, held, kill, label, leaseMayMove, live, moveLease, noFacts, piMove, piMoves, start, who } from "./world.ts";
 
 type Kind = "produce" | "drain" | "pi" | "clock" | "process" | "lease" | "setting" | "inbox" | "delete";
 
@@ -23,8 +23,8 @@ export interface Step {
 
 export interface Plan {
 	seed: number;
-	/** One conversation or two; for each, whether its second process is a viewer window or the background process, and whether it runs from the start. */
-	seconds: Array<{ kind: Process["kind"]; running: boolean }>;
+	/** One conversation or two; for each, whether its second process is a viewer window or the background process, whether it runs from the start, and the mode of each window's pi. */
+	seconds: Array<{ kind: Process["kind"]; running: boolean; modes: [Mode, Mode] }>;
 	steps: Step[];
 	/** The numbers the restart that ends the schedule draws its crashes from. */
 	closing: number[];
@@ -42,8 +42,12 @@ const CLI = { pid: 1, instance: "cli", version: "sim" };
 
 export function plan(seed: number, steps: number): Plan {
 	const next = prng(seed);
-	const seconds = Array.from({ length: 1 + (next() % 2) }, () => ({ kind: pick<Process["kind"]>(["window", "background"], next()), running: next() % 2 === 0 }));
-	return { seed, seconds, steps: Array.from({ length: steps }, () => ({ kind: weighted(WEIGHTS, next()), a: next(), b: next(), c: next() })), closing: Array.from({ length: 6 }, next) };
+	const kinds = Array.from({ length: 1 + (next() % 2) }, () => ({ kind: pick<Process["kind"]>(["window", "background"], next()), running: next() % 2 === 0 }));
+	const drawn = Array.from({ length: steps }, () => ({ kind: weighted(WEIGHTS, next()), a: next(), b: next(), c: next() }));
+	const closing = Array.from({ length: 6 }, next);
+	// Two windows on one conversation are the page's pi and a terminal, either of them first: the one pair between which the lease moves while both live.
+	const modes = (): [Mode, Mode] => (next() % 2 === 0 ? ["rpc", "tui"] : ["tui", "rpc"]);
+	return { seed, seconds: kinds.map((second) => ({ ...second, modes: modes() })), steps: drawn, closing };
 }
 
 const signedBy = (proc: Process | undefined): SessionRequest["created_by"] => (proc ? { pid: proc.pid, instance: proc.name, version: "sim" } : CLI);

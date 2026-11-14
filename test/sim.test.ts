@@ -93,7 +93,7 @@ async function shortest(failing: Plan, invariant: string, play: (p: Plan) => Pro
 	return ran;
 }
 
-const worldOf = (p: Plan): string => p.seconds.map((second, index) => `c${index}: a window and ${second.kind === "window" ? "a second window" : "the background process"}${second.running ? "" : ", not started"}`).join("; ");
+const worldOf = (p: Plan): string => p.seconds.map((second, index) => `c${index}: a window (${second.modes[0]}) and ${second.kind === "window" ? `a second window (${second.modes[1]})` : "the background process"}${second.running ? "" : ", not started"}`).join("; ");
 
 /**
  * What a failure says: the seed, the step, the invariant, the schedule as it ran, and a shorter one
@@ -118,6 +118,8 @@ test("the request engine keeps its invariants through seeded schedules of append
 	let handOvers = 0;
 	let decisions = 0;
 	let turnsBesideATurn = 0;
+	let provedByAnother = 0;
+	const offeredAgainTwice = { prefixed: 0, byText: 0 };
 	let firstBeside: number | undefined;
 	const exits: Record<string, number> = {};
 	for (let seed = FIRST_SEED; seed < FIRST_SEED + SCHEDULES; seed++) {
@@ -131,11 +133,15 @@ test("the request engine keeps its invariants through seeded schedules of append
 		handOvers += ran.coverage.handOvers;
 		decisions += ran.coverage.decisions;
 		turnsBesideATurn += ran.coverage.turnsBesideATurn;
+		provedByAnother += ran.coverage.provedByAnother;
+		offeredAgainTwice.prefixed += ran.coverage.offeredAgainTwice.prefixed;
+		offeredAgainTwice.byText += ran.coverage.offeredAgainTwice.byText;
 		if (ran.coverage.turnsBesideATurn && firstBeside === undefined) firstBeside = seed;
 		for (const [exit, count] of Object.entries(ran.coverage.exits)) exits[exit] = (exits[exit] ?? 0) + count;
 	}
 	t.diagnostic(`simulated ${SCHEDULES} schedules, ${steps} steps, ${crashes} crashes injected (seeds ${FIRST_SEED} to ${FIRST_SEED + SCHEDULES - 1})`);
 	t.diagnostic(`${handOvers} hand-overs; exits: ${EXITS.map((exit) => `${exit} ${exits[exit] ?? 0}`).join(", ")}; ${decisions} findings decided twice at once; ${turnsBesideATurn} turns handed to a pi that held another unstarted${firstBeside === undefined ? "" : ` (first in seed ${firstBeside})`}`);
+	t.diagnostic(`excused by the design: ${offeredAgainTwice.prefixed} prefixed rows and ${offeredAgainTwice.byText} text-proved rows delivered twice after a refusal and a second offer; ${provedByAnother} rows delivered on another row's message with the same words`);
 	if (SCHEDULES >= 1000 && STEPS >= 30) {
 		assert.deepEqual(EXITS.filter((exit) => !exits[exit]), [], "every exit is taken at least once in a full run");
 		assert.ok(crashes > 0 && decisions > 0, "a full run injects crashes and decides findings");

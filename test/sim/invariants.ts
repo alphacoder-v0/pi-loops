@@ -38,6 +38,10 @@ export interface Coverage {
 	/** Turns handed to a pi that still held another turn unstarted: what today's engine allows for prefixed rows (see `oneTurnFromTheHolder`). */
 	turnsBesideATurn: number;
 	decisions: number;
+	/** Rows delivered a second time by a hand-over offered again after a refusal, which the design accepts: prefixed rows, and rows only their text proves. */
+	offeredAgainTwice: { prefixed: number; byText: number };
+	/** Rows that left as delivered on another row's message with the same words, which the text proof cannot tell apart. */
+	provedByAnother: number;
 }
 
 type Queues = ReadonlyMap<string, SessionRequest[]>;
@@ -48,13 +52,18 @@ const conversationOf = (world: World, sessionId: string): Conversation => world.
 
 /**
  * I2. A row leaves its queue only by a named exit, and the trace of that exit is there before the
- * row goes: delivered (its words are in the conversation), dead (a finding carries its id), or
+ * row goes: delivered (pi wrote the row), dead (a finding carries its id), or
  * cancelled, stale, refused, job-removed, done (an audit line). Each exit is also one the row could
  * take: only a stop or a cancel is `done`; `stale` is theirs too, a goal's continuation's once the
  * goal is over, and a person's message's when its conversation is gone; `cancelled` needs a stop or
  * a cancel that named the row, and a turn pi does not hold already (a stop aborts that one as it
  * starts); `job-removed` a job that is gone; `refused` a mode that is not the source's, and such a
  * row is never delivered.
+ *
+ * `delivered` needs a message pi wrote for that row itself, with one excuse, which is counted
+ * (`Coverage.provedByAnother`): another row's message with the same words, written at or after this
+ * row's hand-over stamp, which the engine's text proof takes for this row's by design (world.ts
+ * `deliveredBy`).
  */
 function namedExit(world: World, memory: Memory, queues: Queues, coverage: Coverage): string[] {
 	const out: string[] = [];
@@ -65,19 +74,20 @@ function namedExit(world: World, memory: Memory, queues: Queues, coverage: Cover
 		const name = label(world, row.id);
 		removed.add(key);
 		const spent = memory.spent.get(key) ?? { findings: 0, audited: 0 };
-		if (gone.proved) gone.exit = "delivered";
+		if (gone.delivered) gone.exit = "delivered";
 		else if (gone.findings > spent.findings) gone.exit = "dead";
 		else if (gone.audited.length > spent.audited) gone.exit = gone.audited[0];
 		// The window's word that the row's turn ran, which no file proves: an exit the engine has, held under `KNOWN`.
 		else if (gone.ranUnproved) gone.exit = "ran";
 		memory.spent.set(key, { findings: gone.findings, audited: gone.audited.length });
 		if (gone.exit === undefined) {
-			out.push(`${name} left the queue of ${row.session_id} with nothing to account for it: its words are not in the conversation, no finding carries its id, no audit line names it`);
+			out.push(`${name} left the queue of ${row.session_id} with nothing to account for it: pi wrote no message for it, no finding carries its id, no audit line names it`);
 			continue;
 		}
 		memory.exited.add(key);
 		for (const copy of world.copies) if (copy.sessionId === row.session_id && copy.rowId === row.id) memory.released.add(copy);
 		coverage.exits[gone.exit] = (coverage.exits[gone.exit] ?? 0) + 1;
+		if (gone.delivered === "another row's message") coverage.provedByAnother++;
 		const why = notItsExit(world, gone, gone.exit);
 		if (why) out.push(`${name} left the queue of ${row.session_id} as ${gone.exit}, but ${why}`);
 	}
@@ -224,7 +234,7 @@ function decidedOnce(world: World, memory: Memory, queues: Queues, coverage: Cov
  *
  * Which turn pi runs or begins is asked for prefixed rows only: the window knows a text-proved
  * turn by its words, which two rows can share. And a turn pi kept queued behind an aborted turn is
- * left out: the window takes it for dropped, which is the known defect `KNOWN` names.
+ * left out (the page's pi does that): the window takes it for dropped, a defect `KNOWN` names.
  */
 function stopsAndCancelsWork(world: World, memory: Memory): string[] {
 	const out: string[] = [];
@@ -275,18 +285,21 @@ function attemptsCountFailures(world: World, _memory: Memory, queues: Queues): s
 
 /** Why a hand-over the engine gave up while pi still held it, written late, may be a second delivery of its row. */
 type Excuse = "refused" | "refused, proved by its text" | "stop" | "lease";
+/** The two the design accepts (see `deliveredOnce`); the others are defects, each held under `KNOWN`. */
+const ACCEPTED: readonly Excuse[] = ["refused", "refused, proved by its text"];
 
 /** A person's message pi refused is never offered again, so nothing excuses a second delivery of one after a refusal. */
 const excuseOf = (copy: Copy): Excuse | undefined => (copy.gaveUp !== "refused" ? copy.gaveUp : copy.person ? undefined : copy.provedByText ? "refused, proved by its text" : "refused");
 
 /** The rows pi wrote in this step that are now written more often than once plus their excused late sends. */
-function writtenTooOften(world: World, excused: ReadonlySet<Excuse>): string[] {
+function writtenTooOften(world: World, excused: readonly Excuse[], coverage?: Coverage): string[] {
 	const out: string[] = [];
 	const rows = new Map(world.facts.written.map((copy) => [keyOf(copy.sessionId, copy.rowId), copy]));
 	for (const [key, { sessionId, rowId }] of rows) {
 		const written = world.copies.filter((copy) => keyOf(copy.sessionId, copy.rowId) === key && copy.state === "written");
-		const late = written.filter((copy) => excused.has(excuseOf(copy)!)).length;
-		if (written.length > 1 + late) out.push(`pi wrote ${label(world, rowId)} into ${sessionId} ${written.length} times (${written.map((copy) => `${who(copy.process)}${copy.gaveUp ? `, given up: ${copy.gaveUp}` : ""}`).join("; ")})`);
+		const late = written.filter((copy) => excused.includes(excuseOf(copy)!));
+		if (written.length > 1 + late.length) out.push(`pi wrote ${label(world, rowId)} into ${sessionId} ${written.length} times (${written.map((copy) => `${who(copy.process)}${copy.gaveUp ? `, given up: ${copy.gaveUp}` : ""}`).join("; ")})`);
+		else if (coverage && written.length === 2 && late.some((copy) => ACCEPTED.includes(excuseOf(copy)!))) coverage.offeredAgainTwice[late[0].provedByText ? "byText" : "prefixed"]++;
 	}
 	return out;
 }
@@ -295,18 +308,22 @@ function writtenTooOften(world: World, excused: ReadonlySet<Excuse>): string[] {
  * Delivered once per proof. A row is never handed over once pi has written it, and a person's
  * message pi refused is never handed over again (docs/design.md decision 23: "A person row gets
  * `last_error` and is never handed over again"). Pi writes a row once. The design accepts one
- * second delivery: "A pi-loops row, proved by its prefix, counts an attempt and is offered again
- * after the backoff" (decision 23), so when a tick judged such a hand-over refused and pi then
- * sends it late, the row is there twice. Every other second delivery the simulation finds is a
- * defect; those today's engine has are excused here and held, one by one, under `KNOWN`.
+ * second delivery: a hand-over a tick judged refused, offered again after its backoff, when pi
+ * then sends the first late. Decision 23 says it of a prefixed row ("A pi-loops row, proved by its
+ * prefix, counts an attempt and is offered again after the backoff"), and the engine treats a row
+ * only its text proves (a claim, a goal's continuation) alike (src/engine.ts `decideDrain`: "A
+ * pi-loops row is proved by its prefix, or by its hand-over stamp and text, so offering it again is
+ * safe"). Both are excused and counted (`Coverage.offeredAgainTwice`); it takes a pi that holds a
+ * prompt unstarted past the grace and the backoff. Every other second delivery the simulation
+ * finds is a defect; those today's engine has are excused here and held, one by one, under `KNOWN`.
  *
  * The brief expected two deliveries "when a crash fell between pi's write and the removal". The
  * simulation finds one: the proof is in the conversation and the next process removes the row by
  * it. That says little about the real engine, because here every process sees a write at once; a
  * second real pi reads its own copy of the conversation, which need not show what the first wrote.
  */
-function deliveredOnce(world: World): string[] {
-	const out = writtenTooOften(world, new Set<Excuse>(["refused", ...Object.values(KNOWN_SECOND_DELIVERIES)]));
+function deliveredOnce(world: World, _memory: Memory, _queues: Queues, coverage: Coverage): string[] {
+	const out = writtenTooOften(world, [...ACCEPTED, ...Object.values(KNOWN_SECOND_DELIVERIES)], coverage);
 	for (const h of world.facts.handOvers) {
 		if (h.written) out.push(`${label(world, h.row.id)} was handed over after pi had written it`);
 		if (h.row.source === "person" && h.row.last_error !== undefined) out.push(`${label(world, h.row.id)}, a person's message pi refused (${h.row.last_error}), was handed over again`);
@@ -317,8 +334,7 @@ function deliveredOnce(world: World): string[] {
 /** The second deliveries today's engine makes that the design does not accept, by the name of the check that fails on each. */
 const KNOWN_SECOND_DELIVERIES: Readonly<Record<string, Excuse>> = {
 	"a row is delivered once when the lease moves while pi holds its turn unstarted": "lease",
-	"a row is delivered once after a stop": "stop",
-	"a claim or a goal's continuation pi was slow to start is delivered once": "refused, proved by its text",
+	"a row is delivered once after a stop in the page's pi": "stop",
 };
 
 /**
@@ -329,10 +345,9 @@ const KNOWN_SECOND_DELIVERIES: Readonly<Record<string, Excuse>> = {
  */
 export const KNOWN: Readonly<Record<string, { defect: string; seed: number }>> = {
 	"I3 no turn beside an unwritten turn only its text proves": { seed: 177, defect: "decideDrain gives the lane to an in-flight text-proved turn only against the rows after it in queue order: a turn row that sorts before it is handed over beside it (#245)" },
-	"I2 a row is done only by its proof": { seed: 3346, defect: "a message without a prefix that no handed-over row claims (a text-proved row's late send, once that row has left the queue) is taken for the oldest prefixed turn pi was handed and has not started: that row is removed as done while pi still holds it unwritten" },
-	"a row is delivered once when the lease moves while pi holds its turn unstarted": { seed: 618, defect: "a window takes the lease while the holder's pi holds a turn it was handed and has not started (the lease says a turn runs only from agent_start): the new holder hands the row over again, and both pis write it; for a person's message that is one prompt answered twice" },
-	"a row is delivered once after a stop": { seed: 1736, defect: "after a stop aborts a turn, the window takes what pi still queues behind it for dropped (pi's abort keeps its queue; only Esc clears it): the row is handed over again and pi writes both" },
-	"a claim or a goal's continuation pi was slow to start is delivered once": { seed: 3865, defect: "a turn only its text proves (a claim, a goal's continuation), judged refused after the grace and offered again after its backoff, is written twice when pi sends the first late: the design accepts a second offer for a row proved by its prefix" },
+	"I2 a row is done only by its proof": { seed: 3346, defect: "a message without a prefix that no handed-over row claims (a text-proved row's late send, once that row has left the queue) is taken for the oldest prefixed turn pi was handed and has not started: that row is removed as done while pi still holds it unwritten. Narrow: pi's phase before a run has to outlast the ten-second grace" },
+	"a row is delivered once when the lease moves while pi holds its turn unstarted": { seed: 618, defect: "a window takes the lease while the holder's pi holds a turn it was handed and has not started (the lease says a turn runs only from agent_start): the new holder hands the row over again, and both pis write it; for a person's message that is one prompt answered twice. Narrow: the lease has to be taken during pi's phase before a run" },
+	"a row is delivered once after a stop in the page's pi": { seed: 1736, defect: "in rpc mode (the page's pi) a stop is AgentSession.abort(), which keeps what pi queued behind the aborted turn; the window takes it for dropped, hands the row over again, and pi writes both. A terminal's abort clears the queue, as Esc does" },
 };
 
 export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
@@ -345,7 +360,7 @@ export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
 	["a stop and a cancel do what they name", stopsAndCancelsWork],
 	["I8 attempts count failed hand-overs, a backoff is waited out, and three failures make a dead letter", attemptsCountFailures],
 	["a row is delivered once per proof", deliveredOnce],
-	...Object.entries(KNOWN_SECOND_DELIVERIES).map(([name, excuse]): [string, Invariant] => [name, (world) => writtenTooOften(world, new Set<Excuse>(["refused", ...Object.values(KNOWN_SECOND_DELIVERIES).filter((other) => other !== excuse)]))]),
+	...Object.entries(KNOWN_SECOND_DELIVERIES).map(([name, excuse]): [string, Invariant] => [name, (world) => writtenTooOften(world, [...ACCEPTED, ...Object.values(KNOWN_SECOND_DELIVERIES).filter((other) => other !== excuse)])]),
 ];
 
 /**
@@ -355,7 +370,7 @@ export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
  */
 export function createChecker(world: World, enforce?: string): { check(): { violation?: Violation; known: Violation[] }; coverage: Coverage } {
 	const memory: Memory = { queued: new Map(), spent: new Map(), exited: new Set(), findings: new Map(), released: new Set() };
-	const coverage: Coverage = { exits: {}, handOvers: 0, turnsBesideATurn: 0, decisions: 0 };
+	const coverage: Coverage = { exits: {}, handOvers: 0, turnsBesideATurn: 0, decisions: 0, offeredAgainTwice: { prefixed: 0, byText: 0 }, provedByAnother: 0 };
 	return {
 		coverage,
 		check() {

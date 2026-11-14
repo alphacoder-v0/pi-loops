@@ -11,9 +11,11 @@
  * - A turn starts (`agent_start`), writes the message it began with (`message_start`, then the
  *   entry) and settles (`agent_end`, `agent_settled`). What it was handed meanwhile is written as
  *   follow-ups when it settles. Esc drops that queue unwritten (the terminal clears pi's queues,
- *   then aborts). A stop does not: `ctx.abort()` is `AgentSession.abort()`, which ends the turn and
- *   leaves what is queued behind it, so pi is idle and still holds it, and writes it in its next
- *   run. Here the schedule starts that run as it starts any turn pi was handed.
+ *   then aborts). What a stop does depends on the window's mode, which the seed draws. In a
+ *   terminal (`tui`), `ctx.abort()` is the interactive mode's abort handler, which clears the queue
+ *   as Esc does. In the page's pi (`rpc`) it is `AgentSession.abort()`, which ends the turn and
+ *   leaves what is queued behind it: pi is idle and still holds it, and writes it in its next run,
+ *   which the schedule starts as it starts any turn pi was handed.
  * - A custom message with no turn asked for is written at once.
  * - The person types into the window: a turn of their own, in words no row has.
  * - A hand-over can throw (no model, no credentials).
@@ -27,8 +29,8 @@
  *   whatever the window puts in `ExecutorView.ran` it took for a rewritten prompt by mistake. No window leaves a conversation and lives on
  *   (`created_by.left`), stands aside or runs `pi -p`, so `holderDelivers` is never false.
  * - The lease is a field, not src/lease.ts. It moves as the real one does: from a dead holder to any
- *   live process, from the background process to a window, and between two live windows only while
- *   the holder's pi runs no turn (a terminal taking a conversation from the page's pi).
+ *   live process, from the background process to a window, and between two live windows only from
+ *   the page's pi to a terminal, while the holder's pi runs no turn.
  * - The page never dies and never takes a message back.
  * - A crash is a process that stops before one of the engine's writes. A write is whole or absent,
  *   as the store's atomic writes are; a torn line is not simulated.
@@ -79,6 +81,7 @@ export interface Copy {
 	state: "held" | "written" | "dropped" | "refused" | "died";
 	/** When pi took it up, or let it go: until then it sat unstarted. */
 	leftQueueAt?: number;
+	writtenAt?: number;
 	/**
 	 * Why the engine stopped waiting for it while pi still held it: a tick judged the hand-over
 	 * refused (`refused`); pi kept it queued behind a turn a stop aborted, and the window took it for
@@ -112,10 +115,14 @@ export interface Pi {
 
 const idlePi = (): Pi => ({ running: false, queue: [], aborts: 0 });
 
+export type Mode = "tui" | "rpc";
+
 export interface Process {
 	pid: number;
 	name: string;
 	kind: "window" | "background";
+	/** A window's pi runs in a terminal or behind the browser page; it decides what a stop does to pi's queue. */
+	mode: Mode;
 	conversation: Conversation;
 	alive: boolean;
 	/** A window's pi; the background process has none, and this stays empty. */
@@ -130,14 +137,15 @@ export interface Conversation {
 	deleted: boolean;
 	/** Who holds the lease; a dead holder keeps it until a live process takes it. */
 	holder?: Process;
-	slots: Array<{ kind: Process["kind"]; process?: Process }>;
+	slots: Array<{ kind: Process["kind"]; mode: Mode; process?: Process }>;
 	goalActive: boolean;
 }
 
 /** A row taken out of a queue, with what could account for it read at that instant, before the removal. */
 export interface Removal {
 	row: SessionRequest;
-	proved: boolean;
+	/** For an input: how its delivery shows in what pi wrote (`deliveredBy`). */
+	delivered?: "its own message" | "another row's message";
 	findings: number;
 	/** The exit states the audit holds for the row, newest first. */
 	audited: string[];
@@ -147,7 +155,7 @@ export interface Removal {
 	heldByRemover: boolean;
 	/** The window that removes the row says its turn ran under a message that lost its prefix (`ExecutorView.ran`); asked only of an unproved input. */
 	ranUnproved?: boolean;
-	/** For a stop or a cancel that names a row: whether that row is still queued with no proof of it in the conversation, and whether a live pi was handed it and has neither written nor lost it. */
+	/** For a stop or a cancel that names a row: whether that row is still queued and undelivered, and whether a live pi was handed it and has neither written nor lost it. */
 	named?: { queued: boolean; inFlight: boolean };
 	/** For a stop a window removes: that window's pi at this instant. */
 	removerPi?: { running: boolean; startedAt?: number; turnOf?: string; aborted: boolean };
@@ -225,8 +233,8 @@ export interface World {
 	handOverThrows: boolean;
 }
 
-/** A world of one conversation for each of `seconds`: its first process is a window, started; its second is of `kind`, started when `running`. */
-export function createWorld(dir: string, time: Timers, seconds: ReadonlyArray<{ kind: Process["kind"]; running: boolean }>): World {
+/** A world of one conversation for each of `seconds`: its first process is a window, started; its second is of `kind`, started when `running`; `modes` are the two processes'. */
+export function createWorld(dir: string, time: Timers, seconds: ReadonlyArray<{ kind: Process["kind"]; running: boolean; modes: readonly [Mode, Mode] }>): World {
 	const world: World = {
 		store: new RequestStore(dir),
 		inbox: new Inbox(dir),
@@ -252,7 +260,7 @@ export function createWorld(dir: string, time: Timers, seconds: ReadonlyArray<{ 
 	};
 	time.setTime(EPOCH);
 	for (const [index, second] of seconds.entries()) {
-		const conversation: Conversation = { id: `c${index}`, entries: [], deleted: false, goalActive: true, slots: [{ kind: "window" }, { kind: second.kind }] };
+		const conversation: Conversation = { id: `c${index}`, entries: [], deleted: false, goalActive: true, slots: [{ kind: "window", mode: second.modes[0] }, { kind: second.kind, mode: second.modes[1] }] };
 		world.conversations.push(conversation);
 		start(world, conversation, 0);
 		if (second.running) start(world, conversation, 1);
@@ -273,20 +281,22 @@ export const live = (conversation: Conversation): Process[] => conversation.slot
 export const everyProcess = (world: World): Process[] => world.conversations.flatMap((c) => c.slots.flatMap((slot) => (slot.process ? [slot.process] : [])));
 const pidAlive = (world: World, pid: number): boolean => pid === PAGE_PID || everyProcess(world).some((p) => p.pid === pid && p.alive);
 
-const textOf = (entry: Entry): string => (entry.type === "message" ? entry.message.content[0].text : entry.content);
 /** The sources whose rows carry no `[Trigger <id>]`: only a message with the row's words proves one. */
 const provedByText = (source: string): boolean => source === "goal" || source === "person" || source.startsWith("inbox:");
 /**
- * Whether `row`'s delivery is in the conversation, as the design states the proof (§2.2), written
- * here apart from the engine's `landed`: an entry with a prefixed row's words; for a row only its
- * text proves, a message with its words written at or after its hand-over stamp. A row's words end
- * in a full stop, so none is the start of another's; two messages of the person can be the same words.
+ * How `row`'s delivery shows in what the simulated pi wrote: by a hand-over of the row itself, or,
+ * for a row only its text proves, by another row's message in the same conversation with the same
+ * words, written at or after this row's hand-over stamp. The second is the one thing the engine's
+ * text proof cannot tell from the first, by design (docs/design.md decision 23: "Its proof of
+ * delivery is a user message whose text starts with the row's … written at or after `handed_at`").
+ * A row's words end in a full stop, so none is the start of another's; two messages of the person
+ * can be the same words.
  */
-export function proofIn(conversation: Conversation, row: SessionRequest): boolean {
-	const byText = provedByText(row.source);
-	if (byText && row.handed_at === undefined) return false;
-	const floor = byText ? Date.parse(row.handed_at!) : -Infinity;
-	return conversation.entries.some((entry) => textOf(entry) === (row.payload?.text ?? "") && Date.parse(entry.timestamp) >= floor);
+export function deliveredBy(world: World, row: SessionRequest): Removal["delivered"] {
+	const written = world.copies.filter((copy) => copy.sessionId === row.session_id && copy.state === "written");
+	if (written.some((copy) => copy.rowId === row.id)) return "its own message";
+	const stamp = provedByText(row.source) && row.handed_at !== undefined ? Date.parse(row.handed_at) : Number.NaN;
+	return written.some((copy) => copy.text === row.payload?.text && copy.writtenAt! >= stamp) ? "another row's message" : undefined;
 }
 export const findingsFor = (world: World, rowId: string): number => world.inbox.list().filter((entry) => entry.run_id === rowId).length;
 /** The states the audit's `request` lines give row `rowId`, newest first, without `failed` and `dead`: those two are not exits a line alone proves. */
@@ -312,7 +322,7 @@ export function failedHandOvers(world: World, rowId: string): number {
 /** A new process in slot `index` of `conversation`. It takes the lease when no live process has it, and a window takes it from the background process; otherwise it is a viewer. */
 export function start(world: World, conversation: Conversation, index: number): Process {
 	const slot = conversation.slots[index];
-	const base = { pid: world.nextPid++, conversation, alive: true, pi: idlePi() };
+	const base = { pid: world.nextPid++, mode: slot.mode, conversation, alive: true, pi: idlePi() };
 	const proc = slot.kind === "window" ? windowProcess(world, { ...base, name: `w${index}`, kind: "window" }) : backgroundProcess(world, { ...base, name: "bg", kind: "background" });
 	slot.process = proc;
 	if (!conversation.holder?.alive || (conversation.holder.kind === "background" && proc.kind === "window")) conversation.holder = proc;
@@ -326,13 +336,13 @@ export function kill(world: World, proc: Process): void {
 	proc.pi = idlePi();
 }
 
-/** Whether `to` can take the lease now: from a dead holder always, from the background process when `to` is a window, from a live window when `to` is a window and that holder's pi runs no turn. */
+/** Whether `to` can take the lease now: from a dead holder always; from the background process when `to` is a window; from a live window only when that is the page's pi, `to` is a terminal, and the holder's pi runs no turn. */
 export function leaseMayMove(conversation: Conversation, to: Process): boolean {
 	const from = conversation.holder;
 	if (!to.alive || from === to) return false;
 	if (!from?.alive) return true;
 	if (from.kind === "background") return to.kind === "window";
-	return to.kind === "window" && !from.pi.running;
+	return to.kind === "window" && from.mode === "rpc" && to.mode === "tui" && !from.pi.running;
 }
 
 /** The lease goes to `to`. What the old holder's pi still holds is nobody's to wait for now: the new holder cannot see it. */
@@ -368,6 +378,7 @@ function write(world: World, proc: Process, item: Item): void {
 	if (!item.custom) proc.pi.turnOf = item.copy.rowId;
 	item.copy.abortedAtStart = proc.pi.aborts > aborts;
 	leave(item.copy, "written", at);
+	item.copy.writtenAt = at;
 	world.facts.written.push(item.copy);
 }
 
@@ -386,7 +397,7 @@ function windowProcess(world: World, base: Omit<Process, "executor">): Process {
 	};
 	const ctx = {
 		isIdle: () => !proc.pi.running,
-		mode: "tui",
+		mode: proc.mode,
 		hasUI: false,
 		ui: { notify: () => undefined },
 		sessionManager: { getEntries: () => conversation.entries },
@@ -461,11 +472,12 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 		case "esc":
 			if (pi.current) write(world, proc, pi.current);
 			pi.current = undefined;
-			// Follow-ups are written in order. Esc drops them. An abort (which one of them can ask for as
-			// it starts) ends the turn with the rest still queued: pi holds them, and the window, which
-			// reads a settled pi's unwritten rows as dropped, stops waiting for them.
+			// Follow-ups are written in order. Esc drops them, and so does an abort in a terminal. An
+			// abort in the page's pi (one of them can ask for it as it starts) ends the turn with the
+			// rest still queued: pi holds them, and the window, which reads a settled pi's unwritten
+			// rows as dropped, stops waiting for them.
 			for (const item of pi.queue.splice(0)) {
-				if (move === "esc") leave(item.copy, "dropped", at);
+				if (move === "esc" || (pi.aborts && proc.mode === "tui")) leave(item.copy, "dropped", at);
 				else if (pi.aborts) {
 					pi.queue.push(item);
 					if (item.copy) item.copy.gaveUp ??= "stop";
@@ -527,11 +539,11 @@ function watchedStore(world: World, fuse: Fuse, remover?: Process, removed: () =
 		const rows = real.list(sessionId);
 		for (const row of rows) {
 			if (!gone.includes(row.id)) continue;
-			const removal: Removal = { row, proved: row.kind === "input" && proofIn(conversation, row), findings: findingsFor(world, row.id), audited: auditedExits(world, row.id), failures: failedHandOvers(world, row.id), buried: conversation.deleted, heldByRemover: !!remover && held(remover).some((copy) => copy.rowId === row.id && !copy.gaveUp) };
-			if (row.kind === "input" && !removal.proved) removal.ranUnproved = remover?.window?.view(sessionId).ran?.has(row.id) ?? false;
+			const removal: Removal = { row, delivered: row.kind === "input" ? deliveredBy(world, row) : undefined, findings: findingsFor(world, row.id), audited: auditedExits(world, row.id), failures: failedHandOvers(world, row.id), buried: conversation.deleted, heldByRemover: !!remover && held(remover).some((copy) => copy.rowId === row.id && !copy.gaveUp) };
+			if (row.kind === "input" && !removal.delivered) removal.ranUnproved = remover?.window?.view(sessionId).ran?.has(row.id) ?? false;
 			const target = row.kind !== "input" && row.target && "id" in row.target ? row.target.id : undefined;
 			// A pi was handed the named row and has neither written nor lost it; one that refused it in silence counts until a tick judges the refusal: its window cannot know before.
-			if (target !== undefined) removal.named = { queued: rows.some((r) => r.id === target && r.kind === "input" && !proofIn(conversation, r)), inFlight: world.copies.some((c) => c.sessionId === sessionId && c.rowId === target && c.process.alive && (c.state === "held" || (c.state === "refused" && c.gaveUp !== "refused"))) };
+			if (target !== undefined) removal.named = { queued: rows.some((r) => r.id === target && r.kind === "input" && !deliveredBy(world, r)), inFlight: world.copies.some((c) => c.sessionId === sessionId && c.rowId === target && c.process.alive && (c.state === "held" || (c.state === "refused" && c.gaveUp !== "refused"))) };
 			if (row.kind === "stop" && remover?.window) {
 				const pi = remover.pi;
 				removal.removerPi = { running: pi.running, startedAt: pi.startedAt, turnOf: pi.turnOf, aborted: pi.aborts > 0 };
