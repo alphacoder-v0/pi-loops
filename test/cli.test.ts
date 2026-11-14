@@ -1809,7 +1809,9 @@ test("--tui --loops-dir hands the directory to pi's extension, and --open and --
 	const fakePi = path.join(dir, "pi");
 	fs.writeFileSync(fakePi, `#!/bin/sh\necho "PI_LOOPS_DIR=\${PI_LOOPS_DIR:-unset} args=$*" > ${JSON.stringify(record)}\n`, { mode: 0o755 });
 	const scratch = path.join(dir, "loops");
-	await withEnv({ PI_BIN: fakePi, PI_LOOPS_DIR: undefined }, async () => {
+	// With PI_LOOPS_DIR unset the launcher reads the default loops directory: point pi's agent
+	// directory at this test's own, or the developer's saved model and thinking level join pi's argv.
+	await withEnv({ PI_BIN: fakePi, PI_LOOPS_DIR: undefined, PI_CODING_AGENT_DIR: path.join(dir, "agent") }, async () => {
 		assert.equal(await runCli(["--tui", "--loops-dir", scratch, "--open", "--model", "x"], () => undefined), 0);
 		assert.equal(fs.readFileSync(record, "utf8").trim(), `PI_LOOPS_DIR=${scratch} args=--open --model x`);
 		const said: string[] = [];
