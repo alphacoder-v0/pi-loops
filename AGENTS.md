@@ -122,6 +122,7 @@ examples/                   a dependency-free MCP push server, and an mcp.toml t
 test/                       node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
 test/downstream/            the contract in docs/downstream.md checked from the outside: sh + jq driving `pi-loops`, a loop run in the background against fake-model.mjs, no import of src/
 test/journey/               the journeys J1-J10 (`npm run journey -- J1 …`) and `boot.mjs`, a sandboxed page with a stand-in model
+test/sim/                   the seeded simulation of the request engine that test/sim.test.ts runs: world.ts (the real engine and stores around a simulated pi, lease, clock and crashes, and what that leaves out), schedule.ts (the steps a seed draws), invariants.ts (what is checked after every step), prng.ts
 test/tmp.ts                 every test's temporary directory: removed when the test passes, kept and named when it fails (PI_LOOPS_KEEP_TMP=1 keeps all), strays it started ended
 scripts/                    typecheck.mjs, lint.mjs, check-docs.mjs — TypeScript comes through npx, nothing is a dependency
 ```
@@ -149,6 +150,19 @@ CI runs the same seven on Linux and macOS with **every provider credential clear
 offline by construction — sub-agents go through `test/fake-runner.ts` — and clearing the keys is
 what keeps that a fact: a test that ever reaches a real provider fails there instead of quietly
 spending money.
+
+`npm test` includes the simulation (`test/sim.test.ts`): 2000 seeded schedules of appends, drains,
+pi's turns, crashes and restarts against the real request engine, with every invariant of
+`test/sim/invariants.ts` checked after every step. A failure names its seed, the step, the invariant
+and the schedule, with a shorter schedule that fails the same way. To run one schedule again and
+print it, give its seed (`SIM_STEPS` too, when the run that failed set it):
+
+```bash
+SIM_SEED=<seed> SIM_SCHEDULES=1 PI_LOOPS_HOST=off node --import ./src/register-pi.mjs --test test/sim.test.ts
+```
+
+A check named in `KNOWN` (`test/sim/invariants.ts`) is a defect of `src/` the simulation found and
+nobody has fixed: it runs under `todo`, visible and not red. Fix the defect, then take the name out.
 
 `check:docs` is there because nothing else in CI reads a README: 0.17.0 was tagged green with an
 install line that answered 404. It holds every install command in every document to what
