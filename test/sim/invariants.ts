@@ -241,7 +241,7 @@ function deliveredOnce(world: World): string[] {
  * all of them, and test/sim.test.ts runs it under `todo` on a seed that breaks it.
  */
 export const KNOWN: Readonly<Record<string, string>> = {
-	"I3 no turn beside an unwritten turn only its text proves": "decideDrain gives the lane to an in-flight text-proved turn only against the rows after it in queue order: a turn row that sorts before it is handed over beside it",
+	"I3 no turn beside an unwritten turn only its text proves": "decideDrain gives the lane to an in-flight text-proved turn only against the rows after it in queue order: a turn row that sorts before it is handed over beside it (#245)",
 };
 
 export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
