@@ -369,8 +369,8 @@ export async function run(plan: Plan, dir: string, time: Timers, enforce?: strin
 	const lines: string[] = [];
 	const known: Run["known"] = {};
 	const done = (violation?: Run["violation"]): Run => ({ lines, violation, known, crashes: world.crashes, coverage: checker.coverage });
-	const check = (step: number | "end"): Violation | undefined => {
-		const found = checker.check();
+	const check = (step: number | "end", end = false): Violation | undefined => {
+		const found = checker.check(end);
 		for (const { invariant, message } of found.known) known[invariant] ??= { step, message };
 		return found.violation;
 	};
@@ -390,6 +390,9 @@ export async function run(plan: Plan, dir: string, time: Timers, enforce?: strin
 	try {
 		const left = await killEveryProcessAndFinish(world, plan.closing, () => (violation = check("end")) === undefined);
 		if (!violation && left.length) violation = { invariant: AFTER_RESTART, message: `still queued, neither delivered nor reported: ${left.join(", ")}` };
+		// Once more with nothing new to look at, for what can only be said when the schedule is over.
+		world.facts = noFacts();
+		violation ??= check("end", true);
 	} catch (err: any) {
 		violation = { invariant: "no step throws", message: String(err?.stack ?? err) };
 	}

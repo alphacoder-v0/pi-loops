@@ -29,6 +29,8 @@ interface Memory {
 	findings: Map<string, string>;
 	/** Hand-overs of a row that has left its queue since: what a stop asked of them is over. */
 	released: Set<Copy>;
+	/** Rows that left as delivered on another row's message with the same words: still owed a message of their own. */
+	owedItsOwn: Map<string, { sessionId: string; rowId: string }>;
 }
 
 /** How often each exit was taken and how many rows were handed over, for the test's summary: a schedule that exercises nothing proves nothing. */
@@ -45,7 +47,8 @@ export interface Coverage {
 }
 
 type Queues = ReadonlyMap<string, SessionRequest[]>;
-type Invariant = (world: World, memory: Memory, queues: Queues, coverage: Coverage) => string[];
+/** `end`: the schedule is over, the restart that ends it included. */
+type Invariant = (world: World, memory: Memory, queues: Queues, coverage: Coverage, end: boolean) => string[];
 
 const keyOf = (sessionId: string, id: string): string => `${sessionId} ${id}`;
 const conversationOf = (world: World, sessionId: string): Conversation => world.conversations.find((c) => c.id === sessionId)!;
@@ -87,7 +90,10 @@ function namedExit(world: World, memory: Memory, queues: Queues, coverage: Cover
 		memory.exited.add(key);
 		for (const copy of world.copies) if (copy.sessionId === row.session_id && copy.rowId === row.id) memory.released.add(copy);
 		coverage.exits[gone.exit] = (coverage.exits[gone.exit] ?? 0) + 1;
-		if (gone.delivered === "another row's message") coverage.provedByAnother++;
+		if (gone.delivered === "another row's message") {
+			coverage.provedByAnother++;
+			memory.owedItsOwn.set(key, { sessionId: row.session_id, rowId: row.id });
+		}
 		const why = notItsExit(world, gone, gone.exit);
 		if (why) out.push(`${name} left the queue of ${row.session_id} as ${gone.exit}, but ${why}`);
 	}
@@ -126,6 +132,24 @@ function notItsExit(world: World, gone: Removal, exit: string): string | undefin
 		default:
 			return `the audit knows no exit called ${exit}`;
 	}
+}
+
+/**
+ * I2, for a row that left as delivered on another row's message with the same words. The text
+ * proof cannot tell the two apart, and that is harmless when pi writes both in the end, which
+ * takes a hand-over of the row's own that pi still holds when the row leaves: once out of the
+ * queue it is never handed over again. So when the schedule is over (`end`), pi has written the
+ * row itself or still holds it; otherwise the person said the same words twice and was answered
+ * once.
+ */
+function answeredThoughAnotherSaidTheSame(world: World, memory: Memory, _queues: Queues, _coverage: Coverage, end: boolean): string[] {
+	if (!end) return [];
+	const out: string[] = [];
+	for (const { sessionId, rowId } of memory.owedItsOwn.values()) {
+		const copies = world.copies.filter((copy) => copy.sessionId === sessionId && copy.rowId === rowId);
+		if (!copies.some((copy) => copy.state === "written" || copy.state === "held")) out.push(`${label(world, rowId)} left the queue of ${sessionId} as delivered on another row's message with the same words, and pi never wrote it: two messages, one answer`);
+	}
+	return out;
 }
 
 /**
@@ -345,6 +369,7 @@ const KNOWN_SECOND_DELIVERIES: Readonly<Record<string, Excuse>> = {
  */
 export const KNOWN: Readonly<Record<string, { defect: string; seed: number }>> = {
 	"I3 no turn beside an unwritten turn only its text proves": { seed: 177, defect: "decideDrain gives the lane to an in-flight text-proved turn only against the rows after it in queue order: a turn row that sorts before it is handed over beside it (#245)" },
+	"I2 a person's message is answered even when another has the same words": { seed: 7, defect: "landed takes a row only its text proves for delivered by another row's message with the same words, written at or after its hand-over stamp: when its own hand-over came to nothing (it threw and left last_error, or its window died), the row is removed as done, not given back to the page, and the person, who said the same words twice, is answered once. Needs no more of pi than a failed hand-over or a crash" },
 	"I2 a row is done only by its proof": { seed: 3346, defect: "a message without a prefix that no handed-over row claims (a text-proved row's late send, once that row has left the queue) is taken for the oldest prefixed turn pi was handed and has not started: that row is removed as done while pi still holds it unwritten. Narrow: pi's phase before a run has to outlast the ten-second grace (#247)" },
 	"a row is delivered once when the lease moves while pi holds its turn unstarted": { seed: 618, defect: "a window takes the lease while the holder's pi holds a turn it was handed and has not started (the lease says a turn runs only from agent_start): the new holder hands the row over again, and both pis write it; for a person's message that is one prompt answered twice. Narrow: the lease has to be taken during pi's phase before a run (#248)" },
 	"a row is delivered once after a stop in the page's pi": { seed: 1736, defect: "in rpc mode (the page's pi) a stop is AgentSession.abort(), which keeps what pi queued behind the aborted turn; the window takes it for dropped, hands the row over again, and pi writes both. A terminal's abort clears the queue, as Esc does (#249)" },
@@ -353,6 +378,7 @@ export const KNOWN: Readonly<Record<string, { defect: string; seed: number }>> =
 export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
 	["I2 a row leaves its queue only by a named exit", namedExit],
 	["I2 a row is done only by its proof", doneOnlyByProof],
+	["I2 a person's message is answered even when another has the same words", answeredThoughAnotherSaidTheSame],
 	["I3 one turn at a time, handed over by the holder", oneTurnFromTheHolder],
 	["I3 no turn beside an unwritten turn only its text proves", noTurnBesideATextProvedTurn],
 	["I6 what pi holds unwritten is still owed on disk", heldIsStillOwed],
@@ -366,20 +392,20 @@ export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
 /**
  * The checks for one world. `check()` after every step returns the first thing broken, or
  * undefined, and beside it what the `KNOWN` checks found; `enforce` names one of those to treat
- * as any other check.
+ * as any other check. `check(true)` is the last one, when the schedule is over.
  */
-export function createChecker(world: World, enforce?: string): { check(): { violation?: Violation; known: Violation[] }; coverage: Coverage } {
-	const memory: Memory = { queued: new Map(), spent: new Map(), exited: new Set(), findings: new Map(), released: new Set() };
+export function createChecker(world: World, enforce?: string): { check(end?: boolean): { violation?: Violation; known: Violation[] }; coverage: Coverage } {
+	const memory: Memory = { queued: new Map(), spent: new Map(), exited: new Set(), findings: new Map(), released: new Set(), owedItsOwn: new Map() };
 	const coverage: Coverage = { exits: {}, handOvers: 0, turnsBesideATurn: 0, decisions: 0, offeredAgainTwice: { prefixed: 0, byText: 0 }, provedByAnother: 0 };
 	return {
 		coverage,
-		check() {
+		check(end = false) {
 			const queues = new Map(world.conversations.map((c) => [c.id, world.store.list(c.id)]));
 			let violation: Violation | undefined;
 			const known: Violation[] = [];
 			// Every check runs even after one failed: each also updates what it remembers.
 			for (const [invariant, holds] of INVARIANTS) {
-				const broken = holds(world, memory, queues, coverage);
+				const broken = holds(world, memory, queues, coverage, end);
 				if (!broken.length) continue;
 				if (invariant in KNOWN && invariant !== enforce) known.push({ invariant, message: broken.join("; ") });
 				else violation ??= { invariant, message: broken.join("; ") };
