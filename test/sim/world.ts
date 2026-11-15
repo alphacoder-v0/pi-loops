@@ -10,12 +10,16 @@
  *   throws before any run.
  * - A turn starts (`agent_start`), writes the message it began with (`message_start`, then the
  *   entry) and settles (`agent_end`, `agent_settled`). What it was handed meanwhile is written as
- *   follow-ups when it settles. Esc drops that queue unwritten (the terminal clears pi's queues,
- *   then aborts). What a stop does depends on the window's mode, which the seed draws. In a
- *   terminal (`tui`), `ctx.abort()` is the interactive mode's abort handler, which clears the queue
- *   as Esc does. In the page's pi (`rpc`) it is `AgentSession.abort()`, which ends the turn and
- *   leaves what is queued behind it: pi is idle and still holds it, and writes it in its next run,
- *   which the schedule starts as it starts any turn pi was handed.
+ *   follow-ups when it settles. What a stop does depends on the window's mode, which the seed
+ *   draws. In a terminal (`tui`), Esc and `ctx.abort()` are the interactive mode's abort handler:
+ *   it clears pi's queues, puts the queued texts of user messages into the editor, then aborts.
+ *   The person can then send the editor's text: one message, the texts joined, as they would any
+ *   message of their own. In the page's pi (`rpc`) the page's Stop and `ctx.abort()` are
+ *   `AgentSession.abort()`, which ends the turn and leaves what is queued behind it: pi is idle
+ *   and still holds it, and writes it in its next run, which the schedule starts as it starts any
+ *   turn pi was handed. (Measured on pi 1.2.0: .docs/redesign-0243/signatures/M3b-probes.md, P2 and P3.)
+ * - Before pi persists a message it asks the window (`message_end`), which may give another
+ *   message of the same role: what a window writes into the entry is in the entry.
  * - A custom message with no turn asked for is written at once.
  * - The person types into the window: a turn of their own, in words no row has.
  * - A hand-over can throw (no model, no credentials).
@@ -25,8 +29,10 @@
  *   sees it at once. A real second pi reads its own copy, which can be behind the file, so nothing
  *   here speaks for what a process does with a write it has not read (a crash between pi's write
  *   and the removal, then another window: src/engine.ts `releaseLocalRows`).
- * - No model, no tools, no compaction, no images, no MCP server. No extension rewrites a prompt, so
- *   whatever the window puts in `ExecutorView.ran` it took for a rewritten prompt by mistake. No window leaves a conversation and lives on
+ * - No model, no tools, no compaction, no images, no MCP server. In three worlds of four no
+ *   extension rewrites a prompt, so whatever the window puts in `ExecutorView.ran` it took for a
+ *   rewritten prompt by mistake; in the fourth another extension's `input` handler puts words
+ *   before every user message (`World.rewrites`), as pi lets one (probes, P4). No window leaves a conversation and lives on
  *   (`created_by.left`), stands aside or runs `pi -p`, so `holderDelivers` is never false.
  * - The lease is a field, not src/lease.ts. It moves as the real one does: from a dead holder to any
  *   live process, from the background process to a window, and between two live windows only from
@@ -37,7 +43,10 @@
  * - A step is whole. Inside a drain, another process acts only between two of the drain's rows (it
  *   takes the lease, or its pi writes: `Fault`), and the draining window's own pi does not move, not
  *   even while the drain waits on the inbox for a dead letter.
- * - Time is the schedule's: `Date` and `setTimeout` are node:test's mocks, and nothing waits.
+ * - Time is the schedule's: `Date` and `setTimeout` are node:test's mocks, and nothing waits. In
+ *   half the worlds the clock stands still inside a step, so a stamp and a message of one step are
+ *   of one millisecond; in the other half every message pi writes takes a millisecond, as a real
+ *   one takes time (`World.ticks`).
  */
 import { CEILING, type DrainResult, type EngineSinks, type Executor, bury, proofOf, drain } from "../../src/engine.ts";
 import { Inbox } from "../../src/inbox.ts";
@@ -51,6 +60,8 @@ export const EPOCH = Date.parse("2026-01-01T00:00:00Z");
 export const PAGE_PID = 4242;
 /** How long `Inbox.decide` sleeps at most when it finds the inbox locked (src/lock.ts), in simulated time. */
 const LOCK_WAIT_MS = 60;
+/** What the other extension of a rewriting world puts before every user message. */
+export const REWRITTEN = "[rewritten] ";
 /** How long pi may leave a turn unstarted before a tick may call it refused (docs/design.md), stated apart from the engine's constant on purpose. */
 const GRACE_MS = 10_000;
 
@@ -60,11 +71,13 @@ export interface Timers {
 	tick(ms: number): void;
 }
 
-type Entry = { type: "message"; timestamp: string; message: { role: "user"; content: Array<{ type: "text"; text: string }> } } | { type: "custom_message"; timestamp: string; content: string };
+/** A user message, as pi hands it to `message_end` and persists what comes back: a window may have put fields of its own on it. */
+type UserMessage = { role: "user"; content: Array<{ type: "text"; text: string }> } & Record<string, unknown>;
+type Entry = { type: "message"; timestamp: string; message: UserMessage } | { type: "custom_message"; timestamp: string; content: string };
 
 /**
  * One hand-over, as the simulated pi knows it: which row, to which process, and what became of it.
- * `held` while pi has it unwritten; then `written`, `dropped` (Esc), `refused`
+ * `held` while pi has it unwritten; then `written`, `dropped` (a stop in a terminal), `refused`
  * (pi threw before a run) or `died` (its process was killed).
  */
 export interface Copy {
@@ -92,6 +105,8 @@ export interface Copy {
 	stopNamed?: boolean;
 	/** `ctx.abort()` was called as pi began this message. */
 	abortedAtStart?: boolean;
+	/** A stop in a terminal put this hand-over's text into the editor, and the person sent it: written by them, not by pi's queue. */
+	fromTheEditor?: boolean;
 }
 
 interface Item {
@@ -111,9 +126,11 @@ export interface Pi {
 	/** When the running turn started, and the row whose message it last began. */
 	startedAt?: number;
 	turnOf?: string;
+	/** A terminal's editor: the queued user messages that a stop took out of pi's queue, for the person to send or not. */
+	editor: Item[];
 }
 
-const idlePi = (): Pi => ({ running: false, queue: [], aborts: 0 });
+const idlePi = (): Pi => ({ running: false, queue: [], aborts: 0, editor: [] });
 
 export type Mode = "tui" | "rpc";
 
@@ -183,8 +200,10 @@ export interface HandOver {
 	 */
 	turnsHeld: number;
 	textTurnsHeld: number;
-	/** Pi wrote this row already. */
+	/** Pi wrote this row already, from its queue. */
 	written: boolean;
+	/** The person sent this row's text already, from the editor where a stop in a terminal had put it. */
+	sentFromTheEditor: boolean;
 }
 
 /** Two decisions on one finding at once: its status before, and how many of the two were told `ok`. */
@@ -233,10 +252,14 @@ export interface World {
 	/** The row the engine is handing over right now, for the simulated pi to file its copy under. */
 	sending?: { row: Row; wake: "turn" | "append" };
 	handOverThrows: boolean;
+	/** Every message pi writes takes a millisecond; without it the clock stands still inside a step. */
+	ticks: boolean;
+	/** Another extension's `input` handler puts words before the text of every user message: a prefix of ours is then not at the start, and a row's words are not the message's first. */
+	rewrites: boolean;
 }
 
 /** A world of one conversation for each of `seconds`: its first process is a window, started; its second is of `kind`, started when `running`; `modes` are the two processes'. */
-export function createWorld(dir: string, time: Timers, seconds: ReadonlyArray<{ kind: Process["kind"]; running: boolean; modes: readonly [Mode, Mode] }>): World {
+export function createWorld(dir: string, time: Timers, seconds: ReadonlyArray<{ kind: Process["kind"]; running: boolean; modes: readonly [Mode, Mode] }>, opts: { ticks?: boolean; rewrites?: boolean } = {}): World {
 	const world: World = {
 		store: new RequestStore(dir),
 		inbox: new Inbox(dir),
@@ -259,6 +282,8 @@ export function createWorld(dir: string, time: Timers, seconds: ReadonlyArray<{ 
 		drains: 0,
 		crashes: 0,
 		handOverThrows: false,
+		ticks: opts.ticks === true,
+		rewrites: opts.rewrites === true,
 	};
 	time.setTime(EPOCH);
 	for (const [index, second] of seconds.entries()) {
@@ -375,9 +400,18 @@ function copyFor(world: World, proc: Process, text: string): Copy | undefined {
 function write(world: World, proc: Process, item: Item): void {
 	const at = world.clock;
 	const aborts = proc.pi.aborts;
-	// `message_start` first, then the entry: pi's agent loop emits the two back to back.
-	if (!item.custom) proc.window?.messageStarted({ role: "user", content: item.text }, at);
-	proc.conversation.entries.push(item.custom ? { type: "custom_message", timestamp: stampOf(at), content: item.text } : { type: "message", timestamp: stampOf(at), message: { role: "user", content: [{ type: "text", text: item.text }] } });
+	// `message_start` first, then `message_end`, then the entry: pi's agent loop emits them back to
+	// back, and persists the message that `message_end` gave back, when it gave one.
+	// What pi writes of a user message is what the `input` handlers made of it.
+	const text = world.rewrites && !item.custom ? `${REWRITTEN}${item.text}` : item.text;
+	let message: UserMessage = { role: "user", content: [{ type: "text", text }] };
+	if (!item.custom) {
+		proc.window?.messageStarted({ role: "user", content: text }, at);
+		const ended = (proc.window as unknown as { messageEnded?: (message: UserMessage, at: number) => UserMessage | undefined } | undefined)?.messageEnded?.(message, at);
+		if (ended?.role === "user") message = ended;
+	}
+	proc.conversation.entries.push(item.custom ? { type: "custom_message", timestamp: stampOf(at), content: item.text } : { type: "message", timestamp: stampOf(at), message });
+	if (world.ticks) advance(world, 1);
 	if (!item.copy) return;
 	if (!item.custom) proc.pi.turnOf = item.copy.rowId;
 	item.copy.abortedAtStart = proc.pi.aborts > aborts;
@@ -403,7 +437,8 @@ function windowProcess(world: World, base: Omit<Process, "executor">): Process {
 		isIdle: () => !proc.pi.running,
 		mode: proc.mode,
 		hasUI: false,
-		ui: { notify: () => undefined },
+		// The editor, as an extension reads and sets it: the texts a stop put there, one paragraph each.
+		ui: { notify: () => undefined, getEditorText: () => proc.pi.editor.map((item) => item.text).join("\n\n"), setEditorText: (text: string) => void (proc.pi.editor = proc.pi.editor.filter((item) => text.split("\n\n").includes(item.text))) },
 		sessionManager: { getEntries: () => conversation.entries },
 		abort: () => void (proc.pi.aborts += proc.pi.running ? 1 : 0),
 	};
@@ -439,13 +474,15 @@ function backgroundProcess(world: World, base: Omit<Process, "executor">): Proce
 
 /* ------------------------------------------------------------ pi's moves */
 
-export type PiMove = "start" | "write" | "settle" | "esc" | "refuse" | "type";
+export type PiMove = "start" | "write" | "settle" | "esc" | "refuse" | "type" | "enter";
 
 /** What `process`'s pi can do next; a move listed twice is twice as likely. */
 export function piMoves(proc: Process): PiMove[] {
 	const pi = proc.pi;
 	if (pi.running) return pi.current ? ["write", "write", "settle", "esc"] : ["settle", "esc"];
-	return pi.queue.length ? ["start", "start", "start", "refuse", "type", "type"] : ["type"];
+	// A terminal's editor that a stop filled: the person sends it, or types something else and leaves it.
+	const enter: PiMove[] = pi.editor.length ? ["enter"] : [];
+	return pi.queue.length ? ["start", "start", "start", "refuse", "type", "type", ...enter] : ["type", ...enter];
 }
 
 export function piMove(world: World, proc: Process, move: PiMove): void {
@@ -476,25 +513,49 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			window.agentStarted(at);
 			write(world, proc, { text: `typed #${++world.made}.`, custom: false });
 			break;
+		case "enter": {
+			// The person sends what a stop put into the editor: one message, the texts joined, and a
+			// run that starts with it. Each hand-over whose text is in it is written now, by them.
+			const sent = pi.editor.splice(0);
+			window.inputSeen(at);
+			window.personInput();
+			pi.running = true;
+			pi.startedAt = at;
+			window.agentStarted(at);
+			write(world, proc, { text: sent.map((item) => item.text).join("\n\n"), custom: false });
+			for (const item of sent) {
+				if (!item.copy) continue;
+				const copy: Copy = { ...item.copy, state: "written", writtenAt: at, fromTheEditor: true };
+				world.copies.push(copy);
+				world.facts.written.push(copy);
+			}
+			break;
+		}
 		case "settle":
-		case "esc":
+		case "esc": {
 			if (pi.current) write(world, proc, pi.current);
 			pi.current = undefined;
-			// Follow-ups are written in order. Esc drops them, and so does an abort in a terminal. An
-			// abort in the page's pi (one of them can ask for it as it starts) ends the turn with the
-			// rest still queued: pi holds them, and the window, which reads a settled pi's unwritten
-			// rows as dropped, stops waiting for them.
+			// Follow-ups are written in order, unless the turn was stopped: by Esc or the page's Stop
+			// (`esc`), or by `ctx.abort()` (one of the follow-ups can ask for it as it starts). A stop in
+			// a terminal clears pi's queue and puts the queued user messages into the editor. A stop in
+			// the page's pi ends the turn with the rest still queued: pi holds them, and the window,
+			// which reads a settled pi's unwritten rows as dropped, stops waiting for them.
+			const stopped = move === "esc" || pi.aborts > 0;
 			for (const item of pi.queue.splice(0)) {
-				if (move === "esc" || (pi.aborts && proc.mode === "tui")) leave(item.copy, "dropped", at);
-				else if (pi.aborts) {
+				if (!stopped) write(world, proc, item);
+				else if (proc.mode === "tui") {
+					leave(item.copy, "dropped", at);
+					if (!item.custom) pi.editor.push(item);
+				} else {
 					pi.queue.push(item);
 					if (item.copy) item.copy.gaveUp ??= "stop";
-				} else write(world, proc, item);
+				}
 			}
 			Object.assign(pi, { running: false, aborts: 0, startedAt: undefined, turnOf: undefined });
 			window.agentEnded();
 			window.settled();
 			break;
+		}
 	}
 }
 
@@ -623,7 +684,7 @@ export async function drainAs(world: World, proc: Process, tick: boolean, fault:
 		crash.write();
 		const turns = held(proc).filter((copy) => copy.wake === "turn" && !copy.gaveUp);
 		const local = row.source === "goal" || row.source.startsWith("inbox:");
-		world.facts.handOvers.push({ drain: number, process: proc, row, wake, holds: conversation.holder === proc, queued: world.store.list(conversation.id).some((queued) => queued.id === row.id), producerRunsIt: local && row.created_by.left === undefined && pidAlive(world, row.created_by.pid), piRunning: proc.pi.running, turnsHeld: turns.length, textTurnsHeld: turns.filter((copy) => copy.provedByText && world.clock - copy.handedAt < GRACE_MS).length, written: world.copies.some((copy) => copy.sessionId === conversation.id && copy.rowId === row.id && copy.state === "written") });
+		world.facts.handOvers.push({ drain: number, process: proc, row, wake, holds: conversation.holder === proc, queued: world.store.list(conversation.id).some((queued) => queued.id === row.id), producerRunsIt: local && row.created_by.left === undefined && pidAlive(world, row.created_by.pid), piRunning: proc.pi.running, turnsHeld: turns.length, textTurnsHeld: turns.filter((copy) => copy.provedByText && world.clock - copy.handedAt < GRACE_MS).length, written: world.copies.some((copy) => copy.sessionId === conversation.id && copy.rowId === row.id && copy.state === "written" && !copy.fromTheEditor), sentFromTheEditor: world.copies.some((copy) => copy.sessionId === conversation.id && copy.rowId === row.id && copy.state === "written" && copy.fromTheEditor === true) });
 		world.sending = { row, wake };
 		world.handOverThrows = fault.handOverThrows === true;
 		try {

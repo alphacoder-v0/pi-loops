@@ -5,7 +5,7 @@
  * test/sim/invariants.ts checked after every step. test/sim/world.ts says what is simulated.
  *
  *   SIM_SEED       the first seed (default 1; schedule n runs seed SIM_SEED + n)
- *   SIM_SCHEDULES  how many schedules (default 2000)
+ *   SIM_SCHEDULES  how many schedules (default 2700: one world in four has an extension that rewrites, which leaves about 2000 without)
  *   SIM_STEPS      steps in each (default 40)
  *
  * A failure names its seed; `SIM_SEED=<seed> SIM_SCHEDULES=1` runs that schedule alone and prints it.
@@ -17,7 +17,7 @@ import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { track } from "./tmp.ts";
-import { KNOWN } from "./sim/invariants.ts";
+import { KNOWN, REWRITTEN_HOLDS } from "./sim/invariants.ts";
 import { type Plan, type Run, plan, run } from "./sim/schedule.ts";
 import { EPOCH } from "./sim/world.ts";
 
@@ -29,7 +29,7 @@ function setting(name: string, fallback: number): number {
 }
 
 const FIRST_SEED = setting("SIM_SEED", 1);
-const SCHEDULES = setting("SIM_SCHEDULES", 2000);
+const SCHEDULES = setting("SIM_SCHEDULES", 2700);
 const STEPS = setting("SIM_STEPS", 40);
 /** The exits a full run must have taken at least once each: a generator that stopped reaching one checks nothing about it. */
 const EXITS = ["delivered", "dead", "cancelled", "stale", "refused", "job-removed", "done"];
@@ -93,7 +93,7 @@ async function shortest(failing: Plan, invariant: string, play: (p: Plan) => Pro
 	return ran;
 }
 
-const worldOf = (p: Plan): string => p.seconds.map((second, index) => `c${index}: a window (${second.modes[0]}) and ${second.kind === "window" ? `a second window (${second.modes[1]})` : "the background process"}${second.running ? "" : ", not started"}`).join("; ");
+const worldOf = (p: Plan): string => p.seconds.map((second, index) => `c${index}: a window (${second.modes[0]}) and ${second.kind === "window" ? `a second window (${second.modes[1]})` : "the background process"}${second.running ? "" : ", not started"}`).join("; ") + (p.ticks ? "; a message takes a millisecond" : "; the clock stands still inside a step") + (p.rewrites ? "; another extension rewrites every message" : "");
 
 /**
  * What a failure says: the seed, the step, the invariant, the schedule as it ran, and a shorter one
@@ -127,7 +127,8 @@ test("the request engine keeps its invariants through seeded schedules of append
 		const ran = await play(planned);
 		if (SCHEDULES === 1) console.log([`schedule of seed ${seed} (${worldOf(planned)}):`, ...ran.lines.map((line) => `  ${line}`)].join("\n"));
 		if (ran.violation) assert.fail(await failure(planned, ran, play));
-		for (const invariant of Object.keys(ran.known)) if (!firstSeedOf.has(invariant)) firstSeedOf.set(invariant, seed);
+		// A known defect is shown in a world where no extension rewrites, but for the one that is of such worlds: there another check can break first and be taken for that one.
+		for (const invariant of Object.keys(ran.known)) if (!firstSeedOf.has(invariant) && (!planned.rewrites || invariant === REWRITTEN_HOLDS)) firstSeedOf.set(invariant, seed);
 		steps += planned.steps.length;
 		crashes += ran.crashes;
 		handOvers += ran.coverage.handOvers;

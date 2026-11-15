@@ -156,9 +156,10 @@ offline by construction — sub-agents go through `test/fake-runner.ts` — and 
 what keeps that a fact: a test that ever reaches a real provider fails there instead of quietly
 spending money.
 
-`npm test` includes the simulation (`test/sim.test.ts`): 2000 seeded schedules of appends, drains,
-pi's turns, crashes and restarts against the real request engine, with every invariant of
-`test/sim/invariants.ts` checked after every step. A failure names its seed, the step, the invariant
+`npm test` includes the simulation (`test/sim.test.ts`): 2700 seeded schedules of appends, drains,
+pi's turns, stops, crashes and restarts against the real request engine, with every invariant of
+`test/sim/invariants.ts` checked after every step. One world in four has another extension that
+rewrites every message, and in half of them a message takes a millisecond. A failure names its seed, the step, the invariant
 and the schedule, with a shorter schedule that fails the same way. To run one schedule again and
 print it, give its seed (`SIM_STEPS` too, when the run that failed set it):
 
