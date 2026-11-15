@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
+import { parseLane } from "./lane.ts";
 import { pidAlive, withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { stamp } from "./schedule.ts";
 
@@ -238,11 +239,12 @@ export function decideHostAcquire(current: SessionLease | undefined, me: LeaseHo
 	return { lease: { ...current, epoch: current.epoch + 1, holder: me, updatedAt: stamp(now) } };
 }
 
-const validSessionId = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-
-/** A session id becomes a file name here and in the request store, so anything that could leave the directory is refused. */
+/**
+ * A session id becomes a file name here, so anything that could leave the directory is refused. The
+ * rule is the one of a conversation's lane (src/lane.ts): a lane of another kind is no session.
+ */
 export function sessionFileName(sessionId: string): string {
-	if (!validSessionId.test(sessionId) || sessionId.includes("..")) throw new Error(`invalid session id: ${sessionId}`);
+	if (parseLane(sessionId)?.kind !== "conversation") throw new Error(`invalid session id: ${sessionId}`);
 	return sessionId;
 }
 
