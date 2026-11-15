@@ -85,14 +85,14 @@ src/page-children.ts        one `pi --mode rpc` per conversation open in the pag
 src/held-read.ts            how big a conversation this process parses, and whether a conversation's file is readable here
 src/host-runtime.ts         what pi-loops runs (scheduler + triggers + per-request tools)
 src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid, or by a terminal from the page's pi (`page`) while no turn runs (`turnSince`)
-src/requests.ts             requests/<session>.jsonl: what is addressed to a conversation, kept until it is in it (the row, append, remove, status)
-src/engine.ts               decideDrain, the pure decision for a session's rows; drain, which applies it through an executor; attempts and dead letters
+src/requests.ts             requests/<lane>.jsonl: what is addressed to a lane (a conversation's is its session id), kept until it is in it (the row, claimed or not, append, remove, claim)
+src/engine.ts               decideDrain, the pure decision for a lane's rows: classify, take the lane, start; drain, which applies it through an executor; the exits, attempts and dead letters
 src/window-executor.ts      the engine's executor in a window: pi.sendMessage, and the hand-over set pi has not written yet
 src/register-pi.mjs         node --import hook resolving pi's packages outside pi (pi-loops, tests)
 src/pi-resolver.mjs         where that hook looks for them
 
 storage
-src/lane.ts                 a lane's id: the queue a request row is in; a conversation's lane id is its session id
+src/lane.ts                 a lane's id and its one grammar: a conversation's session id, `@cron-…` for a loop, `@check-…` for a project's checks; the file name it gives
 src/store.ts                jobs.json, state/, runs.jsonl, sessions/
 src/inbox.ts                inbox.jsonl
 src/archive.ts              .pisession export/import

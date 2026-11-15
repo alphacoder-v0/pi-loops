@@ -410,7 +410,18 @@ machine. Everything here follows from that, and each one has a price.
     back, and the background process sweeps files no row names once they are a minute old. Each
     session's queue has its own lock (`requests/<session>.lock`): one `requests.lock` left by a
     process killed mid-rewrite held every writer of every session for the stale wait, and now holds
-    that session's alone. A holder that will not deliver a person row says so on its lease: a window standing
+    that session's alone. A queue is a lane's (`src/lane.ts`): a conversation's lane is its
+    session id, and a name that starts with `@` is a loop's or a project's checks' lane, which
+    nothing writes yet. A row leaves its queue by a named exit and nothing else removes one:
+    delivered, dead, cancelled, stale, refused, job-removed, stopped. The lane is taken from all
+    the rows before any of them is started, so a turn that sorts first is not handed to pi beside
+    an unwritten turn that only its text proves. A dead letter is filed once for a row, under an
+    id derived from the row's (`Inbox.fileOnce`), so a crash between the finding and the removal
+    files nothing the second time. The cost: a row that is queued again under the same id and
+    fails again gets no second finding, also when the first one was decided. A request line is
+    version 3 and names its `lane`. A version 2 line is read as it is and keeps its bytes until
+    its row is patched, so a 0.24.2 window that is still open goes on reading the rows it wrote;
+    a row this version writes for its conversation waits until that window is restarted. A holder that will not deliver a person row says so on its lease: a window standing
     aside writes `aside` on its holder (`print` and `json` mode are there already; `holderDelivers`
     in src/lease.ts reads all three), the page's own pi then runs the page's rows it was rung for in
     that holder's place, and the page does not say "answered there"; when the page's own pi is the
