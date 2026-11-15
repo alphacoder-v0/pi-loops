@@ -16,20 +16,21 @@ export const INTERRUPTIONS_BEFORE_PARKING = 3;
  *   stopped      `aborted` with `stoppedBy: "person"`
  *   handed-back  `aborted` without `stoppedBy`: a window took the conversation, a quit, an
  *                upgrade, a removed job, the budget
- *   interrupted  the process was gone before it wrote a record
+ *   interrupted  the process was gone before it wrote a record. `beside`: it had other runs
+ *                going, so its stop says nothing about this one (`diedBeside`, src/engine.ts)
  */
 export type RunEnd = (
 	| { readonly how: "succeeded" }
 	| { readonly how: "failed"; readonly error: string }
 	| { readonly how: "stopped" }
 	| { readonly how: "handed-back" }
-	| { readonly how: "interrupted" }
+	| { readonly how: "interrupted"; readonly beside: boolean }
 ) & { readonly at: string };
 
 /** The one maker of a `RunEnd`: an end is read from a record, so an end in hand means the record exists. */
 export function runEnd(record: RunRecord): RunEnd {
 	const at = record.finishedAt;
-	if (record.interrupted) return { how: "interrupted", at };
+	if (record.interrupted) return { how: "interrupted", beside: record.beside === true, at };
 	if (record.aborted && record.stoppedBy === "person") return { how: "stopped", at };
 	if (record.aborted) return { how: "handed-back", at };
 	if (record.ok) return { how: "succeeded", at };
@@ -38,6 +39,11 @@ export function runEnd(record: RunRecord): RunEnd {
 
 /** The reason of the attempt that a row gets when the process that ran it stopped before its prompt was written. */
 export const INTERRUPTED = "the process running it stopped";
+
+/** What a job says when it is turned off after `interruptions` interrupted runs in a row. One wording, for a loop and for a plain job. */
+export function parkedReason(jobId: string, interruptions: number): string {
+	return `parked: its last ${interruptions} runs were interrupted before they finished (the process running them stopped each time, with no other loop running; see host.log) — /cron enable ${jobId} to try again`;
+}
 
 /**
  * What `settle` decides. `row` has one discriminant, so a result cannot both leave the row and
@@ -61,7 +67,7 @@ export interface Settlement {
 	 * came between. The cost: when a process stops in the middle of two closings of one job, the
 	 * older record's count can be lost.
 	 */
-	readonly job?: Partial<Pick<LoopJob, "lastCompletedAt" | "lastError" | "consecutiveFailures" | "interruptions" | "enabled">>;
+	readonly job?: Partial<Pick<LoopJob, "lastCompletedAt" | "lastError" | "consecutiveFailures" | "interruptions" | "enabled" | "crowded">>;
 }
 
 /** The job fields a cell writes. `none` writes nothing. */
@@ -72,7 +78,7 @@ type JobCell =
 	| "failure"
 	/** `lastCompletedAt = end.at`, `interruptions` cleared. A stop is no failure: the streak and the last error are not written. */
 	| "stop"
-	/** `lastCompletedAt = end.at`, `interruptions + 1`; at `INTERRUPTIONS_BEFORE_PARKING` the job is turned off and says why. */
+	/** `lastCompletedAt = end.at`, `interruptions + 1`; at `INTERRUPTIONS_BEFORE_PARKING` the job is turned off and says why. A run that was going beside others is not counted: `lastCompletedAt` only. */
 	| "interruption"
 	| "none";
 
@@ -121,7 +127,7 @@ const CELLS: Record<RunEnd["how"], Record<"written" | "unwritten", Cell>> = {
  * `runCount`, `lastDueAt`, `lastFiredAt` and `owedSlot` are never in the patch: the clock counts
  * a slot when it writes the row.
  */
-export function settle(job: Pick<LoopJob, "id" | "name" | "schedule" | "enabled" | "lastCompletedAt" | "consecutiveFailures" | "interruptions"> | undefined, end: RunEnd, written: boolean): Settlement {
+export function settle(job: Pick<LoopJob, "id" | "schedule" | "enabled" | "lastCompletedAt" | "consecutiveFailures" | "interruptions" | "crowded"> | undefined, end: RunEnd, written: boolean): Settlement {
 	const cell = CELLS[end.how][written ? "written" : "unwritten"];
 	// Settled already: this record, or a later one. Stamps are compared as times; each carries its writer's offset.
 	const applied = job !== undefined && job.lastCompletedAt !== undefined && Date.parse(job.lastCompletedAt) >= Date.parse(end.at);
@@ -141,16 +147,23 @@ export function settle(job: Pick<LoopJob, "id" | "name" | "schedule" | "enabled"
 			};
 		} else if (cell.job === "stop") {
 			patch = { lastCompletedAt: end.at, interruptions: undefined };
-		} else if (cell.job === "interruption") {
-			const interruptions = (job.interruptions ?? 0) + 1;
-			patch = { lastCompletedAt: end.at, interruptions };
-			// Turned off rather than run again at every start: each time, the process stopped while this
-			// job's turn was running. Still not proof (a reboot in the middle of a turn counts too), so
-			// the reason says what is known, and enabling the job again tries once more.
-			if (interruptions >= INTERRUPTIONS_BEFORE_PARKING) {
-				patch.enabled = false;
-				patch.lastError = `parked: its last ${interruptions} runs were interrupted before they finished (the process running them stopped each time; see host.log) — /cron enable ${job.name ?? job.id} to try again`;
+		} else if (cell.job === "interruption" && end.how === "interrupted") {
+			if (end.beside) {
+				// The process stopped with other runs going: that says nothing about this one, and
+				// counting each would turn off every job that ran beside the one that took it down.
+				patch = { lastCompletedAt: end.at };
+			} else {
+				const interruptions = (job.interruptions ?? 0) + 1;
+				patch = { lastCompletedAt: end.at, interruptions };
+				// Turned off rather than run again at every start: each time, this job's turn was the one
+				// run going when the process stopped. Still not proof (a reboot in the middle of a turn
+				// counts too), so the reason says what is known, and enabling the job again tries once more.
+				if (interruptions >= INTERRUPTIONS_BEFORE_PARKING) {
+					patch.enabled = false;
+					patch.lastError = parkedReason(job.id, interruptions);
+				}
 			}
+			if (job.crowded !== undefined) patch.crowded = undefined;
 		}
 	}
 	let row: Settlement["row"];

@@ -24,8 +24,9 @@ test("runEnd follows the record flags in order and supplies missing errors.", ()
 	assert.deepEqual(runEnd(record({ error: "broken" })), { how: "failed", error: "broken", at });
 	assert.deepEqual(runEnd(record({ aborted: true, stoppedBy: "person" })), { how: "stopped", at });
 	assert.deepEqual(runEnd(record({ aborted: true })), { how: "handed-back", at });
-	assert.deepEqual(runEnd(record({ interrupted: true })), { how: "interrupted", at });
-	assert.deepEqual(runEnd(record({ interrupted: true, ok: false })), { how: "interrupted", at });
+	assert.deepEqual(runEnd(record({ interrupted: true })), { how: "interrupted", beside: false, at });
+	assert.deepEqual(runEnd(record({ interrupted: true, ok: false })), { how: "interrupted", beside: false, at });
+	assert.deepEqual(runEnd(record({ interrupted: true, beside: true })), { how: "interrupted", beside: true, at });
 	assert.deepEqual(runEnd(record({ aborted: true, stoppedBy: undefined })), { how: "handed-back", at });
 	assert.deepEqual(runEnd(record()), { how: "failed", error: "run failed", at });
 	assert.deepEqual(runEnd(record({ error: "" })), { how: "failed", error: "run failed", at });
@@ -164,16 +165,32 @@ test("A job whose turn stops its process again and again is turned off at the th
 		assert.deepEqual(second.job, { lastCompletedAt: cut(2).at, interruptions: 2 });
 		state = { ...state, ...second.job };
 		const third = settle(state, cut(3), written);
-		assert.deepEqual(third.job, { lastCompletedAt: cut(3).at, interruptions: 3, enabled: false, lastError: "parked: its last 3 runs were interrupted before they finished (the process running them stopped each time; see host.log) — /cron enable nightly to try again" });
+		assert.deepEqual(third.job, { lastCompletedAt: cut(3).at, interruptions: 3, enabled: false, lastError: "parked: its last 3 runs were interrupted before they finished (the process running them stopped each time, with no other loop running; see host.log) — /cron enable cron-j to try again" });
 		// The row's result is the cell's, parked or not.
 		assert.deepEqual(third.row, written ? { do: "leave", exit: "delivered" } : { do: "retry", why: INTERRUPTED });
 		// The same record settled again counts nothing more.
 		assert.equal(Object.hasOwn(settle({ ...state, ...third.job }, cut(3), written), "job"), false);
 	}
-	// A job with no name is named by its id.
-	assert.match(settle(job({ interruptions: 2 }), cut(1), true).job!.lastError!, /\/cron enable cron-j to try again$/);
+	// The command names the job by its id: two jobs can have one name.
+	assert.match(settle(job({ name: "nightly", interruptions: 2 }), cut(1), true).job!.lastError!, /\/cron enable cron-j to try again$/);
 	// A turn that ended, or that a person stopped, clears the count.
 	for (const end of [runEnd(record({ ok: true })), runEnd(record({ error: "broken" })), runEnd(record({ aborted: true, stoppedBy: "person" }))]) assert.equal(settle(job({ interruptions: 2 }), end, true).job!.interruptions, undefined, end.how);
 	// A hand-back writes nothing, so the count stands.
 	assert.equal(Object.hasOwn(settle(job({ interruptions: 2 }), runEnd(record({ aborted: true })), true), "job"), false);
+});
+
+test("[R5] a run whose process stopped with other runs going is not counted, however often: the row is settled as for any interrupted run, and the sweep's mark is cleared", () => {
+	const crowd = (n: number) => runEnd(record({ interrupted: true, beside: true, finishedAt: `2026-01-02T03:0${n}:05.000Z` }));
+	for (const written of [true, false]) {
+		let state = job({ interruptions: 2, crowded: "run-1" });
+		for (const n of [1, 2, 3, 4]) {
+			const result = settle(state, crowd(n), written);
+			assert.deepEqual(result.job, n === 1 ? { lastCompletedAt: crowd(n).at, crowded: undefined } : { lastCompletedAt: crowd(n).at }, "no count, and the job stays on");
+			assert.deepEqual(result.row, written ? { do: "leave", exit: "delivered" } : { do: "retry", why: INTERRUPTED });
+			state = { ...state, ...result.job };
+		}
+		assert.deepEqual([state.interruptions, state.enabled, state.crowded], [2, true, undefined], "the count it had stands");
+		// The next run that is the only one going is counted again.
+		assert.equal(settle(state, runEnd(record({ interrupted: true, finishedAt: "2026-01-02T03:09:05.000Z" })), written).job!.enabled, false);
+	}
 });

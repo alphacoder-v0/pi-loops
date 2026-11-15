@@ -7,7 +7,7 @@ import { TriggerStore } from "../src/triggers.ts";
 import { type ClaimedRow, type ImageContent, RequestStore, type Row, type UnclaimedRow } from "../src/requests.ts";
 import * as path from "node:path";
 import { BACKOFF_MS } from "../src/backoff.ts";
-import { type Action, type Proof, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, proofOf, landed, personRow, plainJobRow, plainRunId, stripImageNotes, claimAlive, changesSomething, runningRun, jobQueued, queuedPrompt, closeRun, heldTurns } from "../src/engine.ts";
+import { type Action, type Proof, CEILING, diedBeside, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, proofOf, landed, personRow, plainJobRow, plainRunId, stripImageNotes, claimAlive, changesSomething, runningRun, jobQueued, queuedPrompt, closeRun, heldTurns } from "../src/engine.ts";
 import { runEnd } from "../src/settle.ts";
 import type { RunRecord } from "../src/store.ts";
 
@@ -1808,6 +1808,7 @@ function closingWorld(job: Record<string, unknown> | null = { id: "j", sessionId
 	const log: string[] = [];
 	w.sinks.ledger = {
 		load: () => jobsList as any,
+		allRuns: () => runs,
 		update: async (id: string, patch: (j: any) => void) => {
 			const found = jobsList.find((j) => j.id === id);
 			if (!found) return undefined;
@@ -2309,4 +2310,70 @@ test("the held turns a window lists are the claims on plain jobs' rows whose pro
 	assert.deepEqual(heldTurns(jobsList, rowsOf, alive), [{ jobId: "a", run: claim("a", "r-a").run }]);
 	// By default a claim is alive by the rule of a lease's holder: these claims are of a pid that is not there.
 	assert.deepEqual(heldTurns(jobsList, rowsOf), []);
+});
+
+test("[R5] diedBeside: a process that stopped had another run going when a marker, a claim or an interrupted record of the same pid says so, and only then", () => {
+	const run = { id: "run-a", pid: 4242, started_at: "2026-06-01T11:59:00Z" };
+	const plain = { stateful: false, sessionId: "s" };
+	const other = { stateful: false, sessionId: "t" };
+	const claimed = (id: string, pid: number, started_at = run.started_at) => ({ ...row(id), run: { id: `run-${id}`, pid, started_at } }) as Row;
+	const rec = (over: Partial<RunRecord>) => ({ runId: "run-b", jobId: "k", stateful: false, cwd: "/p", pid: 4242, startedAt: run.started_at, finishedAt: "2026-06-01T12:00:00Z", ok: false, findings: 0, droppedFindings: 0, stateUpdated: false, ...over }) as RunRecord;
+	const marker = (pid: number, runId = "run-loop") => ({ stateful: true, running: { runId, pid, startedAt: run.started_at } });
+	const rows = (map: Record<string, Row[]>) => (lane: string) => map[lane] ?? [];
+	// Alone: its own claim, a run of another process, a run that has its record.
+	assert.equal(diedBeside(run, [plain, other], rows({ s: [claimed("a", 4242)], t: [claimed("b", 9)] }), []), false);
+	assert.equal(diedBeside(run, [plain, marker(9)], rows({}), []), false);
+	assert.equal(diedBeside(run, [plain, marker(4242)], rows({}), [rec({ runId: "run-loop", ok: true })]), false, "a marker whose run has its record ended before the process stopped");
+	assert.equal(diedBeside(run, [plain, other], rows({ t: [claimed("b", 4242)] }), [rec({ ok: true })]), false, "and so did a claim whose run has its record");
+	assert.equal(diedBeside(run, [plain], rows({}), [rec({ interrupted: true, finishedAt: "2026-06-01T11:58:00Z" })]), false, "an interrupted record that was written before this run began is of an earlier process");
+	assert.equal(diedBeside(run, [plain], rows({}), [rec({ interrupted: true, pid: 9 })]), false);
+	assert.equal(diedBeside(run, [plain], rows({}), [rec({ runId: "run-a", interrupted: true })]), false, "its own record");
+	// Beside: a loop's marker, another plain job's claim, a run that was closed first.
+	assert.equal(diedBeside(run, [plain, marker(4242)], rows({}), []), true);
+	assert.equal(diedBeside(run, [plain, other], rows({ t: [claimed("b", 4242)] }), []), true);
+	assert.equal(diedBeside(run, [plain, other], rows({ t: [claimed("b", 4242)] }), [rec({ startedAt: "2026-06-01T11:00:00Z", ok: true })]), true, "a record of an earlier run of that row is not this claim's");
+	assert.equal(diedBeside(run, [plain], rows({}), [rec({ interrupted: true })]), true);
+});
+
+test("[R5] two turns that were going when their process stopped are not counted, whichever is closed first and however often; a turn that was the only one is", async () => {
+	const w = closingWorld();
+	w.jobsList.push({ id: "k", sessionId: "t", prompt: "go", cwd: "/p", schedule: { kind: "every", ms: 60_000 }, enabled: true, stateful: false, runCount: 1 });
+	const other = () => w.jobsList[1] as any;
+	const dies = (n: number, lane: "s" | "t", pid: number) => {
+		const id = `${lane}${n}`;
+		w.store.append(row(id, { lane, wake: "turn", source: `cron:${lane === "s" ? "j" : "k"}`, mode: "unattended", collapse_key: `cron:${lane === "s" ? "j" : "k"}`, payload: { text: `[Trigger ${id}] go`, cwd: "/p" } }));
+		assert.equal(w.store.claim(lane, id, { id: `run-${id}`, pid, started_at: stamp(T0 + n * 60_000) }), true);
+		w.written(id);
+	};
+	for (let n = 1; n <= 4; n++) {
+		dies(n, "s", 4000 + n);
+		dies(n, "t", 4000 + n);
+		for (const lane of n % 2 ? ["s", "t"] : ["t", "s"]) await drain(lane, w.store, w.executor, T0 + n * 60_000 + 1_000, w.sinks);
+		assert.deepEqual([w.job().interruptions, w.job().enabled, other().interruptions, other().enabled], [undefined, true, undefined, true], `death ${n}`);
+	}
+	assert.deepEqual(w.runs.map((r) => [r.interrupted, r.beside]), Array(8).fill([true, true]), "each record says the run was going beside another");
+	assert.deepEqual([w.store.list("s"), w.store.list("t")], [[], []]);
+	// Alone, it is counted.
+	dies(5, "s", 4005);
+	await drain("s", w.store, w.executor, T0 + 5 * 60_000 + 1_000, w.sinks);
+	assert.deepEqual([w.job().interruptions, w.runs.at(-1)!.beside], [1, undefined]);
+});
+
+test("[R5] a turn that was going beside a loop's run when their process stopped is not counted: with the loop's marker still there, and after the sweep cleared it and left its mark on the job", async () => {
+	// The closing comes first: the loop's marker is the evidence.
+	const first = closingWorld();
+	first.jobsList.push({ id: "loop", stateful: true, enabled: true, schedule: { kind: "every", ms: 60_000 }, running: { runId: "run-loop", pid: 4242, startedAt: "2026-06-01T11:58:00Z" } });
+	claimIn(first.store, "c1");
+	await drain("s", first.store, first.executor, T0, first.sinks);
+	assert.deepEqual([first.job().interruptions, first.runs[0].beside], [undefined, true]);
+	// The sweep came first: the marker is gone, and the job carries the run's id.
+	const second = closingWorld({ id: "j", sessionId: "s", prompt: "go", cwd: "/p", schedule: { kind: "every", ms: 60_000 }, enabled: true, stateful: false, runCount: 1, crowded: "run-c1" });
+	claimIn(second.store, "c1");
+	await drain("s", second.store, second.executor, T0, second.sinks);
+	assert.deepEqual([second.job().interruptions, second.job().crowded, second.runs[0].beside], [undefined, undefined, true]);
+	// A mark for another run says nothing about this one.
+	const third = closingWorld({ id: "j", sessionId: "s", prompt: "go", cwd: "/p", schedule: { kind: "every", ms: 60_000 }, enabled: true, stateful: false, runCount: 1, crowded: "run-old" });
+	claimIn(third.store, "c1");
+	await drain("s", third.store, third.executor, T0, third.sinks);
+	assert.deepEqual([third.job().interruptions, third.job().crowded, third.runs[0].beside], [1, undefined, undefined]);
 });

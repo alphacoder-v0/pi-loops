@@ -127,7 +127,8 @@ All notable changes to pi-loops are documented here. The format follows
   process running it stopped". If its prompt was not written, the prompt is tried again after a
   wait, and after the third time it goes to the inbox as a request that could not be delivered.
   A job whose turns were interrupted three times in a row is turned off, as before, and says
-  `parked: its last 3 runs were interrupted before they finished`. The line "cleared stale running
+  `parked: its last 3 runs were interrupted before they finished`. As before, a run is counted
+  only when it was the one run that the process had going. The line "cleared stale running
   state" is no longer written for a plain job. A turn that you stopped, or that a window took
   back, is not counted as a failure or as an interruption when its process stops before the turn
   is closed: its record says how it ended.

@@ -1346,6 +1346,56 @@ test("a marker that an earlier version left on a plain job, for a turn whose pro
 	}
 });
 
+test("a loop whose process stopped while a plain job's turn was going beside it is not counted as interrupted, and the turn's job is marked for its closing; alone, the loop is counted", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }) });
+	try {
+		const started = new Date(Date.now() - 30_000).toISOString();
+		// Not enabled, so that this scheduler does not start it again: the sweep is what is looked at.
+		const loop = await sched.store.add(makeJob({ stateful: true, enabled: false, name: "loop", running: { runId: "run-loop", pid: 999_999_999, startedAt: started } }));
+		const plain = await sched.store.add(makeJob({ stateful: false, sessionId: "other", name: "plain", schedule: { kind: "every", ms: 3_600_000 }, lastDueAt: started, lastFiredAt: started, prompt: "remind me" }));
+		const store = new RequestStore(dir);
+		store.append({ ...plainJobRow(plain, "run-turn", `cron:${plain.id}`, "", { pid: 1, instance: "host", version: "0" }), lane: "other" } as any);
+		assert.equal(store.claim("other", "run-turn", { id: "run-turn", pid: 999_999_999, started_at: started } as any), true);
+		await sched.tick();
+		let after = Object.fromEntries(sched.store.load().map((j) => [j.id, j]));
+		assert.deepEqual([after[loop.id].running, after[loop.id].interruptions], [undefined, undefined]);
+		assert.match(after[loop.id].lastError ?? "", /with other runs beside this one/);
+		assert.equal(after[plain.id].crowded, "run-turn", "the closing of the turn will find no marker: the job says what the marker did");
+		// The same loop, with the turn of another process beside it: alone in its own.
+		await sched.store.update(loop.id, (j) => void (j.running = { runId: "run-loop-2", pid: 999_999_998, startedAt: started }));
+		await sched.tick();
+		after = Object.fromEntries(sched.store.load().map((j) => [j.id, j]));
+		assert.deepEqual([after[loop.id].running, after[loop.id].interruptions], [undefined, 1]);
+		// A turn that was closed before the sweep left an interrupted record of that process: beside, again.
+		await sched.store.update(loop.id, (j) => void (j.running = { runId: "run-loop-3", pid: 999_999_997, startedAt: started }));
+		sched.store.appendRun({ runId: "run-turn-3", jobId: plain.id, stateful: false, cwd: dir, pid: 999_999_997, startedAt: started, finishedAt: new Date().toISOString(), ok: false, error: "the process running it stopped", findings: 0, droppedFindings: 0, stateUpdated: false, interrupted: true });
+		await sched.tick();
+		after = Object.fromEntries(sched.store.load().map((j) => [j.id, j]));
+		assert.deepEqual([after[loop.id].running, after[loop.id].interruptions], [undefined, 1], "not counted");
+	} finally {
+		await sched.stop();
+	}
+});
+
+test("a marker that an earlier version left for a turn of a row a window queued, with the prompt written, counts no second slot: the window counted it", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const file = path.join(dir, "other.jsonl");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "message", id: "e1", timestamp: new Date().toISOString(), message: { role: "user", content: "[Trigger run-left] remind me" } })}\n`);
+	const leases = { heldEpoch: () => 1, holderOf: () => undefined, sessionFile: (id: string) => (id === "other" ? file : undefined) };
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }), leases });
+	try {
+		const fired = new Date(Date.now() - 30_000).toISOString();
+		const job = await sched.store.add(makeJob({ stateful: false, sessionId: "other", schedule: { kind: "every", ms: 3_600_000 }, createdAt: new Date(Date.now() - 3_700_000).toISOString(), prompt: "remind me", lastDueAt: fired, lastFiredAt: fired, runCount: 1, running: { runId: "run-left", pid: 999_999_999, startedAt: fired } }));
+		new RequestStore(dir).append({ ...plainJobRow(job, "run-left", `cron:${job.id}`, "", { pid: 1, instance: "w1", version: "0" }), lane: "other" } as any);
+		await sched.tick();
+		const after = sched.store.load()[0];
+		assert.deepEqual([after.running, after.runCount, after.lastFiredAt, after.owedSlot], [undefined, 1, fired, undefined]);
+	} finally {
+		await sched.stop();
+	}
+});
+
 test("a window's clock waits for a plain job whose row a run has claimed: the slot stays owed, and /cron run says it is already running", async () => {
 	const dir = tmp("pi-loops-sched-");
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }) });

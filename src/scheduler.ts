@@ -19,8 +19,8 @@ import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, type RunReq
 import { openWhere, ownerSession, runsHere, whereRuns, type OwnerView } from "./job-owner.ts";
 import { shortSessionId } from "./session-head.ts";
 import type { BackgroundExecutor } from "./background-executor.ts";
-import { jobQueued, plainCollapseKey, plainJobRow, plainRunId, runningRun, sessionFileHas } from "./engine.ts";
-import { INTERRUPTIONS_BEFORE_PARKING, oneShotDone } from "./settle.ts";
+import { diedBeside, jobClaim, jobQueued, plainCollapseKey, plainJobRow, plainRunId, runningRun, sessionFileHas } from "./engine.ts";
+import { INTERRUPTIONS_BEFORE_PARKING, oneShotDone, parkedReason } from "./settle.ts";
 import { RequestStore, type Row } from "./requests.ts";
 import { RunList, STOPPED_BY_PERSON } from "./run-list.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
@@ -470,15 +470,6 @@ export class LoopScheduler {
 		return this.store.removeWhere((j) => inScope(j) && !j.enabled && !!j.lastError?.endsWith(DEAD_SESSION_MARKER), { purge: true });
 	}
 
-	/**
-	 * Clear running markers left behind by processes that are gone. Mutates `jobs` in place and
-	 * returns the one-shots it retired, for the caller to report once the store is written.
-	 *
-	 * A dead marker is looked up in the run log first. A run whose record is there finished, and only
-	 * its last write to the store was lost (the process died between `appendRun` and the update after
-	 * it): its slot is spent, so the bookkeeping is finished from the record instead of rolling back
-	 * and running it a second time. Only a run with no record is owed again.
-	 */
 	/** Whether `[Trigger <runId>] ` is in the conversation's file, when pi-loops knows the file. */
 	private promptWritten(sessionId: string, runId: string): boolean {
 		const file = this.leases?.sessionFile?.(sessionId);
@@ -490,6 +481,16 @@ export class LoopScheduler {
 		}
 	}
 
+	/**
+	 * Clear running markers left behind by processes that are gone. Mutates `jobs` in place and
+	 * returns the one-shots it retired, for the caller to report once the store is written.
+	 *
+	 * A dead marker is looked up in the run log first. A run whose record is there finished, and only
+	 * its last write to the store was lost (the process died between `appendRun` and the update after
+	 * it): its slot is spent, so the bookkeeping is finished from the record instead of rolling back
+	 * and running it a second time. A run with no record is owed again, but for a plain job's turn
+	 * whose prompt is in the conversation: that slot is spent too.
+	 */
 	private clearStaleRunning(jobs: LoopJob[]): LoopJob[] {
 		// The wall clock, not `this.now()`: `os.uptime()` is measured against it, so the boot instant
 		// is only meaningful in the same terms — which is why a test cannot move this comparison.
@@ -507,14 +508,29 @@ export class LoopScheduler {
 			const recycled = Number.isFinite(booted) && Date.parse(startedAt) < booted - 60_000;
 			return !(pid === process.pid ? this.going.get(runId) !== undefined : !recycled && pidAlive(pid));
 		};
-		// How many runs each dead process took with it. One that died with a single run in flight
+		// Whether each dead process took other runs with it. One that died with a single run going
 		// points at that run; one that died with several says nothing about any of them, and counting
-		// each would park every loop that happened to run beside the one that took it down.
-		const diedWith = new Map<number, number>();
-		for (const job of jobs) if (job.running && dead(job) && !recordOf(job.running.runId)) diedWith.set(job.running.pid, (diedWith.get(job.running.pid) ?? 0) + 1);
+		// each would park every loop that happened to run beside the one that took it down. The other
+		// runs are a loop's marker and a plain job's claim alike (`diedBeside`). Asked before any marker
+		// is cleared, and only when a marker is stale: it reads the queue of every plain job.
+		const stale = jobs.filter((job) => job.running && dead(job) && !recordOf(job.running.runId));
+		const beside = new Set<string>();
+		if (stale.length) {
+			const rowsOf = (sessionId: string) => this.requests.list(sessionId);
+			const runs = this.store.allRuns();
+			const going = jobs.filter((job) => !(job.running?.pid === process.pid && this.going.get(job.running.runId) !== undefined));
+			for (const job of stale) if (diedBeside({ id: job.running!.runId, pid: job.running!.pid, started_at: job.running!.startedAt }, going, rowsOf, runs)) beside.add(job.id);
+			// A plain job's turn that the same process had going is closed later, by a drain, when this
+			// marker is gone. The mark tells that closing what the marker would have.
+			const pids = new Set(stale.map((job) => job.running!.pid));
+			for (const job of jobs) {
+				const claimed = !job.stateful && job.sessionId ? jobClaim(job.id, rowsOf(job.sessionId)) : undefined;
+				if (claimed && pids.has(claimed.run.pid) && !runs.some((r) => r.runId === claimed.run.id && Date.parse(r.startedAt) >= Date.parse(claimed.run.started_at))) job.crowded = claimed.run.id;
+			}
+		}
 		for (const job of jobs) {
 			if (!job.running) continue;
-			const { pid, runId, startedAt } = job.running;
+			const { runId, startedAt } = job.running;
 			if (!dead(job)) continue;
 			job.running = undefined;
 			const record = recordOf(runId);
@@ -532,7 +548,8 @@ export class LoopScheduler {
 			// whose prompt is written is delivered: asked again under the slot's derived id, the same
 			// prompt would be answered twice.
 			if (!job.stateful && job.sessionId && this.promptWritten(job.sessionId, runId)) {
-				job.runCount++;
+				// A marker that names a queued row is a turn of what a window left: that window counted the slot.
+				if (!this.requests.list(job.sessionId).some((row) => row.id === runId)) job.runCount++;
 				continue;
 			}
 			// The run that died is owed again: roll the bookkeeping back so the next tick re-fires it
@@ -545,7 +562,7 @@ export class LoopScheduler {
 				job.lastDueAt = undefined;
 				job.lastFiredAt = undefined;
 			}
-			if ((diedWith.get(pid) ?? 0) > 1) {
+			if (beside.has(job.id)) {
 				job.lastError = "cleared stale running state (the process ended mid-run, with other runs beside this one); the run will be retried";
 				continue;
 			}
@@ -556,7 +573,7 @@ export class LoopScheduler {
 				// is known, and enabling it again tries once more.
 				job.enabled = false;
 				job.owedSlot = undefined;
-				job.lastError = `parked: its last ${job.interruptions} runs were interrupted before they finished (the process running them stopped each time, with no other loop running; see host.log) — /cron enable ${job.id} to try again`;
+				job.lastError = parkedReason(job.id, job.interruptions);
 				this.log(`cron ${job.name ?? job.id}: parked after ${job.interruptions} interrupted runs`, undefined, job);
 				continue;
 			}

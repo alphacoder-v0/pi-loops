@@ -85,9 +85,16 @@ export interface LoopJob {
 	/**
 	 * Runs in a row that started and never finished: the process running them died mid-run. Three
 	 * park the job (disabled, with why) rather than letting one that takes its process down with it
-	 * do so on every start. Cleared by a run that finishes, and by enabling the job again.
+	 * do so on every start. Cleared by a run that finishes, and by enabling the job again. A run is
+	 * counted only when it was the one run its process had going (`diedBeside`, src/engine.ts).
 	 */
 	interruptions?: number;
+	/**
+	 * The id of this plain job's run that was going, beside a loop's run, when their process
+	 * stopped. The sweep of stale markers writes it when it clears that loop's marker, which is the
+	 * one trace of the loop's run: the closing of this run, later, then counts no interruption.
+	 */
+	crowded?: string;
 	/**
 	 * When this job's `cwd` was first found missing, if it still is.
 	 *
@@ -165,6 +172,8 @@ export interface RunRecord {
 	 * this one: `ok: false`, `error: "the process running it stopped"`. Never beside `aborted`.
 	 */
 	interrupted?: true;
+	/** Beside `interrupted`: the process had other runs going when it stopped, so this run is not counted as an interruption of its job. */
+	beside?: true;
 }
 
 export interface CheckerRecord {

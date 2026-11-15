@@ -67,12 +67,17 @@ machine. Everything here follows from that, and each one has a price.
    failure is the job's. A turn that did not end is delivered only by its prompt in the
    conversation: one whose process stopped before the prompt was written is tried again and
    reported after the third time, and a job whose turns are interrupted three times in a row is
-   turned off. The cost: the slot is counted when its row is written, so `runs N` counts a turn
+   turned off. A turn is counted as interrupted only when it was the one run its process had
+   going, a loop's or a held turn's: a process that stopped with several says nothing about any
+   of them (`diedBeside`). The closing writes that into the record, and the sweep of stale
+   markers leaves it on the job when it clears a loop's marker first. The cost: the slot is counted when its row is written, so `runs N` counts a turn
    that a person stopped; a process that dies in a turn leaves a record that says so, written by
    the closing; a stop that arrives after the lease is taken and before the claim is written is
    answered as a stop of nothing; and the job's patch is applied only for a record newer than the
-   last one applied, so when a process stops in the middle of two closings of one job, the older
-   record's failure or interruption can go uncounted (never counted twice).
+   job's last stamp, which is the slot's until a record is applied. So when a process stops in
+   the middle of two closings of one job, the older record's failure or interruption can go
+   uncounted, and so can a turn that ends before its slot's stamp because the system clock was
+   set back during it (never counted twice).
 
 2. **Who runs what.** One always-on process runs stateful loops, dynamic-rule checks and MCP push
    evaluation for a loops directory. A window starts it when there is work to run, including the plain jobs and queued rule results of
@@ -433,9 +438,11 @@ machine. Everything here follows from that, and each one has a price.
     way: delivered, dead, cancelled, stale, refused, job-removed, stopped. Three others remove
     rows, each for a reason of its own and with its own audit line where one is due: the page,
     which takes back or cancels a message it queued; a window, which drops its own goal's
-    continuations and what it queued once that ran; and a clock, a window's or the background's
-    under the lease it took, which puts a job's new slot in the place of a prompt that failed and
-    takes back the row of a slot another process fired first. A row that a run has claimed leaves
+    continuations and what it queued once that ran; and a clock. A window's clock puts a job's
+    new slot in the place of a prompt that pi did not take. A window's clock or the
+    background's, under the lease it took, takes back the row of a slot another process fired
+    first. In the background a new slot is spent onto a row of its job that failed, and that row
+    keeps its attempts. A row that a run has claimed leaves
     through the closing of that run only. The lane is taken from all
     the rows before any of them is started, so a turn that sorts first is not handed to pi beside
     an unwritten turn that only its text proves. A dead letter is filed once for a row, under an
