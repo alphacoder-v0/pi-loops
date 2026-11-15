@@ -707,8 +707,9 @@ export interface ExecutorView {
 	 * Why this executor leaves the row for later, its mode apart (that is `ceiling`, and the engine
 	 * recomputes the mode itself); undefined when nothing of its own holds the row. `decideDrain` waits
 	 * with this reason, which is computed each time and stored nowhere. A window: always undefined.
-	 * The background process: a turn of its own is writing the conversation, or the row is a turn row
-	 * (until held turns ride rows).
+	 * pi-loops in the background: a turn of its own is writing the conversation, or the row is a turn
+	 * row that this drain may not start (a rule's push waits for a window; a plain job's row starts
+	 * at its job's tick, where its sub-agent slot is).
 	 */
 	blocked(row: UnclaimedRow): string | undefined;
 	/**

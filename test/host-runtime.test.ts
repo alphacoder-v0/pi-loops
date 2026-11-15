@@ -540,9 +540,13 @@ test("a held turn runs in the closed conversation's file and stops once a window
 		await host.scheduler.drain(5000);
 		assert.deepEqual(seen[0], { kind: "held", sessionFile: file, before: true }, "the turn runs in that conversation's own file, holding it");
 		assert.deepEqual(seen[1], { after: false }, "the window's acquisition is what the turn sees");
+		// The slot was counted when its row was written, as a window counts it; what is owed is the row.
 		const job = host.scheduler.store.load()[0];
-		assert.equal(job.runCount, 0, "the interrupted turn is not counted");
-		assert.equal(job.lastFiredAt, undefined, "its slot is owed to the window now holding the conversation");
+		assert.deepEqual([job.runCount, !!job.lastFiredAt, job.owedSlot, job.consecutiveFailures], [1, true, undefined, undefined]);
+		const [row] = new RequestStore(dir).list(sessionId);
+		assert.deepEqual([row.source, row.run, row.attempts, row.not_before], ["cron:cron-held", undefined, 0, undefined], "its row is owed to the window now holding the conversation: no claim, no attempt");
+		const [record] = host.scheduler.store.allRuns();
+		assert.deepEqual([record.runId, record.aborted, record.stoppedBy, record.error], [row.id, true, undefined, "taken back"]);
 	} finally {
 		await host.stop();
 	}
@@ -821,7 +825,7 @@ test("a held turn a person stopped runs exactly once: no successor row, no owed 
 		assert.deepEqual(requests.list(sessionId), [], "no successor row asks the stopped prompt again");
 		const job = host.scheduler.store.load()[0];
 		assert.equal(job.owedSlot, undefined, "the slot is spent");
-		assert.equal(job.runCount, 0, "a stop is not a run, as for a loop's");
+		assert.equal(job.runCount, 1, "the slot was counted when its row was written, as a window counts it");
 		assert.equal(job.lastError, undefined, "and not a failure: no failing mark, nothing under failures in pi-loops status");
 		assert.equal(job.consecutiveFailures, undefined);
 		await host.scheduler.tick();
@@ -856,7 +860,8 @@ test("a stop read by the held turn's own first drain stops it", { timeout: 30_00
 		assert.equal(prompts.length, 0, "stopped before the model was asked");
 		assert.deepEqual(requests.list(sessionId), []);
 		const job = host.scheduler.store.load()[0];
-		assert.deepEqual([job.owedSlot, !!job.lastFiredAt, job.runCount], [undefined, true, 0], "done, not owed: the slot is spent, and a stop is not counted as a run");
+		assert.deepEqual([job.owedSlot, !!job.lastFiredAt, job.runCount, job.consecutiveFailures], [undefined, true, 1, undefined], "done, not owed: the slot is spent, and a stop is no failure");
+		assert.deepEqual(host.triggers.store.listAudit(5, (r) => r.type === "request" && r.state === "stopped").length, 1, "the row left as stopped, with its audit line");
 	} finally {
 		await host.stop();
 	}
