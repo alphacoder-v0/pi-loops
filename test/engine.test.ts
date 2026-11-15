@@ -1764,6 +1764,8 @@ test("[2.1-1] a row whose run is still going waits as running and has the lane, 
 			assert.equal(by.a3.do, "append", "a result is still written");
 		}
 	}
+	// A held turn's prompt is in the conversation while its run is still going: the row waits for the run, it is not delivered yet.
+	assert.deepEqual(decideDrain("conversation", [running], proofThat({ has: () => true, ran: () => "ended" }), jobs, view({ claimLive: () => true }), T0), [{ do: "wait", row: running, why: "running" }]);
 	// An append after the running row wakes the agent; one before it does not, as with a turn pi holds.
 	assert.deepEqual(decideDrain("conversation", [running, result], none, jobs, view({ claimLive: () => true }), T0)[1], { do: "append", row: result, wakeAgent: true });
 	assert.deepEqual(decideDrain("conversation", [result, running], none, jobs, view({ claimLive: () => true }), T0)[0], { do: "append", row: result, wakeAgent: false });

@@ -993,11 +993,16 @@ test("the background closes a claim whose process is gone, by what the run log s
 			store.append(turn(id));
 			assert.equal(store.claim(sessionId, id, { id: `run-${id}`, pid: 999_999_999, started_at: new Date().toISOString() }), true);
 		}
+		// A claim of a process that lives (this one): its run is going, whatever the log says.
+		store.append(turn("t-live"));
+		assert.equal(store.claim(sessionId, "t-live", { id: "run-t-live", pid: process.pid, started_at: new Date().toISOString() }), true);
+		record("run-t-live", { ok: true });
 		record("run-t-aborted", { aborted: true });
 		record("run-t-ended", { ok: true });
 		await host.scheduler.tick();
 		const left = Object.fromEntries(store.list(sessionId).map((r) => [r.id, r]));
-		assert.deepEqual(Object.keys(left).sort(), ["t-aborted", "t-cut"], "the row whose run ended has left");
+		assert.deepEqual(Object.keys(left).sort(), ["t-aborted", "t-cut", "t-live"], "the row whose run ended has left");
+		assert.equal(left["t-live"].run?.id, "run-t-live", "a run that is going keeps its claim");
 		assert.deepEqual([left["t-aborted"].run, left["t-aborted"].attempts], [undefined, 0], "aborted by no person: owed again, and no attempt counted");
 		assert.deepEqual([left["t-cut"].run, left["t-cut"].attempts, left["t-cut"].last_error], [undefined, 1, "the process running it stopped"], "no record: the run was cut off, and that is an attempt");
 		assert.equal(host.scheduler.inbox.list().length, 0);
