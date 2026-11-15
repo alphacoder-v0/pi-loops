@@ -111,6 +111,13 @@ export interface ClaimedRow extends RowBase {
 	run: { id: string; pid: number; procStart?: string; started_at: string };
 }
 
+declare const listed: unique symbol;
+/**
+ * A claim whose run is in the list of runs of the process that writes it. Only `RunList.claim`
+ * (src/run-list.ts) makes one, so no claim is on disk without its run in that list.
+ */
+export type Listed = ClaimedRow["run"] & { readonly [listed]: true };
+
 /** A request row. `if (row.run)` tells the two kinds apart. */
 export type Row = UnclaimedRow | ClaimedRow;
 
@@ -364,7 +371,7 @@ export class RequestStore {
 	 * run has claimed it. Returns whether this caller has the claim. A patch (`update`) can clear a claim and cannot
 	 * set one: the condition is checked here, where no other writer can come between.
 	 */
-	claim(lane: LaneId, id: string, run: ClaimedRow["run"]): boolean {
+	claim(lane: LaneId, id: string, run: Listed): boolean {
 		let claimed = false;
 		this.rewrite(lane, (lines) =>
 			lines.map(({ raw, row }) => {

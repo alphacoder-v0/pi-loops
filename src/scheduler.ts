@@ -20,6 +20,7 @@ import { openWhere, ownerSession, runsHere, whereRuns, type OwnerView } from "./
 import { shortSessionId } from "./session-head.ts";
 import { DEAD_AFTER_ATTEMPTS, plainCollapseKey, plainJobRow, plainRunId, sessionFileHas } from "./engine.ts";
 import { RequestStore, type Row } from "./requests.ts";
+import { STOPPED_BY_PERSON } from "./run-list.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 
 export const DEFAULT_TICK_MS = 30_000;
@@ -129,7 +130,7 @@ export interface PlainJobLeases {
  * abort`, a stop row. A held turn stopped so is done, not handed back: no successor row, no owed slot.
  * A quit, an upgrade, a preemption or the budget aborts with no reason and hands the turn back.
  */
-export const STOPPED_BY_PERSON = "stopped by a person";
+export { STOPPED_BY_PERSON } from "./run-list.ts";
 
 /** A closed conversation the host holds for one turn. */
 export interface HeldSession {

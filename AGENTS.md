@@ -53,6 +53,7 @@ src/recipe.ts               what /recipe decides: manifest parsing (each [[job]]
 src/args.ts                 /cron add argument parsing
 src/thinking.ts             which thinking levels exist, asked wherever one is typed or handed over
 src/slots.ts                the one sub-agent concurrency pool both pipelines and /goal draw from
+src/run-list.ts             the runs that are going in this process, as one list; a claim on a row is written only through it
 src/job-health.ts           which loops and trigger rules count as failing, and the badge/summary line and `[failing ×N]` mark that say so
 src/job-signal.ts           what a loop's runs came to: findings filed, claimed, dismissed, and the quiet streak `/cron` marks
 src/job-lines.ts            the `/cron` listing itself, out of the unimportable extension so a marker or column is testable
