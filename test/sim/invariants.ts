@@ -310,6 +310,19 @@ function attemptsCountFailures(world: World, _memory: Memory, queues: Queues): s
 	return out;
 }
 
+/**
+ * What the person typed into a terminal's editor and has not sent is still in it: a window that
+ * takes its own prompts out of the editor after a stop leaves the person's words where they are.
+ */
+function typedStaysInTheEditor(world: World): string[] {
+	const out: string[] = [];
+	for (const proc of everyProcess(world)) {
+		if (!proc.alive) continue;
+		for (const words of proc.pi.editor.typed) if (!proc.pi.editor.text.includes(words)) out.push(`the person typed "${words}" into the editor of ${who(proc)} and did not send it, and it is no longer there`);
+	}
+	return out;
+}
+
 /** Why a hand-over the engine gave up while pi still held it, written late, may be a second delivery of its row. */
 type Excuse = "refused" | "refused, proved by its text" | "stop" | "lease" | "editor";
 /** The two the design accepts (see `deliveredOnce`); the others are defects, each held under `KNOWN`. */
@@ -382,9 +395,9 @@ export const KNOWN: Readonly<Record<string, { defect: string; seed: number }>> =
 	"I2 a person's message is answered even when another has the same words": { seed: 86, defect: "landed takes a row only its text proves for delivered by another row's message with the same words, written at or after its hand-over stamp: when its own hand-over came to nothing (it threw and left last_error, or its window died), the row is removed as done, not given back to the page, and the person, who said the same words twice, is answered once. Needs no more of pi than a failed hand-over or a crash (#250)" },
 	"I2 a row is done only by its proof": { seed: 3346, defect: "a message without a prefix that no handed-over row claims (a text-proved row's late send, once that row has left the queue) is taken for the oldest prefixed turn pi was handed and has not started: that row is removed as done while pi still holds it unwritten. Narrow: pi's phase before a run has to outlast the ten-second grace (#247)" },
 	"a row is delivered once when the lease moves while pi holds its turn unstarted": { seed: 618, defect: "a window takes the lease while the holder's pi holds a turn it was handed and has not started (the lease says a turn runs only from agent_start): the new holder hands the row over again, and both pis write it; for a person's message that is one prompt answered twice. Narrow: the lease has to be taken during pi's phase before a run (#248)" },
-	"a row is delivered once after a stop in the page's pi": { seed: 86, defect: "in rpc mode (the page's pi) a stop is AgentSession.abort(), which keeps what pi queued behind the aborted turn; the window takes it for dropped, hands the row over again, and pi writes both. A terminal's abort clears the queue, as Esc does (#249)" },
-	"a row is delivered once when the person sends what a stop put into the editor": { seed: 59, defect: "in a terminal a stop (Esc, or ctx.abort()) clears pi's queue and puts the queued user messages into the editor, a prompt of ours with its [Trigger <id>] prefix among them; the window takes the rows for dropped and hands them over again, and when the person presses Enter the editor's text is one more message with the same prompt in it. Measured on pi 1.2.0 (.docs/redesign-0243/signatures/M3b-probes.md, P3). An extension can read and set the editor's text, so a window can take its own prompts out of it (#256)" },
-	[REWRITTEN_HOLDS]: { seed: 7, defect: "pi lets another extension's input handler rewrite a message (probes, P4). A prefix of ours is then not at the start of the message, and a row's words are not its first: the proof by prefix and the proof by words both miss the row's own message. The window guesses (the `ran` exit), or the row is handed over again. The order of the messages is still the order of the hand-overs, so a window that marks the message it handed over marks the right one (#257)" },
+	"a row is delivered once after a stop in the page's pi": { seed: 18, defect: "in rpc mode (the page's pi) a stop is AgentSession.abort(), which keeps what pi queued behind the aborted turn; the window takes it for dropped, hands the row over again, and pi writes both. A terminal's abort clears the queue, as Esc does (#249)" },
+	"a row is delivered once when the person sends what a stop put into the editor": { seed: 59, defect: "in a terminal a stop (Esc, or ctx.abort()) clears pi's queue and puts the queued user messages into the editor, a prompt of ours with its [Trigger <id>] prefix among them; the window takes the rows for dropped and hands them over again, and when the person presses Enter the editor's text is one more message with the same prompt in it. Measured on pi 1.2.0 (.docs/redesign-0243/signatures/M3b-probes.md, P3). An extension can read and set the editor's text, so a window can take its own prompts out of it. Narrow: the engine hands a turn only to an idle pi, so a run has to begin between its look and the hand-over for a prompt of ours to be queued behind a turn (#256)" },
+	[REWRITTEN_HOLDS]: { seed: 7, defect: "pi lets another extension's input handler rewrite a message (probes, P4). A prefix of ours is then not at the start of the message, and a row's words are not its first: the proof by prefix and the proof by words both miss the row's own message. The window guesses (the `ran` exit), or the row is handed over again. Inside one run the order of the messages is still the order of the hand-overs. It is not across a stop in the page's pi: what pi kept is written behind the message that starts the next run, which was handed over later. So a window cannot tell its message by counting (#257)" },
 };
 
 export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
@@ -396,6 +409,7 @@ export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
 	["I6 what pi holds unwritten is still owed on disk", heldIsStillOwed],
 	["I7 a finding is decided once", decidedOnce],
 	["a stop and a cancel do what they name", stopsAndCancelsWork],
+	["what the person typed stays in the editor until they send it", typedStaysInTheEditor],
 	["I8 attempts count failed hand-overs, a backoff is waited out, and three failures make a dead letter", attemptsCountFailures],
 	["a row is delivered once per proof", deliveredOnce],
 	...Object.entries(KNOWN_SECOND_DELIVERIES).map(([name, excuse]): [string, Invariant] => [name, (world) => [...writtenTooOften(world, [...ACCEPTED, ...Object.values(KNOWN_SECOND_DELIVERIES).filter((other) => other !== excuse)]), ...(excuse === "editor" ? handedOverAfterTheEditor(world) : [])]]),

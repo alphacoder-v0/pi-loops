@@ -263,6 +263,10 @@ export async function apply(world: World, step: Step): Promise<string> {
 			// the window's tick comes round, or pi would run the person's turns most of the time.
 			if (moves.length === 1 && moves[0] === "type" && c % 3 !== 0) return drains(world, proc, true);
 			const move = pick(moves, c);
+			if (move === "type" && proc.pi.editor.text !== "") {
+				piMove(world, proc, move);
+				return `${who(proc)}: the person types words of their own into the editor, behind what a stop put there, and does not send them`;
+			}
 			piMove(world, proc, move);
 			return `${who(proc)}: pi ${move === "esc" ? (proc.mode === "tui" ? "is stopped with Esc and settles; what it had queued is in the editor" : "is stopped with the page's Stop and settles; it keeps what it had queued") : PI_SAYS[move]}`;
 		}
@@ -355,6 +359,9 @@ async function killEveryProcessAndFinish(world: World, numbers: readonly number[
 	return left;
 }
 
+/** The checks today's engine breaks where another extension rewrites every message, and no other does: what `REWRITTEN_HOLDS` excuses there. */
+const BROKEN_BY_REWRITING: readonly string[] = ["a row is delivered once per proof", "I8 attempts count failed hand-overs, a backoff is waited out, and three failures make a dead letter", "a stop and a cancel do what they name", AFTER_RESTART];
+
 export interface Run {
 	/** One line per step, as it happened. */
 	lines: string[];
@@ -381,10 +388,11 @@ export async function run(plan: Plan, dir: string, time: Timers, enforce?: strin
 		return rewritten(found.violation, step);
 	};
 	// In a world where another extension rewrites every message, today's engine cannot prove a row
-	// by its prefix or its words: whatever check breaks there is that one defect, held under `KNOWN`.
+	// by its prefix or its words. The checks that breaks (`BROKEN_BY_REWRITING`) are that one defect
+	// there, held under `KNOWN`; every other check fails such a world as it fails any other.
 	const rewritten = (violation: Violation | undefined, step: number | "end"): Violation | undefined => {
 		// The check a run is told to enforce stays itself, in a rewriting world as in any other.
-		if (!violation || !plan.rewrites || !(REWRITTEN_HOLDS in KNOWN) || violation.invariant === enforce) return violation;
+		if (!violation || !plan.rewrites || !(REWRITTEN_HOLDS in KNOWN) || violation.invariant === enforce || !BROKEN_BY_REWRITING.includes(violation.invariant)) return violation;
 		const broken = { invariant: REWRITTEN_HOLDS, message: `${violation.invariant}: ${violation.message}` };
 		if (enforce === REWRITTEN_HOLDS) return broken;
 		known[REWRITTEN_HOLDS] ??= { step, message: broken.message };

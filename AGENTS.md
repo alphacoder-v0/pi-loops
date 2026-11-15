@@ -159,7 +159,7 @@ spending money.
 `npm test` includes the simulation (`test/sim.test.ts`): 2700 seeded schedules of appends, drains,
 pi's turns, stops, crashes and restarts against the real request engine, with every invariant of
 `test/sim/invariants.ts` checked after every step. One world in four has another extension that
-rewrites every message, and in half of them a message takes a millisecond. A failure names its seed, the step, the invariant
+rewrites every message, and in half of all worlds a message takes a millisecond. A failure names its seed, the step, the invariant
 and the schedule, with a shorter schedule that fails the same way. To run one schedule again and
 print it, give its seed (`SIM_STEPS` too, when the run that failed set it):
 
@@ -169,6 +169,14 @@ SIM_SEED=<seed> SIM_SCHEDULES=1 PI_LOOPS_HOST=off node --import ./src/register-p
 
 A check named in `KNOWN` (`test/sim/invariants.ts`) is a defect of `src/` the simulation found and
 nobody has fixed: it runs under `todo`, visible and not red. Fix the defect, then take the name out.
+One of them is of the worlds with a rewriting extension. While it is in `KNOWN`, four checks that
+it breaks there stay green in those worlds (`BROKEN_BY_REWRITING` in `test/sim/schedule.ts`): a
+regression of one of the four in the code for a rewritten prompt is not seen until the name is out.
+
+`test/sim-model.test.ts` holds the simulated pi to what a real pi was measured to do, in scenes
+written out step by step: what the page's Stop keeps and when pi writes it, what Esc in a terminal
+puts into the editor, and a turn that a stop named and Esc dropped. A change to pi's part of
+`test/sim/world.ts` needs a measurement first and a scene here.
 
 A second simulation, `test/sim-claims.test.ts`, runs 400 schedules of a lane that pi-loops in the
 background runs: rows a run claims (`row.run`), runs that end in every way, and a process that dies
