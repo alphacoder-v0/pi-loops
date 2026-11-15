@@ -7,7 +7,7 @@ import { TriggerStore } from "../src/triggers.ts";
 import { type ClaimedRow, type ImageContent, RequestStore, type Row, type UnclaimedRow } from "../src/requests.ts";
 import * as path from "node:path";
 import { BACKOFF_MS } from "../src/backoff.ts";
-import { type Action, type Proof, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, proofOf, landed, personRow, plainJobRow, plainRunId, stripImageNotes, claimAlive } from "../src/engine.ts";
+import { type Action, type Proof, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, proofOf, landed, personRow, plainJobRow, plainRunId, stripImageNotes, claimAlive, changesSomething } from "../src/engine.ts";
 
 test("a row removed between the drain's read and its hand-over is not handed over: the stamp that found no row says so", async () => {
 	// The page's send-here takes a message out of the queue and sends it over rpc. A drain that had
@@ -619,7 +619,7 @@ test("enqueue: a second row with a queued collapse key is not written; one with 
 
 /** `handOver`'s dependencies over a store and a window: the real executor, a drain through it. */
 function handOverDeps(store: RequestStore, w: ReturnType<typeof fakeWindowPi>, sinks: EngineSinks, at = T0) {
-	return { store, delivered: (id: string) => w.executor.entries("s").has(id), produced: (row: Row) => w.executor.produced(row), drain: () => drain("s", store, w.executor, at, sinks) };
+	return { store, delivered: (id: string) => w.executor.proof("s").has(id), produced: (row: Row) => w.executor.produced(row), drain: () => drain("s", store, w.executor, at, sinks) };
 }
 
 test("a claimed finding's hand-off is queued before the finding is marked claimed, under the inbox lock", async () => {
@@ -1595,7 +1595,7 @@ test("a damaged jobs.json costs only the rows that name a job: the person's mess
 	store.append(clock);
 	store.append(row("tr-1", { created_at: stamp(T0 + 2) }));
 	// jobs.json is empty (a torn write) or from a newer pi-loops: JobStore.load() throws from every lookup.
-	const broken: EngineSinks = { jobs: { exists: () => { throw new Error("jobs.json is empty; restore it from jobs.json.bak"); }, enabled: () => true, goalActive: () => true }, inbox: { append: async () => undefined } as any, audit };
+	const broken: EngineSinks = { jobs: { exists: () => { throw new Error("jobs.json is empty; restore it from jobs.json.bak"); }, enabled: () => true, goalActive: () => true }, inbox: { appendOnce: async () => undefined, fileOnce: async () => undefined } as any, audit };
 	const w = windowOn(store);
 	const out = await drain("s", store, w.executor, T0 + 5_000, broken);
 	assert.deepEqual([out.delivered.sort(), out.waiting], [[page.id, "tr-1"].sort(), [clock.id]], "the queue drains around the one row that cannot be judged");
@@ -1846,7 +1846,7 @@ test("[2.1-6] the drain counts an attempt for a cut-off run, clears its claim an
 	const third = await drain("s", again.store, closingExecutor(), T0, again.sinks);
 	assert.deepEqual([again.store.list("s"), third.dead], [[], ["c2"]]);
 	const [letter] = again.inbox.list();
-	assert.deepEqual([letter.id, letter.undelivered, letter.run_id], [findingId("dead | c2"), true, "c2"]);
+	assert.deepEqual([letter.id, letter.undelivered, letter.run_id], [findingId("dead | s | c2"), true, "c2"]);
 	assert.match(letter.text, /^could not be delivered \(failed 3 times: the process running it stopped\): go$/);
 });
 
@@ -1917,7 +1917,7 @@ test("[exit-dead] [R6] a dead letter is the finding, then the audit line, then t
 	assert.deepEqual([store.list("s"), out.dead], [[], ["x1"]]);
 	const letters = inbox.list();
 	assert.equal(letters.length, 1, "one finding, though the dead letter was written twice");
-	assert.deepEqual([letters[0].id, letters[0].lane, letters[0].session_id, letters[0].undelivered, letters[0].source], [findingId("dead | x1"), "s", "s", true, "cron:j"]);
+	assert.deepEqual([letters[0].id, letters[0].lane, letters[0].session_id, letters[0].undelivered, letters[0].source], [findingId("dead | s | x1"), "s", "s", true, "cron:j"]);
 	assert.equal(letters[0].text, "could not be delivered (failed 3 times: boom): go");
 });
 
@@ -1984,4 +1984,58 @@ test("[exit-cancelled] a cancel or a stop does not take a claimed row out of its
 			assert.deepEqual(actions, [{ do: "exit", row: order, exit: "stale" }, live ? { do: "wait", row: claimed, why: "running" } : { do: "close", row: claimed, then: "owed" }], `${order.kind} ${live}`);
 		}
 	}
+});
+
+test("a drain has something to do when it would close a run or take a row out, and nothing when every row waits", () => {
+	// The background reads a quiet queue again only when a decision would change something: a claim
+	// whose process died must count, or it is never closed.
+	const claimed = claimedRow("c1");
+	const plain = row("p1");
+	assert.equal(changesSomething([{ do: "close", row: claimed, then: "owed" }]), true);
+	assert.equal(changesSomething([{ do: "close", row: claimed, then: { exit: "delivered" } }]), true);
+	assert.equal(changesSomething([{ do: "exit", row: plain, exit: "stale" }]), true);
+	assert.equal(changesSomething([{ do: "exit", row: plain, exit: "dead", why: "x" }]), true);
+	assert.equal(changesSomething([{ do: "fail", row: plain, why: "x", retry: "backoff" }]), true);
+	assert.equal(changesSomething([{ do: "append", row: plain, wakeAgent: false }, { do: "turn", row: plain }]), true);
+	assert.equal(changesSomething([{ do: "wait", row: plain, why: "x" }, { do: "wait", row: claimed, why: "running" }]), false);
+	assert.equal(changesSomething([]), false);
+});
+
+test("a window decides a claimed row as the background does: it holds nothing back, asks the claim's process, and reads the run log", async () => {
+	const store = new RequestStore(tmp());
+	const records: unknown[] = [];
+	const entries: unknown[] = [];
+	const ctx = { idle: true, mode: "tui", hasUI: false, isIdle: () => true, abort: () => undefined, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
+	const executor = new WindowExecutor({ sendMessage: () => undefined, sendUserMessage: () => undefined } as any, { here: () => ({ sessionId: "s", holds: true }) }, () => ctx, { pid: 1 }, () => true, () => store.list("s"), () => [], () => records as any);
+	const view = executor.view("s");
+	assert.equal(view.blocked(row("b1")), undefined, "a window holds no row back for a reason of its own");
+	// Claimed a moment ago by this process: a claim older than the machine's start is a process of before the reboot.
+	const mine = { ...claimedRow("c1"), run: { id: "run-c1", pid: process.pid, started_at: new Date().toISOString() } };
+	const dead = { ...claimedRow("c2"), run: { id: "run-c2", pid: 999_999_999, started_at: "2026-06-01T11:59:00Z" } };
+	assert.deepEqual([view.claimLive(mine), view.claimLive(dead)], [true, false]);
+	// A run the background left with a record: the window reads what it came to, and does not count a stop or an abort as a failure.
+	assert.equal(executor.proof("s").ran(dead), undefined, "no record yet");
+	records.push({ runId: "run-c2", jobId: "j", pid: 999_999_999, startedAt: "t", finishedAt: "t", ok: false, aborted: true });
+	assert.equal(executor.proof("s").ran(dead), "aborted");
+	assert.deepEqual(decideDrain("conversation", [dead], executor.proof("s"), jobs, view, T0), [{ do: "close", row: dead, then: "owed" }]);
+	records.push({ runId: "run-c2", jobId: "j", pid: 999_999_999, startedAt: "t", finishedAt: "t", ok: false, aborted: true, stoppedBy: "person" });
+	assert.deepEqual(decideDrain("conversation", [dead], executor.proof("s"), jobs, view, T0), [{ do: "close", row: dead, then: { exit: "stopped" } }]);
+});
+
+test("[R6] a dead letter names the queue it came from: a conversation's has its session, a loop's lane has its lane and no session; a rule's result has its lane too", async () => {
+	const { store, sinks, inbox } = world();
+	const loop = "@cron-0123456789abcdef0123456789abcdef";
+	store.append(row("x-loop", { lane: loop, wake: "turn", source: "cron:cron-0123456789abcdef0123456789abcdef", mode: "unattended", attempts: 3, last_error: "boom", payload: { text: "[Trigger x-loop] go", cwd: "/p" } }));
+	store.append(row("x-conv", { lane: "s", wake: "turn", source: "cron:j", mode: "unattended", attempts: 3, last_error: "boom", payload: { text: "[Trigger x-conv] go", cwd: "/p" } }));
+	// The same row id in two queues: each has its own dead letter.
+	store.append(row("x-loop", { lane: "s", wake: "turn", source: "cron:j", mode: "unattended", attempts: 3, last_error: "boom", payload: { text: "[Trigger x-loop] go", cwd: "/p" } }));
+	store.append(row("x-rule", { lane: "s", payload: { text: "a rule's result with no prefix", cwd: "/p" } }));
+	await drain(loop, store, closingExecutor(), T0, sinks);
+	await drain("s", store, closingExecutor(), T0, sinks);
+	const by = (run: string, lane: string) => inbox.list().find((e) => e.run_id === run && e.lane === lane)!;
+	assert.deepEqual([by("x-loop", loop).id, by("x-loop", loop).session_id, by("x-loop", loop).undelivered], [findingId(`dead | ${loop} | x-loop`), undefined, true]);
+	assert.deepEqual([by("x-conv", "s").id, by("x-conv", "s").session_id], [findingId("dead | s | x-conv"), "s"]);
+	assert.deepEqual([by("x-loop", "s").id, by("x-loop", "s").session_id], [findingId("dead | s | x-loop"), "s"], "the same row id in another queue is another dead letter");
+	assert.deepEqual([by("x-rule", "s").source, by("x-rule", "s").session_id, by("x-rule", "s").undelivered], ["trigger:local:dynamic", "s", undefined], "a rule's result keeps the finding it always had, with its lane");
+	assert.equal(inbox.list().length, 4);
 });

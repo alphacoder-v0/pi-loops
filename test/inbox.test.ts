@@ -192,10 +192,18 @@ test("[fileOnce] filing twice under one id leaves one finding and returns the fi
 	assert.deepEqual(inbox.list().map((e) => [e.id, e.text]), [[id, "the first text"]]);
 });
 
-test("[fileOnce] two calls at once under one id leave one finding", async () => {
-	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+test("[fileOnce] two calls that wait for the lock together leave one finding: each looks while it holds the lock", async () => {
+	const dir = tmp("pi-loops-inbox-");
+	const inbox = new Inbox(dir);
 	const id = findingId("dead | r2");
-	const [a, b] = await Promise.all([inbox.fileOnce({ ...once, text: "a" }, id), inbox.fileOnce({ ...once, text: "b" }, id)]);
+	// Somebody holds the inbox lock (a triage rewrite): both callers are waiting before either looks.
+	const lock = path.join(dir, "inbox.lock");
+	fs.mkdirSync(lock, { recursive: true });
+	const both = Promise.all([inbox.fileOnce({ ...once, text: "a" }, id), inbox.fileOnce({ ...once, text: "b" }, id)]);
+	await new Promise((r) => setTimeout(r, 150));
+	assert.equal(fs.existsSync(inbox.file), false, "neither wrote while the lock was held");
+	fs.rmdirSync(lock);
+	const [a, b] = await both;
 	assert.equal(inbox.list().length, 1);
 	assert.deepEqual([a.id, a.text], [b.id, b.text], "both callers get the one that was written");
 	assert.equal(inbox.list()[0].text, a.text);

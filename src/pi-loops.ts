@@ -137,6 +137,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			return sessionId ? requests.list(sessionId) : [];
 		},
 		(row) => requests.images(row),
+		() => scheduler.store.allRuns(),
 	);
 	let requestWatch: fs.FSWatcher | undefined;
 	let storeWatch: fs.FSWatcher | undefined;

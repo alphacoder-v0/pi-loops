@@ -977,3 +977,31 @@ test("a lane's rows are not buried as a conversation that is gone: a loop's queu
 		await host.stop();
 	}
 });
+
+test("the background closes a claim whose process is gone, by what the run log says: an aborted run leaves its row owed, an ended run lets it leave", async () => {
+	// No code claims a row yet; this is the wiring a claim will meet: the view asks the claim's
+	// process, the proof reads the run log, and a queue with a dead claim is not left as quiet.
+	const dir = tmp("pi-loops-hostrt-");
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
+	try {
+		const { sessionId } = closedConversation(dir);
+		const store = new RequestStore(dir);
+		const by = { pid: process.pid, instance: "test", version: "0" };
+		const turn = (id: string) => ({ ...ruleResultRow(sessionId, `[Trigger ${id}] go`, { traceId: id, sourceLabel: "x", cwd: dir }, by), source: "push:srv:key" as const, wake: "turn" as const, mode: "unattended" as const });
+		const record = (runId: string, over: Record<string, unknown>) => host.scheduler.store.appendRun({ runId, jobId: "", stateful: false, cwd: dir, pid: 999_999_999, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), ok: false, findings: 0, ...over } as any);
+		for (const id of ["t-aborted", "t-ended", "t-cut"]) {
+			store.append(turn(id));
+			assert.equal(store.claim(sessionId, id, { id: `run-${id}`, pid: 999_999_999, started_at: new Date().toISOString() }), true);
+		}
+		record("run-t-aborted", { aborted: true });
+		record("run-t-ended", { ok: true });
+		await host.scheduler.tick();
+		const left = Object.fromEntries(store.list(sessionId).map((r) => [r.id, r]));
+		assert.deepEqual(Object.keys(left).sort(), ["t-aborted", "t-cut"], "the row whose run ended has left");
+		assert.deepEqual([left["t-aborted"].run, left["t-aborted"].attempts], [undefined, 0], "aborted by no person: owed again, and no attempt counted");
+		assert.deepEqual([left["t-cut"].run, left["t-cut"].attempts, left["t-cut"].last_error], [undefined, 1, "the process running it stopped"], "no record: the run was cut off, and that is an attempt");
+		assert.equal(host.scheduler.inbox.list().length, 0);
+	} finally {
+		await host.stop();
+	}
+});

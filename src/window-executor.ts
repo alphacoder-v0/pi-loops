@@ -11,6 +11,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { CEILING, type Executor, type ExecutorView, type Producer, carriesPrefix, proofOf, landed, modeOf, personTextMatches, queuedTriggeredTurn, requestFingerprint, sameProducer, type Proof, claimAlive } from "./engine.ts";
 import { type LeaseBinding, type ProcessProbe, systemProbe } from "./lease.ts";
 import type { ImageContent, RequestMode, Row } from "./requests.ts";
+import type { RunRecord } from "./store.ts";
 import { stamp } from "./schedule.ts";
 
 /**
@@ -161,9 +162,12 @@ export class WindowExecutor implements Executor {
 	private readonly alive: (row: Row) => boolean;
 	/** The bytes of a person row's images (`RequestStore.images`): read as the row is handed over, not kept with the row. */
 	private readonly images: (row: Row) => ImageContent[];
+	/** The run log, read only when a row with a claim is asked about. */
+	private readonly runs: () => readonly RunRecord[];
 
-	constructor(pi: Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">, binding: WindowBinding, ctx: () => WindowCtx | undefined, self: Producer, alive: (row: Row) => boolean = producerAlive, rows: () => Row[] = () => [], images: (row: Row) => ImageContent[] = noImages) {
+	constructor(pi: Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">, binding: WindowBinding, ctx: () => WindowCtx | undefined, self: Producer, alive: (row: Row) => boolean = producerAlive, rows: () => Row[] = () => [], images: (row: Row) => ImageContent[] = noImages, runs: () => readonly RunRecord[] = () => []) {
 		this.rows = rows;
+		this.runs = runs;
 		this.pi = pi;
 		this.binding = binding;
 		this.ctx = ctx;
@@ -187,8 +191,9 @@ export class WindowExecutor implements Executor {
 
 	proof(_lane: string): Proof {
 		const ctx = this.ctx();
-		// A window writes no run record for a turn it runs: its rows are proved by the conversation alone.
-		return proofOf(() => ctx?.sessionManager.getEntries() ?? [], () => []);
+		// A window writes no run record for a turn it runs. It reads the run log for a row a background
+		// run claimed and left: what that run came to decides the row, here as anywhere.
+		return proofOf(() => ctx?.sessionManager.getEntries() ?? [], this.runs);
 	}
 
 	/**

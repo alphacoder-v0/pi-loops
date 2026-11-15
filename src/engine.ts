@@ -582,12 +582,6 @@ export interface Proof {
  * never done.
  */
 export function landed(row: Row, proof: Proof): boolean {
-	const ran = proof.ran(row);
-	return ran === "ended" || ran === "stopped" || written(row, proof);
-}
-
-/** Whether the row's prompt is in the session it writes into: by its prefix, or by its text since its hand-over stamp. */
-function written(row: Row, proof: Proof): boolean {
 	if (carriesPrefix(row.source)) return proof.has(row.id);
 	return row.handed_at !== undefined && proof.personEntries(row.payload?.text ?? "", row.handed_at) > 0;
 }
@@ -785,8 +779,8 @@ const AUDIT_STATE = {
 } as const satisfies Record<Exit, string>;
 
 /**
- * What a drain does with a row. A row leaves its queue by `exit`, or by `close` with an exit;
- * nothing else removes one. A row with a claim (`ClaimedRow`) is never handed to pi, and leaves or
+ * What a drain does with a row. The engine takes a row out of its queue by `exit`, or by `close`
+ * with an exit, and in no other way. A row with a claim (`ClaimedRow`) is never handed to pi, and leaves or
  * loses its claim only through `close`.
  */
 export type Action =
@@ -794,8 +788,7 @@ export type Action =
 	| { do: "turn"; row: UnclaimedRow }
 	| { do: "abort"; stop: UnclaimedRow }
 	| { do: "abortWhenStarted"; stop: UnclaimedRow; target: string }
-	/** `why`, when given, is the audit line's `details.reason`. */
-	| { do: "exit"; row: UnclaimedRow; exit: Exclude<Exit, "dead" | "stopped">; why?: string }
+	| { do: "exit"; row: UnclaimedRow; exit: Exclude<Exit, "dead" | "stopped"> }
 	/** The dead letter. It cannot be written without its reason, which the finding's text carries. */
 	| { do: "exit"; row: UnclaimedRow; exit: "dead"; why: string }
 	/**
@@ -968,7 +961,7 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 		if (view.claimLive(row)) return { actions: [{ do: "wait", row, why: "running" }], holding: true };
 		// No process and no record: what the closing writes for such a run.
 		const end = proof.ran(row) ?? "interrupted";
-		if (end === "ended" || written(row, proof)) return settled({ do: "close", row, then: { exit: "delivered" } });
+		if (end === "ended" || landed(row, proof)) return settled({ do: "close", row, then: { exit: "delivered" } });
 		if (end === "stopped") return settled({ do: "close", row, then: { exit: "stopped" } });
 		if (end === "aborted") return settled({ do: "close", row, then: "owed" });
 		return settled({ do: "close", row, then: { fail: "the process running it stopped" } });
@@ -1204,7 +1197,7 @@ async function deadLetter(store: RequestStore, sinks: EngineSinks, row: Row, why
 		if (!checkDecidedFinding(sinks.audit, row.id)) await sinks.inbox.appendOnce({ source: `trigger:${rule}`, run_id: row.id, job_id: rule, cwd, text: text || `rule result ${row.id}`, ...session, lane: row.lane }, { run_id: row.id, source: `trigger:${rule}` });
 	}
 	// Filed once: a crash between the finding and the removal repeats this at the next drain, and files nothing.
-	else await sinks.inbox.fileOnce({ source: row.source, run_id: row.id, cwd, text: deadLetterText(why, text.slice(0, DEAD_LETTER_CHARS) || `${row.kind} request ${row.id}`), ...session, lane: row.lane, undelivered: true }, findingId(`dead | ${row.id}`));
+	else await sinks.inbox.fileOnce({ source: row.source, run_id: row.id, cwd, text: deadLetterText(why, text.slice(0, DEAD_LETTER_CHARS) || `${row.kind} request ${row.id}`), ...session, lane: row.lane, undelivered: true }, findingId(`dead | ${row.lane} | ${row.id}`));
 	sinks.audit.appendAudit({ cwd, type: "request", traceId: row.id, state: "dead", sourceLabel: row.source, eventLabel: row.lane, summary: text, details: { session_id: row.lane, kind: row.kind, attempts: row.attempts, last_error: row.last_error, reason: why } });
 	store.remove(row.lane, [row.id]);
 }
@@ -1266,9 +1259,9 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 		sinks.audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "failed", sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, attempts, error: why } });
 	};
 	/** The one way a row leaves its queue here, the dead letter apart: its audit line, then the removal. */
-	const leave = (row: Row, exit: Exclude<Exit, "dead">, why?: string): void => {
+	const leave = (row: Row, exit: Exclude<Exit, "dead">): void => {
 		// A delivered input row's record is the session file; everything else ends in the audit.
-		if (exit !== "delivered" || row.kind !== "input") sinks.audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: AUDIT_STATE[exit], sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, kind: row.kind, ...(why === undefined ? {} : { reason: why }) } });
+		if (exit !== "delivered" || row.kind !== "input") sinks.audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: AUDIT_STATE[exit], sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, kind: row.kind } });
 		store.remove(sessionId, [row.id]);
 		out.removed.push(row.id);
 	};
@@ -1286,7 +1279,7 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 					out.dead.push(action.row.id);
 					break;
 				}
-				leave(action.row, action.exit, action.why);
+				leave(action.row, action.exit);
 				break;
 			case "close": {
 				// The run's closing writes go here when a run is closed by the engine: its record when

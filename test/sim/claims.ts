@@ -102,7 +102,7 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 		}
 		const letter = inbox.list().filter((e) => e.run_id === id);
 		const cutOff = runsOf(id).filter((r) => r.end === "cut-off").length;
-		if (letter.length === 1 && letter[0].id === findingId(`dead | ${id}`) && letter[0].lane === LANE && audited("dead") && cutOff >= DEAD_AFTER_ATTEMPTS) return "dead";
+		if (letter.length === 1 && letter[0].id === findingId(`dead | ${LANE} | ${id}`) && letter[0].lane === LANE && letter[0].session_id === undefined && audited("dead") && cutOff >= DEAD_AFTER_ATTEMPTS) return "dead";
 		fail(`${id} left its queue with nothing to account for it: its last run is ${last?.end ?? "none"}, ${letter.length} finding(s), ${cutOff} run(s) cut off`);
 		return "unaccounted";
 	}
@@ -134,6 +134,7 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 			if ((row as { run?: unknown }).run !== undefined) fail(`${row.id} was handed over with a claim on it`);
 			const live = liveClaims();
 			if (live.length) fail(`${row.id} was started while ${live.join(", ")} was running`);
+			if (row.not_before !== undefined && Date.parse(row.not_before) > now) fail(`${row.id} was started before its backoff ended`);
 			const before = runsOf(row.id).at(-1);
 			if (before?.end === "ok" || before?.end === "failed" || before?.end === "stopped") fail(`${row.id} was started again after its run ${before.end}`);
 			alive();

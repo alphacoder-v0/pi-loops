@@ -991,3 +991,14 @@ test("a project's check lane is @check-, its directory's name and a digest of it
 		assert.equal(parseLane(lane!)?.kind, "check", `${name} -> ${lane}`);
 	}
 });
+
+test("what a promotion files in the inbox names the project's check lane, and a result with no project names none", async () => {
+	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
+	const inbox = new Inbox(dir);
+	const audit = new TriggerStore(dir);
+	await promotionToInbox(inbox, audit, "[Trigger t-1] the build is red", { sourceLabel: "local:dynamic", traceId: "t-1" }, { cwd: dir, sessionId: "s1" });
+	await promotionToInbox(inbox, audit, "[Trigger t-2] no project", { sourceLabel: "local:dynamic", traceId: "t-2" }, { cwd: "" });
+	const [withProject, without] = inbox.list();
+	assert.deepEqual([withProject.lane, withProject.session_id, withProject.text], [checkLane(dir), "s1", "the build is red"]);
+	assert.equal("lane" in without, false);
+});

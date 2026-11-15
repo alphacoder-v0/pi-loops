@@ -7,11 +7,17 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Upgrade notes
 
-- **Restart every pi terminal that runs pi-loops 0.24.2 or earlier after you upgrade.** A request
-  this version queues for a conversation (a rule's result, a queued prompt) is a line an earlier
-  version cannot read. A terminal of an earlier version that still has the conversation open
-  leaves such a line in the queue until you restart it. It goes on reading the lines it wrote
-  itself.
+- **Restart every pi terminal that runs pi-loops 0.24.2 or earlier after you upgrade.** What
+  this version queues for a conversation is a line an earlier version cannot read. While a
+  terminal of an earlier version has a conversation open, none of these reaches it: a rule's
+  result, a queued prompt, a message or a claim sent from the page, and a stop or a cancel. The
+  page's Stop and `pi-loops abort <session>` then say the stop is queued, and the turn goes on.
+  Each waits in the queue until you restart that terminal. A request the earlier version queued
+  itself stays readable to it.
+- **Before you go back to 0.24.2, let what is queued be delivered, or cancel it.** 0.24.2 does
+  not read what this version queued: it leaves those requests in the queue, `pi-loops status`
+  does not count them, and it removes the images of a queued message from the page after one
+  minute.
 - **Close every pi-loops 0.22 window before you upgrade.** This version no longer holds such a
   window back, and a window no longer warns you that an older one has the same conversation open.
   Windows of 0.23 and later are not affected. While a 0.22 window stays open:
@@ -106,7 +112,7 @@ All notable changes to pi-loops are documented here. The format follows
   writes it and nothing reads it. A loop's next run on the page is right at once after an edit or
   a run; it could be one tick behind.
 - **A finding names where it was filed from.** `inbox.jsonl` has a new last field, `lane`: a
-  conversation's session id, `@cron-<job id>` for a loop's run, `@check-<project>` for a rule check.
+  conversation's session id, `@` and the job's id for a loop's run, `@check-<project>` for a rule check.
   `pi-loops inbox --json` prints what it printed.
 - **The bridge for pi-loops 0.22 windows is removed** (see the upgrade note). pi-loops no longer
   reads `presence/` or writes `scheduler.json`, and the Background view no longer has the holder
