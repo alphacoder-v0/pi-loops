@@ -79,7 +79,8 @@ test("a due loop job runs in the fake sub-agent, writes state, routes findings t
 	const promptFile = path.join(dir, "prompt.txt");
 	process.env.FAKE_PI_PROMPT_FILE = promptFile;
 	try {
-		const job = await sched.store.add(makeJob({ name: "issues", createdBy: { sessionId: "s1", cwd: dir } }));
+		// An id of the shape `cron_create` gives: the loop's lane is `@` and that id.
+		const job = await sched.store.add(makeJob({ id: "cron-0123456789abcdef0123456789abcdef", name: "issues", createdBy: { sessionId: "s1", cwd: dir } }));
 		await sched.tick();
 		await waitFor(() => finished.length === 1);
 
@@ -89,6 +90,7 @@ test("a due loop job runs in the fake sub-agent, writes state, routes findings t
 		assert.equal(inbox[0].text, "something new");
 		assert.equal(inbox[0].source, "cron:issues");
 		assert.equal(inbox[0].session_id, "s1");
+		assert.equal(inbox[0].lane, "@cron-0123456789abcdef0123456789abcdef", "a loop's finding names the loop's lane");
 		assert.equal(inbox[0].transcript, sched.store.listRuns(job.id)[0].sessionFile);
 		const after = sched.store.load()[0];
 		assert.equal(after.runCount, 1);

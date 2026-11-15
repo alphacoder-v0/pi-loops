@@ -62,7 +62,7 @@ import { SubagentSlots } from "./slots.ts";
 import { askHost, noticesToShow, renderHostSnapshot, ringHost, type HostSnapshot } from "./host-control-channel.ts";
 import { HOST_LOG, crashPaused, crashPauseText, decideEviction, ensureHost, evictHost, heartbeatFresh, hostPushWork, hostServiceAlive, LEAVE_WAIT_MS, RESTART_WAIT_LINE, piPackageDir, readHostService, readSpawnLog, type HostServiceRecord } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
-import { TriggerRuntime, type TriggerOutcome, promotionToInbox } from "./trigger-runtime.ts";
+import { TriggerRuntime, type TriggerOutcome, promotionToInbox, checkLane } from "./trigger-runtime.ts";
 import { scheduleAudit } from "./job-tune.ts";
 import { auditArgs, auditCronFinish, auditCronStart, newTraceId, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
@@ -349,7 +349,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			},
 			onInjectAndRun: async (prompt, trigger) => {
 				if (trigger.cwd && !sameProject(trigger.cwd, session.cwd)) {
-					await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: prompt.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd });
+					await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: prompt.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd, lane: checkLane(trigger.cwd) });
 					refreshBadge();
 					return "inbox";
 				}

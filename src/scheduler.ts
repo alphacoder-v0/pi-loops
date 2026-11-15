@@ -7,6 +7,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { Inbox } from "./inbox.ts";
+import { loopLane } from "./lane.ts";
 import { pidAlive } from "./lock.ts";
 import { composeCheckerPrompt, composeLoopPrompt, findingKind, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
@@ -1157,7 +1158,7 @@ export class LoopScheduler {
 			const source = `cron:${job.name ?? job.id.slice(0, "cron-".length + 8)}`;
 			for (const f of reviewed) {
 				try {
-					await this.inbox.append({ source, text: f.text, run_id: runId, job_id: job.id, cwd: job.cwd, kind: findingKind(f.text), verified: f.verified, verified_reason: f.reason, session_id: job.createdBy?.sessionId, transcript: result.sessionFile });
+					await this.inbox.append({ source, text: f.text, run_id: runId, job_id: job.id, cwd: job.cwd, kind: findingKind(f.text), verified: f.verified, verified_reason: f.reason, session_id: job.createdBy?.sessionId, transcript: result.sessionFile, lane: loopLane(job.id) });
 					findings.push(f.text);
 				} catch (err: any) {
 					this.log(`loop ${job.id}: inbox append failed: ${err?.message ?? err}`, undefined, job);
