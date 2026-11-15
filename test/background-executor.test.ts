@@ -46,7 +46,7 @@ const fails = (message: string, opts: { written: boolean }) => (req: any) => {
 const BUDGET = "stopped by today's budget";
 
 /** pi-loops in the background over one closed conversation, with a scripted runner. */
-function scene(script: (req: any, call: number) => any) {
+function scene(script: (req: any, call: number) => any, over: Partial<Parameters<typeof createHostRuntime>[0]> = {}) {
 	const dir = tmp("pi-loops-bg-");
 	const { sessionId, file } = closedConversation(dir);
 	const calls: any[] = [];
@@ -55,7 +55,7 @@ function scene(script: (req: any, call: number) => any) {
 		calls.push(req);
 		return script(req, calls.length);
 	};
-	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: (line) => void logs.push(line) });
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: (line) => void logs.push(line), ...over });
 	const requests = new RequestStore(dir);
 	const store = host.scheduler.store;
 	return {
@@ -249,6 +249,7 @@ test("a turn that pi-loops stops itself before its prompt is written leaves its 
 		assert.deepEqual([s.runs()[0].aborted, s.job()?.consecutiveFailures, s.job()?.runCount, s.requestAudit()], [true, undefined, 1, []]);
 		await s.tick();
 		assert.deepEqual([s.calls.length, s.calls[1].runId, s.rows(), s.prompts(), s.job()?.runCount], [2, id, [], 1, 1], "the same row runs again, and its slot is not counted twice");
+		assert.deepEqual(s.runs().map((r) => [r.runId, r.aborted, r.ok]), [[id, true, false], [id, undefined, true]], "two records in the run log, with one run id");
 	} finally {
 		await s.host.stop();
 	}
@@ -635,13 +636,14 @@ test("when the clock loses the slot, pi-loops in the background starts nothing i
 	assert.deepEqual(b.calls.map((c) => c.runId), ["run-left"]);
 });
 
-test("a held turn runs as its job and its conversation's directory are set: the job's own time limit, and what pi trusts for that directory; a lease that names no directory is trusted for nothing", async () => {
+test("a held turn runs as its job and its conversation's directory are set: the job's own time limit, and what pi trusts for the conversation's directory, not for the one the job names; a lease that names no directory is trusted for nothing", async () => {
 	const asked: unknown[] = [];
-	const b = bare({ ownerTrusts: (cwd) => (asked.push(cwd), true) });
-	const held = await b.jobs.add(job(b, { ...notDue(), timeoutMs: 42_000 }) as any);
+	const b = bare({ ownerTrusts: (cwd) => (asked.push(cwd), cwd === b.dir) });
+	// The job names another directory, as one that a model chose can: trust is not asked for it.
+	const held = await b.jobs.add(job(b, { ...notDue(), timeoutMs: 42_000, cwd: tmp("pi-loops-elsewhere-") }) as any);
 	b.requests.append(leftRow(b as any, "run-left"));
 	await b.background.fire(held, undefined, b.permit, async () => "fired" as const, Date.now());
-	assert.deepEqual([b.calls[0].timeoutMs, b.calls[0].trusted, asked], [42_000, true, [b.dir]]);
+	assert.deepEqual([b.calls[0].timeoutMs, b.calls[0].trusted, b.calls[0].cwd, asked], [42_000, true, b.dir, [b.dir]]);
 	// The same conversation with a lease that names no directory, as one that an older version wrote.
 	const file = path.join(b.dir, "leases", `${b.sessionId}.json`);
 	const { cwd: _cwd, ...lease } = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -651,16 +653,22 @@ test("a held turn runs as its job and its conversation's directory are set: the 
 	assert.deepEqual([b.calls.length, b.calls[1]?.trusted, asked], [2, false, [b.dir]], "not asked, and not trusted");
 });
 
-test("a plain job that fails for the third time in a row in the background is said to be failing, with its last error; the second time is not", async () => {
+test("a plain job that fails for the third time in a row in the background is said to be failing, with its last error; the second time is not, and a turn that is handed back says nothing", async () => {
 	const said: Array<[string, string]> = [];
-	const b = bare({ runner: (async (req: any) => fails("boom", { written: true })(req)) as any, failing: (message, failing) => void said.push([message, failing.id]) });
+	let call = 0;
+	const b = bare({ runner: (async (req: any) => (++call <= 2 ? fails("boom", { written: true }) : fails(BUDGET, { written: false }))(req)) as any, failing: (message, failing) => void said.push([message, failing.id]) });
 	const held = await b.jobs.add(job(b, { ...notDue(), consecutiveFailures: 1 }) as any);
 	b.requests.append(leftRow(b as any, "run-left"));
 	await b.background.fire(held, undefined, b.permit, async () => "fired" as const, Date.now());
 	assert.deepEqual([b.jobs.load()[0].consecutiveFailures, said], [2, []]);
 	b.requests.append(leftRow(b as any, "run-left-2"));
 	await b.background.fire(b.jobs.load()[0], undefined, b.permit, async () => "fired" as const, Date.now());
-	assert.deepEqual([b.jobs.load()[0].consecutiveFailures, said], [3, [["cron-held has failed 3 times in a row; backing off (last: boom)", "cron-held"]]]);
+	const third = [["cron-held has failed 3 times in a row; backing off (last: boom)", "cron-held"]];
+	assert.deepEqual([b.jobs.load()[0].consecutiveFailures, said], [3, third]);
+	// A turn that pi-loops stops itself is no failure: the count stands at three, and nothing is said again.
+	b.requests.append(leftRow(b as any, "run-left-3"));
+	await b.background.fire(b.jobs.load()[0], undefined, b.permit, async () => "fired" as const, Date.now());
+	assert.deepEqual([call, b.jobs.load()[0].consecutiveFailures, said], [3, 3, third]);
 });
 
 test("a slot waits behind a row of its job that is at its last attempt and has no dead letter yet: the clock is not asked, no lease is taken, and no turn starts", async () => {
@@ -695,6 +703,28 @@ test("a drain stops where a window takes the conversation: the result it wrote s
 		const written = SessionManager.open(s.file).getEntries().map((e: any) => (e.type === "custom_message" ? String(e.content) : String(e.message?.content ?? ""))).filter((text) => text.startsWith("[Trigger t-"));
 		assert.equal(taken, true);
 		assert.deepEqual([written.map((text) => text.slice(0, 18)), s.rows().map((r) => r.id)], [["[Trigger t-first] "], ["t-second"]]);
+	} finally {
+		await s.host.stop();
+	}
+});
+
+test("a row of the job at its second attempt, its backoff over, is started under its own id", async () => {
+	const b = bare();
+	const held = await b.jobs.add(job(b, notDue()) as any);
+	b.requests.append(leftRow(b as any, "run-left", { attempts: 2, last_error: "the process running it stopped", not_before: new Date(Date.now() - 1_000).toISOString() }));
+	assert.equal(b.background.owes(held, Date.now()), true);
+	await b.background.fire(held, undefined, b.permit, async () => "fired" as const, Date.now());
+	assert.deepEqual(b.calls.map((c) => c.runId), ["run-left"]);
+});
+
+test("the runtime gives a held turn what pi trusts for its conversation's directory, and says a plain job that keeps failing in the log and in its project's windows", async () => {
+	const s = scene(fails("boom", { written: true }), { ownerTrusts: (cwd) => cwd === s.dir });
+	try {
+		await s.host.scheduler.store.add(job(s, { consecutiveFailures: 2 }) as any);
+		await s.tick();
+		const line = "cron-held has failed 3 times in a row; backing off (last: boom)";
+		assert.deepEqual([s.calls[0].trusted, s.job()?.consecutiveFailures], [true, 3]);
+		assert.deepEqual([s.logs.includes(line), s.host.notices().filter((n) => n.text === line).map((n) => n.cwd)], [true, [s.dir]]);
 	} finally {
 		await s.host.stop();
 	}
