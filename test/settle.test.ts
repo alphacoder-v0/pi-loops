@@ -76,7 +76,8 @@ test("[settle-one-shot] A one-shot retries once, including when the prompt was n
 	const second = runEnd(record({ error: "broken", finishedAt: "2026-01-02T03:05:05.000Z" }));
 	assert.deepEqual(settle(beforeSecond, second, true), { row: { do: "leave", exit: "delivered" }, job: { lastCompletedAt: second.at, consecutiveFailures: 2, interruptions: undefined, lastError: "broken" } });
 	assert.deepEqual(settle({ ...once, consecutiveFailures: 0 }, first, false), { row: { do: "retry", why: "broken" }, job: { lastCompletedAt: at, consecutiveFailures: 1, interruptions: undefined, lastError: "broken (one-shot: retrying once)" } });
-	assert.deepEqual(settle(job(), first, true), cells[2].result);
+	// A recurring job's first failure is under two as well, and it is not asked again.
+	assert.deepEqual(settle(job({ consecutiveFailures: 0 }), first, true), { row: { do: "leave", exit: "delivered" }, job: { lastCompletedAt: at, consecutiveFailures: 1, interruptions: undefined, lastError: "broken" } });
 });
 
 function onceJob(fields: Partial<Pick<LoopJob, "stateful" | "schedule" | "runCount" | "running" | "consecutiveFailures">> = {}) {
