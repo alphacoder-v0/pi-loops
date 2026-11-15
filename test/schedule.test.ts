@@ -176,6 +176,26 @@ test("nextRunStamp returns undefined for unusable jobs and ignores enabled", () 
 	assert.equal(nextRunStamp(enabled, now), nextRunStamp({ ...enabled, enabled: false }, now));
 });
 
+test("nextRunStamp gives no time, and does not throw, when the next time is past what a date can hold", () => {
+	// `every 100000000d` is a valid interval. Its next run has no stamp, and the page asks for every job's.
+	const now = local(2026, 11, 2, 8, 0);
+	assert.equal(nextRunStamp({ schedule: { kind: "every", ms: 8.64e18 }, createdAt: stamp(now) }, now), undefined);
+	assert.equal(nextRunStamp({ schedule: { kind: "once", at: 9e15 }, createdAt: stamp(now) }, now), undefined);
+	assert.equal(nextRunStamp({ schedule: { kind: "once", at: 8.64e15 }, createdAt: stamp(now) }, now), stamp(8.64e15), "the last date there is still has one");
+});
+
+test("the next run of an every job is worked out, not walked: a start two thousand years back costs nothing and gives the same step", () => {
+	const now = local(2026, 11, 2, 8, 0);
+	const createdAt = new Date(now).setFullYear(1);
+	const began = Date.now();
+	const next = computeNext({ schedule: { kind: "every", ms: 60_000 }, createdAt }, now)!;
+	assert.ok(Date.now() - began < 100, "no walk through a thousand million minutes");
+	assert.ok(next > now && next - now <= 60_000, "the first step after now");
+	assert.equal((next - createdAt) % 60_000, 0, "and it is a whole number of steps from the start");
+	// A base that is ahead of now (a clock that was wrong) gives its first step, as before.
+	assert.equal(computeNext({ schedule: { kind: "every", ms: 60_000 }, createdAt: now + 5_000 }, now), now + 65_000);
+});
+
 test("schedule aliases: hourly/daily/weekly, english phrases, chinese", () => {
 	assert.deepEqual(parseSchedule("hourly"), { kind: "cron", expr: "0 * * * *" });
 	assert.deepEqual(parseSchedule("every hour"), { kind: "cron", expr: "0 * * * *" });

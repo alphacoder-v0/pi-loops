@@ -44,7 +44,7 @@ export interface HostRuntimeDeps {
 	log: (message: string) => void;
 	/** Does pi still have this session? Plain jobs of deleted sessions are parked by the host's sweep. */
 	sessionExists?: (sessionId: string) => boolean;
-	/** Every tick, before the rules are checked (the legacy fence lives here). */
+	/** Every tick, before the rules are checked. */
 	onTick?: (now: number) => void;
 	/** Is this conversation open in the browser page? Then its pi writes the file, and this process never holds it. */
 	pageHolds?: (sessionId: string) => boolean;

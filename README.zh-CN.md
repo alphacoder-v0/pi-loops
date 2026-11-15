@@ -514,8 +514,8 @@ pi-loops 不会因窗口打开或关闭而退出。`/pi-loops` 显示 pid、pi-l
 `[host] auto = false` 或单进程环境变量 `PI_LOOPS_HOST=off` 禁止窗口自动启动。无法启动时会在 1、5、30
 分钟后重试，状态行显示暂停原因，`/pi-loops status` 和 `host.log` 提供详情。窗口连续三次探测不到控制 socket
 会替换失联的 pi-loops：先发 SIGTERM，10 秒后再发 SIGKILL；仍在启动的 pi-loops 不会因此被杀掉。新版窗口会替换旧版
-pi-loops，旧版窗口不会替换新版 pi-loops。升级期间，pi-loops 0.22 窗口让后台进程运行 loop、自己待命，但仍会运行自己持有
-会话的普通任务；重启这些旧窗口才能让普通任务也采用新行为。机器重启后，要等 pi 窗口打开才会恢复运行。pi-loops 还有一个只读状态页，`pi-loops status --url` 打印带令牌的地址。
+pi-loops，旧版窗口不会替换新版 pi-loops。升级前请关闭所有 pi-loops 0.22 窗口：这个版本不再让
+它们待命，仍开着的 0.22 窗口会和后台进程各跑一遍 loop，也会继续运行自己那个会话的普通任务。机器重启后，要等 pi 窗口打开才会恢复运行。pi-loops 还有一个只读状态页，`pi-loops status --url` 打印带令牌的地址。
 
 ## 对 pi 的无侵入性
 
@@ -558,6 +558,7 @@ src/cli-entry.mjs           bin
 src/ts-entry.mjs            .mjs 入口怎么加载本包的 .ts：Node 自己剥类型，装在 node_modules 下就借 pi 的 jiti
 
 流水线
+src/backoff.ts              失败后的等待时间表：排队的请求、loop、规则检查共用一张
 src/scheduler.ts            tick 循环、到期判定、错过补发、并发/重叠控制、子会话执行、写回；pi-loops 在后台运行 loops，窗口跑其会话的普通任务
 src/trigger-runtime.ts      动态规则运行时：admit、投递（sub_agent / inject_summary / inject_and_run）、fire-once、promote、audit
 src/triggers.ts             规则本身：解析、prompt、id 提取、存储、dedup 窗口
@@ -579,12 +580,11 @@ src/subagent-guard.ts       把该策略装进每个子会话的合成扩展
 src/transcript.ts           把子代理 session 文件压成可读的几十行
 
 没有 pi 开着的时候
-src/host.ts                 后台运行的 pi-loops：认领、自检、0.22 兼容边界
+src/host.ts                 后台运行的 pi-loops：认领、自检
 src/host-entry.mjs          pi-loops 的启动入口，负责加载 node_modules 下的 TypeScript
 src/host-control.ts         服务记录、启动、退出与恢复决策
 src/host-control-channel.ts 控制 socket：状态、中止、停止、运行与升级
 src/host-runtime.ts         后台运行逻辑（调度器、triggers、按请求提供的工具）
-src/presence.ts             pi-loops 0.22 窗口写入；升级时只读
 src/register-pi.mjs         在 pi 之外解析 pi 包的 node --import 钩子（宿主、测试用）
 src/pi-resolver.mjs         这个钩子去哪里找
 
@@ -593,6 +593,7 @@ src/store.ts                jobs.json、state/*.md、runs.jsonl、sessions/
 src/inbox.ts                inbox.jsonl
 src/archive.ts              .pisession 归档：无依赖 tar 读写、导出、导入改写
 src/lock.ts                 文件锁、原子写、pid 存活
+src/convert-v2.ts           旧版本留在 loops 目录里的文件，每次启动时清除；只有这个模块提到它们
 src/paths.ts                realpathish：解析到最深的那个存在的祖先，所以还不存在的路径按它父目录的方式解析
 src/snapshot.ts             pi_loops_snapshot 的指纹，以及什么样的变化才值得写一条新条目
 src/config.ts               config.toml 与环境变量覆盖

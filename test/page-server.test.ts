@@ -2402,6 +2402,9 @@ test("a loop row carries its run, its signal and one suggestion; apply writes on
 		const job = jobs()[0];
 		assert.deepEqual(job.schedule, { kind: "every", ms: 3_600_000 });
 		assert.ok(job.lastDueAt, "the clock restarts at the edit, as /cron set does");
+		// The row's next run is worked out from the job as the edit left it: the time the answer gave.
+		const tuned = (await page.get("c/s1/state")).body.automation.jobs.find((j: any) => j.id === "cron-aaaaaaaa");
+		assert.equal(tuned.next, applied.body.nextAt, "the row and the answer say one time");
 		const rows2 = audits(page.loops).filter((a) => a.type === "cron_control_plane");
 		assert.equal(rows2.length, 1);
 		assert.deepEqual([rows2[0].state, rows2[0].sourceLabel, rows2[0].eventLabel, rows2[0].details.before_schedule, rows2[0].details.after_schedule, rows2[0].details.suggestion], ["set", "page", "cron-aaaaaaaa", "every 15m", "every 1h", "slower:cron-aaaaaaaa:every 15m"]);

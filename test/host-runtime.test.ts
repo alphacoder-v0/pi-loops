@@ -493,6 +493,34 @@ test("a conversation left held for a turn that no longer runs is given back on t
 	}
 });
 
+test("a closed conversation's plain job that keeps failing waits out its pause: after three failed turns in a row, no turn for one minute", async () => {
+	// The pause is for whatever pi-loops runs in the background, a loop or a held turn: a turn that
+	// failed three times is failing for a reason the next tick will not fix, and each one is billed.
+	const dir = tmp("pi-loops-hostrt-");
+	const { sessionId } = closedConversation(dir);
+	const turns: string[] = [];
+	const runner = async (req: any) => {
+		turns.push(req.kind);
+		return { ok: true, exitCode: 0, timedOut: false, text: "done", usage: { input: 0, output: 0, cost: 0, turns: 1 } } as any;
+	};
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined });
+	try {
+		const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+		await host.scheduler.store.add({ id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: ago(10 * 60_000), runCount: 3, skippedOverlap: 0, consecutiveFailures: 3, lastCompletedAt: ago(30_000) });
+		await host.scheduler.tick();
+		await host.scheduler.drain(5000);
+		assert.deepEqual(turns, [], "no turn 30 seconds after the third failure");
+		await host.scheduler.store.update("cron-held", (j) => {
+			j.lastCompletedAt = ago(61_000);
+		});
+		await host.scheduler.tick();
+		await host.scheduler.drain(5000);
+		assert.deepEqual(turns, ["held"], "a turn once one minute has passed");
+	} finally {
+		await host.stop();
+	}
+});
+
 test("a held turn runs in the closed conversation's file and stops once a window takes the conversation back", async () => {
 	const dir = tmp("pi-loops-hostrt-");
 	const seen: any[] = [];

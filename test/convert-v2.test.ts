@@ -52,6 +52,42 @@ test("convertStores does nothing the second time, and nothing in a directory tha
 	assert.deepEqual(convertStores(path.join(dir, "no-such-directory")), []);
 });
 
+test("convertStores does not throw when the loops directory is a file.", () => {
+	const dir = tmp("pi-loops-convert-");
+	const notADirectory = path.join(dir, "loops");
+	fs.writeFileSync(notADirectory, "not a directory\n");
+	assert.deepEqual(convertStores(notADirectory, () => {}), []);
+	assert.equal(fs.readFileSync(notADirectory, "utf8"), "not a directory\n");
+});
+
+test("convertStores does not throw when the loops directory cannot be read: it reports each name and returns.", { skip: process.getuid?.() === 0 ? "root reads anything" : false }, () => {
+	const dir = tmp("pi-loops-convert-");
+	fs.writeFileSync(path.join(dir, "scheduler.json"), "{}\n");
+	fs.chmodSync(dir, 0o000);
+	const said: string[] = [];
+	try {
+		assert.deepEqual(convertStores(dir, (line) => void said.push(line)), []);
+	} finally {
+		fs.chmodSync(dir, 0o700);
+	}
+	assert.equal(said.length, 3);
+	assert.equal(fs.existsSync(path.join(dir, "scheduler.json")), true);
+});
+
+test("pi-loops in the background and a window each run the conversion when they start.", () => {
+	// Neither entry module can be imported by a test (AGENTS.md, "Where a decision goes"), so this
+	// reads them: the call is there, after the claim in one and inside the session start in the other.
+	const here = path.dirname(new URL(import.meta.url).pathname);
+	const host = fs.readFileSync(path.join(here, "..", "src", "host.ts"), "utf8");
+	const started = host.indexOf("log(`pi-loops ${PI_LOOPS_VERSION} started");
+	assert.ok(started > host.indexOf("claimHostService(dir,"), "the start line comes after the claim");
+	assert.match(host.slice(started, started + 400), /\n(?:const retired = )?convertStores\(dir, log\);/, "the background process converts as soon as it has its claim");
+	const window = fs.readFileSync(path.join(here, "..", "src", "pi-loops.ts"), "utf8");
+	const start = window.indexOf('pi.on("session_start"');
+	assert.ok(start > 0);
+	assert.match(window.slice(start, start + 900), /bindSession\(ctx\);\n(?:\t*\/\/[^\n]*\n)*\t*convertStores\(dir, /, "a window converts at each session start, before it reads the stores");
+});
+
 test("convertStores removes a retired name that is a link, and leaves what the link points to.", () => {
 	const dir = tmp("pi-loops-convert-");
 	const elsewhere = tmp("pi-loops-elsewhere-");

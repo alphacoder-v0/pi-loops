@@ -434,10 +434,10 @@ export function computeNext(input: DueInput, now: number): number | undefined {
 		case "cron":
 			return cronNextAfter(parseCron(schedule.expr), now);
 		case "every": {
+			// The first step after now, counted from the base. Worked out, not walked: a base far in
+			// the past (a hand-edited `createdAt`) is as cheap as one a minute ago.
 			const base = input.lastFiredAt ?? input.createdAt;
-			let t = base + schedule.ms;
-			while (t <= now) t += schedule.ms;
-			return t;
+			return base + schedule.ms * Math.max(1, Math.floor((now - base) / schedule.ms) + 1);
 		}
 		case "once":
 			return input.lastFiredAt === undefined && schedule.at > now ? schedule.at : undefined;
@@ -445,15 +445,20 @@ export function computeNext(input: DueInput, now: number): number | undefined {
 }
 
 /**
- * When a job runs next, as a stamp, or undefined: its schedule or its creation time is unusable,
- * or it is a one-shot that has fired or whose time has passed. It takes a job as `jobs.json` holds
- * it, so a reader of that file asks the question the scheduler asks, and no file is in between.
- * It does not look at `enabled`: whether a job runs at all is the caller's question.
+ * The first time after `now` that a job's schedule names, as a stamp, or undefined: its schedule
+ * or its creation time is unusable, the time is past what a date can hold, or it is a one-shot
+ * that has fired or whose time has passed. It takes a job as `jobs.json` holds it and uses the
+ * scheduler's evaluator (`computeNext`), so a reader of that file needs no file in between. It does
+ * not look at `enabled`, and it does not say whether a run is due now: those are the caller's
+ * questions (`nextRunOf` in src/job-edit.ts answers the second).
  */
+/** The last millisecond a `Date` can hold: a time past it has no stamp. */
+const MAX_DATE_MS = 8.64e15;
+
 export function nextRunStamp(job: { schedule?: unknown; createdAt?: unknown; lastFiredAt?: unknown }, now: number): string | undefined {
 	if (!isValidSchedule(job.schedule)) return undefined;
 	const createdAt = typeof job.createdAt === "string" ? Date.parse(job.createdAt) : NaN;
 	const fired = typeof job.lastFiredAt === "string" ? Date.parse(job.lastFiredAt) : NaN;
 	const at = computeNext({ schedule: job.schedule, createdAt, lastFiredAt: Number.isFinite(fired) ? fired : undefined }, now);
-	return at === undefined || !Number.isFinite(at) ? undefined : stamp(at);
+	return at === undefined || !Number.isFinite(at) || Math.abs(at) > MAX_DATE_MS ? undefined : stamp(at);
 }

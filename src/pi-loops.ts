@@ -102,7 +102,6 @@ export default function piLoops(pi: ExtensionAPI) {
 	/**
 	 * This instance's claim on its conversation (src/lease.ts). Its plain jobs fire and its requests
 	 * are delivered only while it holds the lease; a second window on the same conversation is a viewer.
-	 * The scheduler's presence entry carries the same instance id.
 	 */
 	const instance = newId("pi");
 	const ownStart = procStart(process.pid);

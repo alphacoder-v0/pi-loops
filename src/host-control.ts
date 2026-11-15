@@ -487,7 +487,7 @@ export const WINDOWS_GRACE_MS = 60_000;
  * means what it meant in 0.22.8, loops run only while a window is open. The first window starts the
  * process (as `auto = true` does) and the last one closing ends it; nothing runs with none open. One a
  * service manager runs (`pi-loops start --foreground`) is the person's to stop and stays. `windows`
- * is the live pi windows this machine's presence lists; `upForMs` gives the window that started the
+ * is the live pi windows that hold a lease on this machine; `upForMs` gives the window that started the
  * process its first tick to be listed.
  */
 export function leavesWithWindows(input: { auto: boolean; managed: HostServiceRecord["managed"]; windows: number; upForMs: number; asked?: boolean }): boolean {

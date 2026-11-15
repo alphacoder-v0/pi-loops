@@ -1,4 +1,4 @@
-/** The one table of waits after a failure. */
+/** The waits after a failure of a queued row, a loop or a rule check: one table for the three. */
 export const BACKOFF_MS: readonly number[] = [60_000, 5 * 60_000, 30 * 60_000, 2 * 3_600_000, 6 * 3_600_000];
 
 /** The wait after the n-th failure in a row, n >= 1. Past the table it stays at the last step. */
