@@ -1976,6 +1976,11 @@ test("a claim is alive while its process is, by the rule of a lease's holder: th
 	assert.equal(claimAlive(claimed, probe(true, "100")), true);
 	assert.equal(claimAlive(claimed, probe(false, "100")), false, "its process is gone");
 	assert.equal(claimAlive(claimed, probe(true, "999")), false, "the pid was given to another process");
+	// With no start time to compare, a claim made before this machine started is another process's.
+	const { procStart: _, ...run } = claimed.run;
+	const booted = (at: string) => ({ alive: () => true, startTime: () => "100", bootedAt: () => Date.parse(at) });
+	assert.equal(claimAlive({ ...claimed, run }, booted("2026-06-01T12:05:00Z")), false, "claimed six minutes before the boot");
+	assert.equal(claimAlive({ ...claimed, run }, booted("2026-06-01T11:58:00Z")), true, "claimed after the boot");
 });
 
 test("[exit-cancelled] a cancel or a stop does not take a claimed row out of its queue: only its run decides what becomes of it", () => {

@@ -104,9 +104,10 @@ export interface UnclaimedRow extends RowBase {
 
 /**
  * A row a background run has claimed: `run` names the run and its process. `RequestStore.claim`
- * is its one writer, and a patch can only clear it.
+ * is its one writer, and a patch can only clear it. Only an input is ever a run.
  */
 export interface ClaimedRow extends RowBase {
+	kind: "input";
 	run: { id: string; pid: number; procStart?: string; started_at: string };
 }
 
@@ -369,7 +370,7 @@ export class RequestStore {
 			lines.map(({ raw, row }) => {
 				if (!row || row.id !== id || row.run || row.kind !== "input") return { raw, row };
 				claimed = true;
-				return { raw: rowLine({ ...row, run }), row };
+				return { raw: rowLine({ ...row, kind: "input", run }), row };
 			}),
 		);
 		return claimed;

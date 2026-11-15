@@ -928,7 +928,7 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 	const inputs = queueOrder(rows);
 	const cancelled = new Set<string>();
 	for (const row of rows) {
-		if (row.kind === "input" || row.run) continue;
+		if (row.kind === "input") continue;
 		let done = false;
 		const target = row.target;
 		if (target && "id" in target) {

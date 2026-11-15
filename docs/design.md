@@ -413,11 +413,13 @@ machine. Everything here follows from that, and each one has a price.
     that session's alone. A queue is a lane's (`src/lane.ts`): a conversation's lane is its
     session id, and a name that starts with `@` is a loop's or a project's checks' lane, which
     nothing writes yet. The engine takes a row out of its queue by a named exit and in no other
-    way: delivered, dead, cancelled, stale, refused, job-removed, stopped. Three others remove
+    way: delivered, dead, cancelled, stale, refused, job-removed, stopped. Four others remove
     rows, each for a reason of its own and with its own audit line where one is due: the page,
     which takes back or cancels a message it queued; a window, which drops its own goal's
-    continuations and what it queued once that ran; and the background's turn in a closed
-    conversation, which still removes the row it ran. The lane is taken from all
+    continuations and what it queued once that ran; a window's clock, which puts a job's new slot
+    in the place of a prompt pi refused and takes back the row of a slot another process fired
+    first; and the background's turn in a closed conversation, which still removes the row it
+    ran. The lane is taken from all
     the rows before any of them is started, so a turn that sorts first is not handed to pi beside
     an unwritten turn that only its text proves. A dead letter is filed once for a row, under an
     id derived from the row's lane and id (`Inbox.fileOnce`), so a crash between the finding and

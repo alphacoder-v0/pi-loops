@@ -10,9 +10,9 @@ All notable changes to pi-loops are documented here. The format follows
 - **Restart every pi terminal that runs pi-loops 0.24.2 or earlier after you upgrade.** What
   this version queues for a conversation is a line an earlier version cannot read. While a
   terminal of an earlier version has a conversation open, none of these reaches it: a rule's
-  result, a queued prompt, a message or a claim sent from the page, and a stop or a cancel. The
-  page's Stop and `pi-loops abort <session>` then say the stop is queued, and the turn goes on.
-  Each waits in the queue until you restart that terminal. A request the earlier version queued
+  result, a queued prompt, a message or a claim sent from the page, and a stop or a cancel.
+  `pi-loops abort <session>` then says the stop is queued, and the turn goes on. Each waits in
+  the queue until you restart that terminal. A request the earlier version queued
   itself stays readable to it.
 - **Before you go back to 0.24.2, let what is queued be delivered, or cancel it.** 0.24.2 does
   not read what this version queued: it leaves those requests in the queue, `pi-loops status`

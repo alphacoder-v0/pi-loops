@@ -165,7 +165,7 @@ export class WindowExecutor implements Executor {
 	/** The run log, read only when a row with a claim is asked about. */
 	private readonly runs: () => readonly RunRecord[];
 
-	constructor(pi: Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">, binding: WindowBinding, ctx: () => WindowCtx | undefined, self: Producer, alive: (row: Row) => boolean = producerAlive, rows: () => Row[] = () => [], images: (row: Row) => ImageContent[] = noImages, runs: () => readonly RunRecord[] = () => []) {
+	constructor(pi: Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">, binding: WindowBinding, ctx: () => WindowCtx | undefined, self: Producer, alive: (row: Row) => boolean = producerAlive, rows: () => Row[] = () => [], images: (row: Row) => ImageContent[] = noImages, runs: () => readonly RunRecord[]) {
 		this.rows = rows;
 		this.runs = runs;
 		this.pi = pi;
