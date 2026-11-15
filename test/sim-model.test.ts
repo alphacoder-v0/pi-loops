@@ -72,13 +72,16 @@ function scene(t: TestContext, mode: Mode, opts: { rewrites?: boolean } = {}) {
 				world.labels.set(`rule-${n}`, `rule#${n}`);
 				world.store.append(ruleResultRow("c0", `[Trigger rule-${n}] rule result ${n}.`, { traceId: `rule-${n}`, sourceLabel: "r1", cwd: CWD }, { pid: window.pid, instance: window.name, version: "sim" }, world.clock));
 			}),
-		/** A stop that names row `id` is queued. */
+		/** A stop is queued: for row `id`, or with `"running"` for the turn that runs now. */
 		stop: (n: number, id: string): Promise<void> =>
 			step(() => {
 				world.labels.set(`stop-${n}`, `stop#${n}`);
-				world.targeted.add(id);
-				world.store.append({ ...stopRow("c0", { id }, "cli", { pid: 1, instance: "cli", version: "sim" }, world.clock), id: `stop-${n}` });
+				if (id !== "running") world.targeted.add(id);
+				const target = id === "running" ? { current: true as const, started_before: new Date(world.clock + 1000).toISOString() } : { id };
+				world.store.append({ ...stopRow("c0", target, "cli", { pid: 1, instance: "cli", version: "sim" }, world.clock), id: `stop-${n}` });
 			}),
+		/** The names of what the page's pi keeps, in order. */
+		kept: (): string[] => window.pi.kept.map((item) => label(world, item.copy!.rowId)),
 		copyOf: (rowId: string) => world.copies.find((copy) => copy.rowId === rowId)!,
 		pi: (move: Parameters<typeof piMove>[2]): Promise<void> => step(() => piMove(world, window, move)),
 		/** The text of every message in the conversation, in the order pi wrote them. */
@@ -95,8 +98,9 @@ test("after the page's Stop the simulated pi starts no run for what it kept, and
 	// A run begins before pi takes up either prompt: both are queued behind it. Then the page's Stop.
 	await s.pi("type");
 	await s.pi("esc");
-	assert.deepEqual(s.window.pi.kept.map((item) => label(s.world, item.copy!.rowId)), ["j1#1", "j2#2"]);
-	assert.deepEqual(piMoves(s.window), ["type"], "pi starts no run for what a stop left, and refuses none of it");
+	assert.deepEqual(s.kept(), ["j1#1", "j2#2"]);
+	assert.ok(!piMoves(s.window).includes("start") && !piMoves(s.window).includes("refuse"), "pi starts no run for what a stop left, and refuses none of it");
+	assert.ok(!piMoves(s.window).includes("enter"), "an empty editor has nothing to send");
 	// The page queues a message of the person, and the window hands it to the idle pi.
 	await s.person(9);
 	assert.deepEqual(await s.drains(), ["person#9"]);
@@ -305,6 +309,103 @@ test("a custom message has its two events, and they do not say it is a user mess
 	await s.drains();
 	assert.deepEqual(s.texts(), ["[Trigger rule-10] rule result 10."]);
 	assert.deepEqual(roles, ["custom"]);
+});
+
+// P2 (VIA=ctx), g5: an abort asked before the settle. A stop row names the turn that runs, the window asks pi to abort it.
+test("a stop row that names the running turn ends it with what waits behind it kept, as the page's Stop does", async (t) => {
+	const s = scene(t, "rpc");
+	const one = await s.job("j1", 1);
+	await s.drains();
+	await s.job("j2", 2);
+	await s.drains();
+	await s.pi("start");
+	await s.pi("write");
+	await s.stop(3, "running");
+	await s.drains();
+	const before = s.texts().length;
+	await s.pi("settle");
+	assert.equal(s.texts().length, before, "nothing behind the aborted turn is written");
+	assert.deepEqual(s.kept(), ["j2#2"]);
+	assert.equal(s.world.copies.filter((copy) => copy.rowId === one && copy.state === "written").length, 1);
+});
+
+// G3, then a run with no stop: the abort is over with the run that it ended.
+for (const mode of ["rpc", "tui"] as const) {
+	test(`an abort ends with its run: the next run in ${mode === "rpc" ? "the page's pi" : "a terminal"} writes its follow-ups`, async (t) => {
+		const s = scene(t, mode);
+		const one = await s.job("j1", 1);
+		await s.drains();
+		await s.pi("type");
+		await s.stop(3, one);
+		await s.drains();
+		await s.pi("settle");
+		assert.equal(s.copyOf(one).abortedAtStart, true);
+		assert.equal(s.window.pi.aborts, 0);
+		await s.drains();
+		await s.job("j2", 2);
+		await s.drains();
+		await s.job("j1", 4);
+		await s.drains();
+		assert.equal(s.window.pi.queue.length, 2);
+		const before = s.texts().length;
+		await s.pi("start");
+		await s.pi("settle");
+		assert.equal(s.texts().length, before + 2, "both prompts of the next run are written");
+	});
+}
+
+// g10: a second Stop in the page's pi while it keeps messages.
+test("a second Stop in the page's pi writes nothing and keeps everything, the new follow-up behind what was kept", async (t) => {
+	const s = scene(t, "rpc");
+	await s.job("j1", 1);
+	await s.drains();
+	await s.job("j2", 2);
+	await s.drains();
+	await s.pi("type");
+	await s.pi("esc");
+	await s.person(9);
+	await s.drains();
+	await s.pi("start");
+	await s.pi("write");
+	await s.rule(10);
+	await s.drains();
+	const before = s.texts().length;
+	await s.pi("esc");
+	assert.equal(s.texts().length, before, "a stopped run writes nothing of what waits");
+	assert.deepEqual(s.kept(), ["j1#1", "j2#2", "rule#10"]);
+	await s.person(11);
+	await s.drains();
+	await s.pi("start");
+	await s.pi("settle");
+	const written = s.texts().slice(before);
+	assert.equal(written[0], "the person says 11.");
+	assert.match(written[1], /run j1, slot 1\.$/);
+	assert.match(written[2], /run j2, slot 2\.$/);
+	assert.equal(written[3], "[Trigger rule-10] rule result 10.");
+});
+
+// P11: a custom message that asks for a turn reaches the idle pi while it keeps prompts. It starts the run, and what pi kept is written behind it.
+test("a custom message can start the run that writes what the page's pi kept", async (t) => {
+	const s = scene(t, "rpc");
+	await s.job("j1", 1);
+	await s.drains();
+	await s.job("j2", 2);
+	await s.drains();
+	await s.pi("type");
+	await s.pi("esc");
+	assert.deepEqual(s.kept(), ["j1#1", "j2#2"]);
+	// The window took pi for busy and sent the result as a follow-up that asks for a turn; pi had settled by then.
+	await s.rule(10);
+	await s.step(() => s.window.window!.append(s.world.store.list("c0").find((row) => row.id === "rule-10")!, true));
+	assert.deepEqual(piMoves(s.window).filter((move) => move === "start").length, 3, "a message that asks for a turn starts a run");
+	const before = s.texts().length;
+	await s.pi("start");
+	await s.pi("settle");
+	const written = s.texts().slice(before);
+	assert.equal(written[0], "[Trigger rule-10] rule result 10.", "the run's first message is the custom one");
+	assert.match(written[1], /run j1, slot 1\.$/);
+	assert.match(written[2], /run j2, slot 2\.$/);
+	assert.equal(written.length, 3);
 });
 
 test("a process that dies takes what its pi kept with it", async (t) => {

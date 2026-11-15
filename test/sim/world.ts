@@ -473,7 +473,8 @@ function windowProcess(world: World, base: Omit<Process, "executor">): Process {
 	const ctx = {
 		isIdle: () => !proc.pi.running,
 		mode: proc.mode,
-		hasUI: false,
+		// True in a terminal and in the page's pi (measured). False would keep a cleanup of the editor that asks for a UI from ever running here.
+		hasUI: true,
 		// The editor, as an extension reads and sets it: one text.
 		ui: { notify: () => undefined, getEditorText: () => proc.pi.editor.text, setEditorText: (text: string) => void (proc.pi.editor.text = text) },
 		// The user messages pi holds behind a turn: follow-ups while one runs, and what a stop left in
