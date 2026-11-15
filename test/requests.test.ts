@@ -126,8 +126,13 @@ test("[v2-read-as-v3] a v2 line this version does not change keeps its bytes thr
 	const store = new RequestStore(tmp());
 	fs.mkdirSync(path.dirname(store.file("s1")), { recursive: true });
 	fs.writeFileSync(store.file("s1"), `${v2Line}\n${JSON.stringify(row("r2", { lane: "s1" }))}\n`);
+	// Each kind of rewrite: a patch of another row, a refused removal, a removal.
+	assert.equal(store.update("s1", "r2", { attempts: 1 }), true);
+	assert.equal(fs.readFileSync(store.file("s1"), "utf8").split("\n")[0], v2Line, "after another row was patched");
+	assert.equal(store.removeIf("s1", "r2", () => false).outcome, "kept");
+	assert.equal(fs.readFileSync(store.file("s1"), "utf8").split("\n")[0], v2Line, "after a removal that was refused");
 	store.remove("s1", ["r2"]);
-	assert.equal(fs.readFileSync(store.file("s1"), "utf8").split("\n")[0], v2Line);
+	assert.equal(fs.readFileSync(store.file("s1"), "utf8"), `${v2Line}\n`, "after another row was removed: the file is that line and nothing else");
 });
 
 test("[v2-read-as-v3] a v2 row this version patches is written back as v3", () => {
