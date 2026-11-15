@@ -481,9 +481,10 @@ export type FileMark = { size: number; mtimeMs: number } | undefined;
  * What a closed conversation's queue was last found to need nothing for: the files the decision read
  * (the conversation, jobs.json) as they were, the rows as they were, and until when the decision
  * holds on its own (the earliest backoff that ends; Infinity when none does). While `stillQuiet`,
- * the conversation is not read again: a row the background process cannot run (an attended row, a
- * turn row until held turns ride rows) used to cost a full parse of the conversation on every tick,
- * for as long as it waited there.
+ * the conversation is not read again: a row the background process cannot run (an attended row)
+ * used to cost a full parse of the conversation on every tick, for as long as it waited there. A
+ * queue that holds a claim is never quiet: whether its run is still going is asked at every tick,
+ * so a claim whose process died is closed and does not stay.
  */
 export interface QuietMark {
 	key: string;
@@ -496,7 +497,7 @@ export function quietMark(files: readonly FileMark[], rows: readonly Row[], now:
 }
 
 export function stillQuiet(mark: QuietMark | undefined, files: readonly FileMark[], rows: readonly Row[], now: number): boolean {
-	return mark !== undefined && now < mark.until && mark.key === JSON.stringify([files, rows]);
+	return !rows.some((row) => row.run) && mark !== undefined && now < mark.until && mark.key === JSON.stringify([files, rows]);
 }
 
 export type PromotionTarget = { to: "row"; sessionId: string } | { to: "inbox"; sessionId?: string };
@@ -865,6 +866,21 @@ export interface JobsView {
 
 const jobOf = (source: string): string | undefined => (source.startsWith("cron:") ? source.slice("cron:".length) : source.startsWith("cron-run:") ? source.slice("cron-run:".length) : undefined);
 
+/**
+ * The run id `/cron` and `cron_list` print as `running <id>`: the job's marker (a loop, or what an
+ * earlier version left on a plain job), else the claim of the job's row in its conversation's
+ * queue. Not a question of liveness: a claim whose process is gone prints until the next drain
+ * closes it, as a stale marker prints until the next tick clears it.
+ */
+export function runningRun(job: Pick<LoopJob, "id" | "running">, rows: readonly Row[]): string | undefined {
+	return job.running?.runId ?? rows.find((r) => r.run && jobOf(r.source) === job.id)?.run?.id;
+}
+
+/** Whether a row of the job is queued in its conversation's lane, claimed or not: the question of the one-shot rule. */
+export function jobQueued(jobId: string, rows: readonly Row[]): boolean {
+	return rows.some((r) => r.kind === "input" && r.collapse_key === plainCollapseKey(jobId));
+}
+
 /** A plain job's prompt waiting in its conversation's queue, as `/cron` and `cron_list` report it. */
 export interface QueuedPrompt {
 	/** The row's `created_at`: when the prompt was queued. */
@@ -876,14 +892,14 @@ export interface QueuedPrompt {
 /**
  * The oldest queued row of a plain job among its conversation's `rows` (`cron:` from the clock,
  * `cron-run:` from `/cron run`), or undefined when none of the job's is queued. The row a held turn
- * is running stays in the file while it runs and is not queued: the job's `running` marker names
+ * is running stays in the file while it runs and is not queued: its claim (`runningRun`) names
  * it, and the listing already shows that. The reason is read from the row alone, so a listing costs
  * one file read per conversation and no executor view.
  */
 export function queuedPrompt(job: Pick<LoopJob, "id" | "running">, rows: readonly Row[], now: number): QueuedPrompt | undefined {
 	// Only a row the engine would run for this job: its own prefix, its source's mode, not dead. A row
 	// written into the file under a job's name is not that job's prompt, and the listing must not say so.
-	const row = rows.find((r) => r.kind === "input" && jobOf(r.source) === job.id && r.id !== job.running?.runId && r.payload?.text.startsWith(`[Trigger ${r.id}] `) && modeOf("conversation", r.kind, r.source, r.wake) === r.mode && r.attempts < DEAD_AFTER_ATTEMPTS);
+	const row = rows.find((r) => r.kind === "input" && jobOf(r.source) === job.id && !r.run && r.id !== job.running?.runId && r.payload?.text.startsWith(`[Trigger ${r.id}] `) && modeOf("conversation", r.kind, r.source, r.wake) === r.mode && r.attempts < DEAD_AFTER_ATTEMPTS);
 	if (!row) return undefined;
 	// Stamps from the file are re-written from what they parse to, never echoed: they reach a terminal and the model.
 	const created = Date.parse(row.created_at);

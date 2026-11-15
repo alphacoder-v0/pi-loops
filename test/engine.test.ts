@@ -7,7 +7,7 @@ import { TriggerStore } from "../src/triggers.ts";
 import { type ClaimedRow, type ImageContent, RequestStore, type Row, type UnclaimedRow } from "../src/requests.ts";
 import * as path from "node:path";
 import { BACKOFF_MS } from "../src/backoff.ts";
-import { type Action, type Proof, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, proofOf, landed, personRow, plainJobRow, plainRunId, stripImageNotes, claimAlive, changesSomething } from "../src/engine.ts";
+import { type Action, type Proof, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, proofOf, landed, personRow, plainJobRow, plainRunId, stripImageNotes, claimAlive, changesSomething, runningRun, jobQueued, queuedPrompt } from "../src/engine.ts";
 
 test("a row removed between the drain's read and its hand-over is not handed over: the stamp that found no row says so", async () => {
 	// The page's send-here takes a message out of the queue and sends it over rpc. A drain that had
@@ -2045,4 +2045,29 @@ test("[R6] a dead letter names the queue it came from: a conversation's has its 
 	assert.deepEqual([by("x-loop", "s").id, by("x-loop", "s").session_id], [findingId("dead | s | x-loop"), "s"], "the same row id in another queue is another dead letter");
 	assert.deepEqual([by("x-rule", "s").source, by("x-rule", "s").session_id, by("x-rule", "s").undelivered], ["trigger:local:dynamic", "s", undefined], "a rule's result keeps the finding it always had, with its lane");
 	assert.equal(inbox.list().length, 4);
+});
+
+test("[quiet-claim] a queue that holds a claim is never quiet: the tick asks again whether its run is going", () => {
+	const files = [{ size: 10, mtimeMs: 1 }];
+	const free = [claimedRow("c1")].map(({ run: _, ...rest }) => rest as UnclaimedRow);
+	assert.equal(stillQuiet(quietMark(files, free, T0), files, free, T0 + 1), true, "the same rows with no claim are quiet");
+	const held = [claimedRow("c1")];
+	assert.equal(stillQuiet(quietMark(files, held, T0), files, held, T0 + 1), false);
+});
+
+test("the run a plain job is in is its marker, else the claim of its row; a row of the job is queued with or without a claim", () => {
+	const mine = claimedRow("r1", { source: "cron:j", collapse_key: "cron:j" });
+	const { run: _, ...free } = mine;
+	const other = claimedRow("r2", { source: "cron:other", collapse_key: "cron:other" });
+	assert.equal(runningRun({ id: "j" }, [other, mine]), "run-r1");
+	assert.equal(runningRun({ id: "j" }, [other, free as UnclaimedRow]), undefined, "a row with no claim is not a run");
+	assert.equal(runningRun({ id: "j", running: { runId: "run-old", startedAt: "2026-06-01T11:00:00Z" } }, [mine]), "run-old", "a marker comes first");
+	assert.equal(runningRun({ id: "j" }, []), undefined);
+	assert.equal(jobQueued("j", [other]), false);
+	assert.equal(jobQueued("j", [other, mine]), true, "a claimed row is queued");
+	assert.equal(jobQueued("j", [free as UnclaimedRow]), true);
+	assert.equal(jobQueued("j", [{ ...(free as UnclaimedRow), kind: "stop" }]), false, "only an input is a prompt");
+	// A row that a run has claimed is running, not waiting: the listing says `running`, not `[queued]`.
+	assert.equal(queuedPrompt({ id: "j" }, [mine], T0), undefined);
+	assert.notEqual(queuedPrompt({ id: "j" }, [free as UnclaimedRow], T0), undefined);
 });
