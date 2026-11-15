@@ -20,7 +20,7 @@ import { openWhere, ownerSession, runsHere, whereRuns, type OwnerView } from "./
 import { shortSessionId } from "./session-head.ts";
 import { DEAD_AFTER_ATTEMPTS, plainCollapseKey, plainJobRow, plainRunId, sessionFileHas } from "./engine.ts";
 import { RequestStore, type Row } from "./requests.ts";
-import { STOPPED_BY_PERSON } from "./run-list.ts";
+import { RunList, STOPPED_BY_PERSON } from "./run-list.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 
 export const DEFAULT_TICK_MS = 30_000;
@@ -169,6 +169,8 @@ export interface SchedulerOptions {
 	slots?: SubagentSlots;
 	/** Omitted, the session of `getSession()` counts as held by this instance (tests, the host, which has none). */
 	leases?: PlainJobLeases;
+	/** The process's list of the runs that are going. Omitted (a window, a test), the scheduler makes its own. */
+	runs?: RunList;
 	/** The extension instance this scheduler runs for: the same id its session lease names. */
 	instance?: string;
 }
@@ -205,7 +207,8 @@ export class LoopScheduler {
 	private timer: NodeJS.Timeout | undefined;
 	private ticking = false;
 	private startedAt = 0;
-	private readonly inflight = new Map<string, { ctrl: AbortController; label: string; jobId: string; startedAt: string; promptPreview: string; sessionFile?: string; stoppedFrom?: "page" | "cli" }>();
+	/** The runs that are going in this process: the list it was given, or its own. */
+	private readonly going: RunList;
 	/** Promises of runs in flight, so stop() can wait for their records to land. */
 	private readonly runs = new Set<Promise<void>>();
 	private stopped = false;
@@ -220,6 +223,7 @@ export class LoopScheduler {
 		this.inbox = new Inbox(opts.dir);
 		this.requests = new RequestStore(opts.dir);
 		this.getSession = opts.getSession;
+		this.going = opts.runs ?? new RunList();
 		this.hooks = opts.hooks ?? {};
 		this.tickMs = opts.tickMs ?? DEFAULT_TICK_MS;
 		this.runner = opts.runner;
@@ -243,37 +247,32 @@ export class LoopScheduler {
 	}
 
 	get runningCount(): number {
-		return this.inflight.size;
+		return this.going.all().length;
 	}
 
 	/** Labels of the loops this process is running right now. */
 	runningLabels(): string[] {
-		return [...this.inflight.values()].map((r) => r.label);
+		return this.going.all().map((r) => r.label);
 	}
 
 	/** In-flight runs with the details `/triggers running` shows. */
 	runningRuns(): Array<{ runId: string; label: string; jobId: string; startedAt: string; promptPreview: string; sessionFile?: string }> {
-		return [...this.inflight.entries()].map(([runId, r]) => ({ runId, label: r.label, jobId: r.jobId, startedAt: r.startedAt, promptPreview: r.promptPreview, sessionFile: r.sessionFile }));
+		return this.going.all().map((r) => ({ runId: r.runId, label: r.label, jobId: r.jobId, startedAt: r.startedAt, promptPreview: r.promptPreview, sessionFile: r.sessionFile }));
 	}
 
 	/** Abort one in-flight run (kills the sub-agent), as a person asked (STOPPED_BY_PERSON), from `from`. */
 	abortRun(runId: string, from: "page" | "cli" = "cli"): boolean {
-		const r = this.inflight.get(runId);
-		if (!r) return false;
-		r.stoppedFrom ??= from;
-		r.ctrl.abort(STOPPED_BY_PERSON);
-		return true;
+		return this.going.stop(runId, from);
 	}
 
 	/** Where a person's stop of `runId` came from, while the run is still in flight. */
 	stopFrom(runId: string): "page" | "cli" | undefined {
-		return this.inflight.get(runId)?.stoppedFrom;
+		return this.going.get(runId)?.stoppedFrom;
 	}
 
 	/** Where the stop on its way to `runId` came from, for a stop that arrives through a request row. */
 	noteStopFrom(runId: string, from: "page" | "cli"): void {
-		const r = this.inflight.get(runId);
-		if (r) r.stoppedFrom = from;
+		this.going.noteStopFrom(runId, from);
 	}
 
 	/**
@@ -282,12 +281,12 @@ export class LoopScheduler {
 	 * Returns the removed job (undefined when there was none) and how many runs were aborted.
 	 */
 	async removeJob(id: string, opts: { purge?: boolean } = {}): Promise<{ job: LoopJob | undefined; aborted: number }> {
-		const runIds = [...this.inflight.entries()].filter(([, r]) => r.jobId === id).map(([runId]) => runId);
-		for (const runId of runIds) this.inflight.get(runId)?.ctrl.abort();
+		const runIds = this.going.all().filter((r) => r.jobId === id).map((r) => r.runId);
+		for (const runId of runIds) this.going.get(runId)?.ctrl.abort();
 		// The wall clock, not `this.now()`: this is a real wait, and a test that moved its injected
 		// clock must not be able to hold the removal open for ever.
 		const deadline = Date.now() + REMOVE_DRAIN_MS;
-		while (runIds.some((runId) => this.inflight.has(runId)) && Date.now() < deadline) {
+		while (runIds.some((runId) => this.going.get(runId) !== undefined) && Date.now() < deadline) {
 			await new Promise((r) => setTimeout(r, 25));
 		}
 		// If a run is still there past the drain the job is removed anyway; `runOnce` re-reads the
@@ -318,7 +317,7 @@ export class LoopScheduler {
 			this.timer = undefined;
 		}
 		await this.tickPromise; // a tick already dispatching must not launch after we leave
-		for (const { ctrl } of this.inflight.values()) ctrl.abort();
+		for (const { ctrl } of this.going.all()) ctrl.abort();
 		// What is lost past this is the record, not the run: the sub-agent is already aborted, and
 		// waiting longer only delays the quit that asked for it.
 		const DRAIN_TIMEOUT_MS = 5_000;
@@ -397,7 +396,8 @@ export class LoopScheduler {
 			// A job removed in another process (a window, the CLI) takes its run here with it, as
 			// `removeJob` does in this one: the run used to go on to its deadline, spending as it went.
 			const present = new Set(jobs.map((j) => j.id));
-			for (const [runId, r] of this.inflight) {
+			for (const r of this.going.all()) {
+				const runId = r.runId;
 				if (present.has(r.jobId) || r.ctrl.signal.aborted) continue;
 				r.ctrl.abort();
 				this.log(`cron ${r.label}: removed while it ran; stopped run ${runId}`);
@@ -510,7 +510,7 @@ export class LoopScheduler {
 			// A pid is only evidence while it can still be the same process: after a reboot the
 			// numbers are handed out again, and a recycled pid would park the job forever.
 			const recycled = Number.isFinite(booted) && Date.parse(startedAt) < booted - 60_000;
-			return !(pid === process.pid ? this.inflight.has(runId) : !recycled && pidAlive(pid));
+			return !(pid === process.pid ? this.going.get(runId) !== undefined : !recycled && pidAlive(pid));
 		};
 		// How many runs each dead process took with it. One that died with a single run in flight
 		// points at that run; one that died with several says nothing about any of them, and counting
@@ -837,7 +837,7 @@ export class LoopScheduler {
 			});
 			if (!claimed) return;
 			const ctrl = new AbortController();
-			this.inflight.set(runId, { ctrl, label: job.name ?? job.id, jobId: job.id, startedAt, promptPreview: previewRedacted(job.prompt, 120) });
+			this.going.add({ runId, ctrl, label: job.name ?? job.id, jobId: job.id, startedAt, promptPreview: previewRedacted(job.prompt, 120) });
 			let outcome: { preempted: boolean; result: RunnerResult; landed?: boolean };
 			try {
 				outcome = await this.hooks.onHeldTurn(job, row?.payload?.text ?? `[Trigger ${runId}] ${job.prompt}${note}`, runId, held, ctrl.signal);
@@ -879,7 +879,7 @@ export class LoopScheduler {
 				sessionFile: held.sessionFile,
 				forSession: job.createdBy?.sessionId ?? sessionId,
 				...(stopped || handedBack ? { aborted: true as const } : {}),
-				...(stopped ? { stoppedBy: "person" as const, stoppedFrom: this.inflight.get(runId)?.stoppedFrom ?? "cli" } : {}),
+				...(stopped ? { stoppedBy: "person" as const, stoppedFrom: this.going.get(runId)?.stoppedFrom ?? "cli" } : {}),
 			};
 			// Every turn is recorded, a stopped one too: it was billed, and the daily budget, `/cron runs`
 			// and the status page all read the run log.
@@ -926,7 +926,7 @@ export class LoopScheduler {
 			} catch (err: any) {
 				this.log(`cron ${job.id}: could not write the store after its turn (${err?.message ?? err})`, undefined, job);
 			}
-			this.inflight.delete(runId);
+			this.going.remove(runId);
 			try {
 				if (landed || stopped) {
 					// The prompt is in the conversation, or a person stopped the turn: the row is done.
@@ -1047,7 +1047,7 @@ export class LoopScheduler {
 		if (!claimed || claimed.running?.runId !== runId) return;
 
 		const ctrl = new AbortController();
-		this.inflight.set(runId, { ctrl, label: job.name ?? job.id, jobId: job.id, startedAt, promptPreview: previewRedacted(job.prompt, 120) });
+		this.going.add({ runId, ctrl, label: job.name ?? job.id, jobId: job.id, startedAt, promptPreview: previewRedacted(job.prompt, 120) });
 		try {
 			this.hooks.onRunStart?.(claimed, runId);
 		} catch (err: any) {
@@ -1058,7 +1058,7 @@ export class LoopScheduler {
 		} finally {
 			// Whatever failed (a state file that cannot be read, a hook that threw), the run id is
 			// released — otherwise `clearStaleRunning` would call the job alive forever.
-			if (this.inflight.delete(runId)) {
+			if (this.going.remove(runId)) {
 				await this.store
 					.update(job.id, (j) => {
 						if (j.running?.runId === runId) j.running = undefined;
@@ -1107,14 +1107,14 @@ export class LoopScheduler {
 				jobId: job.id,
 				runId,
 				onSessionFile: (file) => {
-					const entry = this.inflight.get(runId);
+					const entry = this.going.get(runId);
 					if (entry) entry.sessionFile = file;
 				},
 			});
 		} catch (err: any) {
 			result = failedRun(err?.message ?? String(err));
 		}
-		// NOTE: the run stays in `inflight` until the checker is done too. Releasing it here would
+		// NOTE: the run stays in the list of runs until the checker is done too. Releasing it here would
 		// make `clearStaleRunning` see "my pid, not in flight", clear the running marker, roll the
 		// schedule back and re-fire the same job while its checker is still working.
 
@@ -1206,7 +1206,7 @@ export class LoopScheduler {
 			ordinal: claimed.runCount + 1,
 			...(requestedBy ? { requestedBy } : {}),
 			...(aborted ? { aborted: true as const } : {}),
-			...(byPerson ? { stoppedBy: "person" as const, stoppedFrom: this.inflight.get(runId)?.stoppedFrom ?? "cli" } : {}),
+			...(byPerson ? { stoppedBy: "person" as const, stoppedFrom: this.going.get(runId)?.stoppedFrom ?? "cli" } : {}),
 		};
 		this.store.pruneSessions(job.id, undefined, this.inbox.pinnedTranscripts(job.id));
 		try {
@@ -1250,9 +1250,9 @@ export class LoopScheduler {
 		if (updated && !result.ok && !byPerson && (updated.consecutiveFailures ?? 0) >= FAILING_AFTER) {
 			this.hooks.onSchedulerError?.(`${updated.name ?? updated.id} has failed ${updated.consecutiveFailures} times in a row; backing off (last: ${record.error ?? "unknown"})`, updated);
 		}
-		// Only now: while the run id is in `inflight`, `clearStaleRunning` treats the job as alive,
+		// Only now: while the run id is in the list of runs, `clearStaleRunning` treats the job as alive,
 		// which is exactly right until its `running` marker is gone from the store.
-		this.inflight.delete(runId);
+		this.going.remove(runId);
 		// A one-shot is retired once its single slot is resolved. A failure gets exactly one more
 		// attempt — transient model/network errors are the common case and the user asked for the run,
 		// not for a job — and is then retired too, with the error kept in the run log and reported by
