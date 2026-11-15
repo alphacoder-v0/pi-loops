@@ -130,7 +130,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	/**
 	 * The engine's executor while this process holds a closed conversation: an `append` row is written
 	 * into the file at once, each one once (the `[Trigger <id>]` already in the file is the check).
-	 * No attended row runs here (`CEILING.held`); a turn row is not admitted yet either (held turns move
+	 * No attended row runs here (`CEILING.held`); a turn row is held back as well (held turns move
 	 * onto rows in a later stage), so it waits for a window instead of failing here. While a turn of
 	 * this process runs in the conversation its runner is writing the file, so nothing is appended
 	 * beside it: only a stop or a cancel acts, and the inputs wait.
@@ -425,7 +425,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		}
 		// A turn of this process's own is running there: the conversation is held already, for that
 		// turn, so a stop or cancel is applied through that lease, with the epoch it took, and nothing
-		// is taken a second time. The executor admits no input while the runner has the file.
+		// is taken a second time. The executor holds every input back while the runner has the file.
 		const lease = leases.read(sessionId);
 		if (turnOpen.has(sessionId) && lease?.holder && sameHolder(lease.holder, me()) && lease.sessionFile) {
 			await drainInto({ sessionId, epoch: lease.epoch, sessionFile: lease.sessionFile, cwd: lease.cwd });

@@ -298,7 +298,7 @@ export function typedByPerson(source: Row["source"]): boolean {
  * A row that runs in the process that produced it, whatever that process holds: what the person
  * typed into the window (`typedInWindow`) and a goal's continuation. Their turn belongs in the window
  * the person is looking at, and the goal's state is that window's; another executor runs one only
- * once its producer is gone. The background process never does (src/host-runtime.ts admits no
+ * once its producer is gone. The background process never does (src/host-runtime.ts runs no
  * attended row). A `person` row is not local: its producer is the page's web.mjs, which runs nothing;
  * the holder runs it (design §5, O2).
  */
@@ -918,7 +918,7 @@ export function formatWait(ms: number): string {
  * decide whether a turn is handed over beside one that has the lane. A row with a claim (`row.run`)
  * is decided before any other rule: its run is still going and has the lane, or its run is closed
  * and the row leaves, stays owed, or fails. For the others, oldest first, one lane: a row in
- * backoff, waiting for a server, handed over, above this executor's ceiling or not admitted here is
+ * backoff, waiting for a server, handed over, above this executor's ceiling or held back by it is
  * skipped and blocks nothing; one whose mode is not its source's is refused and removed.
  * `append` rows land at once while idle, with no turn; during a turn they go as a follow-up, which
  * wakes the agent when it ends (docs/design.md decision 9). A `turn` row is handed over only while

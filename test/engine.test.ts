@@ -1975,3 +1975,13 @@ test("a claim is alive while its process is, by the rule of a lease's holder: th
 	assert.equal(claimAlive(claimed, probe(false, "100")), false, "its process is gone");
 	assert.equal(claimAlive(claimed, probe(true, "999")), false, "the pid was given to another process");
 });
+
+test("[exit-cancelled] a cancel or a stop does not take a claimed row out of its queue: only its run decides what becomes of it", () => {
+	const claimed = claimedRow("c1");
+	for (const order of [cancelRow("s", { id: "c1" }, "cli", page), stopRow("s", { id: "c1" }, "cli", page)]) {
+		for (const live of [true, false]) {
+			const actions = decideDrain("conversation", [claimed, order], proofThat({ ran: () => "aborted" }), jobs, view({ claimLive: () => live }), T0);
+			assert.deepEqual(actions, [{ do: "exit", row: order, exit: "stale" }, live ? { do: "wait", row: claimed, why: "running" } : { do: "close", row: claimed, then: "owed" }], `${order.kind} ${live}`);
+		}
+	}
+});
