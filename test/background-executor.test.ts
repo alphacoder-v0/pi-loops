@@ -541,7 +541,7 @@ test("[take-back] a window that takes the conversation before the model is asked
 	}
 });
 
-test("a turn that is going when pi-loops stops is handed back, not failed: its record says so, and one successor row asks again", async () => {
+test("a turn that is going when pi-loops stops is handed back, not failed: its record says so, and one successor row asks again", { timeout: 30_000 }, async () => {
 	let began: () => void = () => undefined;
 	const running = new Promise<void>((r) => (began = r));
 	const s = scene(async (req) => {
@@ -550,16 +550,21 @@ test("a turn that is going when pi-loops stops is handed back, not failed: its r
 		await new Promise<void>((r) => (req.signal.aborted ? r() : req.signal.addEventListener("abort", () => r(), { once: true })));
 		return { ok: false, exitCode: 1, timedOut: false, text: "", errorMessage: "aborted", stopReason: "aborted", usage: USAGE };
 	});
-	await s.host.scheduler.store.add(job(s) as any);
-	await s.host.scheduler.tick();
-	await running;
-	const id = s.calls[0].runId;
-	// A quit: every run of this process is aborted, with no person's word.
-	await s.host.stop();
-	const [record] = s.runs();
-	assert.deepEqual([record.runId, record.aborted, record.stoppedBy], [id, true, undefined]);
-	assert.deepEqual(s.rows().map((r) => [r.id, r.run]), [[plainRunId("cron-held", `after ${id}`), undefined]]);
-	assert.deepEqual([s.job()?.consecutiveFailures, s.job()?.runCount], [undefined, 1]);
+	try {
+		await s.host.scheduler.store.add(job(s) as any);
+		await s.host.scheduler.tick();
+		// A turn that never starts fails here, and does not hold the suite.
+		await Promise.race([running, new Promise((_, reject) => setTimeout(() => reject(new Error("the turn did not start")), 10_000).unref())]);
+		const id = s.calls[0].runId;
+		// A quit: every run of this process is aborted, with no person's word.
+		await s.host.stop();
+		const [record] = s.runs();
+		assert.deepEqual([record.runId, record.aborted, record.stoppedBy], [id, true, undefined]);
+		assert.deepEqual(s.rows().map((r) => [r.id, r.run]), [[plainRunId("cron-held", `after ${id}`), undefined]]);
+		assert.deepEqual([s.job()?.consecutiveFailures, s.job()?.runCount], [undefined, 1]);
+	} finally {
+		await s.host.stop();
+	}
 });
 
 test("pi-loops in the background does not ask again a prompt that 0.24.2 wrote and left a marker for; it asks again the one that was not written", async () => {

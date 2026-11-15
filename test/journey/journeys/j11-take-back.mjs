@@ -77,11 +77,13 @@ export async function run(ctx) {
 	const all = entries();
 	const first = all.findIndex((e) => e.message.role === "user" && text(e).includes(`[Trigger ${claimed.id}]`));
 	const second = all.findIndex((e) => e.message.role === "user" && text(e).includes(`[Trigger ${again[1]}]`));
-	// The window's own entries lead to the successor's prompt; the background's are on a branch of their own.
+	// Counted: every answer or tool result from the first prompt to the end of the file that was
+	// written after the take-back and does not follow from the successor's prompt. So a second
+	// answer by the background is counted wherever it is: after the successor's prompt, or on the
+	// branch that leads to it.
 	const parents = new Map(jsonl(sessionFile).map((e) => [e.id, e.parentId]));
-	const window = new Set();
-	for (let at = all[second].id; at; at = parents.get(at)) window.add(at);
-	const late = all.slice(first + 1, second).filter((e) => !window.has(e.id) && Date.parse(e.timestamp ?? "") >= took).map((e) => `${e.message.role}${e.message.stopReason ? `(${e.message.stopReason})` : ""}: ${text(e).slice(0, 60)}`);
+	const followsSuccessor = (e) => { for (let at = e.id; at; at = parents.get(at)) if (at === all[second].id) return true; return false; };
+	const late = all.slice(first + 1).filter((e) => (e.message.role === "assistant" || e.message.role === "toolResult") && !followsSuccessor(e) && Date.parse(e.timestamp ?? "") >= took).map((e) => `${e.message.role}${e.message.stopReason ? `(${e.message.stopReason})` : ""}: ${text(e).slice(0, 60)}`);
 	if (late.length > 2 || late.some((line) => !/^(toolResult|assistant\(error\)|assistant\(aborted\))/.test(line))) throw new Error(`the background wrote more than the end of an aborted turn after the take-back: ${JSON.stringify(late)}`);
 	const job = JSON.parse(fs.readFileSync(jobsFile, "utf8")).jobs.find((j) => j.id === JOB);
 	if (job?.runCount !== 1 || job.consecutiveFailures) throw new Error(`the slot was counted twice, or the hand-back counted as a failure: ${JSON.stringify(job)}`);
