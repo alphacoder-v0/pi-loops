@@ -13,9 +13,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmp } from "./tmp.ts";
-import { conversationHas, enqueue, personRow, plainJobRow, plainRunId, requestFingerprint, ringProduced, ruleResultRow, stopRow } from "../src/engine.ts";
+import { cancelRow, conversationHas, enqueue, personRow, plainJobRow, plainRunId, requestFingerprint, ringProduced, ruleResultRow, stopRow } from "../src/engine.ts";
 import { createChecker } from "./sim/invariants.ts";
-import { type Mode, EPOCH, PAGE_PID, REWRITTEN, advance, auditedExits, createWorld, drainAs, kill, label, noFacts, piMove, piMoves } from "./sim/world.ts";
+import { type Mode, EPOCH, PAGE_PID, REWRITTEN, advance, auditedExits, clearQueue, createWorld, drainAs, kill, label, noFacts, piMove, piMoves } from "./sim/world.ts";
 
 const CWD = "/p";
 const TYPED_KEPT = "what the person typed stays in the editor until they send it";
@@ -79,6 +79,19 @@ function scene(t: TestContext, mode: Mode, opts: { rewrites?: boolean } = {}) {
 				if (id !== "running") world.targeted.add(id);
 				const target = id === "running" ? { current: true as const, started_before: new Date(world.clock + 1000).toISOString() } : { id };
 				world.store.append({ ...stopRow("c0", target, "cli", { pid: 1, instance: "cli", version: "sim" }, world.clock), id: `stop-${n}` });
+			}),
+		/** The page clears the queue: a cancel for every input row, and pi's queue emptied. Returns the number of cancels. */
+		clear: (): Promise<number> =>
+			step(() => {
+				let n = 0;
+				const cancels = clearQueue(world, conversation, (target) => {
+					const id = `cancel-${++n}`;
+					world.labels.set(id, `cancel#${n}`);
+					world.targeted.add(target);
+					world.store.append({ ...cancelRow("c0", { id: target }, "person", { pid: PAGE_PID, instance: "page", version: "sim" }, world.clock), id });
+					return id;
+				});
+				return cancels?.length ?? -1;
 			}),
 		/** The names of what the page's pi keeps, in order. */
 		kept: (): string[] => window.pi.kept.map((item) => label(world, item.copy!.rowId)),
@@ -406,6 +419,110 @@ test("a custom message can start the run that writes what the page's pi kept", a
 	assert.match(written[1], /run j1, slot 1\.$/);
 	assert.match(written[2], /run j2, slot 2\.$/);
 	assert.equal(written.length, 3);
+});
+
+// g9: a message the person sends to the page's pi while a turn runs. No row of ours is involved.
+test("a message the person sends behind a running turn in the page is a follow-up of no row, and the Stop keeps it", async (t) => {
+	const s = scene(t, "rpc");
+	await s.pi("type");
+	assert.ok(piMoves(s.window).includes("typeBehind"));
+	await s.pi("typeBehind");
+	assert.equal(s.window.pi.queue.length, 1);
+	assert.equal(s.window.pi.queue[0].copy, undefined, "it is no hand-over of ours");
+	await s.pi("esc");
+	assert.equal(s.window.pi.kept.length, 1);
+	assert.equal(s.window.ctx!.hasPendingMessages(), true, "pending is true with nothing of ours held");
+	const before = s.texts().length;
+	await s.pi("type");
+	await s.pi("settle");
+	const written = s.texts().slice(before);
+	assert.equal(written.length, 2);
+	assert.match(written[0], /^typed #/);
+	assert.match(written[1], /^typed behind #/, "what pi kept is written behind the starter");
+});
+
+test("in a terminal the person cannot queue a message behind a turn here: Enter during a run steers, which nobody measured", async (t) => {
+	const s = scene(t, "tui");
+	await s.pi("type");
+	assert.ok(!piMoves(s.window).includes("typeBehind"));
+	assert.ok(piMoves(s.window).includes("otherSends"));
+});
+
+// P6 (other-sends), G2: another extension's own sendUserMessage.
+for (const mode of ["rpc", "tui"] as const) {
+	test(`another extension's message is a follow-up of no row; a stop ${mode === "rpc" ? "in the page's pi keeps it" : "in a terminal puts it into the editor"}`, async (t) => {
+		const s = scene(t, mode);
+		await s.pi("type");
+		await s.pi("otherSends");
+		assert.equal(s.window.pi.queue.length, 1);
+		assert.equal(s.window.pi.queue[0].copy, undefined);
+		const text = s.window.pi.queue[0].text;
+		const before = s.texts().length;
+		await s.pi("esc");
+		assert.equal(s.texts().length, before, "a stopped run does not write it");
+		if (mode === "rpc") assert.deepEqual(s.window.pi.kept.map((item) => item.text), [text]);
+		else assert.equal(s.window.pi.editor.text, text);
+	});
+}
+
+test("another extension's message to an idle pi starts the run, and a prompt of ours that pi had not started is behind it", async (t) => {
+	const s = scene(t, "rpc");
+	await s.job("j1", 1);
+	assert.deepEqual(await s.drains(), ["j1#1"]);
+	const before = s.texts().length;
+	await s.pi("otherSends");
+	assert.equal(s.window.pi.running, true);
+	assert.match(s.texts()[before], /^another extension says #/, "the run's first message is theirs");
+	assert.equal(s.window.pi.queue.length, 1, "our prompt is a follow-up now");
+	await s.pi("settle");
+	assert.match(s.texts().at(-1)!, /run j1, slot 1\.$/);
+});
+
+// P10: rpc `clear_queue`, as the page's "clear queue" sends it after its cancels.
+test("the page's clear queue during a turn takes the follow-ups out of pi, custom ones too, and the run writes none of them", async (t) => {
+	const s = scene(t, "rpc");
+	const one = await s.job("j1", 1);
+	await s.drains();
+	await s.pi("type");
+	await s.rule(10);
+	await s.drains();
+	assert.deepEqual(s.window.pi.queue.map((item) => item.custom), [false, true]);
+	assert.equal(await s.clear(), 2, "one cancel for each input row");
+	assert.deepEqual(s.window.pi.queue, []);
+	assert.equal(s.copyOf(one).state, "dropped");
+	assert.equal(s.copyOf("rule-10").state, "dropped");
+	assert.equal(s.window.ctx!.hasPendingMessages(), false);
+	const before = s.texts().length;
+	s.world.facts = noFacts();
+	piMove(s.world, s.window, "settle");
+	assert.equal(s.texts().length, before, "nothing that was cleared is written");
+});
+
+test("the page's clear queue after a Stop empties what pi kept, and the next run writes its own message only", async (t) => {
+	const s = scene(t, "rpc");
+	await s.job("j1", 1);
+	await s.drains();
+	await s.pi("type");
+	await s.pi("esc");
+	assert.deepEqual(s.kept(), ["j1#1"]);
+	await s.clear();
+	assert.deepEqual(s.window.pi.kept, []);
+	assert.equal(s.window.ctx!.hasPendingMessages(), false);
+	await s.drains();
+	const before = s.texts().length;
+	await s.pi("type");
+	await s.pi("settle");
+	assert.equal(s.texts().length, before + 1);
+});
+
+test("the page's clear queue does not take a prompt that an idle pi is about to start", async (t) => {
+	const s = scene(t, "rpc");
+	const one = await s.job("j1", 1);
+	await s.drains();
+	assert.equal(s.window.pi.queue.length, 1);
+	await s.clear();
+	assert.equal(s.window.pi.queue.length, 1, "that prompt is not in pi's queue of follow-ups");
+	assert.equal(s.copyOf(one).state, "held");
 });
 
 test("a process that dies takes what its pi kept with it", async (t) => {

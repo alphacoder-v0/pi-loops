@@ -29,7 +29,15 @@
  * - Before pi persists a message it asks the window (`message_end`), which may give another
  *   message of the same role: what a window writes into the entry is in the entry.
  * - A custom message with no turn asked for is written at once.
- * - The person types into the window: a turn of their own, in words no row has.
+ * - The person types into the window: a turn of their own, in words no row has. In the page they
+ *   can also send a message straight to pi while a turn runs (`typeBehind`): a follow-up with no
+ *   row, which the page's Stop keeps as it keeps ours (probe g9). In a terminal, Enter during a
+ *   run steers, which nobody measured: the move is the page's only.
+ * - Another extension sends a user message of its own (`otherSends`, probe P6): a follow-up
+ *   during a run, the first message of a run when pi is idle. The window is told of the input
+ *   and not of a person's submission.
+ * - The page clears the queue (`clearQueue`, probe P10): a cancel for every input row, then pi's
+ *   queue is emptied, custom messages too, and no extension is told.
  * - A hand-over can throw (no model, no credentials).
  *
  * What it does not do:
@@ -287,6 +295,8 @@ export interface World {
 	ticks: boolean;
 	/** Another extension's `input` handler puts words before the text of every user message: a prefix of ours is then not at the start, and a row's words are not the message's first. */
 	rewrites: boolean;
+	/** The hand-overs that pi let go of when the page cleared the queue: none of them may be written afterwards. */
+	cleared: Copy[];
 }
 
 /** A world of one conversation for each of `seconds`: its first process is a window, started; its second is of `kind`, started when `running`; `modes` are the two processes'. */
@@ -315,6 +325,7 @@ export function createWorld(dir: string, time: Timers, seconds: ReadonlyArray<{ 
 		handOverThrows: false,
 		ticks: opts.ticks === true,
 		rewrites: opts.rewrites === true,
+		cleared: [],
 	};
 	time.setTime(EPOCH);
 	for (const [index, second] of seconds.entries()) {
@@ -517,16 +528,18 @@ function backgroundProcess(world: World, base: Omit<Process, "executor">): Proce
 
 /* ------------------------------------------------------------ pi's moves */
 
-export type PiMove = "start" | "write" | "settle" | "esc" | "refuse" | "type" | "enter";
+export type PiMove = "start" | "write" | "settle" | "esc" | "refuse" | "type" | "enter" | "typeBehind" | "otherSends";
 
 /** What `process`'s pi can do next; a move listed twice is twice as likely. */
 export function piMoves(proc: Process): PiMove[] {
 	const pi = proc.pi;
-	if (pi.running) return pi.current ? ["write", "write", "settle", "esc"] : ["settle", "esc"];
+	// While a turn runs: the person can send a message behind it in the page, and another extension can send one anywhere.
+	const behind: PiMove[] = proc.mode === "rpc" ? ["typeBehind", "otherSends"] : ["otherSends"];
+	if (pi.running) return pi.current ? ["write", "write", "settle", "esc", ...behind] : ["settle", "esc", ...behind];
 	// A terminal's editor that a stop filled: the person sends it, or adds words of their own first
 	// (`type`). What a stop left in the page's pi starts nothing: no `start` and no `refuse` for it.
 	const enter: PiMove[] = pi.editor.text !== "" ? ["enter"] : [];
-	return pi.queue.length ? ["start", "start", "start", "refuse", "type", "type", ...enter] : ["type", ...enter];
+	return pi.queue.length ? ["start", "start", "start", "refuse", "type", "type", "otherSends", ...enter] : ["type", ...enter];
 }
 
 export function piMove(world: World, proc: Process, move: PiMove): void {
@@ -564,6 +577,25 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			window.agentStarted(at);
 			write(world, proc, { text: `typed #${++world.made}.`, custom: false });
 			break;
+		case "typeBehind":
+			// The person's message while a turn runs, sent to pi and not through a row: `input`, and a follow-up of no row.
+			window.inputSeen(at);
+			window.personInput();
+			pi.queue.push({ text: `typed behind #${++world.made}.`, custom: false });
+			break;
+		case "otherSends": {
+			// Another extension's `sendUserMessage`: `input` with the source `extension`, so no submission of the person is counted.
+			const item: Item = { text: `another extension says #${++world.made}.`, custom: false };
+			window.inputSeen(at);
+			if (pi.running) pi.queue.push(item);
+			else {
+				pi.running = true;
+				pi.startedAt = at;
+				window.agentStarted(at);
+				write(world, proc, item);
+			}
+			break;
+		}
 		case "enter": {
 			// The person sends the editor: one message, all of its text, and a run that starts with it.
 			// Each hand-over whose paragraph is still in the text is written now, by them.
@@ -615,6 +647,26 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			break;
 		}
 	}
+}
+
+/**
+ * The page's "clear queue" for `conversation`: a cancel from the person for every input row in the
+ * queue file, then rpc `clear_queue` to the page's pi. Pi lets go of what it kept after a stop and,
+ * while a turn runs, of the follow-ups behind it, custom messages too; the prompt it runs and a
+ * prompt an idle pi has not started are not in that queue. No extension is told: the window learns
+ * of it from the cancels and from what pi does not write. Returns the ids of the cancels, and
+ * undefined when no page's pi is on the conversation.
+ */
+export function clearQueue(world: World, conversation: Conversation, cancel: (target: string) => string): string[] | undefined {
+	const page = live(conversation).find((proc) => proc.window && proc.mode === "rpc");
+	if (!page) return undefined;
+	const cancels = world.store.list(conversation.id).filter((row) => row.kind === "input").map((row) => cancel(row.id));
+	const pi = page.pi;
+	for (const item of [...pi.kept.splice(0), ...(pi.running ? pi.queue.splice(0) : [])]) {
+		leave(item.copy, "dropped", world.clock);
+		if (item.copy) world.cleared.push(item.copy);
+	}
+	return cancels;
 }
 
 /* ------------------------------------------------------------ the engine, with its writes watched */
