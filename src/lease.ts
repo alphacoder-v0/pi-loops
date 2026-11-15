@@ -351,20 +351,6 @@ export class LeaseStore {
 	}
 
 	/**
-	 * Write `busy` on the holder's own lease at its own epoch; the epoch does not move. A turn that a
-	 * drain starts calls it with the run it just claimed, so the lease names the run that is going,
-	 * whatever the lease was taken for.
-	 */
-	setBusy(sessionId: string, me: Pick<LeaseHolder, "pid" | "instance">, epoch: number, busy: NonNullable<LeaseHolder["busy"]>): boolean {
-		const file = this.file(sessionId);
-		return withFileLockSync(path.join(this.dir, "leases.lock"), () => {
-			const before = this.read(sessionId);
-			if (!before?.holder || !sameHolder(before.holder, me) || before.epoch !== epoch) return false;
-			return this.writeIfCurrent(file, before, { ...before, holder: { ...before.holder, busy }, updatedAt: stamp(Date.now()) });
-		});
-	}
-
-	/**
 	 * The host's acquisition for one piece of work (decideHostAcquire), compare-and-written under the
 	 * lock. Returns the lease it now holds, or why not.
 	 */

@@ -311,18 +311,6 @@ test("setTurn writes and deletes turnSince at the holder's epoch, keeps the epoc
 	assert.equal(store.read("s")?.holder?.page, true, "the rest of the holder stays");
 });
 
-test("[R2] setBusy names the run that is going on the holder's own lease: it keeps the epoch, and refuses another epoch or holder", () => {
-	const store = new LeaseStore(tmp(), probe());
-	store.acquire("s", { ...pageHolder, busy: { runId: "requests", jobId: "promotion", since: "2026-01-01T00:00:00.000Z" } });
-	const busy = { runId: "run-1", jobId: "cron-1", since: "2026-01-01T00:00:01.000Z" };
-	assert.equal(store.setBusy("s", pageHolder, 1, busy), true);
-	assert.deepEqual([store.read("s")?.holder?.busy, store.read("s")?.epoch], [busy, 1]);
-	assert.equal(store.setBusy("s", pageHolder, 2, { ...busy, runId: "run-2" }), false, "a stale epoch");
-	assert.equal(store.setBusy("s", { ...pageHolder, instance: "b" }, 1, { ...busy, runId: "run-2" }), false, "not the holder");
-	assert.equal(store.read("s")?.holder?.busy?.runId, "run-1");
-	assert.equal(store.read("s")?.holder?.page, true, "the rest of the holder stays");
-});
-
 test("a tui window viewing the page mid-turn takes the conversation on its first refresh after the turn", () => {
 	const store = new LeaseStore(tmp(), probe());
 	const page = new LeaseBinding(store, "page", () => ({ kind: "terminal", pid: 30, procStart: "start", mode: "rpc", page: true, pushServers: [] }), probe());

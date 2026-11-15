@@ -414,7 +414,11 @@ function windowProcess(world: World, base: Omit<Process, "executor">): Process {
 	return proc;
 }
 
-/** The background process on a closed conversation, as src/host-runtime.ts builds it: `append` rows only, written into the file at once. */
+/**
+ * The background process on a closed conversation, in this world: `append` rows only, written into the
+ * file at once. It starts no turn here: a plain job's turn in the background has a world of its own
+ * (test/sim/held.ts), and this one keeps to what pi and the windows do to a queue.
+ */
 function backgroundProcess(world: World, base: Omit<Process, "executor">): Process {
 	const proc = base as Process;
 	const conversation = proc.conversation;
@@ -424,7 +428,7 @@ function backgroundProcess(world: World, base: Omit<Process, "executor">): Proce
 		view: () => ({ kind: "held", ceiling: CEILING.held, blocked: (row) => (row.wake === "turn" ? "turn rows wait for a window" : undefined), claimLive: () => false, idle: true, inFlight: new Set<string>(), connected: () => true, producerAlive: () => true, mine: () => false }),
 		append: (row) => write(world, proc, { text: row.payload?.text ?? "", custom: true, copy: copyFor(world, proc, row.payload?.text ?? "") }),
 		turn: () => {
-			throw new Error("the background process does not run turn requests yet");
+			throw new Error("this world's background starts no turn (test/sim/held.ts has that)");
 		},
 		abort: () => undefined,
 		abortWhenStarted: () => undefined,

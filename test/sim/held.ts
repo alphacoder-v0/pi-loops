@@ -60,6 +60,8 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 	let holder: "background" | "window" | undefined;
 	let fuse = Infinity;
 	let crashed = false;
+	/** How many times the process died in the middle of a drain's or a closing's writes. */
+	let cutClosings = 0;
 	const alive = (): void => {
 		if (crashed) throw new Crash();
 	};
@@ -67,6 +69,7 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 		if (--fuse > 0) return;
 		fuse = Infinity;
 		crashed = true;
+		cutClosings++;
 		die("in the middle of its writes");
 		throw new Crash();
 	};
@@ -87,6 +90,8 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 		const audited = (state: string) => audits.some((a) => a.traceId === id && a.state === state);
 		if (prompts(id) > 0) return "delivered";
 		const last = runsOf(id).at(-1);
+		// A run that ended spends its slot, written or not: its record is in the run log.
+		if ((last?.end === "ok" || last?.end === "failed") && records.some((r) => r.runId === id && r.startedAt === last.startedAt)) return "delivered";
 		if (last?.end === "stopped" && audited("stopped")) return "stopped";
 		const letter = inbox.list().filter((e) => e.run_id === id);
 		if (letter.length === 1 && letter[0].id === findingId(`dead | ${SESSION} | ${id}`) && letter[0].session_id === SESSION && audited("dead")) return "dead";
@@ -279,15 +284,19 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 		for (const record of records) byClaim.set(`${record.runId} ${record.startedAt}`, (byClaim.get(`${record.runId} ${record.startedAt}`) ?? 0) + 1);
 		for (const [claim, n] of byClaim) if (n > 1) fail(`the run ${claim} has ${n} records`);
 		if (records.length > runs.length) fail(`${records.length} records for ${runs.length} runs`);
-		// I8: attempts count only a run that left no prompt and failed or was cut off.
+		// I8: a failed run spends its slot; attempts count only a run whose process died before its prompt was written.
 		for (const row of rows) {
-			const unwritten = runsOf(row.id).filter((r) => !r.wrote && (r.end === "failed" || r.end === "cut-off")).length;
-			if (row.attempts > unwritten) fail(`${row.id} has ${row.attempts} attempt(s) and only ${unwritten} of its runs failed or were cut off before the prompt: a stop or a hand-back counted`);
+			const cutOff = runsOf(row.id).filter((r) => !r.wrote && r.end === "cut-off").length;
+			if (row.attempts > cutOff) fail(`${row.id} has ${row.attempts} attempt(s) and only ${cutOff} of its runs were cut off before the prompt: a failure, a stop or a hand-back counted`);
+			if (runsOf(row.id).some((r) => r.end === "ok" || r.end === "failed") && !row.run) fail(`${row.id} is queued again after a run of it ended: a run that ended spends its slot`);
 		}
-		// The job's patch is applied once per record, also when a closing runs twice. A process that
-		// died between a record and the job's write leaves that one record's patch for the next closing.
+		// The job counts a process that died once per run, and never more.
+		if ((job.interruptions ?? 0) > records.filter((r) => r.interrupted).length) fail(`the job counts ${job.interruptions} interruptions and the run log has ${records.filter((r) => r.interrupted).length}`);
+		// A failure is never counted twice, also when a closing runs again after another row's closing
+		// came between. A process that died in the middle of a closing can leave one record uncounted.
 		const streakNow = job.consecutiveFailures ?? 0;
-		if (streakNow !== streak() && streakNow !== streak(records.length - 1)) fail(`the job's streak is ${streakNow}, and the run log says ${streak()} (${streak(records.length - 1)} before its last record): a failure was counted twice, or not at all`);
+		const most = Math.max(...records.map((_, i) => streak(i + 1)), 0);
+		if (streakNow > most) fail(`the job's streak is ${streakNow}, and the run log never says more than ${most}: a failure was counted twice`);
 		if (job.runCount !== known.filter((id) => id.startsWith("slot-")).length) fail(`the closing changed the job's run count to ${job.runCount}`);
 		// A successor follows a run that was handed back with its prompt written, and nothing else; one each.
 		for (const id of known) {
@@ -297,6 +306,13 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 			if (!handedBack || prompts(before!) === 0) fail(`${id} was queued and no run that was handed back with its prompt written is before it`);
 		}
 		if (new Set(known).size !== known.length) fail("a row was queued twice under one id");
+		// And the other way: a run that was handed back with its prompt written, whose row is gone, has its successor.
+		for (const record of records) {
+			// Written by that run itself: a row that was owed and that a window then ran has its prompt from the window.
+			const wroteIt = runs.some((r) => r.rowId === record.runId && r.startedAt === record.startedAt && r.wrote);
+			if (!record.aborted || record.stoppedBy || !wroteIt || rows.some((r) => r.id === record.runId)) continue;
+			if (!known.includes(plainRunId(JOB, `after ${record.runId}`))) fail(`${record.runId} was handed back with its prompt written and left with no successor: the prompt is never asked again`);
+		}
 		const queued = new Set(rows.map((row) => row.id));
 		for (const id of known) if (!queued.has(id) && !gone.has(id)) fail(`${id} is gone from its queue and nothing removed it`);
 		const letters = new Map<string, number>();
@@ -306,7 +322,7 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 		if (rows.length) fail(`${rows.map((r) => r.id).join(", ")} still queued after every run was let to end: a row is stuck`);
 		for (const id of known) if (!gone.has(id)) fail(`${id} never left`);
 		if (records.length !== runs.length) fail(`${runs.length} runs and ${records.length} records: a run has no record`);
-		if ((job.consecutiveFailures ?? 0) !== streak()) fail(`the job's streak is ${job.consecutiveFailures ?? 0} and the run log says ${streak()}`);
+		if (cutClosings === 0 && (job.consecutiveFailures ?? 0) !== streak()) fail(`the job's streak is ${job.consecutiveFailures ?? 0} and the run log says ${streak()}, and no process died in a closing`);
 	}
 
 	for (let i = 0; i < steps && !out.violation; i++) {

@@ -7,7 +7,7 @@ import { TriggerStore } from "../src/triggers.ts";
 import { type ClaimedRow, type ImageContent, RequestStore, type Row, type UnclaimedRow } from "../src/requests.ts";
 import * as path from "node:path";
 import { BACKOFF_MS } from "../src/backoff.ts";
-import { type Action, type Proof, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, proofOf, landed, personRow, plainJobRow, plainRunId, stripImageNotes, claimAlive, changesSomething, runningRun, jobQueued, queuedPrompt, closeRun } from "../src/engine.ts";
+import { type Action, type Proof, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, proofOf, landed, personRow, plainJobRow, plainRunId, stripImageNotes, claimAlive, changesSomething, runningRun, jobQueued, queuedPrompt, closeRun, heldTurns } from "../src/engine.ts";
 import { runEnd } from "../src/settle.ts";
 import type { RunRecord } from "../src/store.ts";
 
@@ -1836,7 +1836,7 @@ const claimIn = (store: RequestStore, id: string, over: Partial<UnclaimedRow> = 
 	assert.equal(store.claim("s", id, { id: `run-${id}`, pid: 4242, started_at: "2026-06-01T11:59:00Z" }), true);
 };
 
-test("[2.1-3] [proved-by-conversation] a closed run whose prompt is in the conversation lets its row leave as delivered, however it ended; an ended record alone does not", async () => {
+test("[2.1-3] [ended-by-record] a closed run that ended, or whose prompt is in the conversation, lets its row leave as delivered: a run that ended spends its slot, written or not", async () => {
 	for (const record of [ENDED, FAILED, STOPPED, HANDED_BACK, undefined]) {
 		const w = closingWorld();
 		claimIn(w.store, "c1");
@@ -1846,13 +1846,24 @@ test("[2.1-3] [proved-by-conversation] a closed run whose prompt is in the conve
 		assert.deepEqual([w.store.list("s").filter((r) => r.id === "c1"), out.removed, out.failed], [[], ["c1"], []], `${record ? runEnd(record).how : "no record"}`);
 		assert.deepEqual(w.requestAudit(), [], "a delivered input's record is its session");
 	}
-	// The run ended and said ok, and the prompt is not in the conversation: not delivered. The row is tried again.
-	const w = closingWorld();
-	claimIn(w.store, "c1");
-	w.runs.push(ENDED);
-	const out = await drain("s", w.store, w.executor, T0, w.sinks);
-	const [left] = w.store.list("s");
-	assert.deepEqual([left.run, left.attempts, left.last_error, out.failed], [undefined, 1, "its prompt is not in the conversation", ["c1"]]);
+	// The run ended, and its prompt is not in the conversation: the slot is spent all the same. The
+	// record is in the run log, and a failure is the job's; the row is not tried again.
+	for (const record of [ENDED, FAILED]) {
+		const w = closingWorld();
+		claimIn(w.store, "c1", { attempts: 1 });
+		w.runs.push(record);
+		const out = await drain("s", w.store, w.executor, T0, w.sinks);
+		assert.deepEqual([w.store.list("s"), out.removed, out.failed, w.requestAudit(), w.job().consecutiveFailures], [[], ["c1"], [], [], record.ok ? undefined : 1], runEnd(record).how);
+	}
+	// A run that did not end is delivered only by its prompt: stopped, handed back and cut off each keep the row or exit otherwise.
+	for (const record of [STOPPED, HANDED_BACK, undefined]) {
+		const w = closingWorld();
+		claimIn(w.store, "c1");
+		if (record) w.runs.push(record);
+		const out = await drain("s", w.store, w.executor, T0, w.sinks);
+		assert.deepEqual(out.removed.length + w.store.list("s").length, 1);
+		assert.notDeepEqual([out.removed, w.requestAudit()], [["c1"], []], `${record ? runEnd(record).how : "no record"}: not a delivery`);
+	}
 	// A lane whose session is new each time has no conversation to look in: there the record of a run that ended proves the row.
 	const lane = `@cron-${"0".repeat(32)}`;
 	for (const [record, leaves] of [[ENDED, true], [FAILED, true], [HANDED_BACK, false]] as const) {
@@ -1920,7 +1931,7 @@ test("[2.1-6] [R5] a claim whose process is gone and that has no record gets an 
 	assert.deepEqual([left.run, left.attempts, left.last_error, left.not_before], [undefined, 1, "the process running it stopped", stamp(T0 + BACKOFF_MS[0])]);
 	assert.deepEqual([first.failed, first.dead], [["c1"], []]);
 	assert.deepEqual(w.requestAudit(), [["failed", "c1"]]);
-	assert.deepEqual([w.job().consecutiveFailures, w.job().lastCompletedAt], [undefined, undefined], "a process that died is no failure of the job");
+	assert.deepEqual([w.job().consecutiveFailures, w.job().interruptions, w.job().lastCompletedAt, w.job().enabled], [undefined, 1, stamp(T0), true], "a process that died is no failure of the job: it is one interruption");
 	// The prompt was written before the process died: the row is delivered, and nothing is asked again.
 	const there = closingWorld();
 	claimIn(there.store, "c1");
@@ -1935,6 +1946,22 @@ test("[2.1-6] [R5] a claim whose process is gone and that has no record gets an 
 	const [letter] = again.inbox.list();
 	assert.deepEqual([letter.id, letter.undelivered, letter.run_id], [findingId("dead | s | c2"), true, "c2"]);
 	assert.match(letter.text, /^could not be delivered \(failed 3 times: the process running it stopped\): go$/);
+});
+
+test("[R5] a job whose turn stops its process three times in a row is turned off, with its prompt written or not: the third closing says why", async () => {
+	for (const written of [true, false]) {
+		const w = closingWorld();
+		for (let n = 1; n <= 3; n++) {
+			const id = `c${n}`;
+			w.store.append(row(id, { wake: "turn", source: "cron:j", mode: "unattended", collapse_key: "cron:j", payload: { text: `[Trigger ${id}] go`, cwd: "/p" } }));
+			assert.equal(w.store.claim("s", id, { id: `run-${id}`, pid: 4242, started_at: stamp(T0 + n * 60_000) }), true);
+			if (written) w.written(id);
+			await drain("s", w.store, w.executor, T0 + n * 60_000 + 1_000, w.sinks);
+			assert.deepEqual([w.job().interruptions, w.job().enabled], [n, n < 3], `${written} ${n}`);
+		}
+		assert.match(w.job().lastError, /^parked: its last 3 runs were interrupted before they finished/);
+		assert.equal(w.runs.filter((r) => r.interrupted).length, 3);
+	}
 });
 
 test("[R3] the closing writes the record, then the job's patch, then the row; the row keeps its claim until both are written, and a record that cannot be written changes nothing", async () => {
@@ -2257,4 +2284,21 @@ test("[two-writers] an append that sorts after a turn is not written once that t
 	};
 	assert.deepEqual(await run(true), { appended: [], delivered: ["t1"], queued: ["t1", "a2"] });
 	assert.deepEqual(await run(false), { appended: ["a2"], delivered: ["t1", "a2"], queued: ["t1", "a2"] });
+});
+
+test("the held turns a window lists are the claims on plain jobs' rows whose process lives: not a loop, not a job with a marker, not a claim of a process that is gone", () => {
+	const claim = (job: string, id: string) => claimedRow(id, { source: `cron:${job}`, collapse_key: `cron:${job}`, lane: `s-${job}` });
+	const rowsOf = (sessionId: string): Row[] => ({ "s-a": [claim("a", "r-a")], "s-b": [claim("b", "r-b")], "s-c": [claim("c", "r-c")], "s-d": [claim("d", "r-d")], "s-e": [slotRow("r-e")] })[sessionId] ?? [];
+	const jobsList = [
+		{ id: "a", stateful: false, sessionId: "s-a" },
+		{ id: "b", stateful: true, sessionId: "s-b" },
+		{ id: "c", stateful: false, sessionId: "s-c", running: { runId: "run-old", pid: 1, startedAt: "2026-06-01T11:00:00Z" } },
+		{ id: "d", stateful: false, sessionId: "s-d" },
+		{ id: "e", stateful: false, sessionId: "s-e" },
+		{ id: "f", stateful: false },
+	];
+	const alive = (row: ClaimedRow) => row.id !== "r-d";
+	assert.deepEqual(heldTurns(jobsList, rowsOf, alive), [{ jobId: "a", run: claim("a", "r-a").run }]);
+	// By default a claim is alive by the rule of a lease's holder: these claims are of a pid that is not there.
+	assert.deepEqual(heldTurns(jobsList, rowsOf), []);
 });

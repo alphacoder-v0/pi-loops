@@ -983,7 +983,7 @@ test("a lane's rows are not buried as a conversation that is gone: a loop's queu
 	}
 });
 
-test("the background closes a claim whose process is gone, by what the run log and the conversation say: a handed-back run leaves its row owed, a written prompt lets it leave, an ended run with no prompt is tried again", async () => {
+test("the background closes a claim whose process is gone, by what the run log and the conversation say: a handed-back run leaves its row owed, a written prompt lets it leave, and a run that ended has spent its slot", async () => {
 	// No code claims a row yet; this is the wiring a claim will meet: the view asks the claim's
 	// process, the proof reads the run log, and a queue with a dead claim is not left as quiet.
 	const dir = tmp("pi-loops-hostrt-");
@@ -1011,8 +1011,7 @@ test("the background closes a claim whose process is gone, by what the run log a
 		record("run-t-unwritten", { ok: true });
 		await host.scheduler.tick();
 		const left = Object.fromEntries(store.list(sessionId).map((r) => [r.id, r]));
-		assert.deepEqual(Object.keys(left).sort(), ["t-aborted", "t-cut", "t-live", "t-unwritten"], "the row whose prompt is in the conversation has left");
-		assert.deepEqual([left["t-unwritten"].run, left["t-unwritten"].attempts, left["t-unwritten"].last_error], [undefined, 1, "its prompt is not in the conversation"], "a run that ended is not a delivery: the conversation decides");
+		assert.deepEqual(Object.keys(left).sort(), ["t-aborted", "t-cut", "t-live"], "the row whose prompt is in the conversation has left, and so has the row of a run that ended with none written: its slot is spent");
 		assert.equal(left["t-live"].run?.id, "run-t-live", "a run that is going keeps its claim");
 		assert.deepEqual([left["t-aborted"].run, left["t-aborted"].attempts], [undefined, 0], "aborted by no person: owed again, and no attempt counted");
 		assert.deepEqual([left["t-cut"].run, left["t-cut"].attempts, left["t-cut"].last_error], [undefined, 1, "the process running it stopped"], "no record: the run was cut off, and that is an attempt");

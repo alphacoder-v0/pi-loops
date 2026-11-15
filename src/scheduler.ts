@@ -20,7 +20,7 @@ import { openWhere, ownerSession, runsHere, whereRuns, type OwnerView } from "./
 import { shortSessionId } from "./session-head.ts";
 import type { BackgroundExecutor } from "./background-executor.ts";
 import { jobQueued, plainCollapseKey, plainJobRow, plainRunId, runningRun, sessionFileHas } from "./engine.ts";
-import { oneShotDone } from "./settle.ts";
+import { INTERRUPTIONS_BEFORE_PARKING, oneShotDone } from "./settle.ts";
 import { RequestStore, type Row } from "./requests.ts";
 import { RunList, STOPPED_BY_PERSON } from "./run-list.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
@@ -29,7 +29,7 @@ export const DEFAULT_TICK_MS = 30_000;
 /** Which process a scheduler is in: a pi window, or pi-loops in the background ("host"). */
 export type SchedulerKind = "interactive" | "host";
 /** Interrupted runs in a row (a process that died mid-run) after which a job is parked. */
-export const INTERRUPTIONS_BEFORE_PARKING = 3;
+export { INTERRUPTIONS_BEFORE_PARKING } from "./settle.ts";
 export const DEFAULT_RUN_TIMEOUT_MS = 15 * 60_000;
 export const MAX_CONCURRENT_RUNS = 3;
 /**
@@ -251,11 +251,6 @@ export class LoopScheduler {
 	/** Abort one in-flight run (kills the sub-agent), as a person asked (STOPPED_BY_PERSON), from `from`. */
 	abortRun(runId: string, from: "page" | "cli" = "cli"): boolean {
 		return this.going.stop(runId, from);
-	}
-
-	/** Where a person's stop of `runId` came from, while the run is still in flight. */
-	stopFrom(runId: string): "page" | "cli" | undefined {
-		return this.going.get(runId)?.stoppedFrom;
 	}
 
 	/** Where the stop on its way to `runId` came from, for a stop that arrives through a request row. */
@@ -728,10 +723,12 @@ export class LoopScheduler {
 		// In the background an attended row (`/cron run`, typed in the conversation) waits for a window
 		// and is no reason for the clock's slots to: a slot there collapses onto a row the background runs.
 		const queued = this.requests.list(sessionId).find((row) => row.kind === "input" && row.wake === "turn" && row.collapse_key === key && !(this.kind === "host" && row.mode === "attended"));
-		// A row pi did not take (`attempts` counts its refusals) is not what a new slot collapses onto:
-		// that slot is lost, as 0.22.8 lost a slot pi refused, and the new one asks in its place.
-		// A `/cron run` row is the person's: a slot collapses onto it, refused or not, so it keeps running as theirs.
-		const refused = queued !== undefined && queued.id !== runId && queued.attempts > 0 && queued.source.startsWith("cron:");
+		// In a window, a row pi did not take (`attempts` counts the hand-overs that failed) is not what
+		// a new slot collapses onto: that slot is lost, as 0.22.8 lost a slot pi refused, and the new
+		// one asks in its place. A `/cron run` row is the person's: a slot collapses onto it, refused or
+		// not, so it keeps running as theirs. In the background a row keeps its attempts: a slot is
+		// spent onto it, so a turn that stops its process again and again reaches its third attempt.
+		const refused = this.kind !== "host" && queued !== undefined && queued.id !== runId && queued.attempts > 0 && queued.source.startsWith("cron:");
 		const collapsed = !!queued && !refused && queued.id !== runId;
 		// `/cron run` while the prompt is already queued asks for nothing new: no slot, no stamp.
 		if (collapsed && source === "cron-run") return "collapsed";

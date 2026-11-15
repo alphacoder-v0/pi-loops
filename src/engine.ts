@@ -23,7 +23,7 @@ import { type ImageContent, type RequestMode, type RequestStore, type Row, image
 import type { LockOptions } from "./lock.ts";
 import { backoffFor } from "./backoff.ts";
 import { stamp } from "./schedule.ts";
-import { type RunEnd, type Settlement, runEnd, settle } from "./settle.ts";
+import { INTERRUPTED, type RunEnd, type Settlement, runEnd, settle } from "./settle.ts";
 import { type JobStore, type LoopJob, type RunRecord, newId } from "./store.ts";
 import { type TriggerStore, checkDecidedFinding } from "./triggers.ts";
 
@@ -880,6 +880,19 @@ export function jobClaim(jobId: string, rows: readonly Row[]): ClaimedRow | unde
 	return rows.find((r): r is ClaimedRow => r.run !== undefined && jobOf(r.source) === jobId);
 }
 
+/**
+ * The held turns that are going for `jobs`: for each plain job with no marker, the claim on its
+ * row, when the process that made it lives. What a window lists as runs of the machine that have
+ * no marker in the store.
+ */
+export function heldTurns(jobs: readonly Pick<LoopJob, "id" | "stateful" | "sessionId" | "running">[], rowsOf: (sessionId: string) => readonly Row[], alive: (row: ClaimedRow) => boolean = claimAlive): Array<{ jobId: string; run: ClaimedRow["run"] }> {
+	return jobs.flatMap((job) => {
+		if (job.stateful || !job.sessionId || job.running) return [];
+		const claimed = jobClaim(job.id, rowsOf(job.sessionId));
+		return claimed && alive(claimed) ? [{ jobId: job.id, run: claimed.run }] : [];
+	});
+}
+
 /** Whether a row of the job is queued in its conversation's lane, claimed or not: the question of the one-shot rule. */
 export function jobQueued(jobId: string, rows: readonly Row[]): boolean {
 	return rows.some((r) => r.kind === "input" && r.collapse_key === plainCollapseKey(jobId));
@@ -1242,9 +1255,6 @@ function leaveRow(store: RequestStore, sinks: EngineSinks, row: Row, exit: Exclu
 	store.remove(row.lane, [row.id]);
 }
 
-/** The words of a run whose process was gone before it wrote a record: the record's error, and the reason of the row's attempt. */
-const INTERRUPTED = "the process running it stopped";
-
 /**
  * The id of the row that asks again after `rowId`. Derived, so a closing that runs twice appends
  * one successor, and a successor that ran meanwhile is found by its prefix and leaves without a
@@ -1287,9 +1297,9 @@ export async function closeRun(store: RequestStore, sinks: EngineSinks, row: Cla
 		end = runEnd(written);
 	}
 	const closed = end;
-	// A conversation's row is delivered by its prompt in the conversation, and by nothing else. A
-	// lane whose session is new each time has no such file: there the record of a run that ended proves it.
-	const written = landed(row, proof) || (parseLane(row.lane)?.kind !== "conversation" && (closed.how === "succeeded" || closed.how === "failed"));
+	// Whether the prompt is in the conversation. A run that ended spends its slot either way (the
+	// table of `settle`); a run that did not end is delivered only when its prompt is there.
+	const written = landed(row, proof);
 	let settlement = settle(undefined, closed, written);
 	const job = jobId === undefined ? undefined : await sinks.ledger.update(jobId, (j) => {
 		settlement = settle(j, closed, written);

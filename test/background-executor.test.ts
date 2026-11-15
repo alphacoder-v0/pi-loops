@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -87,15 +87,18 @@ const leftRow = (s: Scene, id: string, over: Record<string, unknown> = {}) => ({
 test("[clock-row] pi-loops in the background writes a due slot's row under its derived id and runs it as a held turn in the conversation's own file; a job whose conversation it does not know is not fired", async () => {
 	const s = scene(ok);
 	try {
-		await s.host.scheduler.store.add(job(s) as any);
+		await s.host.scheduler.store.add(job(s, { tools: ["read"], builtinTools: ["grep"] }) as any);
 		await s.host.scheduler.store.add(job(s, { id: "cron-nowhere", sessionId: "no-such-conversation" }) as any);
 		await s.tick();
 		assert.equal(s.calls.length, 1);
 		const fired = s.job()!;
 		const id = plainRunId("cron-held", fired.lastDueAt!);
 		assert.deepEqual([s.calls[0].kind, s.calls[0].sessionFile, s.calls[0].prompt, s.calls[0].runId, s.calls[0].parentSessionId], ["held", s.file, `[Trigger ${id}] remind me`, id, s.sessionId]);
+		// As the conversation's owner: the job's own tools, no trust that pi has not saved, the default limit of a turn.
+		assert.deepEqual([s.calls[0].tools, s.calls[0].builtinTools, s.calls[0].trusted, s.calls[0].timeoutMs, s.calls[0].hop, s.calls[0].parentCwd], [["read"], ["grep"], false, 15 * 60_000, 1, s.dir]);
 		const [record] = s.runs();
 		assert.deepEqual([record.runId, record.jobId, record.ok, record.stateful, record.sessionFile, record.aborted], [id, "cron-held", true, false, s.file, undefined]);
+		assert.deepEqual([record.usage, record.summary, record.forSession], [USAGE, "done", s.sessionId], "a turn was billed: its cost is in the run log");
 		assert.deepEqual([fired.runCount, fired.lastCompletedAt, fired.running, fired.owedSlot, fired.lastError], [1, record.finishedAt, undefined, undefined, undefined]);
 		assert.deepEqual([s.rows(), s.prompts()], [[], 1], "the row left once its prompt was in the conversation");
 		assert.equal(new LeaseStore(s.dir).read(s.sessionId)?.holder, null, "the conversation is given back");
@@ -157,15 +160,21 @@ test("[turn-lease] [runs-list] [R1] [R2] while a held turn runs: its row has the
 
 test("[take-back] a window that takes the conversation after the prompt was written stops the turn: the background writes nothing more into the conversation, the row is delivered, and one successor row asks again", async () => {
 	let afterTake = "";
+	let opened: ReturnType<typeof mock.method> | undefined;
 	const s = scene((req) => {
 		writes(req);
-		new LeaseBinding(new LeaseStore(s.dir), "w1", () => ({ kind: "terminal", pid: process.pid, mode: "tui", pushServers: [] })).bind(s.sessionId);
+		new LeaseBinding(new LeaseStore(s.dir), "w1", () => ({ kind: "terminal", pid: process.pid, mode: "tui", pushServers: [] })).bind(s.sessionId, { sessionFile: s.file, cwd: s.dir });
 		afterTake = fs.readFileSync(s.file, "utf8");
+		// From here the conversation is the window's: an open by pi's session manager can write the file.
+		opened = mock.method(SessionManager, "open");
 		return { ok: false, exitCode: 1, timedOut: false, text: "", errorMessage: "taken back: a window opened this conversation", stopReason: "aborted", usage: USAGE };
 	});
 	try {
 		await s.host.scheduler.store.add(job(s) as any);
 		await s.tick();
+		const opens = opened!.mock.callCount();
+		opened!.mock.restore();
+		assert.equal(opens, 0, "after the take-back the background reads the conversation as a plain file, and never opens it");
 		const id = s.calls[0].runId;
 		assert.equal(fs.readFileSync(s.file, "utf8"), afterTake, "the closing reads the conversation and does not write it");
 		const [record] = s.runs();
@@ -284,31 +293,40 @@ test("a row whose prompt is already in the conversation is done, not run again",
 	}
 });
 
-test("[proved-by-conversation] a turn that fails before its prompt is written counts an attempt, backs off, and is not run again before its backoff ends; the third failure is a dead letter", async () => {
+test("[ended-by-record] a turn that fails before its prompt is written spends its slot: the failure is recorded and counted, the row leaves, and the prompt is not asked again", async () => {
 	const s = scene(fails("no credentials", { written: false }));
 	try {
 		await s.host.scheduler.store.add(job(s) as any);
 		await s.tick();
-		const [row] = s.rows();
-		assert.deepEqual([row.run, row.attempts, row.last_error, Date.parse(row.not_before!) > Date.now()], [undefined, 1, "no credentials", true]);
-		assert.deepEqual([s.requestAudit(), s.job()?.consecutiveFailures, s.job()?.lastError], [["failed"], 1, "no credentials"]);
+		const [record] = s.runs();
+		assert.deepEqual([record.ok, record.error, record.aborted, record.interrupted], [false, "no credentials", undefined, undefined]);
+		assert.deepEqual([s.rows(), s.prompts(), s.requestAudit()], [[], 0, []], "no retry, no audit line, and no dead letter");
+		assert.deepEqual([s.job()?.runCount, s.job()?.consecutiveFailures, s.job()?.lastError], [1, 1, "no credentials"]);
+		assert.deepEqual(s.host.scheduler.inbox.list(), []);
+		await s.tick();
+		assert.equal(s.calls.length, 1);
+	} finally {
+		await s.host.stop();
+	}
+});
+
+test("a slot waits behind a row of its job that backs off: no lease is taken, the slot is not spent, and the row keeps its attempts until its third, which is a dead letter", async () => {
+	const s = scene(ok);
+	try {
+		await s.host.scheduler.store.add(job(s) as any);
+		// The row of a turn whose process stopped twice before its prompt was written: it backs off.
+		s.requests.append(leftRow(s, "run-left", { attempts: 2, last_error: "the process running it stopped", not_before: new Date(Date.now() + 5 * 60_000).toISOString() }));
 		const epoch = new LeaseStore(s.dir).read(s.sessionId)?.epoch;
 		await s.tick();
-		assert.equal(s.calls.length, 1, "a row in backoff waits, and so does the job");
-		assert.equal(new LeaseStore(s.dir).read(s.sessionId)?.epoch, epoch, "and the conversation is not taken for a row that cannot start");
-		// A row that has failed twice already: this failure is its third.
-		const dead = scene(fails("no credentials", { written: false }));
-		try {
-			await dead.host.scheduler.store.add(job(dead, notDue()) as any);
-			dead.requests.append(leftRow(dead, "run-left", { attempts: 2 }));
-			await dead.tick();
-			assert.deepEqual([dead.calls.length, dead.rows()], [1, []]);
-			const [letter] = dead.host.scheduler.inbox.list();
-			assert.deepEqual([letter.undelivered, letter.run_id, letter.session_id], [true, "run-left", dead.sessionId]);
-			assert.match(letter.text, /^could not be delivered \(failed 3 times: no credentials\): remind me$/);
-		} finally {
-			await dead.host.stop();
-		}
+		assert.deepEqual([s.calls.length, s.rows().map((r) => [r.id, r.attempts]), s.job()?.lastFiredAt, s.job()?.skippedOverlap, new LeaseStore(s.dir).read(s.sessionId)?.epoch], [0, [["run-left", 2]], undefined, 0, epoch], "the due slot waits, and the conversation is not taken");
+		// Its backoff is over, and the process that claims it stops a third time: the claim of a process that is gone.
+		s.requests.update(s.sessionId, "run-left", { not_before: undefined });
+		assert.equal(s.requests.claim(s.sessionId, "run-left", { id: "run-left", pid: 999_999_999, started_at: new Date().toISOString() } as any), true);
+		await s.tick();
+		const [letter] = s.host.scheduler.inbox.list();
+		assert.deepEqual([letter.undelivered, letter.run_id, letter.session_id], [true, "run-left", s.sessionId]);
+		assert.match(letter.text, /^could not be delivered \(failed 3 times: the process running it stopped\): remind me$/);
+		assert.equal(s.rows().some((r) => r.id === "run-left"), false);
 	} finally {
 		await s.host.stop();
 	}
@@ -374,21 +392,22 @@ test("a rule's result that is queued while a held turn runs is not written besid
 	}
 });
 
-test("[R2] the lease names the run that is going, also when the slot's row took the place of a row that had failed", async () => {
+test("[R2] a due slot is spent onto a row of its job that had failed, which keeps its attempts, and the lease names that row's run", async () => {
 	let busy: any;
+	let attempts: number | undefined;
 	const s = scene((req) => {
 		busy = new LeaseStore(s.dir).read(s.sessionId)?.holder?.busy;
+		attempts = s.rows()[0]?.attempts;
 		return ok(req);
 	});
 	try {
 		await s.host.scheduler.store.add(job(s) as any);
-		// A row of an earlier slot that failed once, its backoff over: the due slot asks in its place.
-		s.requests.append(leftRow(s, "run-refused", { attempts: 1, last_error: "no credentials", not_before: new Date(Date.now() - 1_000).toISOString() }));
+		// A row of an earlier slot whose turn was cut off once, its backoff over.
+		s.requests.append(leftRow(s, "run-refused", { attempts: 1, last_error: "the process running it stopped", not_before: new Date(Date.now() - 1_000).toISOString() }));
 		await s.tick();
-		assert.equal(s.calls.length, 1);
-		assert.notEqual(s.calls[0].runId, "run-refused");
-		assert.deepEqual([busy.runId, busy.jobId], [s.calls[0].runId, "cron-held"]);
-		assert.deepEqual(s.rows(), []);
+		assert.deepEqual([s.calls.length, s.calls[0].runId, attempts], [1, "run-refused", 1], "the row runs, with the attempt it had: a new slot's row does not take its place");
+		assert.deepEqual([busy.runId, busy.jobId], ["run-refused", "cron-held"]);
+		assert.deepEqual([s.rows(), s.job()?.skippedOverlap, s.job()?.runCount], [[], 1, 0], "the due slot is spent onto it, as an overlap");
 	} finally {
 		await s.host.stop();
 	}
@@ -493,4 +512,50 @@ test("pi-loops in the background does not take a conversation that the page has 
 	open = false;
 	await background.fire(job({ sessionId, dir }) as any, due, { release: () => undefined } as any, clock, Date.now());
 	assert.deepEqual([clocked, leases.read(sessionId)?.holder, (leases.read(sessionId)?.epoch ?? 0) > 1], [1, null, true], "taken, and given back when the clock lost the slot");
+});
+
+test("[take-back] a window that takes the conversation before the model is asked stops the turn there: no model call, the row is owed, and nothing is counted", async () => {
+	let taken = false;
+	const s = scene(ok);
+	// The window arrives as the turn begins: after its claim, before the runner.
+	s.logs.push = (line: string) => {
+		if (!taken && /turn run-[0-9a-f]+ in session/.test(line)) {
+			taken = true;
+			new LeaseBinding(new LeaseStore(s.dir), "w1", () => ({ kind: "terminal", pid: process.pid, mode: "tui", pushServers: [] })).bind(s.sessionId, { sessionFile: s.file, cwd: s.dir });
+		}
+		return 0;
+	};
+	try {
+		await s.host.scheduler.store.add(job(s) as any);
+		await s.tick();
+		assert.equal(taken, true);
+		assert.equal(s.calls.length, 0, "the model is not asked for a turn whose conversation is gone");
+		const [record] = s.runs();
+		assert.deepEqual([record.aborted, record.stoppedBy, record.ok], [true, undefined, false]);
+		assert.deepEqual(s.rows().map((r) => [r.run, r.attempts]), [[undefined, 0]], "owed to the window");
+		assert.deepEqual([s.job()?.consecutiveFailures, s.job()?.interruptions, s.prompts()], [undefined, undefined, 0]);
+	} finally {
+		await s.host.stop();
+	}
+});
+
+test("a turn that is going when pi-loops stops is handed back, not failed: its record says so, and one successor row asks again", async () => {
+	let began: () => void = () => undefined;
+	const running = new Promise<void>((r) => (began = r));
+	const s = scene(async (req) => {
+		writes(req);
+		began();
+		await new Promise<void>((r) => (req.signal.aborted ? r() : req.signal.addEventListener("abort", () => r(), { once: true })));
+		return { ok: false, exitCode: 1, timedOut: false, text: "", errorMessage: "aborted", stopReason: "aborted", usage: USAGE };
+	});
+	await s.host.scheduler.store.add(job(s) as any);
+	await s.host.scheduler.tick();
+	await running;
+	const id = s.calls[0].runId;
+	// A quit: every run of this process is aborted, with no person's word.
+	await s.host.stop();
+	const [record] = s.runs();
+	assert.deepEqual([record.runId, record.aborted, record.stoppedBy], [id, true, undefined]);
+	assert.deepEqual(s.rows().map((r) => [r.id, r.run]), [[plainRunId("cron-held", `after ${id}`), undefined]]);
+	assert.deepEqual([s.job()?.consecutiveFailures, s.job()?.runCount], [undefined, 1]);
 });

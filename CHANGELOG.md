@@ -126,12 +126,15 @@ All notable changes to pi-loops are documented here. The format follows
 - **A turn whose process stopped is in the run log.** `/cron runs` lists it as a failed run, "the
   process running it stopped". If its prompt was not written, the prompt is tried again after a
   wait, and after the third time it goes to the inbox as a request that could not be delivered.
-  The line "cleared stale running state" and the stop after three interruptions no longer apply
-  to a plain job.
-- **Two more lines in the audit of requests.** A turn that failed before its prompt was written
-  leaves a `failed` line, as a prompt a window could not hand over does. A turn you stopped before
-  its prompt was written leaves a `stopped` line. A stop that names a prompt whose turn has not
-  started cancels the prompt, and no run is recorded for it.
+  A job whose turns were interrupted three times in a row is turned off, as before, and says
+  `parked: its last 3 runs were interrupted before they finished`. The line "cleared stale running
+  state" is no longer written for a plain job.
+- **One more line in the audit of requests.** A turn you stopped before its prompt was written
+  leaves a `stopped` line. A stop that names a prompt whose turn has not started cancels the
+  prompt, and no run is recorded for it.
+- **A prompt that a window left queued and that fails in the background is not tried again.** A
+  turn that fails spends its slot, as a slot the background fired itself always did: the failure
+  is in the run log and in the job's `last error`.
 - **A loop or a rule check that keeps failing waits 1 minute after the third failure, then 5
   minutes, 30 minutes, 2 hours and 6 hours.** It waited 5 minutes after the third and doubled to
   6 hours. A queued prompt, a loop and a rule check now take their waits from one table. A plain

@@ -62,13 +62,17 @@ machine. Everything here follows from that, and each one has a price.
    (`src/background-executor.ts`). The turn keeps that lease until its end. Its end is one closing
    (`closeRun`), which needs no lease and is decided by one table (`src/settle.ts`): the record,
    the job's patch, a successor row when one is due, and the row last. A later drain, in the
-   background or in a window, makes the same closing for a claim whose process is gone. A
-   conversation's row is delivered by its prompt in the conversation and by nothing else, so a
-   turn that failed before it wrote its prompt is tried again and is reported after the third
-   time. The cost: the slot is counted when its row is written, so `runs N` counts a turn that a
-   person stopped; a process that dies in a turn leaves a record that says so, written by the
-   closing; and a stop that arrives after the lease is taken and before the claim is written is
-   answered as a stop of nothing.
+   background or in a window, makes the same closing for a claim whose process is gone. A turn
+   that ended, well or with a failure, spends its slot: its record is in the run log, and the
+   failure is the job's. A turn that did not end is delivered only by its prompt in the
+   conversation: one whose process stopped before the prompt was written is tried again and
+   reported after the third time, and a job whose turns are interrupted three times in a row is
+   turned off. The cost: the slot is counted when its row is written, so `runs N` counts a turn
+   that a person stopped; a process that dies in a turn leaves a record that says so, written by
+   the closing; a stop that arrives after the lease is taken and before the claim is written is
+   answered as a stop of nothing; and the job's patch is applied only for a record newer than the
+   last one applied, so when a process stops in the middle of two closings of one job, the older
+   record's failure or interruption can go uncounted (never counted twice).
 
 2. **Who runs what.** One always-on process runs stateful loops, dynamic-rule checks and MCP push
    evaluation for a loops directory. A window starts it when there is work to run, including the plain jobs and queued rule results of

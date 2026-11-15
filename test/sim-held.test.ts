@@ -6,7 +6,7 @@
  *
  *   SIM_SEED       the first seed (default 1; schedule n runs seed SIM_SEED + n)
  *   SIM_SCHEDULES  how many schedules (default 400)
- *   SIM_STEPS      steps in each (default 50)
+ *   SIM_STEPS      steps in each (default 70)
  *
  * A failure names its seed and prints its steps; `SIM_SEED=<seed> SIM_SCHEDULES=1` runs it alone.
  */
@@ -24,7 +24,7 @@ function setting(name: string, fallback: number): number {
 }
 const FIRST_SEED = setting("SIM_SEED", 1);
 const SCHEDULES = setting("SIM_SCHEDULES", 400);
-const STEPS = setting("SIM_STEPS", 50);
+const STEPS = setting("SIM_STEPS", 70);
 
 test("[R3] [R4] [R5] a held turn keeps its rules through seeded schedules of claims, written prompts, ends, take-backs, crashes and restarts: one record a run, no prompt answered twice, no failure or attempt counted twice", async () => {
 	const seen = new Set<string>();

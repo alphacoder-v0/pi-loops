@@ -5,8 +5,7 @@
  * written before the prompt, the run goes on outside the drain that started it, and its end is
  * the engine's one closing (`closeRun`), whoever holds the conversation by then.
  *
- * Three things are public. A caller cannot start a turn any other way: it holds neither a lease
- * nor an executor.
+ * A caller cannot start a turn but through `fire`: it holds neither a lease nor an executor.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -204,12 +203,8 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 				// The claim, and the run in the list, in one step. A throw here wrote no claim.
 				const claimed = runs.claim(requests, row, { pid, procStart }, { jobId: job.id, label: job.name ?? job.id, promptPreview: previewRedacted(job.prompt, 120), ctrl: new AbortController(), turn: { ...held, label } }, now);
 				if (!claimed) return; // the row left meanwhile
-				// From here nothing throws: a failure to start goes through the closing.
-				try {
-					leases.setBusy(held.sessionId, deps.holder(), held.epoch, { runId: claimed.run.id, jobId: job.id, since: claimed.run.started_at });
-				} catch (err: any) {
-					log(`lease ${shortSessionId(held.sessionId)}: ${err?.message ?? err}`);
-				}
+				// From here nothing throws: a failure to start goes through the closing. The lease names
+				// this run already: `fire` took it for the row it owed, or for the slot's own row.
 				started = runTurn(claimed, held, job);
 			},
 			// As `/triggers abort` does: the run's AbortController.
@@ -319,8 +314,11 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 		const lane = parseLane(job.sessionId ?? "");
 		if (lane?.kind !== "conversation") return;
 		try {
-			const owed = turnOwed(requests.list(lane.id), job.id, now);
-			if (!owed && due === undefined) return;
+			const rows = requests.list(lane.id);
+			const owed = turnOwed(rows, job.id, now);
+			// A row of this job that cannot start yet (it backs off, or it is at its last attempt and
+			// waits for its dead letter): the slot waits behind it, as it waits behind a turn that is going.
+			if (!owed && (due === undefined || rows.some((r) => r.kind === "input" && r.wake === "turn" && jobOf(r) === job.id && !r.run))) return;
 			const held = take(lane.id, { runId: owed?.id ?? plainRunId(job.id, due ?? ""), jobId: job.id, since: stamp(now) });
 			if (!held) return; // busy, open, or written a moment ago: the slot stays owed
 			try {

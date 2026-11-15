@@ -5,6 +5,9 @@
  */
 import type { LoopJob, RunRecord } from "./store.ts";
 
+/** A job whose runs were interrupted this many times in a row is turned off: the turn may be what stops the process. */
+export const INTERRUPTIONS_BEFORE_PARKING = 3;
+
 /**
  * How a run ended, as its run record states it. `at` is the record's `finishedAt`.
  *
@@ -33,13 +36,16 @@ export function runEnd(record: RunRecord): RunEnd {
 	return { how: "failed", error: record.error || "run failed", at };
 }
 
+/** The reason of the attempt that a row gets when the process that ran it stopped before its prompt was written. */
+export const INTERRUPTED = "the process running it stopped";
+
 /**
  * What `settle` decides. `row` has one discriminant, so a result cannot both leave the row and
  * keep it, and only a row that leaves as `delivered` can have a successor.
  */
 export interface Settlement {
 	readonly row:
-		/** The prompt is in the conversation. `successor`: one more row asks again. */
+		/** The slot is spent: the run ended, or its prompt is in the conversation. `successor`: one more row asks again. */
 		| { readonly do: "leave"; readonly exit: "delivered"; readonly successor?: true }
 		/** A person stopped the run before the prompt was written. The slot is spent. */
 		| { readonly do: "leave"; readonly exit: "stopped" }
@@ -50,9 +56,12 @@ export interface Settlement {
 	/**
 	 * The job's fields to write with `Object.assign` inside `JobStore.update`. A key whose value is
 	 * undefined clears its field. Absent: nothing to write. Every patch sets `lastCompletedAt` to
-	 * `end.at`, and a job that carries that stamp gets no patch, so a patch is applied once per record.
+	 * `end.at`, and a job whose `lastCompletedAt` is that stamp or a later one gets no patch. So a
+	 * record is never counted twice, also when a closing runs again after another row's closing
+	 * came between. The cost: when a process stops in the middle of two closings of one job, the
+	 * older record's count can be lost.
 	 */
-	readonly job?: Partial<Pick<LoopJob, "lastCompletedAt" | "lastError" | "consecutiveFailures" | "interruptions">>;
+	readonly job?: Partial<Pick<LoopJob, "lastCompletedAt" | "lastError" | "consecutiveFailures" | "interruptions" | "enabled">>;
 }
 
 /** The job fields a cell writes. `none` writes nothing. */
@@ -63,31 +72,27 @@ type JobCell =
 	| "failure"
 	/** `lastCompletedAt = end.at`, `interruptions` cleared. A stop is no failure: the streak and the last error are not written. */
 	| "stop"
+	/** `lastCompletedAt = end.at`, `interruptions + 1`; at `INTERRUPTIONS_BEFORE_PARKING` the job is turned off and says why. */
+	| "interruption"
 	| "none";
 
 type Cell =
 	/** `one-shot-retry`: a successor only for a one-shot whose failures after this one are under two. */
 	| { readonly row: "delivered"; readonly job: JobCell; readonly successor: "never" | "always" | "one-shot-retry" }
-	| { readonly row: "stopped" | "owed"; readonly job: JobCell }
-	| { readonly row: "retry"; readonly job: JobCell; readonly why: "the run's error" | "its prompt is not in the conversation" | "the process running it stopped" };
+	| { readonly row: "stopped" | "owed" | "retry"; readonly job: JobCell };
 
 /**
  * The table. The compiler checks that every cell is there. `settle` is this lookup plus the two
- * things a cell cannot say alone: the failure count after the patch, and whether the patch was
- * applied already. One-shot or not changes one cell (`failed` and `written`), and `oneShotDone`.
+ * things a cell cannot say alone: the count after the patch, and whether the patch was applied
+ * already. A run that ended spends its slot whether or not its prompt was written: its record is
+ * in the run log, and its failure is the job's. Only a run that did not end reads the conversation.
  */
+const SPENT_OK: Cell = { row: "delivered", job: "success", successor: "never" };
+// A failed turn spends its slot. Only a one-shot is asked again, once.
+const SPENT_FAILED: Cell = { row: "delivered", job: "failure", successor: "one-shot-retry" };
 const CELLS: Record<RunEnd["how"], Record<"written" | "unwritten", Cell>> = {
-	succeeded: {
-		written: { row: "delivered", job: "success", successor: "never" },
-		// The runner said ok and the prompt is not in the conversation: not delivered, so tried again.
-		unwritten: { row: "retry", job: "success", why: "its prompt is not in the conversation" },
-	},
-	failed: {
-		// A failed turn spends its slot. Only a one-shot is asked again, once.
-		written: { row: "delivered", job: "failure", successor: "one-shot-retry" },
-		// The hand-over failed. The row itself is the retry.
-		unwritten: { row: "retry", job: "failure", why: "the run's error" },
-	},
+	succeeded: { written: SPENT_OK, unwritten: SPENT_OK },
+	failed: { written: SPENT_FAILED, unwritten: SPENT_FAILED },
 	stopped: {
 		// A stop after the prompt was written leaves as `delivered`, not as `stopped`.
 		written: { row: "delivered", job: "stop", successor: "never" },
@@ -100,25 +105,26 @@ const CELLS: Record<RunEnd["how"], Record<"written" | "unwritten", Cell>> = {
 	},
 	interrupted: {
 		// The prompt is there and the process died. It is not asked again.
-		written: { row: "delivered", job: "none", successor: "never" },
-		unwritten: { row: "retry", job: "none", why: "the process running it stopped" },
+		written: { row: "delivered", job: "interruption", successor: "never" },
+		unwritten: { row: "retry", job: "interruption" },
 	},
 };
 
 /**
  * How a plain job's turn ends. Pure: no clock, no file. `job` is the job the turn's row names, as
  * it is in `jobs.json` now (the caller is inside `JobStore.update`), or undefined when it was
- * removed. `written` says the row's prompt is in the conversation, or, in a lane that is not a
- * conversation, that the run ended.
+ * removed. `written` says the row's prompt is in the conversation.
  *
  * The row's result depends on `end.how` and `written` only, but for `successor`, which needs the
  * job. Settling one record twice changes nothing the second time: no patch, and the same row.
+ * A record older than the last one that was settled changes nothing either.
  * `runCount`, `lastDueAt`, `lastFiredAt` and `owedSlot` are never in the patch: the clock counts
  * a slot when it writes the row.
  */
-export function settle(job: Pick<LoopJob, "schedule" | "enabled" | "lastCompletedAt" | "consecutiveFailures"> | undefined, end: RunEnd, written: boolean): Settlement {
+export function settle(job: Pick<LoopJob, "id" | "name" | "schedule" | "enabled" | "lastCompletedAt" | "consecutiveFailures" | "interruptions"> | undefined, end: RunEnd, written: boolean): Settlement {
 	const cell = CELLS[end.how][written ? "written" : "unwritten"];
-	const applied = job !== undefined && job.lastCompletedAt === end.at;
+	// Settled already: this record, or a later one. Stamps are compared as times; each carries its writer's offset.
+	const applied = job !== undefined && job.lastCompletedAt !== undefined && Date.parse(job.lastCompletedAt) >= Date.parse(end.at);
 	const failures = (job?.consecutiveFailures ?? 0) + (cell.job === "failure" && !applied ? 1 : 0);
 	const retryOnce = job?.schedule.kind === "once" && cell.job === "failure" && failures < 2;
 	let patch: Settlement["job"];
@@ -135,6 +141,16 @@ export function settle(job: Pick<LoopJob, "schedule" | "enabled" | "lastComplete
 			};
 		} else if (cell.job === "stop") {
 			patch = { lastCompletedAt: end.at, interruptions: undefined };
+		} else if (cell.job === "interruption") {
+			const interruptions = (job.interruptions ?? 0) + 1;
+			patch = { lastCompletedAt: end.at, interruptions };
+			// Turned off rather than run again at every start: each time, the process stopped while this
+			// job's turn was running. Still not proof (a reboot in the middle of a turn counts too), so
+			// the reason says what is known, and enabling the job again tries once more.
+			if (interruptions >= INTERRUPTIONS_BEFORE_PARKING) {
+				patch.enabled = false;
+				patch.lastError = `parked: its last ${interruptions} runs were interrupted before they finished (the process running them stopped each time; see host.log) — /cron enable ${job.name ?? job.id} to try again`;
+			}
 		}
 	}
 	let row: Settlement["row"];
@@ -142,7 +158,7 @@ export function settle(job: Pick<LoopJob, "schedule" | "enabled" | "lastComplete
 		const successor = job !== undefined && (cell.successor === "always" || (cell.successor === "one-shot-retry" && retryOnce));
 		row = successor ? { do: "leave", exit: "delivered", successor: true } : { do: "leave", exit: "delivered" };
 	} else if (cell.row === "retry") {
-		row = { do: "retry", why: cell.why === "the run's error" && end.how === "failed" ? end.error : cell.why };
+		row = { do: "retry", why: INTERRUPTED };
 	} else {
 		row = cell.row === "stopped" ? { do: "leave", exit: "stopped" } : { do: "owed" };
 	}
@@ -154,8 +170,8 @@ export function settle(job: Pick<LoopJob, "schedule" | "enabled" | "lastComplete
  * either none of its rows is queued (`queued` is false: the prompt ran, was stopped, or died) or
  * it failed twice. Derived from the job and the queue, so a process that stops anywhere in the
  * end of a turn loses no retirement: the next tick asks again. With `settle`: a success or a stop
- * leaves no row; the first failure leaves a successor or the row itself; a hand-back leaves a
- * successor or the owed row.
+ * leaves no row; the first failure leaves a successor; a hand-back leaves a successor or the owed
+ * row.
  */
 export function oneShotDone(job: Pick<LoopJob, "stateful" | "schedule" | "runCount" | "running" | "consecutiveFailures">, queued: boolean): boolean {
 	return !job.stateful && job.schedule.kind === "once" && !job.running && job.runCount >= 1
