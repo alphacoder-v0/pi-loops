@@ -7,7 +7,8 @@ import * as path from "node:path";
 import { JobStore } from "../src/store.ts";
 import { Inbox } from "../src/inbox.ts";
 import { attentionFrom } from "../src/activity.ts";
-import { MAX_PENDING_PUSHES, TRIGGER_SESSIONS_KEPT, TriggerRuntime, promotionSummaryBody, promotionToInbox, triggerSessionKey } from "../src/trigger-runtime.ts";
+import { MAX_PENDING_PUSHES, TRIGGER_SESSIONS_KEPT, TriggerRuntime, promotionSummaryBody, promotionToInbox, triggerSessionKey, checkLane } from "../src/trigger-runtime.ts";
+import { parseLane } from "../src/lane.ts";
 import { type Trigger, TriggerStore, buildPeriodicCheckTrigger, extractDynamicRuleIds } from "../src/triggers.ts";
 import type { RunnerResult, SubagentRequest } from "../src/runner.ts";
 import { fakeRunner } from "./fake-runner.ts";
@@ -740,8 +741,8 @@ test("every matched rule's result is one inbox finding, whatever promote_to_chat
 		const first = inbox.list();
 		assert.equal(first.length, 1);
 		assert.deepEqual(
-			{ source: first[0].source, run_id: first[0].run_id, job_id: first[0].job_id, session_id: first[0].session_id, kind: first[0].kind, text: first[0].text, cwd: first[0].cwd },
-			{ source: "trigger:local:dynamic", run_id: quiet!.trigger.traceId, job_id: kept.id, session_id: "creator", kind: "news", text: `matched ${kept.id}. hello, world; test result: ok`, cwd: dir },
+			{ source: first[0].source, run_id: first[0].run_id, job_id: first[0].job_id, session_id: first[0].session_id, kind: first[0].kind, text: first[0].text, cwd: first[0].cwd, lane: first[0].lane },
+			{ source: "trigger:local:dynamic", run_id: quiet!.trigger.traceId, job_id: kept.id, session_id: "creator", kind: "news", text: `matched ${kept.id}. hello, world; test result: ok`, cwd: dir, lane: checkLane(dir) },
 			"the finding's text is what the check said, unedited",
 		);
 		assert.equal(rt.store.listAudit(1)[0].state, "skipped", "the promotion row still says why nothing reached the chat");
@@ -971,4 +972,33 @@ test("the next look the page shows is the last look plus the poll interval, and 
 	rt.pollIntervalSecs = 600;
 	assert.equal(rt.ruleLook(rule.id)!.nextAt - look.nextAt, 600_000 - 30_000, "600 s after the look");
 	assert.equal(rt.ruleLook("dyn-none"), undefined);
+});
+
+test("a project's check lane is @check-, its directory's name and a digest of its path; two projects named alike have two lanes, and no project has none", () => {
+	const a = fs.realpathSync(tmp("pi-loops-lane-"));
+	const one = path.join(a, "one", "web");
+	const two = path.join(a, "two", "web");
+	fs.mkdirSync(one, { recursive: true });
+	fs.mkdirSync(two, { recursive: true });
+	assert.match(checkLane(one)!, /^@check-web-[0-9a-f]{8}$/);
+	assert.notEqual(checkLane(one), checkLane(two));
+	assert.equal(checkLane(one), checkLane(one), "stable for a project");
+	assert.equal(checkLane(one), `@check-${triggerSessionKey(one).slice("triggers-".length)}`, "the key of the project's check transcripts, without its prefix");
+	assert.equal(checkLane(""), undefined, "a rule with no project has no check lane");
+	// Whatever the directory is called, the lane is one the grammar takes.
+	for (const name of ["a b", "..", "a..b", "é", ".hidden", "x".repeat(250), "@cron-x"]) {
+		const lane = checkLane(path.join(a, name));
+		assert.equal(parseLane(lane!)?.kind, "check", `${name} -> ${lane}`);
+	}
+});
+
+test("what a promotion files in the inbox names the project's check lane, and a result with no project names none", async () => {
+	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
+	const inbox = new Inbox(dir);
+	const audit = new TriggerStore(dir);
+	await promotionToInbox(inbox, audit, "[Trigger t-1] the build is red", { sourceLabel: "local:dynamic", traceId: "t-1" }, { cwd: dir, sessionId: "s1" });
+	await promotionToInbox(inbox, audit, "[Trigger t-2] no project", { sourceLabel: "local:dynamic", traceId: "t-2" }, { cwd: "" });
+	const [withProject, without] = inbox.list();
+	assert.deepEqual([withProject.lane, withProject.session_id, withProject.text], [checkLane(dir), "s1", "the build is red"]);
+	assert.equal("lane" in without, false);
 });

@@ -8,9 +8,10 @@
  * forgets what pi dropped (Esc clears its queues), so the next drain offers it again.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CEILING, type ConversationView, type Executor, type ExecutorView, type Producer, carriesPrefix, conversationView, landed, modeOf, personTextMatches, queuedTriggeredTurn, requestFingerprint, sameProducer } from "./engine.ts";
+import { CEILING, type Executor, type ExecutorView, type Producer, carriesPrefix, proofOf, landed, modeOf, personTextMatches, queuedTriggeredTurn, requestFingerprint, sameProducer, type Proof, claimAlive } from "./engine.ts";
 import { type LeaseBinding, type ProcessProbe, systemProbe } from "./lease.ts";
-import type { ImageContent, RequestMode, SessionRequest } from "./requests.ts";
+import type { ImageContent, RequestMode, Row } from "./requests.ts";
+import type { RunRecord } from "./store.ts";
 import { stamp } from "./schedule.ts";
 
 /**
@@ -65,7 +66,7 @@ export function triggeredTurnLine(ctx: Pick<ExtensionContext, "hasUI" | "ui"> | 
  * differs is a reused pid; with either start time unknown, a row older than this boot is a
  * previous boot's. A producer that left the conversation said so in `created_by.left`.
  */
-export function producerAlive(row: Pick<SessionRequest, "created_by" | "created_at">, probe: ProcessProbe = systemProbe): boolean {
+export function producerAlive(row: Pick<Row, "created_by" | "created_at">, probe: ProcessProbe = systemProbe): boolean {
 	const by = row.created_by;
 	if (by.left !== undefined || !probe.alive(by.pid)) return false;
 	const start = probe.startTime(by.pid);
@@ -79,7 +80,7 @@ export function producerAlive(row: Pick<SessionRequest, "created_by" | "created_
  * server, which the person did not ask for just now. A claim, a recipe hand-off, `/new-trigger` and a
  * goal continuation keep the notices they print themselves.
  */
-export function showsTriggeredTurnLine(source: SessionRequest["source"]): boolean {
+export function showsTriggeredTurnLine(source: Row["source"]): boolean {
 	return source.startsWith("cron:") || source.startsWith("cron-run:") || source.startsWith("push:");
 }
 
@@ -89,7 +90,7 @@ type WindowCtx = Pick<ExtensionContext, "isIdle" | "mode" | "sessionManager" | "
 type WindowBinding = Pick<LeaseBinding, "here"> & Partial<Pick<LeaseBinding, "otherHolderDelivers">>;
 
 /** The default image reader: a window wired without one cannot send a row's images, and says so rather than sending the text without them. */
-const noImages = (row: SessionRequest): ImageContent[] => {
+const noImages = (row: Row): ImageContent[] => {
 	throw new Error(`request ${row.id} has images and this window has no way to read them`);
 };
 
@@ -128,7 +129,7 @@ export class WindowExecutor implements Executor {
 	/** The run pi is in, and the row it started from when a `[Trigger <id>]` message began it. */
 	private running: ExecutorView["running"];
 	/** The rows still in the request file: the cap of a turn this instance did not hand over itself, and the person rows a proof is matched among. */
-	private readonly rows: () => SessionRequest[];
+	private readonly rows: () => Row[];
 	/**
 	 * The rows this instance wrote (`produced`), by id, with what they said. An attended source is
 	 * trusted only on one of these, and only while the row in the file still says it: a row somebody
@@ -158,12 +159,15 @@ export class WindowExecutor implements Executor {
 	 */
 	private readonly ranUnproved = new Set<string>();
 	private readonly self: Producer;
-	private readonly alive: (row: SessionRequest) => boolean;
+	private readonly alive: (row: Row) => boolean;
 	/** The bytes of a person row's images (`RequestStore.images`): read as the row is handed over, not kept with the row. */
-	private readonly images: (row: SessionRequest) => ImageContent[];
+	private readonly images: (row: Row) => ImageContent[];
+	/** The run log, read only when a row with a claim is asked about. */
+	private readonly runs: () => readonly RunRecord[];
 
-	constructor(pi: Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">, binding: WindowBinding, ctx: () => WindowCtx | undefined, self: Producer, alive: (row: SessionRequest) => boolean = producerAlive, rows: () => SessionRequest[] = () => [], images: (row: SessionRequest) => ImageContent[] = noImages) {
+	constructor(pi: Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">, binding: WindowBinding, ctx: () => WindowCtx | undefined, self: Producer, alive: (row: Row) => boolean = producerAlive, rows: () => Row[] = () => [], images: (row: Row) => ImageContent[] = noImages, runs: () => readonly RunRecord[]) {
 		this.rows = rows;
+		this.runs = runs;
 		this.pi = pi;
 		this.binding = binding;
 		this.ctx = ctx;
@@ -185,9 +189,11 @@ export class WindowExecutor implements Executor {
 		return !!ctx && here.sessionId === sessionId && here.holds && (ctx.mode === "tui" || ctx.mode === "rpc");
 	}
 
-	entries(_sessionId: string): ConversationView {
+	proof(_lane: string): Proof {
 		const ctx = this.ctx();
-		return conversationView(() => ctx?.sessionManager.getEntries() ?? []);
+		// A window writes no run record for a turn it runs. It reads the run log for a row a background
+		// run claimed and left: what that run came to decides the row, here as anywhere.
+		return proofOf(() => ctx?.sessionManager.getEntries() ?? [], this.runs);
 	}
 
 	/**
@@ -197,7 +203,7 @@ export class WindowExecutor implements Executor {
 	 */
 	delivered(id: string): boolean {
 		const row = this.rows().find((r) => r.id === id);
-		return row ? landed(row, this.entries("")) : this.entries("").has(id);
+		return row ? landed(row, this.proof("")) : this.proof("").has(id);
 	}
 
 	view(sessionId: string): ExecutorView {
@@ -220,7 +226,8 @@ export class WindowExecutor implements Executor {
 		return {
 			kind: "window",
 			ceiling: CEILING.window,
-			admits: () => true,
+			blocked: () => undefined,
+			claimLive: (row) => claimAlive(row),
 			idle: this.ctx()?.isIdle() ?? true,
 			running: this.running,
 			inFlight: this.handedOver,
@@ -233,13 +240,13 @@ export class WindowExecutor implements Executor {
 			producerAlive: (row) => this.alive(row),
 			// A page's row this window was rung for is this window's as a local row is: the ring that
 			// makes it the person's also names the pi it was typed into.
-			mine: (row) => this.binding.here().sessionId === row.session_id && row.created_by.left === undefined && (sameProducer(row.created_by, this.self) || (row.source === "person" && this.producedRows.get(row.id) === requestFingerprint(row))),
+			mine: (row) => this.binding.here().sessionId === row.lane && row.created_by.left === undefined && (sameProducer(row.created_by, this.self) || (row.source === "person" && this.producedRows.get(row.id) === requestFingerprint(row))),
 			holderDelivers: this.binding.otherHolderDelivers?.(),
 		};
 	}
 
 	/** A row this window just produced: remembered, so its source is believed when its turn starts. */
-	produced(row: SessionRequest): void {
+	produced(row: Row): void {
 		this.producedRows.set(row.id, requestFingerprint(row));
 		// A ring that arrives after the hand-over (the page rang while pi was emitting agent_settled,
 		// and the drain in that handler went first): the row is the page's all the same, so its turn,
@@ -256,13 +263,13 @@ export class WindowExecutor implements Executor {
 	 * once its producer left) runs as unattended with nothing declared: the danger check alone, which
 	 * asks the person in the window.
 	 */
-	private capOf(row: SessionRequest): CurrentTurn & { kind: "row" } {
-		const mode = modeOf(row.kind, row.source, row.wake);
+	private capOf(row: Row): CurrentTurn & { kind: "row" } {
+		const mode = modeOf("conversation", row.kind, row.source, row.wake);
 		if (mode === "attended" && this.producedRows.get(row.id) !== requestFingerprint(row)) return { kind: "row", id: row.id, mode: "unattended" };
 		return { kind: "row", id: row.id, mode, tools: row.payload?.tools, builtinTools: row.payload?.builtin_tools };
 	}
 
-	append(row: SessionRequest, wakeAgent: boolean): void {
+	append(row: Row, wakeAgent: boolean): void {
 		const content = row.payload?.text ?? "";
 		if (wakeAgent) this.pi.sendMessage({ customType: "pi-loops:trigger", content, display: true }, { triggerTurn: true, deliverAs: "followUp" });
 		else this.pi.sendMessage({ customType: "pi-loops:trigger", content, display: true }, { triggerTurn: false });
@@ -278,7 +285,7 @@ export class WindowExecutor implements Executor {
 	 * this window was not rung for (`produced`), one a terminal runs for a page or a forged one, is
 	 * capped as unattended by `capOf`, so the window asks before a dangerous command.
 	 */
-	turn(row: SessionRequest, now = Date.now()): void {
+	turn(row: Row, now = Date.now()): void {
 		const text = row.payload?.text ?? "";
 		// Read before anything is handed over: images that cannot be read, or are not the row's, fail
 		// the hand-over (the engine records the error on the row) instead of sending the text alone.

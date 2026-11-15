@@ -13,9 +13,10 @@ import { HookRunner, runEndEvent, runStartEvent } from "./hooks.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { redact } from "./redact.ts";
 import { keepNotice, parseRingNote, type Notice } from "./host-control-channel.ts";
+import { parseLane } from "./lane.ts";
 import type { RunnerResult, SubagentRequest, SubagentRunner } from "./runner.ts";
 import { DELIVERY_JOB_ID, type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart, sameHolder } from "./lease.ts";
-import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileMark, type QuietMark, bury, changesSomething, conversationHas, conversationView, decideDrain, drain, promotionTarget, promotionView, quietMark, ruleResultRow, sessionFileEntries, stillQuiet } from "./engine.ts";
+import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileMark, type QuietMark, bury, changesSomething, conversationHas, proofOf, decideDrain, drain, promotionTarget, promotionView, quietMark, ruleResultRow, sessionFileEntries, stillQuiet, claimAlive } from "./engine.ts";
 import { RequestStore } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { DEFAULT_RUN_TIMEOUT_MS, type HeldSession, LoopScheduler, type PlainJobLeases, STOPPED_BY_PERSON, type SessionSnapshot } from "./scheduler.ts";
@@ -129,7 +130,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	/**
 	 * The engine's executor while this process holds a closed conversation: an `append` row is written
 	 * into the file at once, each one once (the `[Trigger <id>]` already in the file is the check).
-	 * No attended row runs here (`CEILING.held`); a turn row is not admitted yet either (held turns move
+	 * No attended row runs here (`CEILING.held`); a turn row is held back as well (held turns move
 	 * onto rows in a later stage), so it waits for a window instead of failing here. While a turn of
 	 * this process runs in the conversation its runner is writing the file, so nothing is appended
 	 * beside it: only a stop or a cancel acts, and the inputs wait.
@@ -137,13 +138,13 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const heldView = (sessionId: string): ExecutorView => {
 		const open = turnOpen.get(sessionId);
 		const writing = open?.writing ?? false;
-		return { kind: "held", ceiling: CEILING.held, admits: (row) => !writing && row.wake !== "turn", idle: !writing, running: open && { requestId: open.requestId, startedAt: open.startedAt }, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false };
+		return { kind: "held", ceiling: CEILING.held, blocked: (row) => (writing ? "a turn of pi-loops is writing this conversation" : row.wake === "turn" ? "turn rows wait for a window" : undefined), claimLive: (row) => claimAlive(row), idle: !writing, running: open && { requestId: open.requestId, startedAt: open.startedAt }, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false };
 	};
 	function heldExecutor(held: HeldSession): Executor {
 		const sm = SessionManager.open(held.sessionFile);
 		return {
 			holds: (sessionId) => leases.holds(sessionId, me(), held.epoch),
-			entries: () => conversationView(() => sm.getEntries()),
+			proof: () => proofOf(() => sm.getEntries(), () => scheduler.store.allRuns()),
 			view: () => heldView(held.sessionId),
 			append: (row) => {
 				sm.appendCustomMessageEntry("pi-loops:trigger", row.payload?.text ?? "", true);
@@ -414,6 +415,9 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	 * find every row waiting would ring itself into the next one, for ever.
 	 */
 	async function deliverSession(sessionId: string): Promise<void> {
+		// Only a conversation is delivered to here, or buried as one that is gone: a lane of another kind has no session file.
+		const conversation = parseLane(sessionId);
+		if (conversation?.kind !== "conversation") return;
 		const rows = requests.list(sessionId);
 		if (!rows.length) {
 			quiet.delete(sessionId);
@@ -421,7 +425,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		}
 		// A turn of this process's own is running there: the conversation is held already, for that
 		// turn, so a stop or cancel is applied through that lease, with the epoch it took, and nothing
-		// is taken a second time. The executor admits no input while the runner has the file.
+		// is taken a second time. The executor holds every input back while the runner has the file.
 		const lease = leases.read(sessionId);
 		if (turnOpen.has(sessionId) && lease?.holder && sameHolder(lease.holder, me()) && lease.sessionFile) {
 			await drainInto({ sessionId, epoch: lease.epoch, sessionFile: lease.sessionFile, cwd: lease.cwd });
@@ -431,7 +435,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			if (liveHolderPid(leases, sessionId) !== undefined || deps.pageHolds?.(sessionId)) return; // its holder drains it
 			const file = leases.read(sessionId)?.sessionFile;
 			if (file && fs.existsSync(file)) return; // there, only busy or recently written: a later tick
-			const buried = await bury(sessionId, requests, sinks(), "its conversation is gone");
+			const buried = await bury(conversation.id, requests, sinks(), "its conversation is gone");
 			if (buried.length) log(`${buried.length} queued request(s) for session ${shortSessionId(sessionId)} went to the inbox: its conversation is gone`);
 			return;
 		}
@@ -444,7 +448,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		if (stillQuiet(quiet.get(sessionId), files, rows, now)) return;
 		quiet.delete(sessionId);
 		const entries = sessionFileEntries(file);
-		if (!changesSomething(decideDrain(rows, conversationView(() => entries), sinks().jobs, heldView(sessionId), now))) {
+		if (!changesSomething(decideDrain("conversation", rows, proofOf(() => entries, () => scheduler.store.allRuns()), sinks().jobs, heldView(sessionId), now))) {
 			quiet.set(sessionId, quietMark(files, rows, now));
 			return;
 		}

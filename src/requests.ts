@@ -1,7 +1,7 @@
 /**
- * Requests addressed to a session: `requests/<sessionId>.jsonl`, private state. The file holds live
+ * Requests addressed to a session: `requests/<lane>.jsonl`, private state. The file holds live
  * rows only; a row leaves it once its delivery is in the conversation, or as a dead letter in the
- * inbox. Rows are appended under that session's own lock (`requests/<sessionId>.lock`), and a
+ * inbox. Rows are appended under that session's own lock (`requests/<lane>.lock`), and a
  * removal or an update is an atomic rewrite under it, so one conversation's rewrite never holds
  * another's writers. A person row's image bytes are in a file beside the queue, one per row, and
  * the row carries their digests. The engine (src/engine.ts) decides what each row gets; this file
@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { sessionFileName } from "./lease.ts";
+import { type ConversationId, type Lane, type LaneId, laneFileName, parseLane } from "./lane.ts";
 import { type LockOptions, withFileLockSync, writeFileAtomic } from "./lock.ts";
 
 /** pi's image part, as `pi.sendUserMessage` takes it; pi does not export the type from its package. */
@@ -50,11 +50,11 @@ export type RequestSource =
 	| "cli"
 	| "window";
 
-export interface SessionRequest {
-	v: 2;
+interface RowBase {
+	v: 3;
 	/** pi-loops rows: the id inside `[Trigger <id>] `, the proof of delivery. Person rows: a UUID the page mints. */
 	id: string;
-	session_id: string;
+	lane: LaneId;
 	kind: RequestKind;
 	source: RequestSource;
 	/** modeOf(kind, source, wake), written by the producer, recomputed by the executor; a wider row is refused. */
@@ -97,17 +97,39 @@ export interface SessionRequest {
 	handed_at?: string;
 }
 
-/** What `RequestStore.removeIf` did with the row it was asked about. */
-export type Taken = { outcome: "removed" | "kept"; row: SessionRequest } | { outcome: "missing" };
+/** A row no run has claimed. Only this kind is appended, handed to pi, cancelled or failed. */
+export interface UnclaimedRow extends RowBase {
+	run?: undefined;
+}
 
-export const REQUEST_VERSION = 2;
+/**
+ * A row a background run has claimed: `run` names the run and its process. `RequestStore.claim`
+ * is its one writer, and a patch can only clear it. Only an input is ever a run.
+ */
+export interface ClaimedRow extends RowBase {
+	kind: "input";
+	run: { id: string; pid: number; procStart?: string; started_at: string };
+}
+
+/** A request row. `if (row.run)` tells the two kinds apart. */
+export type Row = UnclaimedRow | ClaimedRow;
+
+/** What `RequestStore.removeIf` did with the row it was asked about. */
+export type Taken = { outcome: "removed" | "kept"; row: Row } | { outcome: "missing" };
+
+const ROW_VERSION = 3;
 const KINDS: ReadonlySet<string> = new Set<RequestKind>(["input", "stop", "cancel"]);
 
 /**
  * One line as a row, or undefined for a line this version does not act on: torn, not JSON, a newer
  * `v`, or an unknown `kind`. Such a line is kept in the file for the version that wrote it.
  */
-export function parseRequestLine(line: string): SessionRequest | undefined {
+export function parseRow(line: string): Row | undefined {
+	return readLine(line)?.row;
+}
+
+/** The one reader of a line: its row, and the version the line was written in. */
+function readLine(line: string): { row: Row; version: 2 | 3 } | undefined {
 	let value: unknown;
 	try {
 		value = JSON.parse(line);
@@ -115,8 +137,10 @@ export function parseRequestLine(line: string): SessionRequest | undefined {
 		return undefined; // a torn last line, or not ours
 	}
 	if (!value || typeof value !== "object") return undefined;
-	const row = value as Partial<SessionRequest>;
-	if (row.v !== REQUEST_VERSION || typeof row.id !== "string" || typeof row.session_id !== "string" || typeof row.kind !== "string" || !KINDS.has(row.kind)) return undefined;
+	const parsed = value as Record<string, unknown>;
+	const lane = parsed.v === ROW_VERSION ? parsed.lane : parsed.v === 2 ? parsed.session_id : undefined;
+	if ((parsed.v !== ROW_VERSION && parsed.v !== 2) || typeof parsed.id !== "string" || typeof lane !== "string" || typeof parsed.kind !== "string" || !KINDS.has(parsed.kind)) return undefined;
+	const row = (parsed.v === 2 ? (({ session_id: _, ...rest }) => ({ ...rest, v: ROW_VERSION, lane }))(parsed) : parsed) as Partial<Row>;
 	// The file is ours, but anything could have written it: a row whose fields are not the shape the
 	// engine reads is skipped like a newer one, rather than thrown on in the middle of a drain.
 	if (typeof row.source !== "string" || typeof row.mode !== "string") return undefined;
@@ -130,7 +154,27 @@ export function parseRequestLine(line: string): SessionRequest | undefined {
 	if (requires !== undefined && (!Array.isArray(requires) || !requires.every((s) => typeof s === "string"))) return undefined;
 	const target = row.target as unknown;
 	if (target !== undefined && !(target && typeof target === "object" && (typeof (target as { id?: unknown }).id === "string" || ((target as { current?: unknown }).current === true && typeof (target as { started_before?: unknown }).started_before === "string")))) return undefined;
-	return { ...row, attempts: typeof row.attempts === "number" ? row.attempts : 0 } as SessionRequest;
+	// A claim of the wrong shape is not a free row: the line is kept, unread, as a newer one is. Only
+	// an input is ever a run, so a claim on a stop or a cancel is a wrong shape too. So is a claim on
+	// a version 2 line: no version writes one, and the version that reads such a line sees no claim.
+	const run = (row as { run?: unknown }).run as Record<string, unknown> | null | undefined;
+	if (run !== undefined && (parsed.v === 2 || row.kind !== "input" || !run || typeof run !== "object" || typeof run.id !== "string" || typeof run.pid !== "number" || typeof run.started_at !== "string" || (run.procStart !== undefined && typeof run.procStart !== "string"))) return undefined;
+	return { row: { ...row, attempts: typeof row.attempts === "number" ? row.attempts : 0 } as Row, version: parsed.v === 2 ? 2 : 3 };
+}
+
+/**
+ * The one writer of a row's line. A row is written as version 3, with one exception: a row that
+ * was read from a version 2 line and is only patched stays a version 2 line, so that the version
+ * that wrote it still reads it (its window may hold the conversation again; its background
+ * process keeps the images of the rows it can read). A claimed row is always version 3: a claim
+ * writes version 3, and a version 2 line that carries one is not read. An older version must not
+ * read a claimed row, or it would hand the row to pi beside the run that has it. A rewrite puts
+ * every line it does not change back as the bytes it read.
+ */
+function rowLine(row: Row, version: 2 | 3 = ROW_VERSION): string {
+	if (version === ROW_VERSION) return JSON.stringify(row);
+	const { v: _, lane, ...rest } = row;
+	return JSON.stringify({ v: 2, session_id: lane, ...rest });
 }
 
 /** Whether `file` ends in the middle of a line. */
@@ -157,34 +201,38 @@ export class RequestStore {
 		this.dir = dir;
 	}
 
-	file(sessionId: string): string {
-		return path.join(this.dir, "requests", `${sessionFileName(sessionId)}.jsonl`);
+	file(lane: LaneId): string {
+		return path.join(this.dir, "requests", `${laneFileName(lane)}.jsonl`);
 	}
 
 	/** One conversation's lock, beside its file: a rewrite of one queue never holds another's writers. A `requests.lock` an older version left is nobody's. */
-	private lockPath(sessionId: string): string {
-		return path.join(this.dir, "requests", `${sessionFileName(sessionId)}.lock`);
+	private lockPath(lane: LaneId): string {
+		return path.join(this.dir, "requests", `${laneFileName(lane)}.lock`);
 	}
 
 	/** Where a row's image bytes are: one file per row, its name derived from a digest of the row id, never from the id as written. */
-	imageFile(sessionId: string, rowId: string): string {
-		return path.join(this.dir, "requests", `${sessionFileName(sessionId)}.${createHash("sha256").update(rowId).digest("hex").slice(0, 32)}.images.json`);
+	imageFile(lane: LaneId, rowId: string): string {
+		return path.join(this.dir, "requests", `${laneFileName(lane)}.${createHash("sha256").update(rowId).digest("hex").slice(0, 32)}.images.json`);
 	}
 
-	/** Every line of the file, parsed where this version can: a removal keeps the lines it cannot. */
-	private lines(sessionId: string): Array<{ raw: string; row?: SessionRequest }> {
+	/** Every line of the file, parsed where this version can: a removal keeps the lines it cannot. An id that is no lane has no lines. */
+	private lines(lane: LaneId): Array<{ raw: string; row?: Row; version?: 2 | 3 }> {
 		let data: string;
 		try {
 			// A regular file only: a FIFO or a device put here would block every reader on it.
-			if (!fs.lstatSync(this.file(sessionId)).isFile()) return [];
-			data = fs.readFileSync(this.file(sessionId), "utf8");
+			if (!fs.lstatSync(this.file(lane)).isFile()) return [];
+			data = fs.readFileSync(this.file(lane), "utf8");
 		} catch {
 			return []; // no requests for this session
 		}
 		return data
 			.split("\n")
 			.filter((raw) => raw.length > 0)
-			.map((raw) => ({ raw, row: parseRequestLine(raw) }));
+			// A row that names another lane than this file's is not this file's: unread by every method.
+			.map((raw) => {
+				const read = readLine(raw);
+				return read?.row.lane === lane ? { raw, row: read.row, version: read.version } : { raw };
+			});
 	}
 
 	/**
@@ -192,11 +240,11 @@ export class RequestStore {
 	 * first, so a row never names a file that is not there. An append that fails (a lock that timed
 	 * out, a file that cannot be written) takes the image file with it: a file no row names is an orphan.
 	 */
-	append(row: SessionRequest, images?: ImageContent[]): void {
-		const imageFile = images?.length ? this.imageFile(row.session_id, row.id) : undefined;
+	append(row: UnclaimedRow, images?: ImageContent[]): void {
+		const imageFile = images?.length ? this.imageFile(row.lane, row.id) : undefined;
 		if (imageFile) writeFileAtomic(imageFile, JSON.stringify(images));
 		try {
-			withFileLockSync(this.lockPath(row.session_id), () => this.appendLocked(row));
+			withFileLockSync(this.lockPath(row.lane), () => this.appendLocked(row));
 		} catch (err) {
 			if (imageFile) fs.rmSync(imageFile, { force: true });
 			throw err;
@@ -217,7 +265,7 @@ export class RequestStore {
 			return []; // no requests directory yet
 		}
 		const live = new Set<string>();
-		for (const sessionId of this.sessions()) for (const row of this.list(sessionId)) if (row.payload?.images?.length) live.add(this.imageFile(sessionId, row.id));
+		for (const lane of this.sessions()) for (const row of this.list(lane)) if (row.payload?.images?.length) live.add(this.imageFile(lane, row.id));
 		const removed: string[] = [];
 		for (const name of names) {
 			if (!/^[^/]+\.[0-9a-f]{32}\.images\.json$/.test(name)) continue;
@@ -239,12 +287,12 @@ export class RequestStore {
 	 * under the row, or gone, is an error for the caller to report, never other bytes sent as the
 	 * person's. The fingerprint the page rang with covers the digests, so this is the same check.
 	 */
-	images(row: SessionRequest): ImageContent[] {
+	images(row: Row): ImageContent[] {
 		const refs = row.payload?.images ?? [];
 		if (!refs.length) return [];
 		let value: unknown;
 		try {
-			value = JSON.parse(fs.readFileSync(this.imageFile(row.session_id, row.id), "utf8"));
+			value = JSON.parse(fs.readFileSync(this.imageFile(row.lane, row.id), "utf8"));
 		} catch (err: any) {
 			throw new Error(`the images of request ${row.id} cannot be read: ${err?.message ?? err}`);
 		}
@@ -264,9 +312,9 @@ export class RequestStore {
 	 * next drain removes it. `lock` bounds the wait for this queue's lock: a caller that holds another
 	 * lock meanwhile passes a timeout shorter than that lock's stale point, and a timeout throws.
 	 */
-	appendIfAbsent(row: SessionRequest, opts: { collapse?: boolean; done?: (queued: SessionRequest) => boolean } = {}, lock?: LockOptions): boolean {
-		return withFileLockSync(this.lockPath(row.session_id), () => {
-			const queued = this.lines(row.session_id);
+	appendIfAbsent(row: UnclaimedRow, opts: { collapse?: boolean; done?: (queued: Row) => boolean } = {}, lock?: LockOptions): boolean {
+		return withFileLockSync(this.lockPath(row.lane), () => {
+			const queued = this.lines(row.lane);
 			if (queued.some(({ row: q }) => q?.id === row.id)) return false;
 			if (opts.collapse && row.collapse_key !== undefined && queued.some(({ row: q }) => q?.kind === "input" && q.collapse_key === row.collapse_key && !opts.done?.(q))) return false;
 			this.appendLocked(row);
@@ -274,24 +322,24 @@ export class RequestStore {
 		}, lock);
 	}
 
-	private appendLocked(row: SessionRequest): void {
-		const file = this.file(row.session_id);
+	private appendLocked(row: UnclaimedRow): void {
+		const file = this.file(row.lane);
 		fs.mkdirSync(path.dirname(file), { recursive: true });
 		// A write cut short by a crash leaves a last line with no newline; appended to, it would take
 		// this row down with it.
-		fs.appendFileSync(file, `${endsTorn(file) ? "\n" : ""}${JSON.stringify(row)}\n`, "utf8");
+		fs.appendFileSync(file, `${endsTorn(file) ? "\n" : ""}${rowLine(row)}\n`, "utf8");
 	}
 
-	/** The rows of `sessionId` this version acts on, in file order. A row naming another session is not this file's to act on. */
-	list(sessionId: string): SessionRequest[] {
-		return this.lines(sessionId).flatMap(({ row }) => (row && row.session_id === sessionId ? [row] : []));
+	/** The rows of `lane` this version acts on, in file order. A read finds nothing for an id that is no lane; a write throws. */
+	list(lane: LaneId): Row[] {
+		return this.lines(lane).flatMap(({ row }) => (row ? [row] : []));
 	}
 
 	/** Rewrite the file without `ids`, under the lock; every line not ours stays. The file goes when nothing is left, and each removed row's image file with it. */
-	remove(sessionId: string, ids: Iterable<string>): void {
+	remove(lane: LaneId, ids: Iterable<string>): void {
 		const gone = new Set(ids);
-		this.rewrite(sessionId, (lines) => lines.filter(({ row }) => !row || !gone.has(row.id)));
-		for (const id of gone) fs.rmSync(this.imageFile(sessionId, id), { force: true });
+		this.rewrite(lane, (lines) => lines.filter(({ row }) => !row || !gone.has(row.id)));
+		for (const id of gone) fs.rmSync(this.imageFile(lane, id), { force: true });
 	}
 
 	/**
@@ -299,16 +347,33 @@ export class RequestStore {
 	 * the result says so: false when no row `id` was in the file, so a hand-over whose stamp did not
 	 * land knows the row is gone (cancelled, or sent from the page) and hands nothing over.
 	 */
-	update(sessionId: string, id: string, patch: Partial<Pick<SessionRequest, "attempts" | "not_before" | "last_error" | "created_by" | "handed_at">>): boolean {
+	update(lane: LaneId, id: string, patch: Partial<Pick<Row, "attempts" | "not_before" | "last_error" | "created_by" | "handed_at">> & { run?: undefined }): boolean {
 		let found = false;
-		this.rewrite(sessionId, (lines) =>
-			lines.map(({ raw, row }) => {
+		this.rewrite(lane, (lines) =>
+			lines.map(({ raw, row, version }) => {
 				if (!row || row.id !== id) return { raw, row };
 				found = true;
-				return { raw: JSON.stringify({ ...row, ...patch }), row };
+				return { raw: rowLine({ ...row, ...patch }, version), row };
 			}),
 		);
 		return found;
+	}
+
+	/**
+	 * Write `run` on row `id`, under the lane's lock, only if the row is there, is an input, and no
+	 * run has claimed it. Returns whether this caller has the claim. A patch (`update`) can clear a claim and cannot
+	 * set one: the condition is checked here, where no other writer can come between.
+	 */
+	claim(lane: LaneId, id: string, run: ClaimedRow["run"]): boolean {
+		let claimed = false;
+		this.rewrite(lane, (lines) =>
+			lines.map(({ raw, row }) => {
+				if (!row || row.id !== id || row.run || row.kind !== "input") return { raw, row };
+				claimed = true;
+				return { raw: rowLine({ ...row, kind: "input", run }), row };
+			}),
+		);
+		return claimed;
 	}
 
 	/**
@@ -317,38 +382,50 @@ export class RequestStore {
 	 * check and the removal are one critical section, so a stamp cannot land between them. Says what
 	 * happened: `removed` with the row, `kept` with the row `when` refused, or `missing`.
 	 */
-	removeIf(sessionId: string, id: string, when: (row: SessionRequest) => boolean): Taken {
+	removeIf(lane: LaneId, id: string, when: (row: Row) => boolean): Taken {
 		// Assigned inside the rewrite's callback, which the type checker does not follow: no narrowing here.
 		let result = { outcome: "missing" } as Taken;
-		this.rewrite(sessionId, (lines) =>
+		this.rewrite(lane, (lines) =>
 			lines.filter(({ row }) => {
 				if (!row || row.id !== id) return true;
 				result = when(row) ? { outcome: "removed", row } : { outcome: "kept", row };
 				return result.outcome !== "removed";
 			}),
 		);
-		if (result.outcome === "removed") fs.rmSync(this.imageFile(sessionId, id), { force: true });
+		if (result.outcome === "removed") fs.rmSync(this.imageFile(lane, id), { force: true });
 		return result;
 	}
 
-	private rewrite(sessionId: string, change: (lines: Array<{ raw: string; row?: SessionRequest }>) => Array<{ raw: string }>): void {
-		const file = this.file(sessionId);
-		withFileLockSync(this.lockPath(sessionId), () => {
-			const remaining = change(this.lines(sessionId));
+	private rewrite(lane: LaneId, change: (lines: Array<{ raw: string; row?: Row; version?: 2 | 3 }>) => Array<{ raw: string }>): void {
+		const file = this.file(lane);
+		withFileLockSync(this.lockPath(lane), () => {
+			const remaining = change(this.lines(lane));
 			if (remaining.length) writeFileAtomic(file, `${remaining.map(({ raw }) => raw).join("\n")}\n`);
 			else fs.rmSync(file, { force: true });
 		});
 	}
 
-	/** The sessions with a request file. */
-	sessions(): string[] {
+	/** The lane of every queue file, parsed. A file whose name is no lane is nobody's here, and stays. */
+	private queues(): Lane[] {
+		let names: string[];
 		try {
-			return fs
-				.readdirSync(path.join(this.dir, "requests"))
-				.filter((f) => f.endsWith(".jsonl"))
-				.map((f) => f.slice(0, -".jsonl".length));
+			names = fs.readdirSync(path.join(this.dir, "requests"));
 		} catch {
 			return []; // no requests directory yet
 		}
+		return names.flatMap((f) => {
+			const lane = f.endsWith(".jsonl") ? parseLane(f.slice(0, -".jsonl".length)) : undefined;
+			return lane ? [lane] : [];
+		});
+	}
+
+	/** The conversations with a queue file. */
+	sessions(): ConversationId[] {
+		return this.queues().flatMap((lane) => (lane.kind === "conversation" ? [lane.id] : []));
+	}
+
+	/** The other lanes with a queue file, parsed: what it lists is not a session id, and cannot go where one goes. */
+	lanes(): Array<Exclude<Lane, { kind: "conversation" }>> {
+		return this.queues().flatMap((lane) => (lane.kind === "conversation" ? [] : [lane]));
 	}
 }

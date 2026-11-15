@@ -7,6 +7,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { Inbox } from "./inbox.ts";
+import { loopLane } from "./lane.ts";
 import { pidAlive } from "./lock.ts";
 import { composeCheckerPrompt, composeLoopPrompt, findingKind, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
@@ -18,7 +19,7 @@ import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, type RunReq
 import { openWhere, ownerSession, runsHere, whereRuns, type OwnerView } from "./job-owner.ts";
 import { shortSessionId } from "./session-head.ts";
 import { DEAD_AFTER_ATTEMPTS, plainCollapseKey, plainJobRow, plainRunId, sessionFileHas } from "./engine.ts";
-import { RequestStore, type SessionRequest } from "./requests.ts";
+import { RequestStore, type Row } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 
 export const DEFAULT_TICK_MS = 30_000;
@@ -81,7 +82,7 @@ export interface SchedulerHooks {
 	/** A one-shot removed itself: the control plane records it the way a person's removal is recorded. */
 	onJobRetired?: (job: LoopJob, reason: string) => void;
 	/** A plain job's row this process wrote into its conversation's queue (the clock's, or `/cron run`'s): the window records it as its own, and says so when it waits. */
-	onRowWritten?: (row: SessionRequest, job: LoopJob) => void;
+	onRowWritten?: (row: Row, job: LoopJob) => void;
 	onInboxChanged?: () => void;
 	/** Every tick, before dispatch. Other subsystems (leases, dynamic triggers) piggyback on it. */
 	onTick?: (now: number) => void | Promise<void>;
@@ -675,12 +676,12 @@ export class LoopScheduler {
 	}
 
 	/** Who wrote a row: this process, as `created_by` names it. */
-	private createdBy(): SessionRequest["created_by"] {
+	private createdBy(): Row["created_by"] {
 		return { pid: process.pid, instance: this.instance, version: PI_LOOPS_VERSION };
 	}
 
 	/** The job's queued `turn` row, when one is: the prompt waiting to run in its conversation. */
-	private queuedTurnRow(job: LoopJob): SessionRequest | undefined {
+	private queuedTurnRow(job: LoopJob): Row | undefined {
 		if (!job.sessionId) return undefined;
 		const key = plainCollapseKey(job.id);
 		return this.requests.list(job.sessionId).find((row) => row.kind === "input" && row.wake === "turn" && row.collapse_key === key);
@@ -690,7 +691,7 @@ export class LoopScheduler {
 	 * The job's queued row the background may run as a held turn: not an attended one (`/cron run`,
 	 * typed in the conversation), which waits for a window and is no reason for the clock's slots to.
 	 */
-	private heldTurnRow(job: LoopJob): SessionRequest | undefined {
+	private heldTurnRow(job: LoopJob): Row | undefined {
 		const row = this.queuedTurnRow(job);
 		return row?.mode === "attended" ? undefined : row;
 	}
@@ -1157,7 +1158,7 @@ export class LoopScheduler {
 			const source = `cron:${job.name ?? job.id.slice(0, "cron-".length + 8)}`;
 			for (const f of reviewed) {
 				try {
-					await this.inbox.append({ source, text: f.text, run_id: runId, job_id: job.id, cwd: job.cwd, kind: findingKind(f.text), verified: f.verified, verified_reason: f.reason, session_id: job.createdBy?.sessionId, transcript: result.sessionFile });
+					await this.inbox.append({ source, text: f.text, run_id: runId, job_id: job.id, cwd: job.cwd, kind: findingKind(f.text), verified: f.verified, verified_reason: f.reason, session_id: job.createdBy?.sessionId, transcript: result.sessionFile, lane: loopLane(job.id) });
 					findings.push(f.text);
 				} catch (err: any) {
 					this.log(`loop ${job.id}: inbox append failed: ${err?.message ?? err}`, undefined, job);

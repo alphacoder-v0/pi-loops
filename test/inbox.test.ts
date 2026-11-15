@@ -4,7 +4,8 @@ import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
-import { Inbox, type InboxEntry, resolveInboxRef } from "../src/inbox.ts";
+import { createHash } from "node:crypto";
+import { FINDING_FIELDS, Inbox, type InboxEntry, findingId, resolveInboxRef } from "../src/inbox.ts";
 
 test("listNew puts checkpoints first and keeps file order inside each group; list() is the file order", async () => {
 	const inbox = new Inbox(tmp("pi-loops-inbox-"));
@@ -175,4 +176,89 @@ test("appendOnce files one finding for one result, however many writers race for
 	assert.equal(inbox.list().length, 2, "a key that names a session files that conversation's own finding");
 	await inbox.appendOnce({ ...entry, source: "cron:x" }, { run_id: "trace-1", source: "cron:x" });
 	assert.equal(inbox.list().length, 3, "another source is another finding");
+});
+
+const once = { source: "cron:demo", run_id: "r1", cwd: "/p", text: "the first text", undelivered: true as const };
+
+test("[fileOnce] filing twice under one id leaves one finding and returns the first", async () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	const id = findingId("dead | r1");
+	const first = await inbox.fileOnce(once, id);
+	const second = await inbox.fileOnce({ ...once, text: "another text" }, id);
+	assert.deepEqual([first.id, first.text, first.status], [id, "the first text", "new"]);
+	// As lines: the first call returns what it built, the second what it read, and an absent key reads as undefined.
+	const line = (e: InboxEntry) => JSON.parse(JSON.stringify(e));
+	assert.deepEqual(line(second), line(first), "the second caller gets the finding that is there");
+	assert.deepEqual(inbox.list().map((e) => [e.id, e.text]), [[id, "the first text"]]);
+});
+
+test("[fileOnce] two calls that wait for the lock together leave one finding: each looks while it holds the lock", async () => {
+	const dir = tmp("pi-loops-inbox-");
+	const inbox = new Inbox(dir);
+	const id = findingId("dead | r2");
+	// Somebody holds the inbox lock (a triage rewrite): both callers are waiting before either looks.
+	const lock = path.join(dir, "inbox.lock");
+	fs.mkdirSync(lock, { recursive: true });
+	const both = Promise.all([inbox.fileOnce({ ...once, text: "a" }, id), inbox.fileOnce({ ...once, text: "b" }, id)]);
+	await new Promise((r) => setTimeout(r, 150));
+	assert.equal(fs.existsSync(inbox.file), false, "neither wrote while the lock was held");
+	fs.rmdirSync(lock);
+	const [a, b] = await both;
+	assert.equal(inbox.list().length, 1);
+	assert.deepEqual([a.id, a.text], [b.id, b.text], "both callers get the one that was written");
+	assert.equal(inbox.list()[0].text, a.text);
+	assert.equal(fs.readFileSync(inbox.file, "utf8").trim().split("\n").length, 1);
+});
+
+test("[fileOnce] a finding that was claimed is returned as it is and is not filed again", async () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	const id = findingId("dead | r3");
+	await inbox.fileOnce(once, id);
+	await inbox.decide(id, "claimed", { by: "s1" });
+	const again = await inbox.fileOnce(once, id);
+	assert.deepEqual([again.status, again.claimed_by], ["claimed", "s1"]);
+	assert.equal(inbox.list().length, 1);
+	assert.equal(inbox.newCount(), 0, "a repeat does not open the question again");
+});
+
+test("[fileOnce] an id that is not inb- and 32 hex throws and files nothing", async () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	for (const id of ["inb-123", "x", "", `inb-${"g".repeat(32)}`, `inb-${"a".repeat(33)}`, `INB-${"a".repeat(32)}`, ` ${findingId("x")}`]) {
+		await assert.rejects(inbox.fileOnce(once, id), /not a finding id/, JSON.stringify(id));
+	}
+	assert.equal(fs.existsSync(inbox.file), false);
+});
+
+test("[fileOnce] findingId gives inb- and 32 hex, the same for the same seed and another for another", () => {
+	assert.equal(findingId("dead | r1"), `inb-${createHash("sha256").update("dead | r1").digest("hex").slice(0, 32)}`);
+	assert.match(findingId("dead | r1"), /^inb-[0-9a-f]{32}$/);
+	assert.equal(findingId("dead | r1"), findingId("dead | r1"));
+	assert.notEqual(findingId("dead | r1"), findingId("dead | r2"));
+	assert.notEqual(findingId("dead | r1"), findingId("ask | r1"), "the seed's first word is part of it");
+});
+
+test("[fileOnce] a finding filed once has the fields an appended one has, in the same order", async () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	const appended = await inbox.append({ ...once, lane: "s1", session_id: "s1" });
+	const filed = await inbox.fileOnce({ ...once, lane: "s1", session_id: "s1" }, findingId("dead | r9"));
+	assert.deepEqual(Object.keys(filed), Object.keys(appended));
+	assert.deepEqual({ ...filed, id: "", created_at: "" }, { ...appended, id: "", created_at: "" });
+});
+
+test("a finding keeps its lane through a rewrite, and a lane that is not a string reads as missing", async () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	const withLane = await inbox.append({ ...once, lane: "@cron-abc" });
+	const other = await inbox.append({ ...once, text: "another" });
+	assert.equal(Object.keys(withLane).at(-1), "lane", "written last");
+	assert.equal("lane" in other, false, "and only when it is set");
+	await inbox.decide(other.id, "dismissed");
+	assert.equal(inbox.list().find((e) => e.id === withLane.id)?.lane, "@cron-abc", "the rewrite of the file kept it");
+	assert.match(fs.readFileSync(inbox.file, "utf8").split("\n")[0], /"lane":"@cron-abc"\}$/);
+	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-x", created_at: "2026-11-01T00:00:00.000+00:00", status: "new", source: "s", run_id: "r", cwd: "/p", text: "t", lane: 5 })}\n`);
+	assert.equal("lane" in inbox.list().find((e) => e.id === "inb-x")!, false);
+});
+
+test("pi-loops inbox --json fields do not gain lane", () => {
+	assert.equal((FINDING_FIELDS as readonly string[]).includes("lane"), false);
+	assert.equal(FINDING_FIELDS.length, 10);
 });

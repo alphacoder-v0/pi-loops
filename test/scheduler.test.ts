@@ -13,7 +13,7 @@ import { JobStore, type LoopJob } from "../src/store.ts";
 import { LeaseBinding, LeaseStore } from "../src/lease.ts";
 import { failedRun, type RunnerResult } from "../src/runner.ts";
 import { stamp } from "../src/schedule.ts";
-import { RequestStore, type SessionRequest } from "../src/requests.ts";
+import { RequestStore, type Row } from "../src/requests.ts";
 import { BACKOFF_MS } from "../src/backoff.ts";
 import { type EngineSinks, PERSON_SEND_GRACE_MS, drain, plainJobRow, plainRunId, typedByPerson } from "../src/engine.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
@@ -79,7 +79,8 @@ test("a due loop job runs in the fake sub-agent, writes state, routes findings t
 	const promptFile = path.join(dir, "prompt.txt");
 	process.env.FAKE_PI_PROMPT_FILE = promptFile;
 	try {
-		const job = await sched.store.add(makeJob({ name: "issues", createdBy: { sessionId: "s1", cwd: dir } }));
+		// An id of the shape `cron_create` gives: the loop's lane is `@` and that id.
+		const job = await sched.store.add(makeJob({ id: "cron-0123456789abcdef0123456789abcdef", name: "issues", createdBy: { sessionId: "s1", cwd: dir } }));
 		await sched.tick();
 		await waitFor(() => finished.length === 1);
 
@@ -89,6 +90,7 @@ test("a due loop job runs in the fake sub-agent, writes state, routes findings t
 		assert.equal(inbox[0].text, "something new");
 		assert.equal(inbox[0].source, "cron:issues");
 		assert.equal(inbox[0].session_id, "s1");
+		assert.equal(inbox[0].lane, "@cron-0123456789abcdef0123456789abcdef", "a loop's finding names the loop's lane");
 		assert.equal(inbox[0].transcript, sched.store.listRuns(job.id)[0].sessionFile);
 		const after = sched.store.load()[0];
 		assert.equal(after.runCount, 1);
@@ -1787,7 +1789,7 @@ test("a plain job's slot lost to another process leaves no row behind", async ()
 
 test("the scheduler reports each plain-job row it writes, so the window records /cron run's as the person's own", async () => {
 	const dir = tmp("pi-loops-sched-");
-	const written: SessionRequest[] = [];
+	const written: Row[] = [];
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }), hooks: { onRowWritten: (row) => void written.push(row) } });
 	try {
 		const job = await sched.store.add(makeJob({ stateful: false, sessionId: "mine", schedule: { kind: "every", ms: 60_000 }, prompt: "deploy check" }));

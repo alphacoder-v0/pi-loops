@@ -936,7 +936,7 @@ export function decideChildStops(children: readonly ChildView[], now: number, op
  * stop it. It is never adopted, since its pipes died with the process that held them.
  */
 export function decideOrphan(rec: PageRecord, self: { pid: number; procStart?: string }, probe: ProcessProbe): "ours" | "gone" | "wait-then-stop" {
-	const alive = (pid: number, start: string | undefined) => holderAlive({ kind: "terminal", pid, instance: "", procStart: start, acquiredAt: rec.startedAt, pushServers: [] }, probe);
+	const alive = (pid: number, start: string | undefined) => holderAlive({ pid, procStart: start, acquiredAt: rec.startedAt }, probe);
 	if (rec.server.pid === self.pid && (rec.server.procStart === undefined || self.procStart === undefined || rec.server.procStart === self.procStart)) return "ours";
 	if (rec.server.pid !== self.pid && alive(rec.server.pid, rec.server.procStart)) return "ours";
 	return alive(rec.pid, rec.procStart) ? "wait-then-stop" : "gone";

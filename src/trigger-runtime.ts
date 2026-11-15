@@ -15,6 +15,7 @@ import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import type { JobStore } from "./store.ts";
 import type { Inbox } from "./inbox.ts";
+import { type LaneId, parseLane } from "./lane.ts";
 import { failurePause, FAILING_AFTER } from "./backoff.ts";
 import { stamp } from "./schedule.ts";
 import { type Look, PathLooks, watchOf } from "./path-precheck.ts";
@@ -147,6 +148,19 @@ export function triggerSessionKey(cwd: string): string {
 	return `triggers-${base}-${digest}`;
 }
 
+/**
+ * A project's check lane: `@check-`, the directory's name and the digest of `triggerSessionKey`.
+ * What a rule check or a push files for the project names it. The name is made of the characters
+ * a lane id takes and cut to 100, so that any directory has a lane; no project (`cwd` empty) has none.
+ */
+export function checkLane(cwd: string): LaneId | undefined {
+	if (!cwd) return undefined;
+	const name = (path.basename(cwd).replace(/[^A-Za-z0-9._-]/g, "_").replace(/\.{2,}/g, "_") || "unknown").slice(0, 100);
+	const digest = createHash("sha256").update(realpathish(cwd)).digest("hex").slice(0, 8);
+	const lane = parseLane(`@check-${name}-${digest}`);
+	return lane?.kind === "check" ? lane.id : undefined;
+}
+
 /** Check transcripts kept per project, as docs/configuration.md promises. */
 export const TRIGGER_SESSIONS_KEPT = 40;
 
@@ -178,7 +192,7 @@ export function promotionSummaryBody(trigger: Trigger, summary: string): string 
 export async function promotionToInbox(inbox: Pick<Inbox, "appendOnce">, audit: Pick<TriggerStore, "listAudit">, content: string, trigger: { sourceLabel: string; traceId: string }, where: { cwd: string; sessionId?: string }): Promise<void> {
 	if (checkDecidedFinding(audit, trigger.traceId)) return;
 	const source = `trigger:${trigger.sourceLabel}`;
-	await inbox.appendOnce({ source, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: where.cwd, session_id: where.sessionId }, { run_id: trigger.traceId, source });
+	await inbox.appendOnce({ source, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: where.cwd, session_id: where.sessionId, lane: checkLane(where.cwd) }, { run_id: trigger.traceId, source });
 }
 
 /**
@@ -691,7 +705,7 @@ export class TriggerRuntime {
 			const source = `trigger:${trigger.sourceLabel}`;
 			for (const [forSession, group] of byCreator(matchedRules)) {
 				try {
-					const there = await this.inbox.appendOnce({ source, text: summary, run_id: trigger.traceId, job_id: group[0].id, cwd, session_id: forSession }, { run_id: trigger.traceId, source, session_id: forSession }, { unlessRepeat: true });
+					const there = await this.inbox.appendOnce({ source, text: summary, run_id: trigger.traceId, job_id: group[0].id, cwd, session_id: forSession, lane: checkLane(cwd) }, { run_id: trigger.traceId, source, session_id: forSession }, { unlessRepeat: true });
 					inboxDecision = there.run_id === trigger.traceId ? "filed" : (inboxDecision ?? "repeat");
 				} catch (err: any) {
 					this.log(`trigger ${trigger.traceId.slice(0, 8)}: inbox append failed: ${err?.message ?? err}`);

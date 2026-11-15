@@ -50,7 +50,7 @@ import { openWhere, runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, type TurnMarks, closedConversation, markTurnEvent, openWindowPids, procStart, turnSinceOf } from "./lease.ts";
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
 import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
-import { RequestStore, type SessionRequest } from "./requests.ts";
+import { RequestStore, type Row, type UnclaimedRow } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
@@ -62,7 +62,7 @@ import { SubagentSlots } from "./slots.ts";
 import { askHost, noticesToShow, renderHostSnapshot, ringHost, type HostSnapshot } from "./host-control-channel.ts";
 import { HOST_LOG, crashPaused, crashPauseText, decideEviction, ensureHost, evictHost, heartbeatFresh, hostPushWork, hostServiceAlive, LEAVE_WAIT_MS, RESTART_WAIT_LINE, piPackageDir, readHostService, readSpawnLog, type HostServiceRecord } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
-import { TriggerRuntime, type TriggerOutcome, promotionToInbox } from "./trigger-runtime.ts";
+import { TriggerRuntime, type TriggerOutcome, promotionToInbox, checkLane } from "./trigger-runtime.ts";
 import { scheduleAudit } from "./job-tune.ts";
 import { auditArgs, auditCronFinish, auditCronStart, newTraceId, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
@@ -137,6 +137,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			return sessionId ? requests.list(sessionId) : [];
 		},
 		(row) => requests.images(row),
+		() => scheduler.store.allRuns(),
 	);
 	let requestWatch: fs.FSWatcher | undefined;
 	let storeWatch: fs.FSWatcher | undefined;
@@ -349,7 +350,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			},
 			onInjectAndRun: async (prompt, trigger) => {
 				if (trigger.cwd && !sameProject(trigger.cwd, session.cwd)) {
-					await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: prompt.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd });
+					await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: prompt.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd, lane: checkLane(trigger.cwd) });
 					refreshBadge();
 					return "inbox";
 				}
@@ -654,14 +655,14 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (result.delivered.length || result.removed.length || result.dead.length) refreshBadge();
 		return result;
 	}
-	const createdBy = (): SessionRequest["created_by"] => ({ pid: process.pid, instance, procStart: ownStart, version: PI_LOOPS_VERSION });
+	const createdBy = (): Row["created_by"] => ({ pid: process.pid, instance, procStart: ownStart, version: PI_LOOPS_VERSION });
 	/** Where a row this window produces is addressed: this conversation, in this project. */
 	const rowAddress = (): RowAddress => ({ sessionId: binding.here().sessionId ?? session.sessionId ?? "", cwd: session.cwd, createdBy: createdBy() });
 	/** Whether a row's proof is in this conversation already (src/engine.ts landed): such a row collapses nothing, and `agent_settled` no longer waits for it. */
 	const delivered = (id: string) => executor.delivered(id);
 	const handOverDeps = (): HandOverDeps => ({ store: requests, delivered, produced: (row) => executor.produced(row), drain: drainRequests });
 	/** A prompt one of this window's sources has for the chat (src/engine.ts handOver), and the line that says it waits. */
-	async function handOver(row: SessionRequest, claim?: { inbox: Inbox; entryId: string }): Promise<HandOverOutcome> {
+	async function handOver(row: UnclaimedRow, claim?: { inbox: Inbox; entryId: string }): Promise<HandOverOutcome> {
 		const out = await engineHandOver(handOverDeps(), row, claim);
 		if (out.line && lastCtx?.hasUI) lastCtx.ui.notify(out.line, "info");
 		return out;
@@ -1309,7 +1310,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							ctx.ui.notify("usage: /cron queue [cancel <n|id>|clear]", "warning");
 							return;
 						}
-						const targets = action === "clear" ? rows.filter((r) => r.kind === "input") : [pickQueued(rows, ref)].filter((r): r is SessionRequest => r !== undefined);
+						const targets = action === "clear" ? rows.filter((r) => r.kind === "input") : [pickQueued(rows, ref)].filter((r): r is Row => r !== undefined);
 						if (!targets.length) {
 							ctx.ui.notify(action === "clear" ? "nothing is queued for this conversation" : `nothing queued matches '${ref}'; /cron queue lists what is`, "warning");
 							return;

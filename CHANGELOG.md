@@ -7,6 +7,17 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Upgrade notes
 
+- **Restart every pi terminal that runs pi-loops 0.24.2 or earlier after you upgrade.** What
+  this version queues for a conversation is a line an earlier version cannot read. While a
+  terminal of an earlier version has a conversation open, none of these reaches it: a rule's
+  result, a queued prompt, a message or a claim sent from the page, and a stop or a cancel.
+  `pi-loops abort <session>` then says the stop is queued, and the turn goes on. Each waits in
+  the queue until you restart that terminal. A request the earlier version queued
+  itself stays readable to it.
+- **Before you go back to 0.24.2, let what is queued be delivered, or cancel it.** 0.24.2 does
+  not read what this version queued: it leaves those requests in the queue, `pi-loops status`
+  does not count them, and it removes the images of a queued message from the page after one
+  minute.
 - **Close every pi-loops 0.22 window before you upgrade.** This version no longer holds such a
   window back, and a window no longer warns you that an older one has the same conversation open.
   Windows of 0.23 and later are not affected. While a 0.22 window stays open:
@@ -24,6 +35,14 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Fixed
 
+- **A turn is not handed to pi beside one that pi holds and has not written.** When pi held a turn
+  it had not started (a goal's continuation, a claimed finding's prompt, a message from the page),
+  a message that sorts before it in the queue could be handed over as well, and one answer could
+  then count for both. The queue now gives the lane to the turn in hand before it starts anything
+  (#245).
+- **A request that could not be delivered is reported once.** When pi-loops stopped between filing
+  the finding and removing the request, the next start filed the finding a second time. The
+  finding now has an id that comes from its request, and a repeat files nothing.
 - **A loop made without a name gets one, in the prompt's script.** A prompt with no Latin word
   (Chinese, Japanese, Korean) was named `loop`, then `loop-2`, and a `--name` in the same script
   was refused. The name now takes the prompt's first CJK runs, and `--name` accepts letters of any
@@ -92,6 +111,9 @@ All notable changes to pi-loops are documented here. The format follows
 - **The page works out each job's next run when it is asked.** `next-runs.json` is gone: nothing
   writes it and nothing reads it. A loop's next run on the page is right at once after an edit or
   a run; it could be one tick behind.
+- **A finding names where it was filed from.** `inbox.jsonl` has a new last field, `lane`: a
+  conversation's session id, `@` and the job's id for a loop's run, `@check-<project>` for a rule check.
+  `pi-loops inbox --json` prints what it printed.
 - **The bridge for pi-loops 0.22 windows is removed** (see the upgrade note). pi-loops no longer
   reads `presence/` or writes `scheduler.json`, and the Background view no longer has the holder
   `a pi-loops 0.22 window`. When pi-loops in the background or a window starts, it removes

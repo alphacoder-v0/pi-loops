@@ -14,7 +14,7 @@ import { asleepNote, runsSomewhere, type OwnerView } from "./job-owner.ts";
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal, signalSummary } from "./job-signal.ts";
 import { plural } from "./plural.ts";
 import { previewRedacted } from "./redact.ts";
-import type { SessionRequest } from "./requests.ts";
+import type { Row } from "./requests.ts";
 import { computeNext, formatLocal, formatSchedule } from "./schedule.ts";
 import type { LoopJob, RunRecord } from "./store.ts";
 import type { DynamicTriggerRule } from "./triggers.ts";
@@ -25,7 +25,7 @@ export interface JobLinesInput {
 	/** The whole inbox, read once by the caller. */
 	inbox: InboxEntry[];
 	/** A conversation's queued rows (`RequestStore.list`): a plain job whose prompt waits there is marked `[queued …]`. */
-	requests: (sessionId: string) => SessionRequest[];
+	requests: (sessionId: string) => Row[];
 	/** Who holds which session, as the instance reading the list sees it: a plain job of a session nobody holds has no next run. */
 	view: OwnerView;
 	now: number;
@@ -55,7 +55,7 @@ export function snapshotLoopLabel(job: string): string {
 
 
 /** What a queued row's source is called in `/cron queue`, the words the browser page uses for the same row. */
-export function queueSourceLabel(source: SessionRequest["source"], jobName: (id: string) => string | undefined): string {
+export function queueSourceLabel(source: Row["source"], jobName: (id: string) => string | undefined): string {
 	const at = source.indexOf(":");
 	const [kind, arg] = at < 0 ? [source, ""] : [source.slice(0, at), source.slice(at + 1)];
 	if (source === "person") return "you";
@@ -79,7 +79,7 @@ export interface QueueLinesInput {
  * line each with its source, how long it has waited and the start of its text. The numbers are what
  * `/cron queue cancel <n>` takes, so they are the listing's and nothing else's.
  */
-export function queueLines(rows: readonly SessionRequest[], opts: QueueLinesInput): string[] {
+export function queueLines(rows: readonly Row[], opts: QueueLinesInput): string[] {
 	const inputs = queueOrder(rows);
 	if (!inputs.length) return ["(nothing is queued for this conversation)"];
 	return inputs.map((row, i) => {
@@ -95,7 +95,7 @@ export function queueLines(rows: readonly SessionRequest[], opts: QueueLinesInpu
  * Which queued row `ref` names, for `/cron queue cancel`: its number in the listing, its id, or a
  * prefix of its id that names one row. Undefined when nothing matches; a prefix of several is nobody.
  */
-export function pickQueued(rows: readonly SessionRequest[], ref: string): SessionRequest | undefined {
+export function pickQueued(rows: readonly Row[], ref: string): Row | undefined {
 	const inputs = queueOrder(rows);
 	const trimmed = ref.trim();
 	if (/^\d+$/.test(trimmed)) return inputs[Number(trimmed) - 1];

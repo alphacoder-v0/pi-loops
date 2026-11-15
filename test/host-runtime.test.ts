@@ -957,3 +957,56 @@ test("Stop this run on a loop run, through the page's wiring: aborted at once, a
 		await host.stop();
 	}
 });
+
+test("a lane's rows are not buried as a conversation that is gone: a loop's queue is left alone by the tick and by a ring", async () => {
+	// Only a conversation has a session file to be gone. A loop's lane has none, and its rows are a later executor's.
+	const dir = tmp("pi-loops-hostrt-");
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
+	try {
+		const lane = "@cron-0123456789abcdef0123456789abcdef";
+		const store = new RequestStore(dir);
+		const row = { ...ruleResultRow("placeholder", "[Trigger t-lane] for the loop", { traceId: "t-lane", sourceLabel: "local:dynamic", cwd: dir }, { pid: process.pid, instance: "test", version: "0" }), lane };
+		store.append(row);
+		await host.scheduler.tick();
+		host.ring(lane);
+		await new Promise((r) => setTimeout(r, 100));
+		await host.scheduler.tick();
+		assert.deepEqual(store.list(lane).map((r) => r.id), ["t-lane"], "the row is still queued");
+		assert.equal(host.scheduler.inbox.list().length, 0, "and no dead letter says its conversation is gone");
+	} finally {
+		await host.stop();
+	}
+});
+
+test("the background closes a claim whose process is gone, by what the run log says: an aborted run leaves its row owed, an ended run lets it leave", async () => {
+	// No code claims a row yet; this is the wiring a claim will meet: the view asks the claim's
+	// process, the proof reads the run log, and a queue with a dead claim is not left as quiet.
+	const dir = tmp("pi-loops-hostrt-");
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
+	try {
+		const { sessionId } = closedConversation(dir);
+		const store = new RequestStore(dir);
+		const by = { pid: process.pid, instance: "test", version: "0" };
+		const turn = (id: string) => ({ ...ruleResultRow(sessionId, `[Trigger ${id}] go`, { traceId: id, sourceLabel: "x", cwd: dir }, by), source: "push:srv:key" as const, wake: "turn" as const, mode: "unattended" as const });
+		const record = (runId: string, over: Record<string, unknown>) => host.scheduler.store.appendRun({ runId, jobId: "", stateful: false, cwd: dir, pid: 999_999_999, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), ok: false, findings: 0, ...over } as any);
+		for (const id of ["t-aborted", "t-ended", "t-cut"]) {
+			store.append(turn(id));
+			assert.equal(store.claim(sessionId, id, { id: `run-${id}`, pid: 999_999_999, started_at: new Date().toISOString() }), true);
+		}
+		// A claim of a process that lives (this one): its run is going, whatever the log says.
+		store.append(turn("t-live"));
+		assert.equal(store.claim(sessionId, "t-live", { id: "run-t-live", pid: process.pid, started_at: new Date().toISOString() }), true);
+		record("run-t-live", { ok: true });
+		record("run-t-aborted", { aborted: true });
+		record("run-t-ended", { ok: true });
+		await host.scheduler.tick();
+		const left = Object.fromEntries(store.list(sessionId).map((r) => [r.id, r]));
+		assert.deepEqual(Object.keys(left).sort(), ["t-aborted", "t-cut", "t-live"], "the row whose run ended has left");
+		assert.equal(left["t-live"].run?.id, "run-t-live", "a run that is going keeps its claim");
+		assert.deepEqual([left["t-aborted"].run, left["t-aborted"].attempts], [undefined, 0], "aborted by no person: owed again, and no attempt counted");
+		assert.deepEqual([left["t-cut"].run, left["t-cut"].attempts, left["t-cut"].last_error], [undefined, 1, "the process running it stopped"], "no record: the run was cut off, and that is an attempt");
+		assert.equal(host.scheduler.inbox.list().length, 0);
+	} finally {
+		await host.stop();
+	}
+});
