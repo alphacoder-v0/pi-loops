@@ -18,7 +18,7 @@ import type { Inbox } from "./inbox.ts";
 import { redact } from "./redact.ts";
 import { type LeaseHolder, type LeaseStore, type ProcessProbe, type SessionLease, holderAlive, holderDelivers, systemProbe } from "./lease.ts";
 import { withinProject } from "./paths.ts";
-import { type ImageContent, type RequestMode, type RequestStore, type Row, imageRef } from "./requests.ts";
+import { type ImageContent, type RequestMode, type RequestStore, type Row, imageRef, type UnclaimedRow } from "./requests.ts";
 import type { LockOptions } from "./lock.ts";
 import { backoffFor } from "./backoff.ts";
 import { stamp } from "./schedule.ts";
@@ -45,7 +45,7 @@ export function modeOf(kind: Row["kind"], source: Row["source"], wake?: Row["wak
 }
 
 /** A rule's result as the row its creating conversation gets: an `append` with no model call, its trace id the proof of delivery. */
-export function ruleResultRow(sessionId: string, content: string, trigger: { traceId: string; sourceLabel: string; cwd?: string }, createdBy: Row["created_by"], now = Date.now()): Row {
+export function ruleResultRow(sessionId: string, content: string, trigger: { traceId: string; sourceLabel: string; cwd?: string }, createdBy: Row["created_by"], now = Date.now()): UnclaimedRow {
 	const source = `rule:${trigger.sourceLabel}` as const;
 	return { v: 3, id: trigger.traceId, lane: sessionId, kind: "input", source, mode: modeOf("input", source, "append"), wake: "append", payload: { text: content, cwd: trigger.cwd ?? "" }, created_at: stamp(now), created_by: createdBy, attempts: 0 };
 }
@@ -68,7 +68,7 @@ export const plainCollapseKey = (jobId: string): `cron:${string}` => `cron:${job
  * model, thinking) rides along, so the executor runs it as the job asked, not as the chat is set.
  * `source` is `cron:` for the clock and `cron-run:` for `/cron run` typed in the conversation.
  */
-export function plainJobRow(job: Pick<LoopJob, "id" | "sessionId" | "prompt" | "cwd" | "model" | "thinking" | "tools" | "builtinTools">, id: string, source: `cron:${string}` | `cron-run:${string}`, note: string, createdBy: Row["created_by"], now = Date.now()): Row {
+export function plainJobRow(job: Pick<LoopJob, "id" | "sessionId" | "prompt" | "cwd" | "model" | "thinking" | "tools" | "builtinTools">, id: string, source: `cron:${string}` | `cron-run:${string}`, note: string, createdBy: Row["created_by"], now = Date.now()): UnclaimedRow {
 	return {
 		v: 3,
 		id,
@@ -103,7 +103,7 @@ export function carriesPrefix(source: Row["source"]): boolean {
 }
 
 /** A turn row of one of a window's sources; `text` carries the prefix when `carriesPrefix(source)`. */
-function turnRow(id: string, source: Row["source"], text: string, to: RowAddress, collapseKey: string | undefined, now: number): Row {
+function turnRow(id: string, source: Row["source"], text: string, to: RowAddress, collapseKey: string | undefined, now: number): UnclaimedRow {
 	return {
 		v: 3,
 		id,
@@ -126,7 +126,7 @@ function turnRow(id: string, source: Row["source"], text: string, to: RowAddress
  * the row id and no second prefix is added. Pushes of one event kind collapse on the trigger's own
  * idempotency key, without the `mcp:<server>:` the key repeats from the source.
  */
-export function pushRunRow(prompt: string, trigger: { traceId: string; idempotencyKey: string; source: { kind: "mcp"; serverName: string } | { kind: "local"; subkind: string } }, to: RowAddress, now = Date.now()): Row {
+export function pushRunRow(prompt: string, trigger: { traceId: string; idempotencyKey: string; source: { kind: "mcp"; serverName: string } | { kind: "local"; subkind: string } }, to: RowAddress, now = Date.now()): UnclaimedRow {
 	const server = trigger.source.kind === "mcp" ? trigger.source.serverName : trigger.source.subkind;
 	const ownPrefix = `mcp:${server}:`;
 	const key = trigger.idempotencyKey.startsWith(ownPrefix) ? trigger.idempotencyKey.slice(ownPrefix.length) : trigger.idempotencyKey;
@@ -144,12 +144,12 @@ export function goalRunId(goal: { condition: string; iterations: number; updated
 }
 
 /** A `/goal` continuation as the row its session runs as a turn: attended, the person's own goal (design O3), in the evaluator's words. */
-export function goalRow(prompt: string, goal: { condition: string; iterations: number; updatedAt: string }, to: RowAddress, now = Date.now()): Row {
+export function goalRow(prompt: string, goal: { condition: string; iterations: number; updatedAt: string }, to: RowAddress, now = Date.now()): UnclaimedRow {
 	return turnRow(goalRunId(goal), "goal", prompt, to, "goal", now);
 }
 
 /** `/inbox claim`: the finding as the turn that addresses it. A fresh id per claim; one queued hand-off per finding. */
-export function inboxClaimRow(prompt: string, entryId: string, to: RowAddress, now = Date.now()): Row {
+export function inboxClaimRow(prompt: string, entryId: string, to: RowAddress, now = Date.now()): UnclaimedRow {
 	return turnRow(newId("claim"), `inbox:${entryId}`, prompt, to, `inbox:${entryId}`, now);
 }
 
@@ -161,7 +161,7 @@ export function inboxClaimRow(prompt: string, entryId: string, to: RowAddress, n
  * views the conversation never runs it beside the holder. Its mode stays attended: a holder believes
  * that only once the page rings it for the row, and otherwise runs it capped as unattended.
  */
-export function pageClaimRow(prompt: string, entryId: string, to: RowAddress, now = Date.now()): Row {
+export function pageClaimRow(prompt: string, entryId: string, to: RowAddress, now = Date.now()): UnclaimedRow {
 	const row = inboxClaimRow(prompt, entryId, to, now);
 	return { ...row, created_by: { ...to.createdBy, left: stamp(now) } };
 }
@@ -181,12 +181,12 @@ export type RecipeHandOff = "tracker" | "merge";
  * A recipe's hand-off to the chat: one queued at a time per recipe and per kind, so a merge conflict
  * is not swallowed by the tracker description still waiting, which says nothing about it.
  */
-export function recipeRow(prompt: string, recipe: string, kind: RecipeHandOff, to: RowAddress, now = Date.now()): Row {
+export function recipeRow(prompt: string, recipe: string, kind: RecipeHandOff, to: RowAddress, now = Date.now()): UnclaimedRow {
 	return turnRow(newId("recipe"), `recipe:${recipe}`, prompt, to, `recipe:${recipe}:${kind}`, now);
 }
 
 /** `/new-trigger <request>`: the turn that turns the request into a rule. Every one is its own. */
-export function newTriggerRow(prompt: string, to: RowAddress, now = Date.now()): Row {
+export function newTriggerRow(prompt: string, to: RowAddress, now = Date.now()): UnclaimedRow {
 	return turnRow(newId("nt"), "new-trigger", prompt, to, undefined, now);
 }
 
@@ -197,7 +197,7 @@ export function newTriggerRow(prompt: string, to: RowAddress, now = Date.now()):
  * is sent only while that process lives (`decideDrain`), and offered by the next page otherwise.
  * The row names its images by digest; the bytes go beside the queue (`RequestStore.append`).
  */
-export function personRow(id: string, text: string, images: ImageContent[] | undefined, to: RowAddress, now = Date.now()): Row {
+export function personRow(id: string, text: string, images: ImageContent[] | undefined, to: RowAddress, now = Date.now()): UnclaimedRow {
 	return {
 		v: 3,
 		id,
@@ -245,12 +245,12 @@ export function ringProduced(rows: readonly Row[], id: string, fingerprint: stri
  * turn; `{current, started_before}` names the turn running when the stop was asked for, so a late one
  * never stops the next turn.
  */
-export function stopRow(sessionId: string, target: NonNullable<Row["target"]>, source: Row["source"], createdBy: Row["created_by"], now = Date.now()): Row {
+export function stopRow(sessionId: string, target: NonNullable<Row["target"]>, source: Row["source"], createdBy: Row["created_by"], now = Date.now()): UnclaimedRow {
 	return { v: 3, id: newId("stop"), lane: sessionId, kind: "stop", source, mode: modeOf("stop", source), target, created_at: stamp(now), created_by: createdBy, attempts: 0 };
 }
 
 /** Take a queued row out before it runs. One pi already holds is not cancelled: a stop aborts it as it starts. */
-export function cancelRow(sessionId: string, target: { id: string }, source: Row["source"], createdBy: Row["created_by"], now = Date.now()): Row {
+export function cancelRow(sessionId: string, target: { id: string }, source: Row["source"], createdBy: Row["created_by"], now = Date.now()): UnclaimedRow {
 	return { v: 3, id: newId("cancel"), lane: sessionId, kind: "cancel", source, mode: modeOf("cancel", source), target, created_at: stamp(now), created_by: createdBy, attempts: 0 };
 }
 
@@ -349,7 +349,7 @@ export function releaseLocalRows(store: RequestStore, sessionId: string, self: P
  * conversation is done, not queued: the goal's next continuation is written while the last one is
  * still in the file, waiting for the drain that removes it. Returns whether it was written.
  */
-export function enqueue(store: RequestStore, row: Row, delivered: (id: string) => boolean = () => false, lock?: LockOptions): boolean {
+export function enqueue(store: RequestStore, row: UnclaimedRow, delivered: (id: string) => boolean = () => false, lock?: LockOptions): boolean {
 	return store.appendIfAbsent(row, { collapse: true, done: (queued) => delivered(queued.id) }, lock);
 }
 
@@ -408,7 +408,7 @@ export interface HandOverOutcome {
  * a crash between the two leaves the finding `new` with its hand-off queued, where the reverse order
  * left it claimed with nobody told.
  */
-export async function handOver(deps: HandOverDeps, row: Row, claim?: { inbox: Pick<Inbox, "decide">; entryId: string }): Promise<HandOverOutcome> {
+export async function handOver(deps: HandOverDeps, row: UnclaimedRow, claim?: { inbox: Pick<Inbox, "decide">; entryId: string }): Promise<HandOverOutcome> {
 	let written = false;
 	if (claim) {
 		// Queued under the inbox lock, after the finding is found still new (`Inbox.decide`): a claim

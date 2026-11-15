@@ -50,7 +50,7 @@ import { openWhere, runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, type TurnMarks, closedConversation, markTurnEvent, openWindowPids, procStart, turnSinceOf } from "./lease.ts";
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
 import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
-import { RequestStore, type Row } from "./requests.ts";
+import { RequestStore, type Row, type UnclaimedRow } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
@@ -661,7 +661,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	const delivered = (id: string) => executor.delivered(id);
 	const handOverDeps = (): HandOverDeps => ({ store: requests, delivered, produced: (row) => executor.produced(row), drain: drainRequests });
 	/** A prompt one of this window's sources has for the chat (src/engine.ts handOver), and the line that says it waits. */
-	async function handOver(row: Row, claim?: { inbox: Inbox; entryId: string }): Promise<HandOverOutcome> {
+	async function handOver(row: UnclaimedRow, claim?: { inbox: Inbox; entryId: string }): Promise<HandOverOutcome> {
 		const out = await engineHandOver(handOverDeps(), row, claim);
 		if (out.line && lastCtx?.hasUI) lastCtx.ui.notify(out.line, "info");
 		return out;

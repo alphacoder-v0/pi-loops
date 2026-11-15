@@ -1327,7 +1327,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			if (!alive.has(key)) alive.set(key, holderAlive(h));
 			return alive.get(key) as boolean;
 		};
-		const waiting = new Set(requests.sessions());
+		const waiting = new Set<string>(requests.sessions());
 		const jobs = readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs;
 		const readers: RowReaders = {
 			lease: (id) => byId.get(id),

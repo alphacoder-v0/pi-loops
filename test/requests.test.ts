@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import { tmp } from "./tmp.ts";
 import * as path from "node:path";
-import { RequestStore, imageRef, parseRow, type Row } from "../src/requests.ts";
+import { RequestStore, imageRef, parseRow, type Row, type UnclaimedRow } from "../src/requests.ts";
 import { personRow } from "../src/engine.ts";
 
 test("each conversation's queue has its own lock, and a requests.lock an older version left is nobody's", () => {
@@ -100,7 +100,7 @@ test("a person row's image bytes live beside the queue, and the row carries thei
 	assert.equal(parseRow(JSON.stringify(row("x", { payload: { text: "t", cwd: "/", images: [{ type: "image", data: "AAAA", mimeType: "image/png" }] as any } }))), undefined);
 });
 
-const row = (id: string, over: Partial<Row> = {}): Row => ({ v: 3, id, lane: "s", kind: "input", source: "rule:local:dynamic", mode: "none", wake: "append", payload: { text: `[Trigger ${id}] hello`, cwd: "/" }, created_at: "2026-01-01T00:00:00Z", created_by: { pid: 1, instance: "w", version: "0" }, attempts: 0, ...over });
+const row = (id: string, over: Partial<UnclaimedRow> = {}): UnclaimedRow => ({ v: 3, id, lane: "s", kind: "input", source: "rule:local:dynamic", mode: "none", wake: "append", payload: { text: `[Trigger ${id}] hello`, cwd: "/" }, created_at: "2026-01-01T00:00:00Z", created_by: { pid: 1, instance: "w", version: "0" }, attempts: 0, ...over });
 const v2Line = '{"v":2,"id":"r1","session_id":"s1","kind":"input","source":"cli","mode":"attended","created_at":"2026-11-01T00:00:00.000+00:00","created_by":{"pid":1,"instance":"w","version":"0.24.2"},"attempts":0,"payload":{"text":"hi","cwd":"/p"}}';
 
 test("[v2-read-as-v3] a line written by 0.24.2 is listed under its lane", () => {
@@ -205,7 +205,7 @@ test("a line this version cannot act on is skipped by list and kept by remove an
 
 test("a session id that could leave the directory is refused", () => {
 	const store = new RequestStore(tmp());
-	assert.throws(() => store.append(row("1", { lane: "../x" })), /invalid session id/);
+	assert.throws(() => store.append(row("1", { lane: "../x" })), /invalid lane id: \.\.\/x/);
 });
 
 test("a row appended after a write cut short is not lost to the torn line", () => {
@@ -238,4 +238,58 @@ test("a row naming another session, or with a requires or target of the wrong sh
 	assert.equal(parseRow(JSON.stringify(row("4", { kind: "stop", target: "x" as any }))), undefined);
 	assert.equal(parseRow(JSON.stringify(row("5", { kind: "stop", target: { current: true } as any }))), undefined);
 	assert.equal(parseRow(JSON.stringify(row("6", { kind: "stop", target: { id: "1" } })))?.id, "6");
+});
+
+const claim = { id: "run-1", pid: 4242, procStart: "100", started_at: "2026-11-01T00:00:00.000+00:00" };
+
+test("[lanes-and-sessions] a conversation's queue is in sessions(), a loop's and a check's are in lanes() with their kind, and a file that names no lane is in neither", () => {
+	const store = new RequestStore(tmp());
+	store.append(row("c1", { lane: "s1" }));
+	store.append(row("l1", { lane: "@cron-0123abcd" }));
+	store.append(row("k1", { lane: "@check-piz-1a2b3c4d" }));
+	const dir = path.dirname(store.file("s1"));
+	for (const name of ["@x.jsonl", "@cron-.jsonl", ".hidden.jsonl", "notes.txt"]) fs.writeFileSync(path.join(dir, name), "{}\n");
+	assert.deepEqual(store.sessions(), ["s1"]);
+	assert.deepEqual(store.lanes().sort((a, b) => a.id.localeCompare(b.id)), [{ kind: "check", id: "@check-piz-1a2b3c4d" }, { kind: "loop", id: "@cron-0123abcd" }]);
+	assert.deepEqual(store.list("@cron-0123abcd").map((r) => r.id), ["l1"], "a lane's rows are listed for the lane");
+	assert.deepEqual(store.list("@x"), [], "an id that is no lane has no rows, and asking is not an error");
+	for (const name of ["@x.jsonl", "@cron-.jsonl", ".hidden.jsonl"]) assert.equal(fs.existsSync(path.join(dir, name)), true, `${name} stays for whatever wrote it`);
+});
+
+test("[lanes-and-sessions] a row that names another lane than its file's is not this file's for any method", () => {
+	const store = new RequestStore(tmp());
+	store.append(row("mine", { lane: "s1" }));
+	const stray = JSON.stringify(row("stray", { lane: "s2" }));
+	fs.appendFileSync(store.file("s1"), `${stray}\n`);
+	assert.deepEqual(store.list("s1").map((r) => r.id), ["mine"]);
+	assert.equal(store.update("s1", "stray", { attempts: 2 }), false, "not patched");
+	assert.deepEqual(store.removeIf("s1", "stray", () => true), { outcome: "missing" }, "not taken");
+	store.remove("s1", ["stray", "mine"]);
+	assert.equal(fs.readFileSync(store.file("s1"), "utf8"), `${stray}\n`, "not removed: the line is as it was written");
+});
+
+test("a claim is written once: only on a row that has none, and it makes the line version 3", () => {
+	const store = new RequestStore(tmp());
+	fs.mkdirSync(path.dirname(store.file("s1")), { recursive: true });
+	fs.writeFileSync(store.file("s1"), `${v2Line}\n`);
+	assert.equal(store.claim("s1", "r1", claim), true);
+	assert.equal(store.claim("s1", "r1", { ...claim, id: "run-2", pid: 1 }), false, "a second claim does not take it");
+	assert.equal(store.claim("s1", "no-such-row", claim), false);
+	const listed = store.list("s1")[0];
+	assert.deepEqual(listed.run, claim, "the first claim stands");
+	const line = JSON.parse(fs.readFileSync(store.file("s1"), "utf8"));
+	assert.deepEqual([line.v, line.lane, "session_id" in line], [3, "s1", false], "an older version cannot read a claimed row, so it cannot hand it over a second time");
+	assert.equal(store.update("s1", "r1", { run: undefined, attempts: 1 }), true);
+	assert.equal("run" in JSON.parse(fs.readFileSync(store.file("s1"), "utf8")), false, "a patch can clear a claim");
+	assert.equal(store.claim("s1", "r1", { ...claim, id: "run-3" }), true, "and the row can be claimed again");
+});
+
+test("a line whose claim is damaged is kept and not listed: a broken claim is not a free row", () => {
+	const store = new RequestStore(tmp());
+	fs.mkdirSync(path.dirname(store.file("s1")), { recursive: true });
+	const lines = [{ run: "x" }, { run: { id: "r", pid: "1", started_at: "t" } }, { run: { id: "r", pid: 1 } }, { run: { pid: 1, started_at: "t" } }, { run: null }].map((over) => JSON.stringify({ ...row("d", { lane: "s1" }), ...over }));
+	fs.writeFileSync(store.file("s1"), `${lines.join("\n")}\n`);
+	assert.deepEqual(store.list("s1"), []);
+	store.remove("s1", ["d"]);
+	assert.equal(fs.readFileSync(store.file("s1"), "utf8"), `${lines.join("\n")}\n`);
 });

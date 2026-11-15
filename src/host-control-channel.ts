@@ -20,7 +20,7 @@ import { plural } from "./plural.ts";
 import { type LeaseStore, type ProcessProbe, holderAlive, sessionFileName } from "./lease.ts";
 import { conversationLabel, shortSessionId } from "./session-head.ts";
 import { previewRedacted, redact } from "./redact.ts";
-import type { RequestStore, Row } from "./requests.ts";
+import type { RequestStore, Row, UnclaimedRow } from "./requests.ts";
 import { formatLocal, stamp } from "./schedule.ts";
 import type { RunRecord, RunRequester } from "./store.ts";
 
@@ -386,7 +386,7 @@ export interface StopHost {
 	heldTurn(sessionId: string): { runId: string } | undefined;
 	ring(sessionId: string): void;
 	leases: () => Parameters<typeof heldTurnFor>[0];
-	append: (row: Row) => void;
+	append: (row: UnclaimedRow) => void;
 	createdBy: () => Row["created_by"];
 }
 
