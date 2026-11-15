@@ -445,20 +445,23 @@ export function computeNext(input: DueInput, now: number): number | undefined {
 }
 
 /**
- * The first time after `now` that a job's schedule names, as a stamp, or undefined: its schedule
- * or its creation time is unusable, the time is past what a date can hold, or it is a one-shot
- * that has fired or whose time has passed. It takes a job as `jobs.json` holds it and uses the
- * scheduler's evaluator (`computeNext`), so a reader of that file needs no file in between. It does
- * not look at `enabled`, and it does not say whether a run is due now: those are the caller's
- * questions (`nextRunOf` in src/job-edit.ts answers the second).
+ * The last time that has a stamp: a day before the last millisecond a `Date` can hold, because
+ * `stamp` moves a time by the local zone's offset before it writes it.
  */
-/** The last millisecond a `Date` can hold: a time past it has no stamp. */
-const MAX_DATE_MS = 8.64e15;
+const LAST_STAMP_MS = 8.64e15 - 86_400_000;
 
+/**
+ * The first time after `now` that a job's schedule names, as a stamp, or undefined: its schedule
+ * is unusable, an `every` job has no usable time to count from, the time is past the last one
+ * that has a stamp, or it is a one-shot that has fired or whose time has passed. It takes a job
+ * as `jobs.json` holds it and uses the scheduler's evaluator (`computeNext`), so a reader of that
+ * file needs no file in between. It does not look at `enabled`, and it does not say whether a run
+ * is due now: those are the caller's questions (`nextRunOf` in src/job-edit.ts answers the second).
+ */
 export function nextRunStamp(job: { schedule?: unknown; createdAt?: unknown; lastFiredAt?: unknown }, now: number): string | undefined {
 	if (!isValidSchedule(job.schedule)) return undefined;
 	const createdAt = typeof job.createdAt === "string" ? Date.parse(job.createdAt) : NaN;
 	const fired = typeof job.lastFiredAt === "string" ? Date.parse(job.lastFiredAt) : NaN;
 	const at = computeNext({ schedule: job.schedule, createdAt, lastFiredAt: Number.isFinite(fired) ? fired : undefined }, now);
-	return at === undefined || !Number.isFinite(at) || Math.abs(at) > MAX_DATE_MS ? undefined : stamp(at);
+	return at === undefined || !Number.isFinite(at) || Math.abs(at) > LAST_STAMP_MS ? undefined : stamp(at);
 }

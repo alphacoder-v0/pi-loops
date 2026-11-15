@@ -181,7 +181,11 @@ test("nextRunStamp gives no time, and does not throw, when the next time is past
 	const now = local(2026, 11, 2, 8, 0);
 	assert.equal(nextRunStamp({ schedule: { kind: "every", ms: 8.64e18 }, createdAt: stamp(now) }, now), undefined);
 	assert.equal(nextRunStamp({ schedule: { kind: "once", at: 9e15 }, createdAt: stamp(now) }, now), undefined);
-	assert.equal(nextRunStamp({ schedule: { kind: "once", at: 8.64e15 }, createdAt: stamp(now) }, now), stamp(8.64e15), "the last date there is still has one");
+	// `stamp` moves a time by the zone's offset first, so the last day of all has no stamp in some zones.
+	assert.equal(nextRunStamp({ schedule: { kind: "once", at: 8.64e15 }, createdAt: stamp(now) }, now), undefined);
+	assert.equal(nextRunStamp({ schedule: { kind: "once", at: 8.64e15 - 3_600_000 }, createdAt: stamp(now) }, now), undefined, "also in a zone far ahead of UTC");
+	const lastWithOne = 8.64e15 - 2 * 86_400_000;
+	assert.equal(nextRunStamp({ schedule: { kind: "once", at: lastWithOne }, createdAt: stamp(now) }, now), stamp(lastWithOne), "two days before the end still has one");
 });
 
 test("the next run of an every job is worked out, not walked: a start two thousand years back costs nothing and gives the same step", () => {

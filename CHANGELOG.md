@@ -17,8 +17,10 @@ All notable changes to pi-loops are documented here. The format follows
   - a rule's result for its conversation can be written to the conversation's file while the
     window has it open, where it went to the inbox before;
   - a 0.22 window started with `--no-session` or `--session-dir` has its plain jobs turned off
-    within ten minutes (`disabled: session … no longer exists`). Turn them on again with
-    `/cron enable <id>` after the upgrade.
+    within ten minutes (`disabled: session … no longer exists`). `/cron enable <id>` holds only
+    after you close that window and open the conversation in a window of this version; before
+    that, the job is turned off again within ten minutes. A `--no-session` conversation cannot be
+    opened again: make its jobs again in a new conversation.
 
 ### Fixed
 
