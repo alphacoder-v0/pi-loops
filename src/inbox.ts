@@ -6,8 +6,10 @@
  * Appends are line-atomic; status rewrites are serialized through a file lock.
  * Corrupt lines are skipped on read and written back verbatim by every rewrite, never deleted.
  */
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { LaneId } from "./lane.ts";
 import { withFileLock, writeFileAtomic } from "./lock.ts";
 import { INBOX_TEXT_MAX_CHARS, type FindingKind, capChars } from "./protocol.ts";
 import { newId } from "./store.ts";
@@ -66,6 +68,8 @@ export interface InboxEntry {
 	 * says so too, but the text is anyone's to write, and a claim of this finding carries it out.
 	 */
 	undelivered?: true;
+	/** The lane the finding was filed from (src/lane.ts). Absent on a finding an older version wrote. */
+	lane?: LaneId;
 }
 
 /** The fields a finding is, in their order — CONTRACT.md §2.2 and docs/downstream.md §3. */
@@ -73,6 +77,14 @@ export const FINDING_FIELDS = ["id", "created_at", "status", "kind", "source", "
 
 /** What a writer gives for a new finding; the inbox fills in the id, the time and the status. */
 export type NewFinding = Omit<InboxEntry, "id" | "created_at" | "status" | "kind" | "verified" | "dismiss_reason"> & Partial<Pick<InboxEntry, "kind" | "verified">>;
+
+/**
+ * The id of a finding that is filed once: `inb-` and the first 32 hex of SHA-256(`seed`). It has
+ * the shape of every other finding id. Pure.
+ */
+export function findingId(seed: string): string {
+	return `inb-${createHash("sha256").update(seed).digest("hex").slice(0, 32)}`;
+}
 
 /** Reasons longer than a finding are a paragraph, and the prompt they go into is capped. */
 const DISMISS_REASON_MAX_CHARS = INBOX_TEXT_MAX_CHARS;
@@ -122,10 +134,30 @@ export class Inbox {
 		});
 	}
 
+	/**
+	 * Under `inbox.lock`: a finding with this id is returned as it is in the file, whatever its status
+	 * and whatever `entry` says; otherwise `entry` is written with this id and returned. One finding
+	 * per id, the first one to a second caller. For a writer that may crash and run again (a dead
+	 * letter): the caller derives the id with `findingId`, and an id that is not `inb-` and 32 hex
+	 * throws, because a hand-made id is a second way to file twice. A finding that rotation took out
+	 * of the file is not there to find: a repeat that late files again.
+	 */
+	async fileOnce(entry: NewFinding, id: string): Promise<InboxEntry> {
+		if (!/^inb-[0-9a-f]{32}$/.test(id)) throw new Error(`not a finding id: ${JSON.stringify(id)}`);
+		const full = this.build(entry, id);
+		fs.mkdirSync(path.dirname(this.file), { recursive: true });
+		return withFileLock(this.lockPath, () => {
+			const there = this.list().find((e) => e.id === id);
+			if (there) return there;
+			this.write(full);
+			return full;
+		});
+	}
+
 	/** The line a new finding is: built in `FINDING_FIELDS` order, then pi-loops' own. */
-	private build(entry: NewFinding): InboxEntry {
+	private build(entry: NewFinding, id = newId("inb")): InboxEntry {
 		return {
-			id: newId("inb"), // inb-<32 hex>, the shape every other id in pi-loops has
+			id, // inb-<32 hex>, the shape every other id in pi-loops has
 			created_at: stamp(),
 			status: "new",
 			kind: entry.kind ?? "news",
@@ -142,6 +174,7 @@ export class Inbox {
 			...(entry.session_id === undefined ? {} : { session_id: entry.session_id }),
 			...(entry.transcript === undefined ? {} : { transcript: entry.transcript }),
 			...(entry.undelivered ? { undelivered: true as const } : {}),
+			...(entry.lane === undefined ? {} : { lane: entry.lane }),
 		};
 	}
 
@@ -343,6 +376,7 @@ function readFinding(raw: any): InboxEntry | undefined {
 		dismissed_at: str("dismissed_at"),
 		transcript: str("transcript"),
 		...(raw.undelivered === true ? { undelivered: true as const } : {}),
+		...(typeof raw.lane === "string" ? { lane: raw.lane } : {}),
 	};
 }
 
