@@ -311,6 +311,24 @@ function attemptsCountFailures(world: World, _memory: Memory, queues: Queues): s
 }
 
 /**
+ * The count of failed hand-overs is what bounds how often a prompt of ours runs (src/engine.ts:
+ * "without the count, a prompt an extension rewrites on every turn would run for ever"). So one
+ * process's pi writes one pi-loops row at most `DEAD_AT` times, in a rewriting world as in any
+ * other. Left out: a hand-over the engine had given up (a late send, which the checks on second
+ * deliveries hold), what the person sent from the editor, and a person's row, which is offered
+ * again uncounted today (the known defect of rewriting worlds).
+ */
+function writesAreBounded(world: World): string[] {
+	const out: string[] = [];
+	const counted = (copy: Copy): boolean => copy.state === "written" && !copy.person && !copy.fromTheEditor && !copy.gaveUp;
+	for (const first of new Set(world.facts.written.filter(counted))) {
+		const times = world.copies.filter((copy) => counted(copy) && copy.rowId === first.rowId && copy.sessionId === first.sessionId && copy.process === first.process).length;
+		if (times > DEAD_AT) out.push(`the pi of ${who(first.process)} wrote ${label(world, first.rowId)} ${times} times: a row that failed ${DEAD_AT} times is a dead letter`);
+	}
+	return out;
+}
+
+/**
  * What the person typed into a terminal's editor and has not sent is still in it: a window that
  * takes its own prompts out of the editor after a stop leaves the person's words where they are.
  */
@@ -410,6 +428,7 @@ export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
 	["I7 a finding is decided once", decidedOnce],
 	["a stop and a cancel do what they name", stopsAndCancelsWork],
 	["what the person typed stays in the editor until they send it", typedStaysInTheEditor],
+	["a prompt of ours is written by one pi at most three times", writesAreBounded],
 	["I8 attempts count failed hand-overs, a backoff is waited out, and three failures make a dead letter", attemptsCountFailures],
 	["a row is delivered once per proof", deliveredOnce],
 	...Object.entries(KNOWN_SECOND_DELIVERIES).map(([name, excuse]): [string, Invariant] => [name, (world) => [...writtenTooOften(world, [...ACCEPTED, ...Object.values(KNOWN_SECOND_DELIVERIES).filter((other) => other !== excuse)]), ...(excuse === "editor" ? handedOverAfterTheEditor(world) : [])]]),

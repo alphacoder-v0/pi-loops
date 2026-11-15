@@ -14,14 +14,17 @@
  *   draws. In a terminal (`tui`), Esc and `ctx.abort()` are the interactive mode's abort handler:
  *   it clears pi's queues, puts the queued texts of user messages into the editor, then aborts.
  *   The editor is one text: the queued texts as pi held them (after another extension's `input`
- *   handler, where there is one), before what was there (that order is read in pi's interactive
- *   mode; two stops in a row were not measured), and the person can type more behind them. Enter
- *   sends all of it as one message. In the page's pi (`rpc`) the page's Stop and `ctx.abort()` are
- *   `AgentSession.abort()`, which ends the turn and leaves what is queued behind it: pi is idle
+ *   handler, where there is one), before what was there (measured with words the person had
+ *   typed; that what was there came from an earlier stop was not), and the person can type more
+ *   behind them. Enter sends all of it as one message. In the page's pi (`rpc`) the page's Stop
+ *   and `ctx.abort()` are `AgentSession.abort()`, which ends the turn and leaves what is queued behind it: pi is idle
  *   and still holds it, and starts no run for it. The next run starts with a message handed over
  *   or typed after the stop, and writes what pi kept behind that message. (Measured on pi 1.2.0:
- *   .docs/redesign-0243/signatures/M3b-probes.md, P2, P3, G1 and G2.) test/sim-model.test.ts holds
- *   these to the measurements, scene by scene.
+ *   .docs/redesign-0243/signatures/M3b-probes.md, P2, P3 and G1 to G4.) A stop need not come from
+ *   the person: the window asks for `ctx.abort()` as a message starts whose row a stop named, and
+ *   when that message is a follow-up, pi writes it and stops there, with what waits behind it
+ *   kept or put into the editor as after any stop. test/sim-model.test.ts holds these to the
+ *   measurements, scene by scene.
  * - Pi emits `message_start` and `message_end` for a custom message as for a user message.
  * - Before pi persists a message it asks the window (`message_end`), which may give another
  *   message of the same role: what a window writes into the entry is in the entry.
@@ -171,6 +174,8 @@ export interface Process {
 	/** A window's pi; the background process has none, and this stays empty. */
 	pi: Pi;
 	window?: WindowExecutor;
+	/** What a window's extension sees of its pi: the part of the fake context that a scene asks directly. */
+	ctx?: { hasPendingMessages(): boolean; ui: { getEditorText(): string; setEditorText(text: string): void } };
 	executor: Executor;
 }
 
@@ -482,6 +487,7 @@ function windowProcess(world: World, base: Omit<Process, "executor">): Process {
 	const window = new WindowExecutor(pi as unknown as Args[0], { here: () => ({ sessionId: conversation.id, holds: conversation.holder === proc }) }, () => ctx as unknown as ReturnType<Args[2]>, { pid: proc.pid }, (row) => row.created_by.left === undefined && pidAlive(world, row.created_by.pid), () => world.store.list(conversation.id), undefined, () => []);
 	proc.window = window;
 	proc.executor = window;
+	proc.ctx = ctx;
 	return proc;
 }
 
@@ -580,23 +586,27 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 		case "esc": {
 			if (pi.current) write(world, proc, pi.current);
 			pi.current = undefined;
-			// Follow-ups are written in order, what an earlier stop left first (pi has one queue), unless
-			// the turn was stopped: by Esc or the page's Stop (`esc`), or by `ctx.abort()` (one of the
-			// follow-ups can ask for it as it starts). A stop in a terminal clears pi's queue and puts
-			// the queued user messages into the editor, before what is there. A stop in the page's pi
-			// ends the turn with the rest still queued: pi holds them, and the window, which reads a
-			// settled pi's unwritten rows as dropped, stops waiting for them.
-			const stopped = move === "esc" || pi.aborts > 0;
-			const followUps = pi.queue.splice(0);
-			if (!stopped) for (const item of [...pi.kept.splice(0), ...followUps]) write(world, proc, item);
-			else if (proc.mode === "tui") {
-				const put = followUps.filter((item) => !item.custom).map((item) => ({ paragraph: world.rewrites ? `${REWRITTEN}${item.text}` : item.text, copy: item.copy }));
-				for (const item of followUps) leave(item.copy, "dropped", at);
+			// Pi takes what waits behind the turn one message at a time: what an earlier stop left
+			// first, then the follow-ups (pi has one queue). A stop ends that: Esc or the page's Stop
+			// (`esc`), or `ctx.abort()`, which the window can ask for as any of these messages starts.
+			// The message that asked is written; what waits behind it is not. A stop in a terminal
+			// clears pi's queue and puts the queued user messages into the editor, before what is
+			// there. A stop in the page's pi leaves the rest queued: pi holds it, and the window,
+			// which reads a settled pi's unwritten rows as dropped, stops waiting for it.
+			const waiting = [...pi.kept.splice(0), ...pi.queue.splice(0)];
+			let stopped = move === "esc" || pi.aborts > 0;
+			while (!stopped && waiting.length) {
+				write(world, proc, waiting.shift()!);
+				stopped = pi.aborts > 0;
+			}
+			if (proc.mode === "tui") {
+				const put = waiting.filter((item) => !item.custom).map((item) => ({ paragraph: world.rewrites ? `${REWRITTEN}${item.text}` : item.text, copy: item.copy }));
+				for (const item of waiting) leave(item.copy, "dropped", at);
 				pi.editor.put.push(...put);
 				pi.editor.text = paragraphs(...put.map((item) => item.paragraph), pi.editor.text);
 			} else {
-				for (const item of followUps) if (item.copy) item.copy.gaveUp ??= "stop";
-				pi.kept.push(...followUps);
+				for (const item of waiting) if (item.copy) item.copy.gaveUp ??= "stop";
+				pi.kept.push(...waiting);
 			}
 			Object.assign(pi, { running: false, aborts: 0, startedAt: undefined, turnOf: undefined });
 			window.agentEnded();

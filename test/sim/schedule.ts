@@ -388,7 +388,7 @@ export async function run(plan: Plan, dir: string, time: Timers, enforce?: strin
 		return rewritten(found.violation, step);
 	};
 	// In a world where another extension rewrites every message, today's engine cannot prove a row
-	// by its prefix or its words. The checks that breaks (`BROKEN_BY_REWRITING`) are that one defect
+	// by its prefix or its words. The checks it breaks (`BROKEN_BY_REWRITING`) are that one defect
 	// there, held under `KNOWN`; every other check fails such a world as it fails any other.
 	const rewritten = (violation: Violation | undefined, step: number | "end"): Violation | undefined => {
 		// The check a run is told to enforce stays itself, in a rewriting world as in any other.
