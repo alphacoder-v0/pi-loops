@@ -124,7 +124,7 @@ examples/                   a dependency-free MCP push server, and an mcp.toml t
 test/                       node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
 test/downstream/            the contract in docs/downstream.md checked from the outside: sh + jq driving `pi-loops`, a loop run in the background against fake-model.mjs, no import of src/
 test/journey/               the journeys J1-J10 (`npm run journey -- J1 …`) and `boot.mjs`, a sandboxed page with a stand-in model
-test/sim/                   the seeded simulation of the request engine that test/sim.test.ts runs: world.ts (the real engine and stores around a simulated pi, lease, clock and crashes, and what that leaves out), schedule.ts (the steps a seed draws), invariants.ts (what is checked after every step), prng.ts
+test/sim/                   the seeded simulation of the request engine that test/sim.test.ts runs: world.ts (the real engine and stores around a simulated pi, lease, clock and crashes, and what that leaves out), schedule.ts (the steps a seed draws), invariants.ts (what is checked after every step), prng.ts; claims.ts (a lane the background runs: rows a run claims, runs that end in every way, a process that dies at any write), which test/sim-claims.test.ts runs
 test/tmp.ts                 every test's temporary directory: removed when the test passes, kept and named when it fails (PI_LOOPS_KEEP_TMP=1 keeps all), strays it started ended
 scripts/                    typecheck.mjs, lint.mjs, check-docs.mjs — TypeScript comes through npx, nothing is a dependency
 ```
@@ -165,6 +165,12 @@ SIM_SEED=<seed> SIM_SCHEDULES=1 PI_LOOPS_HOST=off node --import ./src/register-p
 
 A check named in `KNOWN` (`test/sim/invariants.ts`) is a defect of `src/` the simulation found and
 nobody has fixed: it runs under `todo`, visible and not red. Fix the defect, then take the name out.
+
+A second simulation, `test/sim-claims.test.ts`, runs 400 schedules of a lane that pi-loops in the
+background runs: rows a run claims (`row.run`), runs that end in every way, and a process that dies
+at any write. Its executor is simulated, because nothing in `src/` claims a row yet; the engine's
+rules for a claimed row are the real ones. It takes the same `SIM_SEED`, `SIM_SCHEDULES` and
+`SIM_STEPS`.
 
 `check:docs` is there because nothing else in CI reads a README: 0.17.0 was tagged green with an
 install line that answered 404. It holds every install command in every document to what
