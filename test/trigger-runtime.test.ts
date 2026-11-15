@@ -553,12 +553,19 @@ test("a rule whose check keeps failing is polled with a widening gap instead of 
 	const finished: any[] = [];
 	const rt = new TriggerRuntime({
 		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner,
-		pollIntervalSecs: 60, now: () => clock, hooks: { onFinished: (o) => void finished.push(o) },
+		// A poll interval far shorter than any pause: when a check below does not run, the pause is why.
+		pollIntervalSecs: 10, now: () => clock, hooks: { onFinished: (o) => void finished.push(o) },
 	});
 	const poll = async () => {
 		const n = finished.length;
 		await rt.tick(clock, true);
 		await until(() => finished.length > n, "the check ran");
+	};
+	const noCheck = async (why: string) => {
+		const n = calls.length;
+		await rt.tick(clock, true);
+		await new Promise((r) => setTimeout(r, 50));
+		assert.equal(calls.length, n, why);
 	};
 	try {
 		await rt.store.add({ condition: "c", action: "a", cwd: dir, fireOnce: false });
@@ -570,17 +577,18 @@ test("a rule whose check keeps failing is polled with a widening gap instead of 
 		assert.equal(rt.store.load()[0].consecutiveFailures, 3);
 		assert.ok(rt.store.listAudit(50).some((a) => a.state === "backoff"), "the audit says why the rule went quiet");
 
-		clock += 30_000;
-		await rt.tick(clock, true);
-		await new Promise((r) => setTimeout(r, 50));
-		assert.equal(calls.length, 3, "not started 30 seconds after the last failure");
-
-		clock += 30_000;
+		// The fourth check waits one minute after the third failure.
+		clock += 59_000;
+		await noCheck("not checked 59 seconds after the third failure");
+		clock += 1_000;
 		await poll();
-		assert.equal(calls.length, 4, "started once one minute has passed");
+		assert.equal(calls.length, 4, "checked once one minute has passed");
 
+		// The fifth waits five minutes after the fourth failure.
+		clock += 5 * 60_000 - 1_000;
+		await noCheck("four failures wait five minutes, not one");
 		failing = false;
-		clock += 20 * 60_000;
+		clock += 1_000;
 		await poll();
 		assert.equal(calls.length, 5);
 		assert.equal(rt.store.load()[0].consecutiveFailures, undefined, "a check that completes clears the count");
