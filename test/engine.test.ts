@@ -7,7 +7,7 @@ import { TriggerStore } from "../src/triggers.ts";
 import { type ClaimedRow, type ImageContent, RequestStore, type Row, type UnclaimedRow } from "../src/requests.ts";
 import * as path from "node:path";
 import { BACKOFF_MS } from "../src/backoff.ts";
-import { type Action, type Proof, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, proofOf, landed, personRow, plainJobRow, plainRunId, stripImageNotes } from "../src/engine.ts";
+import { type Action, type Proof, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, proofOf, landed, personRow, plainJobRow, plainRunId, stripImageNotes, claimAlive } from "../src/engine.ts";
 
 test("a row removed between the drain's read and its hand-over is not handed over: the stamp that found no row says so", async () => {
 	// The page's send-here takes a message out of the queue and sends it over rpc. A drain that had
@@ -1947,4 +1947,31 @@ test("[mode-by-lane] a row in a loop's lane or a check's lane is unattended what
 	const asked = row("m1", { lane: "@cron-j", wake: "turn", source: "cron-run:j", mode: "unattended", payload: { text: "[Trigger m1] go", cwd: "/p" } });
 	assert.deepEqual(decideDrain("loop", [asked], none, jobs, view(), T0), [{ do: "turn", row: asked }]);
 	assert.deepEqual(decideDrain("conversation", [asked], none, jobs, view(), T0), [{ do: "exit", row: asked, exit: "refused" }]);
+});
+
+test("a proof reads what a claim's run came to from the run records: the newest record of the claim's run, and nothing for a row with no claim", () => {
+	const claimed = claimedRow("c1");
+	const record = (over: Record<string, unknown>) => ({ runId: "run-c1", jobId: "j", pid: 1, startedAt: "t", finishedAt: "t", ok: true, ...over }) as any;
+	const ran = (records: unknown[]) => proofOf(() => [], () => records as any).ran(claimed);
+	assert.equal(ran([]), undefined, "no record has the run's id");
+	assert.equal(ran([record({ runId: "another-run" })]), undefined);
+	assert.equal(ran([record({})]), "ended");
+	assert.equal(ran([record({ ok: false, error: "boom" })]), "ended", "a failed run has ended too: it spent its slot");
+	assert.equal(ran([record({ ok: false, aborted: true, stoppedBy: "person" })]), "stopped");
+	assert.equal(ran([record({ ok: false, aborted: true })]), "aborted");
+	assert.equal(ran([record({ ok: false, aborted: true }), record({})]), "ended", "the newest record of the run");
+	// A row with no claim: nothing to ask, and the run log is not read.
+	let read = 0;
+	const lazy = proofOf(() => [], () => (read++, [record({ runId: "t9" })]));
+	assert.equal(lazy.ran(row("t9")), undefined);
+	assert.equal(landed(row("t9"), lazy), false);
+	assert.equal(read, 0);
+});
+
+test("a claim is alive while its process is, by the rule of a lease's holder: the same pid started at another time is another process", () => {
+	const claimed = { ...claimedRow("c1"), run: { id: "run-c1", pid: 4242, procStart: "100", started_at: "2026-06-01T11:59:00Z" } };
+	const probe = (alive: boolean, start: string | undefined) => ({ alive: () => alive, startTime: () => start, bootedAt: () => 0 });
+	assert.equal(claimAlive(claimed, probe(true, "100")), true);
+	assert.equal(claimAlive(claimed, probe(false, "100")), false, "its process is gone");
+	assert.equal(claimAlive(claimed, probe(true, "999")), false, "the pid was given to another process");
 });

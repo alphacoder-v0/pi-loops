@@ -957,3 +957,23 @@ test("Stop this run on a loop run, through the page's wiring: aborted at once, a
 		await host.stop();
 	}
 });
+
+test("a lane's rows are not buried as a conversation that is gone: a loop's queue is left alone by the tick and by a ring", async () => {
+	// Only a conversation has a session file to be gone. A loop's lane has none, and its rows are a later executor's.
+	const dir = tmp("pi-loops-hostrt-");
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
+	try {
+		const lane = "@cron-0123456789abcdef0123456789abcdef";
+		const store = new RequestStore(dir);
+		const row = { ...ruleResultRow("placeholder", "[Trigger t-lane] for the loop", { traceId: "t-lane", sourceLabel: "local:dynamic", cwd: dir }, { pid: process.pid, instance: "test", version: "0" }), lane };
+		store.append(row);
+		await host.scheduler.tick();
+		host.ring(lane);
+		await new Promise((r) => setTimeout(r, 100));
+		await host.scheduler.tick();
+		assert.deepEqual(store.list(lane).map((r) => r.id), ["t-lane"], "the row is still queued");
+		assert.equal(host.scheduler.inbox.list().length, 0, "and no dead letter says its conversation is gone");
+	} finally {
+		await host.stop();
+	}
+});
