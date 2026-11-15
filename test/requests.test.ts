@@ -126,7 +126,9 @@ test("[v2-read-as-v3] a v2 line this version does not change keeps its bytes thr
 	const store = new RequestStore(tmp());
 	fs.mkdirSync(path.dirname(store.file("s1")), { recursive: true });
 	fs.writeFileSync(store.file("s1"), `${v2Line}\n${JSON.stringify(row("r2", { lane: "s1" }))}\n`);
-	// Each kind of rewrite: a patch of another row, a refused removal, a removal.
+	// Each kind of rewrite: a claim of another row, a patch of it, a refused removal, a removal.
+	assert.equal(store.claim("s1", "r2", { id: "run-9", pid: 1, started_at: "2026-11-01T00:00:00.000+00:00" }), true);
+	assert.equal(fs.readFileSync(store.file("s1"), "utf8").split("\n")[0], v2Line, "after another row was claimed");
 	assert.equal(store.update("s1", "r2", { attempts: 1 }), true);
 	assert.equal(fs.readFileSync(store.file("s1"), "utf8").split("\n")[0], v2Line, "after another row was patched");
 	assert.equal(store.removeIf("s1", "r2", () => false).outcome, "kept");
@@ -135,16 +137,30 @@ test("[v2-read-as-v3] a v2 line this version does not change keeps its bytes thr
 	assert.equal(fs.readFileSync(store.file("s1"), "utf8"), `${v2Line}\n`, "after another row was removed: the file is that line and nothing else");
 });
 
-test("[v2-read-as-v3] a v2 row this version patches is written back as v3", () => {
+test("[v2-read-as-v3] a v2 row this version patches stays a version 2 line: the version that wrote it still reads it", () => {
 	const store = new RequestStore(tmp());
 	fs.mkdirSync(path.dirname(store.file("s1")), { recursive: true });
 	fs.writeFileSync(store.file("s1"), `${v2Line}\n`);
-	assert.equal(store.update("s1", "r1", { attempts: 1 }), true);
+	// Every field a drain patches: a failure, a backoff, a hand-over stamp, the producer leaving.
+	assert.equal(store.update("s1", "r1", { attempts: 1, last_error: "boom", not_before: "2026-11-01T00:01:00.000+00:00", handed_at: "2026-11-01T00:00:30.000+00:00" }), true);
 	const written = JSON.parse(fs.readFileSync(store.file("s1"), "utf8"));
-	assert.equal(written.v, 3);
-	assert.equal(written.lane, "s1");
-	assert.equal(written.attempts, 1);
-	assert.equal(Object.hasOwn(written, "session_id"), false);
+	assert.deepEqual([written.v, written.session_id, Object.hasOwn(written, "lane")], [2, "s1", false], "as 0.24.2 reads a line: version 2, with session_id");
+	assert.deepEqual([written.attempts, written.last_error, written.not_before, written.handed_at], [1, "boom", "2026-11-01T00:01:00.000+00:00", "2026-11-01T00:00:30.000+00:00"]);
+	const { attempts: _a, last_error: _e, not_before: _n, handed_at: _h, ...rest } = written;
+	const { attempts: _b, ...original } = JSON.parse(v2Line);
+	assert.deepEqual(rest, original, "every other field is as 0.24.2 wrote it");
+	// This version reads it as it reads any version 2 line, and a second patch keeps it version 2.
+	assert.deepEqual([store.list("s1")[0].lane, store.list("s1")[0].attempts], ["s1", 1]);
+	store.update("s1", "r1", { attempts: 2 });
+	assert.equal(JSON.parse(fs.readFileSync(store.file("s1"), "utf8")).v, 2);
+});
+
+test("[v2-read-as-v3] a row this version appended is patched as version 3", () => {
+	const store = new RequestStore(tmp());
+	store.append(row("r1", { lane: "s1" }));
+	store.update("s1", "r1", { attempts: 1 });
+	const written = JSON.parse(fs.readFileSync(store.file("s1"), "utf8"));
+	assert.deepEqual([written.v, written.lane, Object.hasOwn(written, "session_id")], [3, "s1", false]);
 });
 
 test("a line of a version this one does not know is kept and not listed", () => {
@@ -161,7 +177,8 @@ test("a v3 line without a lane, and a v2 line without a session_id, are kept and
 	const store = new RequestStore(tmp());
 	const { lane: _, ...withoutLane } = row("r1", { lane: "s1" });
 	const { session_id: __, ...withoutSessionId } = { ...JSON.parse(v2Line) };
-	const lines = [JSON.stringify(withoutLane), JSON.stringify(withoutSessionId)];
+	// A version reads its own field only: a version 3 line that names its queue as version 2 did is not read, nor the reverse.
+	const lines = [JSON.stringify(withoutLane), JSON.stringify(withoutSessionId), JSON.stringify({ ...withoutLane, session_id: "s1" }), JSON.stringify({ ...withoutSessionId, lane: "s1" })];
 	fs.mkdirSync(path.dirname(store.file("s1")), { recursive: true });
 	fs.writeFileSync(store.file("s1"), `${lines.join("\n")}\n`);
 	assert.deepEqual(store.list("s1"), []);
@@ -292,4 +309,16 @@ test("a line whose claim is damaged is kept and not listed: a broken claim is no
 	assert.deepEqual(store.list("s1"), []);
 	store.remove("s1", ["d"]);
 	assert.equal(fs.readFileSync(store.file("s1"), "utf8"), `${lines.join("\n")}\n`);
+});
+
+test("only an input can be claimed: a stop or a cancel is never a run, and a line that says otherwise is not read", () => {
+	const store = new RequestStore(tmp());
+	const stop = { ...row("st", { lane: "s1" }), kind: "stop" as const, mode: "none" as const, payload: undefined, target: { id: "x" } };
+	store.append(stop);
+	assert.equal(store.claim("s1", "st", { id: "run-1", pid: 1, started_at: "2026-11-01T00:00:00.000+00:00" }), false);
+	assert.equal(store.list("s1")[0].run, undefined);
+	const forged = JSON.stringify({ ...stop, id: "forged", run: { id: "run-2", pid: 1, started_at: "2026-11-01T00:00:00.000+00:00" } });
+	fs.appendFileSync(store.file("s1"), `${forged}\n`);
+	assert.deepEqual(store.list("s1").map((r) => r.id), ["st"], "a claimed stop is a line this version does not act on");
+	assert.equal(fs.readFileSync(store.file("s1"), "utf8").includes(forged), true, "and it stays as it was written");
 });

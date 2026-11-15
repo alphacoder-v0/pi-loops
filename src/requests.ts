@@ -124,6 +124,11 @@ const KINDS: ReadonlySet<string> = new Set<RequestKind>(["input", "stop", "cance
  * `v`, or an unknown `kind`. Such a line is kept in the file for the version that wrote it.
  */
 export function parseRow(line: string): Row | undefined {
+	return readLine(line)?.row;
+}
+
+/** The one reader of a line: its row, and the version the line was written in. */
+function readLine(line: string): { row: Row; version: 2 | 3 } | undefined {
 	let value: unknown;
 	try {
 		value = JSON.parse(line);
@@ -148,19 +153,25 @@ export function parseRow(line: string): Row | undefined {
 	if (requires !== undefined && (!Array.isArray(requires) || !requires.every((s) => typeof s === "string"))) return undefined;
 	const target = row.target as unknown;
 	if (target !== undefined && !(target && typeof target === "object" && (typeof (target as { id?: unknown }).id === "string" || ((target as { current?: unknown }).current === true && typeof (target as { started_before?: unknown }).started_before === "string")))) return undefined;
-	// A claim of the wrong shape is not a free row: the line is kept, unread, as a newer one is.
+	// A claim of the wrong shape is not a free row: the line is kept, unread, as a newer one is. Only
+	// an input is ever a run, so a claim on a stop or a cancel is a wrong shape too.
 	const run = (row as { run?: unknown }).run as Record<string, unknown> | null | undefined;
-	if (run !== undefined && (!run || typeof run !== "object" || typeof run.id !== "string" || typeof run.pid !== "number" || typeof run.started_at !== "string" || (run.procStart !== undefined && typeof run.procStart !== "string"))) return undefined;
-	return { ...row, attempts: typeof row.attempts === "number" ? row.attempts : 0 } as Row;
+	if (run !== undefined && (row.kind !== "input" || !run || typeof run !== "object" || typeof run.id !== "string" || typeof run.pid !== "number" || typeof run.started_at !== "string" || (run.procStart !== undefined && typeof run.procStart !== "string"))) return undefined;
+	return { row: { ...row, attempts: typeof row.attempts === "number" ? row.attempts : 0 } as Row, version: parsed.v === 2 ? 2 : 3 };
 }
 
 /**
- * The one writer of a row's line: an append, and a row that `update` patched. A rewrite puts every
- * other line back as the bytes it read, so a line an older version wrote stays as it wrote it until
- * its row is patched here or leaves.
+ * The one writer of a row's line. A row is written as version 3, with one exception: a row that
+ * was read from a version 2 line and is only patched stays a version 2 line, so that the version
+ * that wrote it still reads it (its window may hold the conversation again; its background
+ * process keeps the images of the rows it can read). A claimed row is always version 3: an older
+ * version must not read it, or it would hand the row to pi beside the run that has it. A rewrite
+ * puts every line it does not change back as the bytes it read.
  */
-function rowLine(row: Row): string {
-	return JSON.stringify(row);
+function rowLine(row: Row, version: 2 | 3 = ROW_VERSION): string {
+	if (version === ROW_VERSION || row.run) return JSON.stringify(row);
+	const { v: _, lane, ...rest } = row;
+	return JSON.stringify({ v: 2, session_id: lane, ...rest });
 }
 
 /** Whether `file` ends in the middle of a line. */
@@ -202,7 +213,7 @@ export class RequestStore {
 	}
 
 	/** Every line of the file, parsed where this version can: a removal keeps the lines it cannot. An id that is no lane has no lines. */
-	private lines(lane: LaneId): Array<{ raw: string; row?: Row }> {
+	private lines(lane: LaneId): Array<{ raw: string; row?: Row; version?: 2 | 3 }> {
 		let data: string;
 		try {
 			// A regular file only: a FIFO or a device put here would block every reader on it.
@@ -216,8 +227,8 @@ export class RequestStore {
 			.filter((raw) => raw.length > 0)
 			// A row that names another lane than this file's is not this file's: unread by every method.
 			.map((raw) => {
-				const row = parseRow(raw);
-				return { raw, row: row?.lane === lane ? row : undefined };
+				const read = readLine(raw);
+				return read?.row.lane === lane ? { raw, row: read.row, version: read.version } : { raw };
 			});
 	}
 
@@ -336,25 +347,25 @@ export class RequestStore {
 	update(lane: LaneId, id: string, patch: Partial<Pick<Row, "attempts" | "not_before" | "last_error" | "created_by" | "handed_at">> & { run?: undefined }): boolean {
 		let found = false;
 		this.rewrite(lane, (lines) =>
-			lines.map(({ raw, row }) => {
+			lines.map(({ raw, row, version }) => {
 				if (!row || row.id !== id) return { raw, row };
 				found = true;
-				return { raw: rowLine({ ...row, ...patch }), row };
+				return { raw: rowLine({ ...row, ...patch }, version), row };
 			}),
 		);
 		return found;
 	}
 
 	/**
-	 * Write `run` on row `id`, under the lane's lock, only if the row is there and no run has claimed
-	 * it. Returns whether this caller has the claim. A patch (`update`) can clear a claim and cannot
+	 * Write `run` on row `id`, under the lane's lock, only if the row is there, is an input, and no
+	 * run has claimed it. Returns whether this caller has the claim. A patch (`update`) can clear a claim and cannot
 	 * set one: the condition is checked here, where no other writer can come between.
 	 */
 	claim(lane: LaneId, id: string, run: ClaimedRow["run"]): boolean {
 		let claimed = false;
 		this.rewrite(lane, (lines) =>
 			lines.map(({ raw, row }) => {
-				if (!row || row.id !== id || row.run) return { raw, row };
+				if (!row || row.id !== id || row.run || row.kind !== "input") return { raw, row };
 				claimed = true;
 				return { raw: rowLine({ ...row, run }), row };
 			}),
@@ -382,7 +393,7 @@ export class RequestStore {
 		return result;
 	}
 
-	private rewrite(lane: LaneId, change: (lines: Array<{ raw: string; row?: Row }>) => Array<{ raw: string }>): void {
+	private rewrite(lane: LaneId, change: (lines: Array<{ raw: string; row?: Row; version?: 2 | 3 }>) => Array<{ raw: string }>): void {
 		const file = this.file(lane);
 		withFileLockSync(this.lockPath(lane), () => {
 			const remaining = change(this.lines(lane));
