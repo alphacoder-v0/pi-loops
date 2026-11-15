@@ -41,7 +41,7 @@
  */
 import { CEILING, type DrainResult, type EngineSinks, type Executor, bury, conversationView, drain } from "../../src/engine.ts";
 import { Inbox } from "../../src/inbox.ts";
-import { RequestStore, type SessionRequest } from "../../src/requests.ts";
+import { RequestStore, type Row } from "../../src/requests.ts";
 import { TriggerStore } from "../../src/triggers.ts";
 import { WindowExecutor } from "../../src/window-executor.ts";
 
@@ -143,7 +143,7 @@ export interface Conversation {
 
 /** A row taken out of a queue, with what could account for it read at that instant, before the removal. */
 export interface Removal {
-	row: SessionRequest;
+	row: Row;
 	/** For an input: how its delivery shows in what pi wrote (`deliveredBy`). */
 	delivered?: "its own message" | "another row's message";
 	findings: number;
@@ -167,7 +167,7 @@ export interface Removal {
 export interface HandOver {
 	drain: number;
 	process: Process;
-	row: SessionRequest;
+	row: Row;
 	wake: "turn" | "append";
 	holds: boolean;
 	/** The row is in its queue file. */
@@ -229,7 +229,7 @@ export interface World {
 	drains: number;
 	crashes: number;
 	/** The row the engine is handing over right now, for the simulated pi to file its copy under. */
-	sending?: { row: SessionRequest; wake: "turn" | "append" };
+	sending?: { row: Row; wake: "turn" | "append" };
 	handOverThrows: boolean;
 }
 
@@ -292,8 +292,8 @@ const provedByText = (source: string): boolean => source === "goal" || source ==
  * A row's words end in a full stop, so none is the start of another's; two messages of the person
  * can be the same words.
  */
-export function deliveredBy(world: World, row: SessionRequest): Removal["delivered"] {
-	const written = world.copies.filter((copy) => copy.sessionId === row.session_id && copy.state === "written");
+export function deliveredBy(world: World, row: Row): Removal["delivered"] {
+	const written = world.copies.filter((copy) => copy.sessionId === row.lane && copy.state === "written");
 	if (written.some((copy) => copy.rowId === row.id)) return "its own message";
 	const stamp = provedByText(row.source) && row.handed_at !== undefined ? Date.parse(row.handed_at) : Number.NaN;
 	return written.some((copy) => copy.text === row.payload?.text && copy.writtenAt! >= stamp) ? "another row's message" : undefined;
@@ -603,7 +603,7 @@ export async function drainAs(world: World, proc: Process, tick: boolean, fault:
 			if (other.pi.current) piMove(world, other, "write");
 		}
 	};
-	const handOver = (row: SessionRequest, wake: "turn" | "append", call: () => void): void => {
+	const handOver = (row: Row, wake: "turn" | "append", call: () => void): void => {
 		crash.write();
 		const turns = held(proc).filter((copy) => copy.wake === "turn" && !copy.gaveUp);
 		const local = row.source === "goal" || row.source.startsWith("inbox:");

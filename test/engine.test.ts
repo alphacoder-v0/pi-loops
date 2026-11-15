@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import { tmp } from "./tmp.ts";
 import { Inbox } from "../src/inbox.ts";
 import { TriggerStore } from "../src/triggers.ts";
-import { type ImageContent, RequestStore, type SessionRequest } from "../src/requests.ts";
+import { type ImageContent, RequestStore, type Row } from "../src/requests.ts";
 import * as path from "node:path";
 import { BACKOFF_MS } from "../src/backoff.ts";
 import { type Action, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, conversationView, landed, personRow, plainJobRow, plainRunId, stripImageNotes } from "../src/engine.ts";
@@ -75,7 +75,7 @@ import { WindowExecutor, forgetDropped, producerAlive, showsTriggeredTurnLine } 
 import { LeaseStore, procStart } from "../src/lease.ts";
 import { stamp } from "../src/schedule.ts";
 
-const row = (id: string, over: Partial<SessionRequest> = {}): SessionRequest => ({ v: 2, id, session_id: "s", kind: "input", source: "rule:local:dynamic", mode: "none", wake: "append", payload: { text: `[Trigger ${id}] hello`, cwd: "/" }, created_at: "2026-01-01T00:00:00Z", created_by: { pid: 1, instance: "w", version: "0" }, attempts: 0, ...over });
+const row = (id: string, over: Partial<Row> = {}): Row => ({ v: 3, id, lane: "s", kind: "input", source: "rule:local:dynamic", mode: "none", wake: "append", payload: { text: `[Trigger ${id}] hello`, cwd: "/" }, created_at: "2026-01-01T00:00:00Z", created_by: { pid: 1, instance: "w", version: "0" }, attempts: 0, ...over });
 
 const T0 = Date.parse("2026-06-01T12:00:00Z");
 
@@ -91,7 +91,7 @@ function world(dir = tmp()) {
  * An executor whose `append` writes the id into the conversation at once, as an idle chat or the
  * background process does, unless `deliver` says otherwise.
  */
-function fakeExecutor(opts: { holds?: () => boolean; idle?: boolean; deliver?: (row: SessionRequest, written: Set<string>) => void } = {}) {
+function fakeExecutor(opts: { holds?: () => boolean; idle?: boolean; deliver?: (row: Row, written: Set<string>) => void } = {}) {
 	const written = new Set<string>();
 	const given: string[] = [];
 	const inFlight = new Set<string>();
@@ -491,7 +491,7 @@ test("promotionView reads the leases: a live terminal that delivers is an open w
  * window is (pid 1 unless said), `holds` whether it has the lease, `alive` whether a row's producer is.
  */
 /** `rows` is the request file as the extension wires it: what this window produced is remembered only while the row is there. */
-function fakeWindowPi(idle: boolean, opts: { holds?: boolean; self?: Producer; alive?: (row: SessionRequest) => boolean; mode?: string; rows?: () => SessionRequest[]; images?: (row: SessionRequest) => ImageContent[] } = {}) {
+function fakeWindowPi(idle: boolean, opts: { holds?: boolean; self?: Producer; alive?: (row: Row) => boolean; mode?: string; rows?: () => Row[]; images?: (row: Row) => ImageContent[] } = {}) {
 	const sent: Array<{ text: string; options: unknown }> = [];
 	const appended: Array<{ content: unknown; options: unknown }> = [];
 	const notices: string[] = [];
@@ -556,7 +556,7 @@ test("pushRunRow: the trace id is the row id, the prompt keeps its one prefix, p
 	assert.equal(r.collapse_key, "push:gh:custom:issue-7");
 	assert.equal(r.payload?.text, "[Trigger t-1] gh fired: issue opened", "no second prefix");
 	assert.equal(r.payload?.cwd, "/proj");
-	assert.equal(r.session_id, "s");
+	assert.equal(r.lane, "s");
 	assert.equal(modeOf(r.kind, r.source, r.wake), r.mode);
 	assert.equal(showsTriggeredTurnLine(r.source), true, "a push announces its turn as it did");
 });
@@ -619,7 +619,7 @@ test("enqueue: a second row with a queued collapse key is not written; one with 
 
 /** `handOver`'s dependencies over a store and a window: the real executor, a drain through it. */
 function handOverDeps(store: RequestStore, w: ReturnType<typeof fakeWindowPi>, sinks: EngineSinks, at = T0) {
-	return { store, delivered: (id: string) => w.executor.entries("s").has(id), produced: (row: SessionRequest) => w.executor.produced(row), drain: () => drain("s", store, w.executor, at, sinks) };
+	return { store, delivered: (id: string) => w.executor.entries("s").has(id), produced: (row: Row) => w.executor.produced(row), drain: () => drain("s", store, w.executor, at, sinks) };
 }
 
 test("a claimed finding's hand-off is queued before the finding is marked claimed, under the inbox lock", async () => {
@@ -900,7 +900,7 @@ test("dropContinuations: this instance's goal rows and a dead producer's go, a l
 	const dead = goalRow("a", { condition: "e", iterations: 1, updatedAt: "t1" }, by(33), T0);
 	const claim = inboxClaimRow("x", "inb-1", by(11), T0);
 	for (const r of [claim, mine1, live, dead, mine2]) store.append(r);
-	const alive = (row: SessionRequest) => row.created_by.pid !== 33;
+	const alive = (row: Row) => row.created_by.pid !== 33;
 	assert.deepEqual(dropContinuations(store, "s", self, alive), [mine1.id, dead.id, mine2.id]);
 	assert.deepEqual(store.list("s").map((r) => r.id), [claim.id, live.id], "the claim is not a continuation; the live window's goal is its own");
 	assert.deepEqual(dropContinuations(store, "s", self, alive), [], "nothing left to drop");
@@ -970,7 +970,7 @@ test("a page's claim is born left: the holder runs it capped, attended once rung
 
 test("producerAlive: a dead pid, a reused pid, an unknown start time, a producer that left", () => {
 	const probe = { alive: (pid: number) => pid !== 404, startTime: (pid: number) => (pid === 7 ? "B" : undefined), bootedAt: () => T0 };
-	const r = (created_by: SessionRequest["created_by"], created_at = new Date(T0 + 1_000).toISOString()) => ({ created_by, created_at });
+	const r = (created_by: Row["created_by"], created_at = new Date(T0 + 1_000).toISOString()) => ({ created_by, created_at });
 	assert.equal(producerAlive(r({ pid: 404, instance: "w", version: "0" }), probe), false, "dead pid");
 	assert.equal(producerAlive(r({ pid: 7, instance: "w", version: "0", procStart: "A" }), probe), false, "reused pid: the process at 7 started at B");
 	assert.equal(producerAlive(r({ pid: 7, instance: "w", version: "0", procStart: "B" }), probe), true);
@@ -1081,7 +1081,7 @@ async function doorbellWorld(dropProbability: number, seed: number) {
 		for (let i = 0; i < n; i++) {
 			const sid = sessions[Math.floor(rand() * sessions.length)];
 			const id = `${name}-${i}`;
-			store.append(row(id, { session_id: sid }));
+			store.append(row(id, { lane: sid }));
 			enqueuedAt.set(id, Date.now());
 			sessionOf.set(id, sid);
 			bell(sid);

@@ -92,6 +92,7 @@ src/register-pi.mjs         node --import hook resolving pi's packages outside p
 src/pi-resolver.mjs         where that hook looks for them
 
 storage
+src/lane.ts                 a lane's id: the queue a request row is in; a conversation's lane id is its session id
 src/store.ts                jobs.json, state/, runs.jsonl, sessions/
 src/inbox.ts                inbox.jsonl
 src/archive.ts              .pisession export/import

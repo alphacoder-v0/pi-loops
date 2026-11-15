@@ -13,7 +13,7 @@ import { JobStore, type LoopJob } from "../src/store.ts";
 import { LeaseBinding, LeaseStore } from "../src/lease.ts";
 import { failedRun, type RunnerResult } from "../src/runner.ts";
 import { stamp } from "../src/schedule.ts";
-import { RequestStore, type SessionRequest } from "../src/requests.ts";
+import { RequestStore, type Row } from "../src/requests.ts";
 import { BACKOFF_MS } from "../src/backoff.ts";
 import { type EngineSinks, PERSON_SEND_GRACE_MS, drain, plainJobRow, plainRunId, typedByPerson } from "../src/engine.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
@@ -1787,7 +1787,7 @@ test("a plain job's slot lost to another process leaves no row behind", async ()
 
 test("the scheduler reports each plain-job row it writes, so the window records /cron run's as the person's own", async () => {
 	const dir = tmp("pi-loops-sched-");
-	const written: SessionRequest[] = [];
+	const written: Row[] = [];
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }), hooks: { onRowWritten: (row) => void written.push(row) } });
 	try {
 		const job = await sched.store.add(makeJob({ stateful: false, sessionId: "mine", schedule: { kind: "every", ms: 60_000 }, prompt: "deploy check" }));

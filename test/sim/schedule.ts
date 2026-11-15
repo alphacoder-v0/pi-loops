@@ -6,7 +6,7 @@
  * is what lets a failing schedule be cut down to the steps that matter.
  */
 import { type DrainResult, cancelRow, conversationHas, enqueue, goalRow, handOver, inboxClaimRow, personRow, plainJobRow, plainRunId, requestFingerprint, ringProduced, ruleResultRow, stopRow } from "../../src/engine.ts";
-import type { SessionRequest } from "../../src/requests.ts";
+import type { Row } from "../../src/requests.ts";
 import { stamp } from "../../src/schedule.ts";
 import { type Violation, createChecker, type Coverage } from "./invariants.ts";
 import { pick, prng, weighted } from "./prng.ts";
@@ -50,7 +50,7 @@ export function plan(seed: number, steps: number): Plan {
 	return { seed, seconds: kinds.map((second) => ({ ...second, modes: modes() })), steps: drawn, closing };
 }
 
-const signedBy = (proc: Process | undefined): SessionRequest["created_by"] => (proc ? { pid: proc.pid, instance: proc.name, version: "sim" } : CLI);
+const signedBy = (proc: Process | undefined): Row["created_by"] => (proc ? { pid: proc.pid, instance: proc.name, version: "sim" } : CLI);
 const seconds = (ms: number): string => (ms < 1_000 ? `${ms} ms` : ms < 60_000 ? `${ms / 1_000} s` : `${ms / 60_000} min`);
 const names = (world: World, ids: readonly string[]): string => ids.map((id) => label(world, id)).join(", ");
 
@@ -61,7 +61,7 @@ function outcome(world: World, out: DrainResult | undefined): string {
 }
 
 /** A row that arrives having failed already, in a life before the schedule: its attempts are counted as that history. */
-function arrives(row: SessionRequest, c: number): SessionRequest {
+function arrives(row: Row, c: number): Row {
 	const before = (c >>> 8) % 6 === 0 ? 1 + ((c >>> 12) % 2) : 0;
 	return before ? { ...row, attempts: before } : row;
 }
@@ -74,7 +74,7 @@ function produce(world: World, conversation: Conversation, b: number, c: number)
 	const windows = processes.filter((p) => p.window);
 	const queued = () => world.store.list(conversation.id).filter((row) => row.kind === "input");
 	const to = conversation.id;
-	const history = (row: SessionRequest): string => {
+	const history = (row: Row): string => {
 		if (!row.attempts) return "";
 		world.threw.set(row.id, (world.threw.get(row.id) ?? 0) + row.attempts);
 		return `, which failed ${row.attempts} times before`;
@@ -138,7 +138,7 @@ function produce(world: World, conversation: Conversation, b: number, c: number)
 			// A stop is for something that runs or is about to: half of those that name a row name one pi already holds.
 			const inputs = queued();
 			const handed = inputs.filter((row) => everyProcess(world).some((p) => held(p).some((copy) => copy.rowId === row.id)));
-			const target: NonNullable<SessionRequest["target"]> = c % 3 === 0 || !inputs.length ? { current: true, started_before: stamp(at) } : { id: pick(handed.length && (c >>> 2) % 2 === 0 ? handed : inputs, c >>> 3).id };
+			const target: NonNullable<Row["target"]> = c % 3 === 0 || !inputs.length ? { current: true, started_before: stamp(at) } : { id: pick(handed.length && (c >>> 2) % 2 === 0 ? handed : inputs, c >>> 3).id };
 			if ("id" in target) world.targeted.add(target.id);
 			world.store.append({ ...stopRow(to, target, "cli", CLI, at), id });
 			return `stop#${n} is queued for ${to}, naming ${"id" in target ? label(world, target.id) : "the turn running now"}`;
@@ -181,7 +181,7 @@ async function inbox(world: World, b: number, c: number): Promise<string> {
 		const row = { ...inboxClaimRow(`address finding ${index + 1} (claim ${n}.${i}).`, entry.id, { sessionId: proc.conversation.id, cwd: CWD, createdBy: signedBy(proc) }, world.clock), id: `claim-${n}.${i}` };
 		world.labels.set(row.id, `claim#${n}.${i}`);
 		says.push(`a claim in ${who(proc)}`);
-		const deps = { store: world.store, delivered: (id: string) => window.delivered(id), produced: (queued: SessionRequest) => window.produced(queued), drain: () => drainAs(world, proc, false) };
+		const deps = { store: world.store, delivered: (id: string) => window.delivered(id), produced: (queued: Row) => window.produced(queued), drain: () => drainAs(world, proc, false) };
 		// A claim that won has drained, so it has a result; one that lost queued nothing and has none.
 		return async () => (await handOver(deps, row, { inbox: world.inbox, entryId: entry.id })).result !== undefined;
 	});

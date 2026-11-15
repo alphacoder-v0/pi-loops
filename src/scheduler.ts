@@ -18,7 +18,7 @@ import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, type RunReq
 import { openWhere, ownerSession, runsHere, whereRuns, type OwnerView } from "./job-owner.ts";
 import { shortSessionId } from "./session-head.ts";
 import { DEAD_AFTER_ATTEMPTS, plainCollapseKey, plainJobRow, plainRunId, sessionFileHas } from "./engine.ts";
-import { RequestStore, type SessionRequest } from "./requests.ts";
+import { RequestStore, type Row } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 
 export const DEFAULT_TICK_MS = 30_000;
@@ -81,7 +81,7 @@ export interface SchedulerHooks {
 	/** A one-shot removed itself: the control plane records it the way a person's removal is recorded. */
 	onJobRetired?: (job: LoopJob, reason: string) => void;
 	/** A plain job's row this process wrote into its conversation's queue (the clock's, or `/cron run`'s): the window records it as its own, and says so when it waits. */
-	onRowWritten?: (row: SessionRequest, job: LoopJob) => void;
+	onRowWritten?: (row: Row, job: LoopJob) => void;
 	onInboxChanged?: () => void;
 	/** Every tick, before dispatch. Other subsystems (leases, dynamic triggers) piggyback on it. */
 	onTick?: (now: number) => void | Promise<void>;
@@ -675,12 +675,12 @@ export class LoopScheduler {
 	}
 
 	/** Who wrote a row: this process, as `created_by` names it. */
-	private createdBy(): SessionRequest["created_by"] {
+	private createdBy(): Row["created_by"] {
 		return { pid: process.pid, instance: this.instance, version: PI_LOOPS_VERSION };
 	}
 
 	/** The job's queued `turn` row, when one is: the prompt waiting to run in its conversation. */
-	private queuedTurnRow(job: LoopJob): SessionRequest | undefined {
+	private queuedTurnRow(job: LoopJob): Row | undefined {
 		if (!job.sessionId) return undefined;
 		const key = plainCollapseKey(job.id);
 		return this.requests.list(job.sessionId).find((row) => row.kind === "input" && row.wake === "turn" && row.collapse_key === key);
@@ -690,7 +690,7 @@ export class LoopScheduler {
 	 * The job's queued row the background may run as a held turn: not an attended one (`/cron run`,
 	 * typed in the conversation), which waits for a window and is no reason for the clock's slots to.
 	 */
-	private heldTurnRow(job: LoopJob): SessionRequest | undefined {
+	private heldTurnRow(job: LoopJob): Row | undefined {
 		const row = this.queuedTurnRow(job);
 		return row?.mode === "attended" ? undefined : row;
 	}

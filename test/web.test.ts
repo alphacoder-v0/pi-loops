@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { plainJobRow, requestFingerprint, ruleResultRow } from "../src/engine.ts";
-import { RequestStore, type SessionRequest } from "../src/requests.ts";
+import { RequestStore, type Row } from "../src/requests.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { ChildPool, type PageChild } from "../src/page-children.ts";
@@ -877,7 +877,7 @@ function chattyPi(dir: string, lines: unknown[]): string {
 }
 
 /** The request rows the front end wrote for the fake pi's session `s1`, in file order. */
-function rowsOf(dir: string): SessionRequest[] {
+function rowsOf(dir: string): Row[] {
 	return new RequestStore(path.join(dir, "loops")).list("s1");
 }
 const lastRow = (dir: string) => rowsOf(dir).at(-1);
@@ -1634,7 +1634,7 @@ test("clear cancels every row the badge counts, pi-loops' included, and empties 
 	const web = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), log, true, {}, ["pi-loops"]), { named: "s1" });
 	try {
 		const store = new RequestStore(loops);
-		const by = { pid: process.pid, instance: "w", procStart: undefined, version: "test" } as SessionRequest["created_by"];
+		const by = { pid: process.pid, instance: "w", procStart: undefined, version: "test" } as Row["created_by"];
 		store.append(plainJobRow({ id: "cron-a", sessionId: "s1", prompt: "check", cwd: dir }, "run-a", "cron:cron-a", "", by));
 		store.append(ruleResultRow("s1", "CI failed", { traceId: "trace-r", sourceLabel: "ci" }, by));
 		const mineRow = await web.post("prompt", { text: "mine" });

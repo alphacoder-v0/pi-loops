@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dangerousCommandReason } from "../src/danger.ts";
 import { decideDrain, goalRow, inboxClaimRow, modeOf, personRow, plainJobRow, requestFingerprint, ringProduced } from "../src/engine.ts";
-import type { SessionRequest } from "../src/requests.ts";
+import type { Row } from "../src/requests.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
 import { stamp } from "../src/schedule.ts";
 import { automationTools } from "../src/tools.ts";
@@ -27,7 +27,7 @@ const MUTATING_TOOLS = ["cron_create", "cron_remove", "set_cron_job_state", "new
 function window(cfg: Partial<GuardConfig> = {}, opts: { hasUI?: boolean; answer?: (options: string[]) => string | undefined; confirmTimeoutMs?: number } = {}) {
 	const asked: Array<{ title: string; options: string[]; timeout: number | undefined }> = [];
 	const logged: string[] = [];
-	const queued = new Map<string, SessionRequest>();
+	const queued = new Map<string, Row>();
 	const ctx = {
 		hasUI: opts.hasUI ?? true,
 		aborts: 0,
@@ -58,7 +58,7 @@ function window(cfg: Partial<GuardConfig> = {}, opts: { hasUI?: boolean; answer?
 		return row;
 	};
 	/** A row this window wrote itself, as `engine.handOver` reports it, then handed over and started. */
-	const ownRowStarted = (row: SessionRequest) => {
+	const ownRowStarted = (row: Row) => {
 		executor.produced(row);
 		executor.agentStarted(T0);
 		executor.turn(row);
@@ -472,7 +472,7 @@ test("a submission left over inside the person's own cycle does not uncap a row 
 const pageRow = (id: string, text: string) => personRow(id, text, undefined, { sessionId: "s", cwd: "/p", createdBy: { pid: 4242, instance: "page", version: "0" } }, T0);
 
 /** The page appended `row` and rang with `fingerprint`; its turn then starts in this window. */
-function pageSent(w: ReturnType<typeof window>, row: SessionRequest, fingerprint?: string) {
+function pageSent(w: ReturnType<typeof window>, row: Row, fingerprint?: string) {
 	w.queued.set(row.id, row);
 	const believed = fingerprint === undefined ? undefined : ringProduced([...w.queued.values()], row.id, fingerprint, (r) => w.executor.produced(r));
 	w.executor.agentStarted(T0);

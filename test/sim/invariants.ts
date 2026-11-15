@@ -6,7 +6,7 @@
  * a dead letter; which exit a row may take), so a change to the engine's own constants is a change
  * these checks see.
  */
-import type { SessionRequest } from "../../src/requests.ts";
+import type { Row } from "../../src/requests.ts";
 import { type Conversation, type Copy, type Removal, type World, everyProcess, failedHandOvers, held, label, who } from "./world.ts";
 
 /** Failures of one row before it is a dead letter (docs/design.md), stated apart from the engine's constant on purpose. */
@@ -46,7 +46,7 @@ export interface Coverage {
 	provedByAnother: number;
 }
 
-type Queues = ReadonlyMap<string, SessionRequest[]>;
+type Queues = ReadonlyMap<string, Row[]>;
 /** `end`: the schedule is over, the restart that ends it included. */
 type Invariant = (world: World, memory: Memory, queues: Queues, coverage: Coverage, end: boolean) => string[];
 
@@ -73,7 +73,7 @@ function namedExit(world: World, memory: Memory, queues: Queues, coverage: Cover
 	const removed = new Set<string>();
 	for (const gone of world.facts.removals) {
 		const { row } = gone;
-		const key = keyOf(row.session_id, row.id);
+		const key = keyOf(row.lane, row.id);
 		const name = label(world, row.id);
 		removed.add(key);
 		const spent = memory.spent.get(key) ?? { findings: 0, audited: 0 };
@@ -84,18 +84,18 @@ function namedExit(world: World, memory: Memory, queues: Queues, coverage: Cover
 		else if (gone.ranUnproved) gone.exit = "ran";
 		memory.spent.set(key, { findings: gone.findings, audited: gone.audited.length });
 		if (gone.exit === undefined) {
-			out.push(`${name} left the queue of ${row.session_id} with nothing to account for it: pi wrote no message for it, no finding carries its id, no audit line names it`);
+			out.push(`${name} left the queue of ${row.lane} with nothing to account for it: pi wrote no message for it, no finding carries its id, no audit line names it`);
 			continue;
 		}
 		memory.exited.add(key);
-		for (const copy of world.copies) if (copy.sessionId === row.session_id && copy.rowId === row.id) memory.released.add(copy);
+		for (const copy of world.copies) if (copy.sessionId === row.lane && copy.rowId === row.id) memory.released.add(copy);
 		coverage.exits[gone.exit] = (coverage.exits[gone.exit] ?? 0) + 1;
 		if (gone.delivered === "another row's message") {
 			coverage.provedByAnother++;
-			memory.owedItsOwn.set(key, { sessionId: row.session_id, rowId: row.id });
+			memory.owedItsOwn.set(key, { sessionId: row.lane, rowId: row.id });
 		}
 		const why = notItsExit(world, gone, gone.exit);
-		if (why) out.push(`${name} left the queue of ${row.session_id} as ${gone.exit}, but ${why}`);
+		if (why) out.push(`${name} left the queue of ${row.lane} as ${gone.exit}, but ${why}`);
 	}
 	const now = new Map<string, string>();
 	for (const [sessionId, rows] of queues) for (const row of rows) now.set(keyOf(sessionId, row.id), label(world, row.id));
@@ -126,7 +126,7 @@ function notItsExit(world: World, gone: Removal, exit: string): string | undefin
 			return world.tampered.has(row.id) ? undefined : "its mode is the one its source gets";
 		case "stale":
 			if (!input) return undefined;
-			if (row.source === "goal" && !conversationOf(world, row.session_id).goalActive) return undefined;
+			if (row.source === "goal" && !conversationOf(world, row.lane).goalActive) return undefined;
 			if (row.source === "person" && gone.buried) return undefined;
 			return "it is an input its conversation is still owed";
 		default:
@@ -159,7 +159,7 @@ function answeredThoughAnotherSaidTheSame(world: World, memory: Memory, _queues:
  * pi had not written.
  */
 function doneOnlyByProof(world: World): string[] {
-	return world.facts.removals.filter((gone) => gone.exit === "ran").map((gone) => `${label(world, gone.row.id)} left the queue of ${gone.row.session_id} as done on the window's word that its turn ran, and pi had not written it`);
+	return world.facts.removals.filter((gone) => gone.exit === "ran").map((gone) => `${label(world, gone.row.id)} left the queue of ${gone.row.lane} as done on the window's word that its turn ran, and pi had not written it`);
 }
 
 /**

@@ -56,7 +56,7 @@ import {
 import { removeOpenFile, sweepOpenFiles, writeOpenFile } from "./open-file.ts";
 import { DEVICE_COOKIE, DEVICE_STORAGE_KEY, DeviceStore, KEY_KINDS, type KeyKind, UrlKeys } from "./page-devices.ts";
 import { realpathish, sameProject } from "./paths.ts";
-import { RequestStore, type SessionRequest } from "./requests.ts";
+import { RequestStore, type Row } from "./requests.ts";
 import { awayIn, markProjectSeen, type SinceYouLooked } from "./seen.ts";
 import { listRecipes, type Starter, starters } from "./recipe.ts";
 import { newTraceId, TriggerStore } from "./triggers.ts";
@@ -1773,10 +1773,10 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	}
 
 	/** Every queued `inbox:` row on this machine, by the finding it claims. */
-	function queuedClaims(): Map<string, { sessionId: string; row: SessionRequest }> {
-		const out = new Map<string, { sessionId: string; row: SessionRequest }>();
+	function queuedClaims(): Map<string, { sessionId: string; row: Row }> {
+		const out = new Map<string, { sessionId: string; row: Row }>();
 		for (const sessionId of requests.sessions()) {
-			let rows: SessionRequest[];
+			let rows: Row[];
 			try {
 				rows = requests.list(sessionId);
 			} catch {
@@ -1931,7 +1931,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const withoutPiLoops = new Set<string>();
 	/** The rows each page pi was rung for, so the sweep does not ring one twice. A restarted pi is a new child and is rung again. */
 	const rungFor = new WeakMap<PageChild, Set<string>>();
-	function ringOnce(child: PageChild, row: SessionRequest) {
+	function ringOnce(child: PageChild, row: Row) {
 		const rung = rungFor.get(child) ?? new Set<string>();
 		rungFor.set(child, rung);
 		if (rung.has(row.id)) return;
@@ -1944,7 +1944,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	 * conversation, leave them to a terminal that holds it (its watcher drains them), wait for
 	 * pi-loops' scheduled turn there, or start a page pi when nobody holds it. Says which.
 	 */
-	async function deliverTo(sessionId: string, rows: SessionRequest[]): Promise<ClaimDelivery> {
+	async function deliverTo(sessionId: string, rows: Row[]): Promise<ClaimDelivery> {
 		const lease = leaseOf(sessionId);
 		const h = lease?.holder && holderAlive(lease.holder) ? lease.holder : undefined;
 		const child = pool.get(sessionId);
@@ -2004,7 +2004,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const sessions = only === undefined ? requests.sessions() : [only];
 		let findings: Map<string, InboxEntry> | undefined;
 		for (const sessionId of sessions) {
-			let rows: SessionRequest[];
+			let rows: Row[];
 			try {
 				rows = requests.list(sessionId).filter(isPageClaim);
 			} catch {
@@ -2012,7 +2012,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			}
 			if (!rows.length) continue;
 			findings ??= new Map(inbox.list().map((e) => [e.id, e]));
-			const live: SessionRequest[] = [];
+			const live: Row[] = [];
 			for (const row of rows) {
 				const id = row.source.slice("inbox:".length);
 				const found = findings.get(id);

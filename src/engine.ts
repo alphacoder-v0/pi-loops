@@ -18,7 +18,7 @@ import type { Inbox } from "./inbox.ts";
 import { redact } from "./redact.ts";
 import { type LeaseHolder, type LeaseStore, type ProcessProbe, type SessionLease, holderAlive, holderDelivers, systemProbe } from "./lease.ts";
 import { withinProject } from "./paths.ts";
-import { type ImageContent, type RequestMode, type RequestStore, type SessionRequest, imageRef } from "./requests.ts";
+import { type ImageContent, type RequestMode, type RequestStore, type Row, imageRef } from "./requests.ts";
 import type { LockOptions } from "./lock.ts";
 import { backoffFor } from "./backoff.ts";
 import { stamp } from "./schedule.ts";
@@ -36,7 +36,7 @@ export const DEAD_LETTER_CHARS = 400;
  * `none` asks for no model call of its own (a chat busy with a turn is still woken to see it, as a
  * follow-up is: docs/design.md decision 9).
  */
-export function modeOf(kind: SessionRequest["kind"], source: SessionRequest["source"], wake?: SessionRequest["wake"]): RequestMode {
+export function modeOf(kind: Row["kind"], source: Row["source"], wake?: Row["wake"]): RequestMode {
 	if (kind !== "input") return "none";
 	if (source.startsWith("rule:")) return "none";
 	if (source.startsWith("push:")) return wake === "turn" ? "unattended" : "none";
@@ -45,9 +45,9 @@ export function modeOf(kind: SessionRequest["kind"], source: SessionRequest["sou
 }
 
 /** A rule's result as the row its creating conversation gets: an `append` with no model call, its trace id the proof of delivery. */
-export function ruleResultRow(sessionId: string, content: string, trigger: { traceId: string; sourceLabel: string; cwd?: string }, createdBy: SessionRequest["created_by"], now = Date.now()): SessionRequest {
+export function ruleResultRow(sessionId: string, content: string, trigger: { traceId: string; sourceLabel: string; cwd?: string }, createdBy: Row["created_by"], now = Date.now()): Row {
 	const source = `rule:${trigger.sourceLabel}` as const;
-	return { v: 2, id: trigger.traceId, session_id: sessionId, kind: "input", source, mode: modeOf("input", source, "append"), wake: "append", payload: { text: content, cwd: trigger.cwd ?? "" }, created_at: stamp(now), created_by: createdBy, attempts: 0 };
+	return { v: 3, id: trigger.traceId, lane: sessionId, kind: "input", source, mode: modeOf("input", source, "append"), wake: "append", payload: { text: content, cwd: trigger.cwd ?? "" }, created_at: stamp(now), created_by: createdBy, attempts: 0 };
 }
 
 /**
@@ -68,11 +68,11 @@ export const plainCollapseKey = (jobId: string): `cron:${string}` => `cron:${job
  * model, thinking) rides along, so the executor runs it as the job asked, not as the chat is set.
  * `source` is `cron:` for the clock and `cron-run:` for `/cron run` typed in the conversation.
  */
-export function plainJobRow(job: Pick<LoopJob, "id" | "sessionId" | "prompt" | "cwd" | "model" | "thinking" | "tools" | "builtinTools">, id: string, source: `cron:${string}` | `cron-run:${string}`, note: string, createdBy: SessionRequest["created_by"], now = Date.now()): SessionRequest {
+export function plainJobRow(job: Pick<LoopJob, "id" | "sessionId" | "prompt" | "cwd" | "model" | "thinking" | "tools" | "builtinTools">, id: string, source: `cron:${string}` | `cron-run:${string}`, note: string, createdBy: Row["created_by"], now = Date.now()): Row {
 	return {
-		v: 2,
+		v: 3,
 		id,
-		session_id: job.sessionId ?? "",
+		lane: job.sessionId ?? "",
 		kind: "input",
 		source,
 		mode: modeOf("input", source, "turn"),
@@ -89,7 +89,7 @@ export function plainJobRow(job: Pick<LoopJob, "id" | "sessionId" | "prompt" | "
 export interface RowAddress {
 	sessionId: string;
 	cwd: string;
-	createdBy: SessionRequest["created_by"];
+	createdBy: Row["created_by"];
 }
 
 /**
@@ -98,16 +98,16 @@ export interface RowAddress {
  * claim, a recipe hand-off, `/new-trigger`) and a goal's continuation go as their own words, as in
  * 0.22.8, and are proved as a person row is: by their text, after the stamp they were handed over at.
  */
-export function carriesPrefix(source: SessionRequest["source"]): boolean {
+export function carriesPrefix(source: Row["source"]): boolean {
 	return source.startsWith("cron:") || source.startsWith("cron-run:") || source.startsWith("rule:") || source.startsWith("push:");
 }
 
 /** A turn row of one of a window's sources; `text` carries the prefix when `carriesPrefix(source)`. */
-function turnRow(id: string, source: SessionRequest["source"], text: string, to: RowAddress, collapseKey: string | undefined, now: number): SessionRequest {
+function turnRow(id: string, source: Row["source"], text: string, to: RowAddress, collapseKey: string | undefined, now: number): Row {
 	return {
-		v: 2,
+		v: 3,
 		id,
-		session_id: to.sessionId,
+		lane: to.sessionId,
 		kind: "input",
 		source,
 		mode: modeOf("input", source, "turn"),
@@ -126,7 +126,7 @@ function turnRow(id: string, source: SessionRequest["source"], text: string, to:
  * the row id and no second prefix is added. Pushes of one event kind collapse on the trigger's own
  * idempotency key, without the `mcp:<server>:` the key repeats from the source.
  */
-export function pushRunRow(prompt: string, trigger: { traceId: string; idempotencyKey: string; source: { kind: "mcp"; serverName: string } | { kind: "local"; subkind: string } }, to: RowAddress, now = Date.now()): SessionRequest {
+export function pushRunRow(prompt: string, trigger: { traceId: string; idempotencyKey: string; source: { kind: "mcp"; serverName: string } | { kind: "local"; subkind: string } }, to: RowAddress, now = Date.now()): Row {
 	const server = trigger.source.kind === "mcp" ? trigger.source.serverName : trigger.source.subkind;
 	const ownPrefix = `mcp:${server}:`;
 	const key = trigger.idempotencyKey.startsWith(ownPrefix) ? trigger.idempotencyKey.slice(ownPrefix.length) : trigger.idempotencyKey;
@@ -144,12 +144,12 @@ export function goalRunId(goal: { condition: string; iterations: number; updated
 }
 
 /** A `/goal` continuation as the row its session runs as a turn: attended, the person's own goal (design O3), in the evaluator's words. */
-export function goalRow(prompt: string, goal: { condition: string; iterations: number; updatedAt: string }, to: RowAddress, now = Date.now()): SessionRequest {
+export function goalRow(prompt: string, goal: { condition: string; iterations: number; updatedAt: string }, to: RowAddress, now = Date.now()): Row {
 	return turnRow(goalRunId(goal), "goal", prompt, to, "goal", now);
 }
 
 /** `/inbox claim`: the finding as the turn that addresses it. A fresh id per claim; one queued hand-off per finding. */
-export function inboxClaimRow(prompt: string, entryId: string, to: RowAddress, now = Date.now()): SessionRequest {
+export function inboxClaimRow(prompt: string, entryId: string, to: RowAddress, now = Date.now()): Row {
 	return turnRow(newId("claim"), `inbox:${entryId}`, prompt, to, `inbox:${entryId}`, now);
 }
 
@@ -161,13 +161,13 @@ export function inboxClaimRow(prompt: string, entryId: string, to: RowAddress, n
  * views the conversation never runs it beside the holder. Its mode stays attended: a holder believes
  * that only once the page rings it for the row, and otherwise runs it capped as unattended.
  */
-export function pageClaimRow(prompt: string, entryId: string, to: RowAddress, now = Date.now()): SessionRequest {
+export function pageClaimRow(prompt: string, entryId: string, to: RowAddress, now = Date.now()): Row {
 	const row = inboxClaimRow(prompt, entryId, to, now);
 	return { ...row, created_by: { ...to.createdBy, left: stamp(now) } };
 }
 
 /** Whether `row` is a claim the page queued (`pageClaimRow`) and no holder has handed over yet. */
-export function isPageClaim(row: SessionRequest): boolean {
+export function isPageClaim(row: Row): boolean {
 	return row.kind === "input" && row.source.startsWith("inbox:") && row.created_by.instance === PAGE_INSTANCE && row.created_by.left !== undefined && row.handed_at === undefined;
 }
 
@@ -181,12 +181,12 @@ export type RecipeHandOff = "tracker" | "merge";
  * A recipe's hand-off to the chat: one queued at a time per recipe and per kind, so a merge conflict
  * is not swallowed by the tracker description still waiting, which says nothing about it.
  */
-export function recipeRow(prompt: string, recipe: string, kind: RecipeHandOff, to: RowAddress, now = Date.now()): SessionRequest {
+export function recipeRow(prompt: string, recipe: string, kind: RecipeHandOff, to: RowAddress, now = Date.now()): Row {
 	return turnRow(newId("recipe"), `recipe:${recipe}`, prompt, to, `recipe:${recipe}:${kind}`, now);
 }
 
 /** `/new-trigger <request>`: the turn that turns the request into a rule. Every one is its own. */
-export function newTriggerRow(prompt: string, to: RowAddress, now = Date.now()): SessionRequest {
+export function newTriggerRow(prompt: string, to: RowAddress, now = Date.now()): Row {
 	return turnRow(newId("nt"), "new-trigger", prompt, to, undefined, now);
 }
 
@@ -197,11 +197,11 @@ export function newTriggerRow(prompt: string, to: RowAddress, now = Date.now()):
  * is sent only while that process lives (`decideDrain`), and offered by the next page otherwise.
  * The row names its images by digest; the bytes go beside the queue (`RequestStore.append`).
  */
-export function personRow(id: string, text: string, images: ImageContent[] | undefined, to: RowAddress, now = Date.now()): SessionRequest {
+export function personRow(id: string, text: string, images: ImageContent[] | undefined, to: RowAddress, now = Date.now()): Row {
 	return {
-		v: 2,
+		v: 3,
 		id,
-		session_id: to.sessionId,
+		lane: to.sessionId,
 		kind: "input",
 		source: "person",
 		mode: modeOf("input", "person", "turn"),
@@ -221,7 +221,7 @@ export function personRow(id: string, text: string, images: ImageContent[] | und
  * channel no model tool can write to, so the window believes the row's attended mode only when the
  * row in the file still has this fingerprint (`ringProduced`).
  */
-export function requestFingerprint(row: SessionRequest): string {
+export function requestFingerprint(row: Row): string {
 	const images = row.payload?.images?.map((image) => [image.mimeType, image.sha256]) ?? null;
 	return createHash("sha256").update(JSON.stringify([row.kind, row.source, row.wake ?? null, row.payload?.text ?? "", images, row.payload?.tools ?? null, row.payload?.builtin_tools ?? null])).digest("hex").slice(0, 32);
 }
@@ -231,7 +231,7 @@ export function requestFingerprint(row: SessionRequest): string {
  * window (`produced`) only when the row now in the file has exactly that fingerprint. Returns whether
  * it was; a ring for a row that is gone, or that says something else now, records nothing.
  */
-export function ringProduced(rows: readonly SessionRequest[], id: string, fingerprint: string, produced: (row: SessionRequest) => void): boolean {
+export function ringProduced(rows: readonly Row[], id: string, fingerprint: string, produced: (row: Row) => void): boolean {
 	const row = rows.find((r) => r.id === id);
 	if (!row || requestFingerprint(row) !== fingerprint) return false;
 	produced(row);
@@ -245,13 +245,13 @@ export function ringProduced(rows: readonly SessionRequest[], id: string, finger
  * turn; `{current, started_before}` names the turn running when the stop was asked for, so a late one
  * never stops the next turn.
  */
-export function stopRow(sessionId: string, target: NonNullable<SessionRequest["target"]>, source: SessionRequest["source"], createdBy: SessionRequest["created_by"], now = Date.now()): SessionRequest {
-	return { v: 2, id: newId("stop"), session_id: sessionId, kind: "stop", source, mode: modeOf("stop", source), target, created_at: stamp(now), created_by: createdBy, attempts: 0 };
+export function stopRow(sessionId: string, target: NonNullable<Row["target"]>, source: Row["source"], createdBy: Row["created_by"], now = Date.now()): Row {
+	return { v: 3, id: newId("stop"), lane: sessionId, kind: "stop", source, mode: modeOf("stop", source), target, created_at: stamp(now), created_by: createdBy, attempts: 0 };
 }
 
 /** Take a queued row out before it runs. One pi already holds is not cancelled: a stop aborts it as it starts. */
-export function cancelRow(sessionId: string, target: { id: string }, source: SessionRequest["source"], createdBy: SessionRequest["created_by"], now = Date.now()): SessionRequest {
-	return { v: 2, id: newId("cancel"), session_id: sessionId, kind: "cancel", source, mode: modeOf("cancel", source), target, created_at: stamp(now), created_by: createdBy, attempts: 0 };
+export function cancelRow(sessionId: string, target: { id: string }, source: Row["source"], createdBy: Row["created_by"], now = Date.now()): Row {
+	return { v: 3, id: newId("cancel"), lane: sessionId, kind: "cancel", source, mode: modeOf("cancel", source), target, created_at: stamp(now), created_by: createdBy, attempts: 0 };
 }
 
 export type HeldTurnMatch = { kind: "turn"; sessionId: string; runId: string } | { kind: "ambiguous"; matches: string[] };
@@ -278,7 +278,7 @@ export function heldTurnFor(leases: readonly SessionLease[], ref: string, probe?
 }
 
 /** The sources a person types into the window itself: `/inbox claim`, a recipe command, `/new-trigger`. */
-function typedInWindow(source: SessionRequest["source"]): boolean {
+function typedInWindow(source: Row["source"]): boolean {
 	return source.startsWith("inbox:") || source.startsWith("recipe:") || source === "new-trigger";
 }
 
@@ -287,7 +287,7 @@ function typedInWindow(source: SessionRequest["source"]): boolean {
  * the turn rows, these take the lane first, as the person's own message would. `/cron run` is typed
  * too, in the job's own words with the prefix the clock's prompt has.
  */
-export function typedByPerson(source: SessionRequest["source"]): boolean {
+export function typedByPerson(source: Row["source"]): boolean {
 	return source === "person" || source.startsWith("cron-run:") || typedInWindow(source);
 }
 
@@ -299,7 +299,7 @@ export function typedByPerson(source: SessionRequest["source"]): boolean {
  * attended row). A `person` row is not local: its producer is the page's web.mjs, which runs nothing;
  * the holder runs it (design §5, O2).
  */
-export function isLocal(row: SessionRequest): boolean {
+export function isLocal(row: Row): boolean {
 	return row.kind === "input" && (typedInWindow(row.source) || row.source === "goal");
 }
 
@@ -320,7 +320,7 @@ export function sameProducer(by: Producer, self: Producer): boolean {
  * that quit mid-goal), which would otherwise be the new goal's first turn and, through the shared
  * collapse key, swallow its own continuations. A live other window's rows are its goal's, not ours.
  */
-export function dropContinuations(store: RequestStore, sessionId: string, self: Producer, alive: (row: SessionRequest) => boolean): string[] {
+export function dropContinuations(store: RequestStore, sessionId: string, self: Producer, alive: (row: Row) => boolean): string[] {
 	const stale = store.list(sessionId).filter((row) => row.kind === "input" && row.source === "goal" && (sameProducer(row.created_by, self) || !alive(row)));
 	if (stale.length) store.remove(sessionId, stale.map((row) => row.id));
 	return stale.map((row) => row.id);
@@ -349,7 +349,7 @@ export function releaseLocalRows(store: RequestStore, sessionId: string, self: P
  * conversation is done, not queued: the goal's next continuation is written while the last one is
  * still in the file, waiting for the drain that removes it. Returns whether it was written.
  */
-export function enqueue(store: RequestStore, row: SessionRequest, delivered: (id: string) => boolean = () => false, lock?: LockOptions): boolean {
+export function enqueue(store: RequestStore, row: Row, delivered: (id: string) => boolean = () => false, lock?: LockOptions): boolean {
 	return store.appendIfAbsent(row, { collapse: true, done: (queued) => delivered(queued.id) }, lock);
 }
 
@@ -374,7 +374,7 @@ export const queuedTriggeredTurn = (runId: string): string => `queued triggered 
  * push keeps the line it had; a goal continuation says nothing more than its own notice did. `name`
  * is the plain job's, when the caller has it (the row names the job by id).
  */
-export function waitingLine(source: SessionRequest["source"], id: string, name?: string): string | undefined {
+export function waitingLine(source: Row["source"], id: string, name?: string): string | undefined {
 	if (source.startsWith("push:")) return queuedTriggeredTurn(id);
 	const job = jobOf(source);
 	if (job !== undefined) return `queued: cron ${name ?? job} runs after the current turn`;
@@ -388,7 +388,7 @@ export function waitingLine(source: SessionRequest["source"], id: string, name?:
 export interface HandOverDeps {
 	store: RequestStore;
 	delivered(id: string): boolean;
-	produced(row: SessionRequest): void;
+	produced(row: Row): void;
 	drain(): Promise<DrainResult | undefined>;
 }
 
@@ -408,13 +408,13 @@ export interface HandOverOutcome {
  * a crash between the two leaves the finding `new` with its hand-off queued, where the reverse order
  * left it claimed with nobody told.
  */
-export async function handOver(deps: HandOverDeps, row: SessionRequest, claim?: { inbox: Pick<Inbox, "decide">; entryId: string }): Promise<HandOverOutcome> {
+export async function handOver(deps: HandOverDeps, row: Row, claim?: { inbox: Pick<Inbox, "decide">; entryId: string }): Promise<HandOverOutcome> {
 	let written = false;
 	if (claim) {
 		// Queued under the inbox lock, after the finding is found still new (`Inbox.decide`): a claim
 		// decided elsewhere between the list and here (another window, the page, `pi-loops inbox`)
 		// queues nothing, so no holder can run a hand-off for a claim that lost.
-		const decided = await claim.inbox.decide(claim.entryId, "claimed", { by: row.session_id, before: () => void (written = enqueue(deps.store, row, deps.delivered, CLAIM_QUEUE_LOCK)) });
+		const decided = await claim.inbox.decide(claim.entryId, "claimed", { by: row.lane, before: () => void (written = enqueue(deps.store, row, deps.delivered, CLAIM_QUEUE_LOCK)) });
 		if (!("ok" in decided)) {
 			const ref = claim.entryId.slice(0, 12);
 			return { written: false, result: undefined, line: "missing" in decided ? `inbox: ${ref} is gone; nothing was sent` : `inbox: ${ref} was already ${decided.already}; nothing was sent` };
@@ -487,12 +487,12 @@ export interface QuietMark {
 	until: number;
 }
 
-export function quietMark(files: readonly FileMark[], rows: readonly SessionRequest[], now: number): QuietMark {
+export function quietMark(files: readonly FileMark[], rows: readonly Row[], now: number): QuietMark {
 	const ends = rows.map((row) => (row.not_before === undefined ? NaN : Date.parse(row.not_before))).filter((at) => Number.isFinite(at) && at > now);
 	return { key: JSON.stringify([files, rows]), until: ends.length ? Math.min(...ends) : Infinity };
 }
 
-export function stillQuiet(mark: QuietMark | undefined, files: readonly FileMark[], rows: readonly SessionRequest[], now: number): boolean {
+export function stillQuiet(mark: QuietMark | undefined, files: readonly FileMark[], rows: readonly Row[], now: number): boolean {
 	return mark !== undefined && now < mark.until && mark.key === JSON.stringify([files, rows]);
 }
 
@@ -569,7 +569,7 @@ export interface ConversationView {
  * row's, is older than the stamp and proves nothing; a row never handed over has no stamp and is
  * never done.
  */
-export function landed(row: SessionRequest, conversation: ConversationView): boolean {
+export function landed(row: Row, conversation: ConversationView): boolean {
 	if (carriesPrefix(row.source)) return conversation.has(row.id);
 	return row.handed_at !== undefined && conversation.personEntries(row.payload?.text ?? "", row.handed_at) > 0;
 }
@@ -673,7 +673,7 @@ export interface ExecutorView {
 	 * engine recomputes the mode itself): the background process takes nothing while a held turn has
 	 * the conversation's file, and no turn row until held turns ride rows.
 	 */
-	admits(row: SessionRequest): boolean;
+	admits(row: Row): boolean;
 	/** window: `ctx.isIdle()`; the background process writes into a conversation nobody has open. */
 	idle: boolean;
 	running?: { requestId?: string; startedAt: string };
@@ -702,12 +702,12 @@ export interface ExecutorView {
 	 * still says what the ring said: its attended mode is believed. A fresh person row nobody rang for
 	 * yet waits `PERSON_RING_WAIT_MS`, so the bell wins the race with the file watcher.
 	 */
-	believed?(row: SessionRequest): boolean;
+	believed?(row: Row): boolean;
 	connected(server: string): boolean;
 	/** Whether the process that wrote the row is still there: a local row waits for it, a person row is sent only for it. */
-	producerAlive(row: SessionRequest): boolean;
+	producerAlive(row: Row): boolean;
 	/** This executor is the row's producer, bound to its session: the one that runs a local row while it lives, and the page's pi for a person row the page rang it for. */
-	mine(row: SessionRequest): boolean;
+	mine(row: Row): boolean;
 	/**
 	 * Whether the conversation's live holder, another process, delivers the person rows addressed to
 	 * it (src/lease.ts holderDelivers); undefined when nobody else holds it. `false` makes this
@@ -719,21 +719,21 @@ export interface ExecutorView {
 }
 
 export type Action =
-	| { do: "append"; row: SessionRequest; wakeAgent: boolean }
-	| { do: "turn"; row: SessionRequest }
-	| { do: "abort"; stop: SessionRequest }
-	| { do: "abortWhenStarted"; stop: SessionRequest; target: string }
-	| { do: "remove"; row: SessionRequest; why: "done" | "cancelled" | "stale" | "job-removed" | "refused" }
-	| { do: "dead"; row: SessionRequest; why: string }
+	| { do: "append"; row: Row; wakeAgent: boolean }
+	| { do: "turn"; row: Row }
+	| { do: "abort"; stop: Row }
+	| { do: "abortWhenStarted"; stop: Row; target: string }
+	| { do: "remove"; row: Row; why: "done" | "cancelled" | "stale" | "job-removed" | "refused" }
+	| { do: "dead"; row: Row; why: string }
 	/**
 	 * pi did not write the row it was handed. An attempt is counted; at `DEAD_AFTER_ATTEMPTS` a pi-loops
 	 * row is a dead letter. `retry` says when it is offered again: `never` for a person row (the page
 	 * takes it back: a retry that did land would answer one prompt twice), `backoff` for a hand-over
 	 * pi refused, `now` for one pi dropped (Esc), which the hold after a stop already paces.
 	 */
-	| { do: "fail"; row: SessionRequest; why: string; retry: "never" | "backoff" | "now" }
+	| { do: "fail"; row: Row; why: string; retry: "never" | "backoff" | "now" }
 	/** `until`: when the wait ends on its own (the ring wait), for a drain to be scheduled then. */
-	| { do: "wait"; row: SessionRequest; why: string; until?: number };
+	| { do: "wait"; row: Row; why: string; until?: number };
 
 /** What the caller knows about the drain it asks for: a tick is the one drain that may judge a hand-over pi never answered. */
 export interface DrainOptions {
@@ -775,7 +775,7 @@ export function changesSomething(actions: readonly Action[]): boolean {
  * before what the clock or a server queued, as their own message would; `append` rows keep their
  * place, so a result queued before the claim lands before it.
  */
-export function queueOrder(rows: readonly SessionRequest[]): SessionRequest[] {
+export function queueOrder(rows: readonly Row[]): Row[] {
 	const turns = rows.filter((row) => row.kind === "input" && row.wake === "turn");
 	const turnOrder = [...turns.filter((row) => typedByPerson(row.source)), ...turns.filter((row) => !typedByPerson(row.source))];
 	return rows.filter((row) => row.kind === "input").map((row) => (row.wake === "turn" ? turnOrder.shift()! : row));
@@ -806,7 +806,7 @@ export interface QueuedPrompt {
  * it, and the listing already shows that. The reason is read from the row alone, so a listing costs
  * one file read per conversation and no executor view.
  */
-export function queuedPrompt(job: Pick<LoopJob, "id" | "running">, rows: readonly SessionRequest[], now: number): QueuedPrompt | undefined {
+export function queuedPrompt(job: Pick<LoopJob, "id" | "running">, rows: readonly Row[], now: number): QueuedPrompt | undefined {
 	// Only a row the engine would run for this job: its own prefix, its source's mode, not dead. A row
 	// written into the file under a job's name is not that job's prompt, and the listing must not say so.
 	const row = rows.find((r) => r.kind === "input" && jobOf(r.source) === job.id && r.id !== job.running?.runId && r.payload?.text.startsWith(`[Trigger ${r.id}] `) && modeOf(r.kind, r.source, r.wake) === r.mode && r.attempts < DEAD_AFTER_ATTEMPTS);
@@ -842,7 +842,7 @@ export function formatWait(ms: number): string {
  * producer while that process lives; every other executor skips it, judges nothing about it and
  * counts no attempt.
  */
-export function decideDrain(rows: readonly SessionRequest[], entries: ConversationView, jobs: JobsView, view: ExecutorView, now: number, opts: DrainOptions = {}): Action[] {
+export function decideDrain(rows: readonly Row[], entries: ConversationView, jobs: JobsView, view: ExecutorView, now: number, opts: DrainOptions = {}): Action[] {
 	const actions: Action[] = [];
 	const queued = new Map(rows.filter((row) => row.kind === "input").map((row) => [row.id, row]));
 	const inputs = queueOrder(rows);
@@ -966,7 +966,7 @@ export function decideDrain(rows: readonly SessionRequest[], entries: Conversati
 			continue;
 		}
 		// Judged by the executor that runs the row: the goal is that process's state.
-		if (row.source === "goal" && !jobs.goalActive(row.session_id)) {
+		if (row.source === "goal" && !jobs.goalActive(row.lane)) {
 			actions.push({ do: "remove", row, why: "stale" });
 			continue;
 		}
@@ -1026,8 +1026,8 @@ export interface Executor {
 	view(sessionId: string): ExecutorView;
 	entries(sessionId: string): ConversationView;
 	/** Hand a turn row to pi; `now` is when, for `ExecutorView.inFlightSince`. */
-	turn(row: SessionRequest, now: number): void;
-	append(row: SessionRequest, wakeAgent: boolean): void;
+	turn(row: Row, now: number): void;
+	append(row: Row, wakeAgent: boolean): void;
 	/** Stop the turn running now. */
 	abort(): void;
 	/** Stop the turn of row `id`, handed to pi and not started yet, as it starts. */
@@ -1073,7 +1073,7 @@ export function deadLetterParts(entry: { text: string; undelivered?: true }, tex
 	return m ? { why: m[1], prompt: m[2] } : undefined;
 }
 
-async function deadLetter(store: RequestStore, sinks: EngineSinks, sessionId: string, row: SessionRequest, why: string): Promise<void> {
+async function deadLetter(store: RequestStore, sinks: EngineSinks, sessionId: string, row: Row, why: string): Promise<void> {
 	const text = stripPrefix(row.payload?.text ?? "");
 	const cwd = row.payload?.cwd ?? "";
 	// A rule's result keeps the finding it always had in the inbox (`trigger:<label>`): the
@@ -1087,7 +1087,7 @@ async function deadLetter(store: RequestStore, sinks: EngineSinks, sessionId: st
 		if (!checkDecidedFinding(sinks.audit, row.id)) await sinks.inbox.appendOnce({ source: `trigger:${rule}`, run_id: row.id, job_id: rule, cwd, text: text || `rule result ${row.id}`, session_id: sessionId }, { run_id: row.id, source: `trigger:${rule}` });
 	}
 	else await sinks.inbox.append({ source: row.source, run_id: row.id, cwd, text: deadLetterText(why, text.slice(0, DEAD_LETTER_CHARS) || `${row.kind} request ${row.id}`), session_id: sessionId, undelivered: true });
-	sinks.audit.appendAudit({ cwd, type: "request", traceId: row.id, state: "dead", sourceLabel: row.source, eventLabel: row.session_id, summary: text, details: { session_id: row.session_id, kind: row.kind, attempts: row.attempts, last_error: row.last_error, reason: why } });
+	sinks.audit.appendAudit({ cwd, type: "request", traceId: row.id, state: "dead", sourceLabel: row.source, eventLabel: row.lane, summary: text, details: { session_id: row.lane, kind: row.kind, attempts: row.attempts, last_error: row.last_error, reason: why } });
 	store.remove(sessionId, [row.id]);
 }
 
@@ -1124,8 +1124,8 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 	// A window that does not hold the conversation (a viewer, one standing aside, a `pi -p` run)
 	// still runs what the person typed into it and its own goal's continuations; and the browser
 	// page's rows it was rung for, when the holder will not deliver them (`ExecutorView.holderDelivers`).
-	const own = (row: SessionRequest) => view.mine(row) && (isLocal(row) || (row.source === "person" && view.holderDelivers === false));
-	const may = (row?: SessionRequest) => executor.holds(sessionId) || (!!row && own(row));
+	const own = (row: Row) => view.mine(row) && (isLocal(row) || (row.source === "person" && view.holderDelivers === false));
+	const may = (row?: Row) => executor.holds(sessionId) || (!!row && own(row));
 	const rows = may() ? store.list(sessionId) : store.list(sessionId).filter(own);
 	if (!rows.length) return out;
 	const actions = decideDrain(rows, executor.entries(sessionId), sinks.jobs, view, now, opts);
@@ -1134,7 +1134,7 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 	 * never is (design §5), it keeps its error for the page. Otherwise the count, the error and, when
 	 * the retry backs off, when it may go again are written on the row, and the audit says `failed`.
 	 */
-	const failed = async (row: SessionRequest, why: string, retry: "never" | "backoff" | "now"): Promise<void> => {
+	const failed = async (row: Row, why: string, retry: "never" | "backoff" | "now"): Promise<void> => {
 		const attempts = row.attempts + 1;
 		out.failed.push(row.id);
 		if (row.source !== "person" && attempts >= DEAD_AFTER_ATTEMPTS) {
@@ -1143,7 +1143,7 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 			return;
 		}
 		store.update(sessionId, row.id, { attempts, last_error: why, ...(retry === "backoff" ? { not_before: stamp(now + backoffFor(attempts)) } : {}) });
-		sinks.audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "failed", sourceLabel: row.source, eventLabel: row.session_id, details: { session_id: row.session_id, attempts, error: why } });
+		sinks.audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "failed", sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, attempts, error: why } });
 	};
 	for (const action of actions) {
 		// Before each one, not once: the conversation can be taken while this drains.
@@ -1155,7 +1155,7 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 				break;
 			case "remove":
 				// A done input row's record is the session file; everything else ends in the audit.
-				if (action.why !== "done" || action.row.kind !== "input") sinks.audit.appendAudit({ cwd: action.row.payload?.cwd ?? "", type: "request", traceId: action.row.id, state: action.why, sourceLabel: action.row.source, eventLabel: action.row.session_id, details: { session_id: action.row.session_id, kind: action.row.kind } });
+				if (action.why !== "done" || action.row.kind !== "input") sinks.audit.appendAudit({ cwd: action.row.payload?.cwd ?? "", type: "request", traceId: action.row.id, state: action.why, sourceLabel: action.row.source, eventLabel: action.row.lane, details: { session_id: action.row.lane, kind: action.row.kind } });
 				store.remove(sessionId, [action.row.id]);
 				out.removed.push(action.row.id);
 				break;
@@ -1219,7 +1219,7 @@ export async function bury(sessionId: string, store: RequestStore, sinks: Engine
 	for (const row of store.list(sessionId)) {
 		if (row.kind === "input" && row.source !== "person") await deadLetter(store, sinks, sessionId, row, why);
 		else {
-			sinks.audit.appendAudit({ cwd: "", type: "request", traceId: row.id, state: "stale", sourceLabel: row.source, eventLabel: row.session_id, details: { session_id: row.session_id, kind: row.kind, reason: why } });
+			sinks.audit.appendAudit({ cwd: "", type: "request", traceId: row.id, state: "stale", sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, kind: row.kind, reason: why } });
 			store.remove(sessionId, [row.id]);
 		}
 		ids.push(row.id);
