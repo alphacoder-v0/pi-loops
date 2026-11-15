@@ -122,7 +122,9 @@ All notable changes to pi-loops are documented here. The format follows
   the conversation in the middle of a turn, or pi-loops stops the turn itself (a quit, an upgrade,
   the daily budget), `/cron` shows `[queued …]` for the job and `next` is the following slot. It
   showed the slot as due again. The prompt runs once, in whichever of the two has the conversation
-  next. A one-shot's one retry shows `[queued …]` as well.
+  next. A one-shot's one retry shows `[queued …]` as well. A turn that pi-loops stopped before it
+  wrote its prompt, and the run of that prompt afterwards, are two lines of `/cron runs` with one
+  run id.
 - **A turn whose process stopped is in the run log.** `/cron runs` lists it as a failed run, "the
   process running it stopped". If its prompt was not written, the prompt is tried again after a
   wait, and after the third time it goes to the inbox as a request that could not be delivered.
@@ -131,7 +133,8 @@ All notable changes to pi-loops are documented here. The format follows
   when other runs were going in the process that stopped. So a job whose turn only ran beside the
   run that stops the process can be turned off with it, and a loop that ran beside a turn is
   counted as if it ran alone. `/cron enable` turns the job on again. Before, runs that stopped
-  together were not counted. The line "cleared stale running state" is no longer written for a
+  together were not counted. The message of a job that is turned off for its turns leaves out
+  "with no other loop running", which is no longer what it means. The line "cleared stale running state" is no longer written for a
   plain job's turn that this version ran. A turn that you stopped, or that a window took
   back, is not counted as a failure or as an interruption when its process stops before the turn
   is closed: its record says how it ended.
