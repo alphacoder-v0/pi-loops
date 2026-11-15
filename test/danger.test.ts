@@ -414,14 +414,17 @@ test("pi-loops with a verb the shell expands is refused: what it expands to is n
 	assert.equal(dangerousCommandReason("pi-loops inbox list $FLAGS", HOME), undefined, "an expanded word after the verb is an argument");
 });
 
-test("the pi-loops refusal is linear: 200 KB of open parentheses, quotes, comments or pi-loops is answered in under 200 ms, and so is every other pattern", () => {
+test("the pi-loops refusal is linear: 200 KB of open parentheses, quotes, comments or pi-loops is answered in under 200 ms of processor time, and so is every other pattern", () => {
+	// Processor time, not the wall clock: on a loaded machine the wall clock measured the load, and
+	// this bound failed with three suites running at once. A pattern that is not linear takes seconds of either.
 	const size = 200 * 1024;
 	const fill = (unit: string) => unit.repeat(Math.ceil(size / unit.length));
 	for (const unit of ["( a ", '"', "'", '"a b" ', "'a b' ", "$'", '\\"', "pi-loops ", "pi-loops host ", "pi-loops -", "{,", "$IFS", "curl |", "wget | ", "# '", "chmod -", "dd ", "git push ", "git push --force ", "git push --force\n", "dd of=/dev/x ", "reboot ", "grep halt | ", "grep 'halt' ", 'grep "halt" x; ', "grep halt 2>&1 "]) {
 		const command = fill(unit);
-		const started = performance.now();
+		const started = process.cpuUsage();
 		dangerousCommandReason(command, HOME);
-		const ms = performance.now() - started;
+		const used = process.cpuUsage(started);
+		const ms = (used.user + used.system) / 1000;
 		assert.ok(ms < 200, `${JSON.stringify(unit)} × ${command.length / unit.length}: ${ms.toFixed(0)} ms`);
 	}
 });
