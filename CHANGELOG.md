@@ -13,7 +13,11 @@ All notable changes to pi-loops are documented here. The format follows
   result, a queued prompt, a message or a claim sent from the page, and a stop or a cancel.
   `pi-loops abort <session>` then says the stop is queued, and the turn goes on. Each waits in
   the queue until you restart that terminal. A request the earlier version queued
-  itself stays readable to it.
+  itself stays readable to it, with one exception: a scheduled prompt that pi-loops in the
+  background has started to run in a closed conversation. Every scheduled prompt that pi-loops
+  in the background queues for a closed conversation is a line of this version too: a terminal
+  of an earlier version that opens that conversation does not run it, though its turn is
+  counted, until you restart that terminal.
 - **Before you go back to 0.24.2, let what is queued be delivered, or cancel it.** 0.24.2 does
   not read what this version queued: it leaves those requests in the queue, `pi-loops status`
   does not count them, and it removes the images of a queued message from the page after one
@@ -35,6 +39,11 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Fixed
 
+- **A scheduled prompt in a closed conversation is not answered twice after pi-loops stopped in
+  the middle of it.** When pi-loops in the background stopped after it wrote a job's prompt into
+  the conversation and before it recorded the run, the next start ran the same prompt again. The
+  prompt is a queued request first now, under an id that comes from its slot, so the next start
+  finds the prompt in the conversation and does not ask it again.
 - **A turn is not handed to pi beside one that pi holds and has not written.** When pi held a turn
   it had not started (a goal's continuation, a claimed finding's prompt, a message from the page),
   a message that sorts before it in the queue could be handed over as well, and one answer could
@@ -104,6 +113,24 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Changed
 
+- **A plain job that pi-loops runs in a closed conversation is counted when its turn starts, as in
+  a window.** `runs N` rises when the slot fires, not when the turn ends, and it counts a turn
+  that you stopped. `last error` is cleared when the slot fires. While the turn runs,
+  `last_completed_at` in `cron_list` is the time the slot fired.
+- **A turn that did not get to write its prompt waits as a queued prompt.** When a window takes
+  the conversation in the middle of a turn, or pi-loops stops the turn itself (a quit, an upgrade,
+  the daily budget), `/cron` shows `[queued …]` for the job and `next` is the following slot. It
+  showed the slot as due again. The prompt runs once, in whichever of the two has the conversation
+  next. A one-shot's one retry shows `[queued …]` as well.
+- **A turn whose process stopped is in the run log.** `/cron runs` lists it as a failed run, "the
+  process running it stopped". If its prompt was not written, the prompt is tried again after a
+  wait, and after the third time it goes to the inbox as a request that could not be delivered.
+  The line "cleared stale running state" and the stop after three interruptions no longer apply
+  to a plain job.
+- **Two more lines in the audit of requests.** A turn that failed before its prompt was written
+  leaves a `failed` line, as a prompt a window could not hand over does. A turn you stopped before
+  its prompt was written leaves a `stopped` line. A stop that names a prompt whose turn has not
+  started cancels the prompt, and no run is recorded for it.
 - **A loop or a rule check that keeps failing waits 1 minute after the third failure, then 5
   minutes, 30 minutes, 2 hours and 6 hours.** It waited 5 minutes after the third and doubled to
   6 hours. A queued prompt, a loop and a rule check now take their waits from one table. A plain
