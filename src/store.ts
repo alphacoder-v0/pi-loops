@@ -160,6 +160,11 @@ export interface RunRecord {
 	stoppedBy?: "person";
 	/** Where that person stopped it: the browser page, or a terminal (`pi-loops abort`, `/triggers abort`). */
 	stoppedFrom?: "page" | "cli";
+	/**
+	 * The process that ran it was gone before it wrote a record, and the closing of its row wrote
+	 * this one: `ok: false`, `error: "the process running it stopped"`. Never beside `aborted`.
+	 */
+	interrupted?: true;
 }
 
 export interface CheckerRecord {
