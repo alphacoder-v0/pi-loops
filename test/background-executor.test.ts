@@ -11,6 +11,9 @@ import { createHostRuntime } from "../src/host-runtime.ts";
 import { RunList } from "../src/run-list.ts";
 import { LeaseBinding, LeaseStore, procStart } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
+import { Inbox } from "../src/inbox.ts";
+import { JobStore } from "../src/store.ts";
+import { TriggerStore } from "../src/triggers.ts";
 
 /** A conversation nobody has open, with a file that was last written ten minutes ago. */
 function closedConversation(dir: string): { sessionId: string; file: string } {
@@ -582,6 +585,116 @@ test("pi-loops in the background does not ask again a prompt that 0.24.2 wrote a
 		assert.deepEqual(s.calls.map((c) => c.jobId), ["cron-unwritten"], "only the turn that wrote no prompt is asked again");
 		const written = s.job()!;
 		assert.deepEqual([written.running, written.runCount, written.owedSlot, written.lastFiredAt], [undefined, 1, undefined, fired], "spent: the stamps stand, and the slot is counted");
+	} finally {
+		await s.host.stop();
+	}
+});
+
+/** The executor by itself over one closed conversation, with real stores and a runner that counts: for a call the scheduler would not make, and for what the runtime wires in. */
+function bare(over: Partial<Parameters<typeof createBackgroundExecutor>[0]> = {}) {
+	const dir = tmp("pi-loops-bg-");
+	const { sessionId, file } = closedConversation(dir);
+	const leases = new LeaseStore(dir);
+	const requests = new RequestStore(dir);
+	const jobs = new JobStore(dir);
+	const inbox = new Inbox(dir);
+	const audit = new TriggerStore(dir);
+	const calls: any[] = [];
+	const background = createBackgroundExecutor({
+		dir,
+		requests,
+		leases,
+		jobs,
+		runs: new RunList(),
+		runner: (async (req: any) => {
+			calls.push(req);
+			return ok(req);
+		}) as any,
+		sinks: () => ({ jobs: { exists: (id) => jobs.load().some((j) => j.id === id), enabled: (id) => jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox, audit, ledger: jobs, self: () => ({ pid: process.pid, instance: "host", version: "0" }) }),
+		holder: (busy) => ({ kind: "host", pid: process.pid, instance: "host", procStart: procStart(process.pid), acquiredAt: new Date().toISOString(), pushServers: [], ...(busy ? { busy } : {}) }),
+		turnTimeoutMs: 1_000,
+		appended: () => undefined,
+		deliveryFailed: () => undefined,
+		log: () => undefined,
+		...over,
+	});
+	const permit = { release: () => undefined } as any;
+	return { dir, sessionId, file, leases, requests, jobs, calls, background, permit };
+}
+
+test("when the clock loses the slot, pi-loops in the background starts nothing in that conversation at that tick, also when a prompt of the job waits there", async () => {
+	const b = bare();
+	const held = await b.jobs.add(job(b) as any);
+	b.requests.append(leftRow(b as any, "run-left"));
+	const due = new Date(Date.now() - 1_000).toISOString();
+	await b.background.fire(held, due, b.permit, async () => "lost" as const, Date.now());
+	assert.deepEqual([b.calls.length, b.requests.list(b.sessionId).map((r) => [r.id, r.run])], [0, [["run-left", undefined]]], "the prompt that waits is not started by a tick whose slot was lost");
+	assert.equal(b.leases.read(b.sessionId)?.holder, null, "and the conversation is given back");
+	// The same call with a clock that spent the slot onto that prompt: it runs.
+	await b.background.fire(held, due, b.permit, async () => "collapsed" as const, Date.now());
+	assert.deepEqual(b.calls.map((c) => c.runId), ["run-left"]);
+});
+
+test("a held turn runs as its job and its conversation's directory are set: the job's own time limit, and what pi trusts for that directory; a lease that names no directory is trusted for nothing", async () => {
+	const asked: unknown[] = [];
+	const b = bare({ ownerTrusts: (cwd) => (asked.push(cwd), true) });
+	const held = await b.jobs.add(job(b, { ...notDue(), timeoutMs: 42_000 }) as any);
+	b.requests.append(leftRow(b as any, "run-left"));
+	await b.background.fire(held, undefined, b.permit, async () => "fired" as const, Date.now());
+	assert.deepEqual([b.calls[0].timeoutMs, b.calls[0].trusted, asked], [42_000, true, [b.dir]]);
+	// The same conversation with a lease that names no directory, as one that an older version wrote.
+	const file = path.join(b.dir, "leases", `${b.sessionId}.json`);
+	const { cwd: _cwd, ...lease } = JSON.parse(fs.readFileSync(file, "utf8"));
+	fs.writeFileSync(file, JSON.stringify(lease));
+	b.requests.append(leftRow(b as any, "run-left-2"));
+	await b.background.fire(held, undefined, b.permit, async () => "fired" as const, Date.now());
+	assert.deepEqual([b.calls.length, b.calls[1]?.trusted, asked], [2, false, [b.dir]], "not asked, and not trusted");
+});
+
+test("a plain job that fails for the third time in a row in the background is said to be failing, with its last error; the second time is not", async () => {
+	const said: Array<[string, string]> = [];
+	const b = bare({ runner: (async (req: any) => fails("boom", { written: true })(req)) as any, failing: (message, failing) => void said.push([message, failing.id]) });
+	const held = await b.jobs.add(job(b, { ...notDue(), consecutiveFailures: 1 }) as any);
+	b.requests.append(leftRow(b as any, "run-left"));
+	await b.background.fire(held, undefined, b.permit, async () => "fired" as const, Date.now());
+	assert.deepEqual([b.jobs.load()[0].consecutiveFailures, said], [2, []]);
+	b.requests.append(leftRow(b as any, "run-left-2"));
+	await b.background.fire(b.jobs.load()[0], undefined, b.permit, async () => "fired" as const, Date.now());
+	assert.deepEqual([b.jobs.load()[0].consecutiveFailures, said], [3, [["cron-held has failed 3 times in a row; backing off (last: boom)", "cron-held"]]]);
+});
+
+test("a slot waits behind a row of its job that is at its last attempt and has no dead letter yet: the clock is not asked, no lease is taken, and no turn starts", async () => {
+	// A row with three attempts is in the queue only when a process stopped as it filed the dead letter.
+	const b = bare();
+	const held = await b.jobs.add(job(b) as any);
+	b.requests.append(leftRow(b as any, "run-left", { attempts: 3, last_error: "the process running it stopped" }));
+	const epoch = b.leases.read(b.sessionId)?.epoch;
+	let clocked = 0;
+	await b.background.fire(held, new Date(Date.now() - 1_000).toISOString(), b.permit, async () => (clocked++, "fired" as const), Date.now());
+	assert.deepEqual([clocked, b.calls.length, b.leases.read(b.sessionId)?.epoch, b.requests.list(b.sessionId).map((r) => [r.id, r.run, r.attempts])], [0, 0, epoch, [["run-left", undefined, 3]]]);
+});
+
+test("a drain stops where a window takes the conversation: the result it wrote stays, and the next one is left for the window", async () => {
+	const s = scene(ok);
+	try {
+		const { ruleResultRow } = await import("../src/engine.ts");
+		const by = { pid: 1, instance: "w1", version: "0" };
+		for (const id of ["t-first", "t-second"]) s.requests.append(ruleResultRow(s.sessionId, `[Trigger ${id}] look at ${id}`, { traceId: id, sourceLabel: "x", cwd: s.dir }, by));
+		// The window arrives after the first result is written: at the audit line of its delivery.
+		const audit = s.host.triggers.store;
+		const append = audit.appendAudit.bind(audit);
+		let taken = false;
+		audit.appendAudit = ((record: any) => {
+			if (!taken && record.traceId === "t-first") {
+				taken = true;
+				new LeaseBinding(new LeaseStore(s.dir), "w1", () => ({ kind: "terminal", pid: process.pid, mode: "tui", pushServers: [] })).bind(s.sessionId, { sessionFile: s.file, cwd: s.dir });
+			}
+			return append(record);
+		}) as typeof audit.appendAudit;
+		await s.tick();
+		const written = SessionManager.open(s.file).getEntries().map((e: any) => (e.type === "custom_message" ? String(e.content) : String(e.message?.content ?? ""))).filter((text) => text.startsWith("[Trigger t-"));
+		assert.equal(taken, true);
+		assert.deepEqual([written.map((text) => text.slice(0, 18)), s.rows().map((r) => r.id)], [["[Trigger t-first] "], ["t-second"]]);
 	} finally {
 		await s.host.stop();
 	}
