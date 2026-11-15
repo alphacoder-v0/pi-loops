@@ -6,7 +6,9 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { tmp } from "./tmp.ts";
 import { loadConfig } from "../src/config.ts";
 import { plainJobRow, plainRunId } from "../src/engine.ts";
+import { createBackgroundExecutor } from "../src/background-executor.ts";
 import { createHostRuntime } from "../src/host-runtime.ts";
+import { RunList } from "../src/run-list.ts";
 import { LeaseBinding, LeaseStore, procStart } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
 
@@ -433,4 +435,62 @@ test("a claim of this process whose run is not going is closed at the next tick,
 	} finally {
 		await s.host.stop();
 	}
+});
+
+test("a drain starts the turn of the job it was fired for, and no other job's: a second job's row in the same conversation starts at its own tick, as its own job", async () => {
+	const s = scene(ok);
+	try {
+		await s.host.scheduler.store.add(job(s) as any);
+		await s.host.scheduler.store.add(job(s, { id: "cron-other", prompt: "remind me too", ...notDue() }) as any);
+		// The other job's row was queued first, so it sorts before the due slot's row.
+		s.requests.append({ ...plainJobRow(job(s, { id: "cron-other", prompt: "remind me too" }) as any, "run-other", "cron:cron-other", "", { pid: 1, instance: "w1", version: "0" }, Date.now() - 60_000) });
+		for (let i = 0; i < 3 && s.runs().length < 2; i++) {
+			aged(s.file);
+			await s.tick();
+		}
+		const by = Object.fromEntries(s.runs().map((r) => [r.runId, r.jobId]));
+		assert.equal(by["run-other"], "cron-other", "its record names its own job");
+		assert.deepEqual(Object.values(by).sort(), ["cron-held", "cron-other"]);
+		assert.deepEqual(s.rows(), []);
+	} finally {
+		await s.host.stop();
+	}
+});
+
+test("pi-loops in the background does not take a conversation that the page has open, though its job's slot is due", async () => {
+	const dir = tmp("pi-loops-bg-");
+	const { sessionId } = closedConversation(dir);
+	const leases = new LeaseStore(dir);
+	const requests = new RequestStore(dir);
+	let open = true;
+	let clocked = 0;
+	const never = () => {
+		throw new Error("nothing is written for a conversation the page has open");
+	};
+	const background = createBackgroundExecutor({
+		dir,
+		requests,
+		leases,
+		jobs: { load: () => [], allRuns: () => [], remove: never } as any,
+		runs: new RunList(),
+		runner: never as any,
+		sinks: never as any,
+		holder: (busy) => ({ kind: "host", pid: process.pid, instance: "host", procStart: procStart(process.pid), acquiredAt: new Date().toISOString(), pushServers: [], ...(busy ? { busy } : {}) }),
+		pageHolds: () => open,
+		turnTimeoutMs: 1_000,
+		appended: never,
+		deliveryFailed: never,
+		log: () => undefined,
+	});
+	const due = new Date(Date.now() - 1_000).toISOString();
+	const clock = async () => {
+		clocked++;
+		return "lost" as const;
+	};
+	await background.fire(job({ sessionId, dir }) as any, due, { release: () => undefined } as any, clock, Date.now());
+	assert.deepEqual([clocked, leases.read(sessionId)?.holder, leases.read(sessionId)?.epoch], [0, null, 1], "no lease is taken, and the clock writes no row");
+	// The same call once the page has let go: the lease is taken, and the clock is asked.
+	open = false;
+	await background.fire(job({ sessionId, dir }) as any, due, { release: () => undefined } as any, clock, Date.now());
+	assert.deepEqual([clocked, leases.read(sessionId)?.holder, (leases.read(sessionId)?.epoch ?? 0) > 1], [1, null, true], "taken, and given back when the clock lost the slot");
 });
