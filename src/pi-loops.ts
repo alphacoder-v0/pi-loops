@@ -637,7 +637,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
-	const engineSinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), enabled: (id) => scheduler.store.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => goalPursued(goal) }, inbox: scheduler.inbox, audit: triggers.store });
+	const engineSinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), enabled: (id) => scheduler.store.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => goalPursued(goal) }, inbox: scheduler.inbox, audit: triggers.store, ledger: scheduler.store, self: () => createdBy() });
 	/** One drain per session for when a wait ends on its own (the ring wait on a page's row), replaced, never stacked. */
 	const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	/**

@@ -558,6 +558,14 @@ function watchedStore(world: World, fuse: Fuse, remover?: Process, removed: () =
 		real.remove(sessionId, gone);
 		removed();
 	};
+	// The drain's removal of a row that landed and has no claim: the same look, through `remove`.
+	watched.removeIf = (sessionId, id, when) => {
+		const row = real.list(sessionId).find((r) => r.id === id);
+		if (!row) return { outcome: "missing" };
+		if (!when(row)) return { outcome: "kept", row };
+		watched.remove(sessionId, [id]);
+		return { outcome: "removed", row };
+	};
 	return watched;
 }
 

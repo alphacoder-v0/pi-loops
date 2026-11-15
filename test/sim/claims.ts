@@ -125,6 +125,17 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 			},
 			listAudit: () => [],
 		},
+		// The closing's writes: the record of a run whose process died, into the same run log. This lane names no job.
+		ledger: {
+			load: () => [],
+			update: async () => undefined,
+			appendRun: (record) => {
+				alive();
+				records.push(record);
+				wrote();
+			},
+		},
+		self: () => ({ pid: 0, instance: "sim", version: "0" }),
 	};
 	const executorOf = (me: Proc): Executor => ({
 		holds: () => me.alive,

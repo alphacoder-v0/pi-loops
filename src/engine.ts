@@ -23,7 +23,8 @@ import { type ImageContent, type RequestMode, type RequestStore, type Row, image
 import type { LockOptions } from "./lock.ts";
 import { backoffFor } from "./backoff.ts";
 import { stamp } from "./schedule.ts";
-import { type LoopJob, type RunRecord, newId } from "./store.ts";
+import { type RunEnd, type Settlement, runEnd, settle } from "./settle.ts";
+import { type JobStore, type LoopJob, type RunRecord, newId } from "./store.ts";
 import { type TriggerStore, checkDecidedFinding } from "./triggers.ts";
 
 /** Failures of one row before it is a dead letter. */
@@ -563,14 +564,14 @@ export interface Proof {
 	/** How many user messages whose text is `text`'s (`personTextMatches`) it holds, written at or after `since` (`conversationPersonEntries`). */
 	personEntries(text: string, since: string): number;
 	/**
-	 * What the run records say of the run that claimed the row (`row.run`): `ended` (a failed run
-	 * has ended too: it spent its slot), `stopped` (a person stopped it), `aborted` (a quit, an
-	 * upgrade, the budget, or a window that took the conversation back), or undefined when the row
-	 * has no claim or no record has the claim's run id. No record says `interrupted` yet: the
-	 * closing of a run whose process is gone writes it, and that is not built. A fake can answer
-	 * it. Whether the run is still going is the executor's question (`ExecutorView.claimLive`).
+	 * The end of the run that claimed `row`, as its run record states it: the newest record whose
+	 * `runId` is `row.run.id` and whose `startedAt` is at or after `row.run.started_at`. Undefined
+	 * for a row with no claim, and when no such record is there. Every writer of a record for a
+	 * claim copies `startedAt` from the claim, so the record of a row's first run is older than the
+	 * claim of its second, and does not close it. Whether the run is still going is the executor's
+	 * question (`ExecutorView.claimLive`).
 	 */
-	ran(row: Row): "ended" | "stopped" | "aborted" | "interrupted" | undefined;
+	ran(row: Row): RunEnd | undefined;
 }
 
 /**
@@ -646,11 +647,10 @@ export function proofOf(entries: () => readonly unknown[], runs: () => readonly 
 		ran: (row) => {
 			if (!row.run) return undefined;
 			const id = row.run.id;
+			const from = Date.parse(row.run.started_at);
 			let record: RunRecord | undefined;
-			for (const r of runs()) if (r.runId === id) record = r; // the newest one
-			if (!record) return undefined;
-			if (record.aborted) return record.stoppedBy === "person" ? "stopped" : "aborted";
-			return "ended";
+			for (const r of runs()) if (r.runId === id && Date.parse(r.startedAt) >= from) record = r; // the newest one of this claim
+			return record && runEnd(record);
 		},
 	};
 }
@@ -800,13 +800,11 @@ export type Action =
 	 */
 	| { do: "fail"; row: UnclaimedRow; why: string; retry: "never" | "backoff" | "now" }
 	/**
-	 * The process that ran a claimed row is gone. The run is closed first; then the row gets `then`:
-	 * an exit (`delivered`: its run ended or its prompt is written; `stopped`: a person stopped the
-	 * run, the slot is spent, no attempt is counted), `owed` (the run was aborted by no person: the
-	 * claim is cleared, no attempt is counted, the row stays), or a failure (the claim is cleared, an
-	 * attempt is counted, the row backs off; at `DEAD_AFTER_ATTEMPTS` it is a dead letter).
+	 * The process that ran a claimed row is gone: its run is closed (`closeRun`). What the row gets
+	 * is decided there, once, from the run's record: it leaves as `delivered` or as `stopped`, it
+	 * stays owed with its claim cleared, or it fails with an attempt.
 	 */
-	| { do: "close"; row: ClaimedRow; then: { exit: Extract<Exit, "delivered" | "stopped"> } | { fail: string } | "owed" }
+	| { do: "close"; row: ClaimedRow }
 	/** `until`: when the wait ends on its own (the ring wait), for a drain to be scheduled then. */
 	| { do: "wait"; row: Row; why: string; until?: number };
 
@@ -972,16 +970,8 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 	type Sorted = { actions: Action[]; holding: boolean; ready?: UnclaimedRow };
 	const settled = (...own: Action[]): Sorted => ({ actions: own, holding: false });
 
-	/** A row a run has claimed: its run is going, or it is closed and the row gets what the run came to. */
-	const claimed = (row: ClaimedRow): Sorted => {
-		if (view.claimLive(row)) return { actions: [{ do: "wait", row, why: "running" }], holding: true };
-		// No process and no record: what the closing writes for such a run.
-		const end = proof.ran(row) ?? "interrupted";
-		if (end === "ended" || landed(row, proof)) return settled({ do: "close", row, then: { exit: "delivered" } });
-		if (end === "stopped") return settled({ do: "close", row, then: { exit: "stopped" } });
-		if (end === "aborted") return settled({ do: "close", row, then: "owed" });
-		return settled({ do: "close", row, then: { fail: "the process running it stopped" } });
-	};
+	/** A row a run has claimed: its run is going, or it is closed and the row gets what the run came to (`closeRun`). */
+	const claimed = (row: ClaimedRow): Sorted => (view.claimLive(row) ? { actions: [{ do: "wait", row, why: "running" }], holding: true } : settled({ do: "close", row }));
 
 	const unclaimed = (row: UnclaimedRow): Sorted => {
 		const actions: Action[] = [];
@@ -1159,12 +1149,16 @@ export interface Executor {
 	refused(id: string): void;
 }
 
-/** Where the engine records what it did: the jobs it checks rows against, the inbox for dead letters, the audit. */
+/** Where the engine records what it did: the jobs it checks rows against, the inbox for dead letters, the audit, and what the closing of a run writes. */
 export interface EngineSinks {
 	jobs: JobsView;
 	/** A dead letter is filed once, under an id derived from its row's; a rule's result keeps `appendOnce`. */
 	inbox: Pick<Inbox, "appendOnce" | "fileOnce">;
 	audit: Pick<TriggerStore, "appendAudit" | "listAudit">;
+	/** jobs.json and the run log, for the closing of a run: its record when none is there, and the job's patch. A window gives these too: it closes the claim of a background process that is gone. */
+	ledger: Pick<JobStore, "load" | "update" | "appendRun">;
+	/** This process, as the `created_by` of a row the closing writes. */
+	self(): Row["created_by"];
 }
 
 export interface DrainResult {
@@ -1219,6 +1213,96 @@ async function deadLetter(store: RequestStore, sinks: EngineSinks, row: Row, why
 }
 
 /**
+ * One more failure of `row`: at `DEAD_AFTER_ATTEMPTS` a pi-loops row is a dead letter; a person row
+ * never is (design §5), it keeps its error for the page. Otherwise the count, the error and, when
+ * the retry backs off, when it may go again are written on the row, and the audit says `failed`.
+ * A row that fails has no run: a claim is cleared in the same write, so the attempt is counted once.
+ */
+async function failRow(store: RequestStore, sinks: EngineSinks, row: Row, why: string, retry: "never" | "backoff" | "now", now: number): Promise<"failed" | "dead"> {
+	const attempts = row.attempts + 1;
+	if (row.source !== "person" && attempts >= DEAD_AFTER_ATTEMPTS) {
+		await deadLetter(store, sinks, { ...row, attempts, last_error: why }, `failed ${attempts} times: ${why}`);
+		return "dead";
+	}
+	store.update(row.lane, row.id, { attempts, last_error: why, ...(retry === "backoff" ? { not_before: stamp(now + backoffFor(attempts)) } : {}), ...(row.run ? { run: undefined } : {}) });
+	sinks.audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "failed", sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, attempts, error: why } });
+	return "failed";
+}
+
+/** The one way a row leaves its queue, the dead letter apart: its audit line, then the removal. */
+function leaveRow(store: RequestStore, sinks: EngineSinks, row: Row, exit: Exclude<Exit, "dead">): void {
+	// A delivered input row's record is the session file; everything else ends in the audit.
+	if (exit !== "delivered" || row.kind !== "input") sinks.audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: AUDIT_STATE[exit], sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, kind: row.kind } });
+	store.remove(row.lane, [row.id]);
+}
+
+/** The words of a run whose process was gone before it wrote a record: the record's error, and the reason of the row's attempt. */
+const INTERRUPTED = "the process running it stopped";
+
+/**
+ * The id of the row that asks again after `rowId`. Derived, so a closing that runs twice appends
+ * one successor, and a successor that ran meanwhile is found by its prefix and leaves without a
+ * second answer.
+ */
+const successorId = (jobId: string, rowId: string): string => plainRunId(jobId, `after ${rowId}`);
+
+/** What a closing came to: what `settle` decided, the end it read, the job as written, and where the row's id belongs in a `DrainResult`. */
+export interface Closed {
+	settlement: Settlement;
+	end: RunEnd;
+	job?: LoopJob;
+	outcome: "removed" | "waiting" | "failed" | "dead";
+}
+
+/**
+ * The closing of the run that claimed `row`: the one function that takes a claim off a row. Two
+ * callers: a drain, for a `close` action (the claim's process is gone, and the caller holds the
+ * lane), and the process that ran the run, when it ends there, with or without the lease: the
+ * closing writes the run log, `jobs.json` and the queue file, and never the conversation. It has
+ * no parameter for how the run ended: it reads that from the run log through `proof`, or from the
+ * record it appends, so the row cannot be changed before a record exists. `record` is the record
+ * of a run that ended in this process; a drain passes none. The closing is the one writer of a
+ * record for a claim.
+ *
+ * The writes, in order. Each is safe to repeat, and a process that stops after any of them leaves
+ * the row with its claim, so the next drain starts again at the first:
+ *   1. the record, when none belongs to the claim: `record`, else one that says `interrupted`;
+ *   2. the job's patch, which `settle` gives once per record;
+ *   3. the successor row, under an id derived from this row's;
+ *   4. the row, last: it leaves, or its claim is cleared, with or without an attempt.
+ */
+export async function closeRun(store: RequestStore, sinks: EngineSinks, row: ClaimedRow, proof: Proof, now: number, record?: RunRecord): Promise<Closed> {
+	const jobId = jobOf(row.source);
+	let end = proof.ran(row);
+	if (!end) {
+		const named = jobId === undefined ? undefined : sinks.ledger.load().find((j) => j.id === jobId);
+		const written: RunRecord = record ?? { runId: row.run.id, jobId: jobId ?? "", ...(named?.name ? { jobName: named.name } : {}), stateful: false, cwd: row.payload?.cwd ?? named?.cwd ?? "", pid: row.run.pid, startedAt: row.run.started_at, finishedAt: stamp(now), ok: false, error: INTERRUPTED, findings: 0, droppedFindings: 0, stateUpdated: false, interrupted: true };
+		sinks.ledger.appendRun(written);
+		end = runEnd(written);
+	}
+	const closed = end;
+	// A conversation's row is delivered by its prompt in the conversation, and by nothing else. A
+	// lane whose session is new each time has no such file: there the record of a run that ended proves it.
+	const written = landed(row, proof) || (parseLane(row.lane)?.kind !== "conversation" && (closed.how === "succeeded" || closed.how === "failed"));
+	let settlement = settle(undefined, closed, written);
+	const job = jobId === undefined ? undefined : await sinks.ledger.update(jobId, (j) => {
+		settlement = settle(j, closed, written);
+		if (settlement.job) Object.assign(j, settlement.job);
+	});
+	const fate = settlement.row;
+	if (job && fate.do === "leave" && fate.exit === "delivered" && fate.successor) store.appendIfAbsent(plainJobRow(job, successorId(job.id, row.id), `cron:${job.id}`, "", sinks.self(), now));
+	let outcome: Closed["outcome"];
+	if (fate.do === "leave") {
+		leaveRow(store, sinks, row, fate.exit);
+		outcome = "removed";
+	} else if (fate.do === "owed") {
+		store.update(row.lane, row.id, { run: undefined });
+		outcome = "waiting";
+	} else outcome = await failRow(store, sinks, row, fate.why, "backoff", now);
+	return { settlement, end: closed, job, outcome };
+}
+
+/**
  * Deliver what is queued for `sessionId` through `executor`: every row if it holds the conversation,
  * else only the local rows it produced itself. Read the rows, decide, then apply each action, asking
  * `holds()` again before each one.
@@ -1257,28 +1341,12 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 	const lane = parseLane(sessionId);
 	if (!rows.length || !lane) return out;
 	const actions = decideDrain(lane.kind, rows, executor.proof(sessionId), sinks.jobs, view, now, opts);
-	/**
-	 * One more failure of `row`: at `DEAD_AFTER_ATTEMPTS` a pi-loops row is a dead letter; a person row
-	 * never is (design §5), it keeps its error for the page. Otherwise the count, the error and, when
-	 * the retry backs off, when it may go again are written on the row, and the audit says `failed`.
-	 */
 	const failed = async (row: Row, why: string, retry: "never" | "backoff" | "now"): Promise<void> => {
-		const attempts = row.attempts + 1;
 		out.failed.push(row.id);
-		if (row.source !== "person" && attempts >= DEAD_AFTER_ATTEMPTS) {
-			await deadLetter(store, sinks, { ...row, attempts, last_error: why }, `failed ${attempts} times: ${why}`);
-			out.dead.push(row.id);
-			return;
-		}
-		// A row that fails has no run: a claim is cleared in the same write.
-		store.update(sessionId, row.id, { attempts, last_error: why, ...(retry === "backoff" ? { not_before: stamp(now + backoffFor(attempts)) } : {}), ...(row.run ? { run: undefined } : {}) });
-		sinks.audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "failed", sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, attempts, error: why } });
+		if ((await failRow(store, sinks, row, why, retry, now)) === "dead") out.dead.push(row.id);
 	};
-	/** The one way a row leaves its queue here, the dead letter apart: its audit line, then the removal. */
 	const leave = (row: Row, exit: Exclude<Exit, "dead">): void => {
-		// A delivered input row's record is the session file; everything else ends in the audit.
-		if (exit !== "delivered" || row.kind !== "input") sinks.audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: AUDIT_STATE[exit], sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, kind: row.kind } });
-		store.remove(sessionId, [row.id]);
+		leaveRow(store, sinks, row, exit);
 		out.removed.push(row.id);
 	};
 	for (const action of actions) {
@@ -1298,14 +1366,9 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 				leave(action.row, action.exit);
 				break;
 			case "close": {
-				// The run's closing writes go here when a run is closed by the engine: its record when
-				// none has its id, then its `run_end`. Until then a claim is only read, never made.
-				const { row, then } = action;
-				if (then === "owed") {
-					store.update(sessionId, row.id, { run: undefined });
-					out.waiting.push(row.id);
-				} else if ("fail" in then) await failed(row, then.fail, "backoff");
-				else leave(row, then.exit);
+				const closed = await closeRun(store, sinks, action.row, executor.proof(sessionId), now);
+				if (closed.outcome === "dead") out.failed.push(action.row.id);
+				out[closed.outcome].push(action.row.id);
 				break;
 			}
 			case "abort":
@@ -1323,7 +1386,9 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 				const row = action.row;
 				// Drains overlap (the tick, the bell, a promotion), and one can hand a row over while this
 				// one awaits a dead letter: ask again at the moment of handing it over.
-				if (executor.view(sessionId).inFlight.has(row.id) || landed(row, executor.proof(sessionId))) break;
+				// And whether the row may start: a turn that this drain started holds the appends behind it.
+				const current = executor.view(sessionId);
+				if (current.inFlight.has(row.id) || landed(row, executor.proof(sessionId)) || current.blocked(row) !== undefined) break;
 				try {
 					// The stamp first, under the lock: the proof of a text-proved row's delivery is a user message
 					// written at or after it. A crash between the two leaves a stamped row with no message,
@@ -1335,16 +1400,17 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 					if (action.do === "append") executor.append(row, action.wakeAgent);
 					else executor.turn(row, now);
 				} catch (err: any) {
-					await failed(row, redact(err?.message ?? String(err)), "backoff");
+					// One attempt, not two: the row is read again, and a row that has a claim now is not
+					// failed here. Its closing counts the attempt, once.
+					const queued = store.list(sessionId).find((r) => r.id === row.id);
+					if (queued && !queued.run) await failed(queued, redact(err?.message ?? String(err)), "backoff");
 					break;
 				}
 				out.delivered.push(row.id);
 				// Written into the conversation already (an idle window, the background process): gone now.
 				// Otherwise pi holds it as a follow-up and the next drain finds it in the file, or not.
-				if (landed(row, executor.proof(sessionId))) {
-					store.remove(sessionId, [row.id]);
-					out.removed.push(row.id);
-				}
+				// A row that a run has claimed leaves through its closing only.
+				if (landed(row, executor.proof(sessionId)) && store.removeIf(sessionId, row.id, (r) => !r.run).outcome === "removed") out.removed.push(row.id);
 				break;
 			}
 		}

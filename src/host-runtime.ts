@@ -17,7 +17,7 @@ import { parseLane } from "./lane.ts";
 import type { RunnerResult, SubagentRequest, SubagentRunner } from "./runner.ts";
 import { DELIVERY_JOB_ID, type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart, sameHolder } from "./lease.ts";
 import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileMark, type QuietMark, bury, changesSomething, conversationHas, proofOf, decideDrain, drain, promotionTarget, promotionView, quietMark, ruleResultRow, sessionFileEntries, stillQuiet, claimAlive } from "./engine.ts";
-import { RequestStore } from "./requests.ts";
+import { RequestStore, type Row } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { DEFAULT_RUN_TIMEOUT_MS, type HeldSession, LoopScheduler, type PlainJobLeases, STOPPED_BY_PERSON, type SessionSnapshot } from "./scheduler.ts";
 import { stamp } from "./schedule.ts";
@@ -84,6 +84,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const requests = new RequestStore(dir);
 	/** The host as a lease holder: it holds a closed conversation for one piece of work, then lets go. */
 	const ownStart = procStart(process.pid);
+	/** This process, as the rows it writes name it. */
+	const createdBy = (): Row["created_by"] => ({ pid: process.pid, instance: "host", procStart: ownStart, version: PI_LOOPS_VERSION });
 	const me = (busy?: LeaseHolder["busy"]): LeaseHolder => ({ kind: "host", pid: process.pid, instance: "host", procStart: ownStart, acquiredAt: stamp(), pushServers: [], ...(busy ? { busy } : {}) });
 	const fileMtime = (file: string | undefined): number | undefined => {
 		if (!file) return undefined;
@@ -119,7 +121,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const canHold = (sessionId: string | undefined): boolean => !(sessionId !== undefined && deps.pageHolds?.(sessionId)) && closedConversation(leases, sessionId);
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
-	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), enabled: (id) => scheduler.store.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: scheduler.inbox, audit: triggers.store });
+	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), enabled: (id) => scheduler.store.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: scheduler.inbox, audit: triggers.store, ledger: scheduler.store, self: createdBy });
 
 	/**
 	 * The held turns this process is in, by session: the run (the lease's `busy.runId`), when it
@@ -355,7 +357,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const promote = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string): Promise<"queued" | "chat" | "inbox"> => {
 		const route = promotionTarget(forSession, promotionView(leases, trigger.cwd));
 		if (route.to === "inbox") return toInbox(content, trigger, route.sessionId);
-		requests.append(ruleResultRow(route.sessionId, content, trigger, { pid: process.pid, instance: "host", procStart: ownStart, version: PI_LOOPS_VERSION }));
+		requests.append(ruleResultRow(route.sessionId, content, trigger, createdBy()));
 		if (!canHold(route.sessionId)) return "queued";
 		return (await deliverQueued(route.sessionId, trigger.traceId)) ? "chat" : "queued";
 	};
