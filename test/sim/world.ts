@@ -408,7 +408,7 @@ function windowProcess(world: World, base: Omit<Process, "executor">): Process {
 		abort: () => void (proc.pi.aborts += proc.pi.running ? 1 : 0),
 	};
 	type Args = ConstructorParameters<typeof WindowExecutor>;
-	const window = new WindowExecutor(pi as unknown as Args[0], { here: () => ({ sessionId: conversation.id, holds: conversation.holder === proc }) }, () => ctx as unknown as ReturnType<Args[2]>, { pid: proc.pid }, (row) => row.created_by.left === undefined && pidAlive(world, row.created_by.pid), () => world.store.list(conversation.id));
+	const window = new WindowExecutor(pi as unknown as Args[0], { here: () => ({ sessionId: conversation.id, holds: conversation.holder === proc }) }, () => ctx as unknown as ReturnType<Args[2]>, { pid: proc.pid }, (row) => row.created_by.left === undefined && pidAlive(world, row.created_by.pid), () => world.store.list(conversation.id), undefined, () => []);
 	proc.window = window;
 	proc.executor = window;
 	return proc;
