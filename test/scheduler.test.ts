@@ -1480,6 +1480,25 @@ test("the job's next slot is not collapsed onto a row pi refused: the refused ro
 	}
 });
 
+test("a plain job's clock writes nothing when it is asked with no lease on the conversation", async () => {
+	const dir = tmp("pi-loops-sched-");
+	// An executor that asks the clock without the lease it must take first.
+	const said: string[] = [];
+	const background = { owes: () => false, fire: async (_job: unknown, _due: unknown, _permit: unknown, clock: () => Promise<string>) => void said.push(await clock()) };
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), owns: () => true, sessionExists: () => true, leases: { heldEpoch: () => undefined, holderOf: () => undefined }, background } as any);
+	try {
+		await sched.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "p" }));
+		await sched.tick();
+		await sched.stop();
+		assert.deepEqual(said, ["lost"]);
+		assert.deepEqual(rowsFor(dir, "s"), [], "no row in a conversation this process does not hold");
+		const job = sched.store.load()[0];
+		assert.deepEqual([job.lastFiredAt, job.runCount], [undefined, 0], "and the slot is still owed");
+	} finally {
+		await sched.stop();
+	}
+});
+
 test("a plain job's slot lost to another process leaves no row behind", async () => {
 	const dir = tmp("pi-loops-sched-");
 	// The lease's epoch moves once the row is in the file, as it does when a pi-loops 0.22 window fired

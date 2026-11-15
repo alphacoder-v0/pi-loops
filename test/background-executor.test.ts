@@ -196,6 +196,8 @@ test("a turn that fails after its prompt was written is a failed run: recorded, 
 		await s.tick();
 		const [record] = s.runs();
 		assert.deepEqual([record.ok, record.error, record.aborted], [false, "the model refused", undefined]);
+		assert.deepEqual({ stateful: record.stateful, forSession: record.forSession, cost: record.usage?.cost }, { stateful: false, forSession: s.sessionId, cost: 0.01 });
+		assert.equal(s.host.scheduler.store.spend(0).total, 0.01, "its cost counts in the spend the daily budget reads");
 		const after = s.job()!;
 		assert.deepEqual([after.runCount, after.consecutiveFailures, after.lastError, after.lastCompletedAt], [1, 1, "the model refused", record.finishedAt]);
 		assert.deepEqual(s.rows(), []);
@@ -558,4 +560,24 @@ test("a turn that is going when pi-loops stops is handed back, not failed: its r
 	assert.deepEqual([record.runId, record.aborted, record.stoppedBy], [id, true, undefined]);
 	assert.deepEqual(s.rows().map((r) => [r.id, r.run]), [[plainRunId("cron-held", `after ${id}`), undefined]]);
 	assert.deepEqual([s.job()?.consecutiveFailures, s.job()?.runCount], [undefined, 1]);
+});
+
+test("pi-loops in the background does not ask again a prompt that 0.24.2 wrote and left a marker for; it asks again the one that was not written", async () => {
+	const s = scene(ok);
+	try {
+		// 0.24.2 ran the turn with a marker on the job and no row, and its process stopped.
+		const fired = new Date(Date.now() - 30_000).toISOString();
+		const marked = (runId: string) => ({ lastDueAt: fired, lastFiredAt: fired, running: { runId, pid: 999_999_999, startedAt: fired } });
+		SessionManager.open(s.file).appendMessage({ role: "user", content: "[Trigger run-written] remind me", timestamp: Date.now() } as any);
+		aged(s.file);
+		await s.host.scheduler.store.add(job(s, marked("run-written")) as any);
+		const other = closedConversation(s.dir);
+		await s.host.scheduler.store.add(job({ sessionId: other.sessionId, dir: s.dir }, { id: "cron-unwritten", ...marked("run-unwritten") }) as any);
+		for (let i = 0; i < 2; i++) await s.tick();
+		assert.deepEqual(s.calls.map((c) => c.jobId), ["cron-unwritten"], "only the turn that wrote no prompt is asked again");
+		const written = s.job()!;
+		assert.deepEqual([written.running, written.runCount, written.owedSlot, written.lastFiredAt], [undefined, 1, undefined, fired], "spent: the stamps stand, and the slot is counted");
+	} finally {
+		await s.host.stop();
+	}
 });

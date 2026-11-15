@@ -46,15 +46,15 @@ export async function run(ctx) {
 	const claimed = await ctx.waitFor("the held turn's claim", () => { const row = rows().find((r) => r.run); return { ok: !!row && lease()?.holder?.kind === "host", last: { rows: rows(), holder: lease()?.holder }, value: row }; }, 300000);
 	await ctx.waitFor("the prompt in the conversation", () => ({ ok: prompts().includes(claimed.id), last: prompts() }), 30000);
 	const status = spawnSync(path.join(ctx.boot.root, "bin", "pi-loops"), ["status"], { cwd: ctx.boot.project, env: ctx.boot.env, encoding: "utf8", timeout: 10000 });
-	const before = fs.readFileSync(sessionFile, "utf8").split("\n").filter(Boolean).length;
+	if (!status.stdout.includes("running build-watch")) throw new Error(`pi-loops status does not list the turn:\n${status.stdout}${status.stderr}`);
 
 	// 4. A person opens the conversation in a terminal while the turn runs.
 	const command = `${path.join(ctx.boot.root, "bin", "pi-loops")} --tui --no-extensions -e ${path.join(ctx.boot.root, "product")} --model fake/fake-model --session ${sessionFile}`;
 	tmux("-f", "/dev/null", "new-session", "-d", "-s", "again", "-x", "200", "-y", "50", "-c", ctx.boot.project, command);
-	const screen = () => tmux("capture-pane", "-p", "-t", "again").stdout ?? "";
-	const took = await ctx.waitFor("the terminal to hold the conversation", () => ({ ok: lease()?.holder?.kind === "terminal", last: lease()?.holder, value: Date.now() }), 60000);
+	const screen = () => tmux("capture-pane", "-p", "-S", "-200", "-t", "again").stdout ?? "";
+	const took = await ctx.waitFor("the terminal to hold the conversation", () => { const holder = lease()?.holder; return { ok: holder?.kind === "terminal", last: holder, value: Date.parse(holder?.acquiredAt ?? "") }; }, 60000);
 
-	// 5. The turn stops: its record says it was handed back, by no person. The background wrote at most one entry after the take-back.
+	// 5. The turn stops: its record says it was handed back, by no person.
 	const record = await ctx.waitFor("the record of the turn that was taken back", () => { const r = runs().find((x) => x.runId === claimed.run.id); return { ok: !!r, last: runs(), value: r }; }, 30000);
 	if (record.aborted !== true || record.stoppedBy !== undefined) throw new Error(`the record does not say the turn was handed back: ${JSON.stringify(record)}`);
 	const said = await ctx.waitFor("the window's notice", () => { const s = screen(); return { ok: s.replace(/\s+/g, " ").includes(NOTICE), last: s, value: s }; }, 30000);
@@ -62,14 +62,32 @@ export async function run(ctx) {
 	// 6. The prompt is asked once more, in the terminal: the turn's own prompt was written, so a successor row asks again.
 	const again = await ctx.waitFor("the successor's prompt in the conversation", () => { const ids = prompts(); return { ok: ids.length === 2 && ids[0] === claimed.id && ids[1] !== claimed.id, last: ids, value: ids }; }, 120000);
 	await ctx.waitFor("the job's queue to be empty", () => ({ ok: rows().length === 0, last: rows() }), 120000);
-	await ctx.waitFor("the terminal's answer", () => { const s = screen(); return { ok: s.includes(ctx.reply), last: s }; }, 120000);
+	// The successor's own answer: an assistant message that ends the turn, after the successor's prompt.
+	const entries = () => jsonl(sessionFile).filter((e) => e.type === "message");
+	const text = (e) => (typeof e.message.content === "string" ? e.message.content : (e.message.content ?? []).map((c) => c.text ?? "").join(""));
+	await ctx.waitFor("the successor's answer in the conversation", () => {
+		const all = entries();
+		const asked = all.findIndex((e) => e.message.role === "user" && text(e).includes(`[Trigger ${again[1]}]`));
+		const answered = all.slice(asked + 1).some((e) => e.message.role === "assistant" && text(e).includes(ctx.reply));
+		return { ok: asked !== -1 && answered, last: all.slice(-4).map((e) => `${e.message.role}: ${text(e).slice(0, 60)}`) };
+	}, 180000);
 	if (runs().length !== 1) throw new Error(`the background ran the job again: ${JSON.stringify(runs())}`);
+	// What the background wrote into the conversation after the window took it: what pi writes when a
+	// turn is aborted, and no more. The result of the tool that was running, and the turn's error.
+	const all = entries();
+	const first = all.findIndex((e) => e.message.role === "user" && text(e).includes(`[Trigger ${claimed.id}]`));
+	const second = all.findIndex((e) => e.message.role === "user" && text(e).includes(`[Trigger ${again[1]}]`));
+	// The window's own entries lead to the successor's prompt; the background's are on a branch of their own.
+	const parents = new Map(jsonl(sessionFile).map((e) => [e.id, e.parentId]));
+	const window = new Set();
+	for (let at = all[second].id; at; at = parents.get(at)) window.add(at);
+	const late = all.slice(first + 1, second).filter((e) => !window.has(e.id) && Date.parse(e.timestamp ?? "") >= took).map((e) => `${e.message.role}${e.message.stopReason ? `(${e.message.stopReason})` : ""}: ${text(e).slice(0, 60)}`);
+	if (late.length > 2 || late.some((line) => !/^(toolResult|assistant\(error\)|assistant\(aborted\))/.test(line))) throw new Error(`the background wrote more than the end of an aborted turn after the take-back: ${JSON.stringify(late)}`);
 	const job = JSON.parse(fs.readFileSync(jobsFile, "utf8")).jobs.find((j) => j.id === JOB);
 	if (job?.runCount !== 1 || job.consecutiveFailures) throw new Error(`the slot was counted twice, or the hand-back counted as a failure: ${JSON.stringify(job)}`);
-	const byBackground = jsonl(sessionFile).slice(before).filter((e) => e.type === "message" && Date.parse(e.timestamp ?? "") < took).length;
 
 	const evidence = path.join(ctx.dir, "take-back.txt");
-	fs.writeFileSync(evidence, [`status while the turn ran:\n${status.stdout}${status.stderr}`, `claim ${JSON.stringify(claimed.run)}`, `record ${JSON.stringify(record)}`, `prompts in the conversation, by id: ${JSON.stringify(again)}`, `entries the background wrote between the last look and the take-back: ${byBackground}`, `job ${JSON.stringify(job)}`, `terminal:\n${said}`].join("\n\n"));
+	fs.writeFileSync(evidence, [`status while the turn ran:\n${status.stdout}${status.stderr}`, `claim ${JSON.stringify(claimed.run)}`, `record ${JSON.stringify(record)}`, `prompts in the conversation, by id: ${JSON.stringify(again)}`, `what the background wrote into the conversation after the take-back (${late.length}): ${JSON.stringify(late)}`, `job ${JSON.stringify(job)}`, `terminal:\n${said}`].join("\n\n"));
 	ctx.addEvidence(evidence);
 	const final = path.join(ctx.dir, "terminal-after.txt");
 	fs.writeFileSync(final, screen());
