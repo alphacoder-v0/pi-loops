@@ -164,12 +164,12 @@ function readLine(line: string): { row: Row; version: 2 | 3 } | undefined {
  * The one writer of a row's line. A row is written as version 3, with one exception: a row that
  * was read from a version 2 line and is only patched stays a version 2 line, so that the version
  * that wrote it still reads it (its window may hold the conversation again; its background
- * process keeps the images of the rows it can read). A claimed row is always version 3: an older
- * version must not read it, or it would hand the row to pi beside the run that has it. A rewrite
- * puts every line it does not change back as the bytes it read.
+ * process keeps the images of the rows it can read). A claim writes version 3: an older version
+ * must not read a claimed row, or it would hand the row to pi beside the run that has it. A
+ * rewrite puts every line it does not change back as the bytes it read.
  */
 function rowLine(row: Row, version: 2 | 3 = ROW_VERSION): string {
-	if (version === ROW_VERSION || row.run) return JSON.stringify(row);
+	if (version === ROW_VERSION) return JSON.stringify(row);
 	const { v: _, lane, ...rest } = row;
 	return JSON.stringify({ v: 2, session_id: lane, ...rest });
 }
