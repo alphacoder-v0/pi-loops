@@ -8,7 +8,7 @@
 import { type DrainResult, cancelRow, conversationHas, enqueue, goalRow, handOver, inboxClaimRow, personRow, plainJobRow, plainRunId, requestFingerprint, ringProduced, ruleResultRow, stopRow } from "../../src/engine.ts";
 import type { Row } from "../../src/requests.ts";
 import { stamp } from "../../src/schedule.ts";
-import { type Violation, createChecker, type Coverage } from "./invariants.ts";
+import { type Violation, KNOWN, REWRITTEN_HOLDS, createChecker, type Coverage } from "./invariants.ts";
 import { pick, prng, weighted } from "./prng.ts";
 import { type Conversation, type Fault, PAGE_PID, type Mode, type PiMove, type Process, type Timers, type World, advance, atOnce, buryAs, createWorld, drainAs, everyProcess, held, kill, label, leaseMayMove, live, moveLease, noFacts, piMove, piMoves, start, who } from "./world.ts";
 
@@ -28,6 +28,10 @@ export interface Plan {
 	steps: Step[];
 	/** The numbers the restart that ends the schedule draws its crashes from. */
 	closing: number[];
+	/** Whether a message pi writes takes a millisecond (test/sim/world.ts, `World.ticks`). */
+	ticks: boolean;
+	/** Whether another extension rewrites every user message (`World.rewrites`): one world in four. */
+	rewrites: boolean;
 }
 
 const WEIGHTS: ReadonlyArray<readonly [Kind, number]> = [["produce", 25], ["drain", 30], ["pi", 20], ["clock", 9], ["process", 6], ["inbox", 5], ["lease", 2], ["setting", 2], ["delete", 1]];
@@ -47,7 +51,9 @@ export function plan(seed: number, steps: number): Plan {
 	const closing = Array.from({ length: 6 }, next);
 	// Two windows on one conversation are the page's pi and a terminal, either of them first: the one pair between which the lease moves while both live.
 	const modes = (): [Mode, Mode] => (next() % 2 === 0 ? ["rpc", "tui"] : ["tui", "rpc"]);
-	return { seed, seconds: kinds.map((second) => ({ ...second, modes: modes() })), steps: drawn, closing };
+	const seconds = kinds.map((second) => ({ ...second, modes: modes() }));
+	// Drawn last, so that a seed's steps are the ones it always had.
+	return { seed, seconds, steps: drawn, closing, ticks: next() % 2 === 0, rewrites: next() % 4 === 0 };
 }
 
 const signedBy = (proc: Process | undefined): Row["created_by"] => (proc ? { pid: proc.pid, instance: proc.name, version: "sim" } : CLI);
@@ -221,7 +227,7 @@ function open(world: World, conversation: Conversation, index: number): string {
 	return `${who(proc)} starts${conversation.holder === proc ? " and takes the lease" : ", without the lease"}`;
 }
 
-const PI_SAYS: Record<PiMove, string> = { start: "starts the turn it was handed", write: "writes the turn's message", settle: "settles", esc: "is stopped with Esc and settles", refuse: "refuses what it was handed, silently", type: "runs a message the person typed" };
+const PI_SAYS: Record<PiMove, string> = { start: "starts the turn it was handed", write: "writes the turn's message", settle: "settles", esc: "is stopped and settles", refuse: "refuses what it was handed, silently", type: "runs a message the person typed", enter: "runs what the person sent from the editor, where a stop had put it" };
 
 /** Make `step` happen in `world`, and say what happened in one line. */
 export async function apply(world: World, step: Step): Promise<string> {
@@ -257,8 +263,12 @@ export async function apply(world: World, step: Step): Promise<string> {
 			// the window's tick comes round, or pi would run the person's turns most of the time.
 			if (moves.length === 1 && moves[0] === "type" && c % 3 !== 0) return drains(world, proc, true);
 			const move = pick(moves, c);
+			if (move === "type" && proc.pi.editor.text !== "") {
+				piMove(world, proc, move);
+				return `${who(proc)}: the person types words of their own into the editor, behind what a stop put there, and does not send them`;
+			}
 			piMove(world, proc, move);
-			return `${who(proc)}: pi ${PI_SAYS[move]}`;
+			return `${who(proc)}: pi ${move === "esc" ? (proc.mode === "tui" ? "is stopped with Esc and settles; what it had queued is in the editor" : "is stopped with the page's Stop and settles; it keeps what it had queued") : PI_SAYS[move]}`;
 		}
 		case "process": {
 			if (c % 16 === 0) {
@@ -349,6 +359,9 @@ async function killEveryProcessAndFinish(world: World, numbers: readonly number[
 	return left;
 }
 
+/** The checks today's engine breaks where another extension rewrites every message, and no other does: what `REWRITTEN_HOLDS` excuses there. */
+const BROKEN_BY_REWRITING: readonly string[] = ["a row is delivered once per proof", "I8 attempts count failed hand-overs, a backoff is waited out, and three failures make a dead letter", "a stop and a cancel do what they name", AFTER_RESTART];
+
 export interface Run {
 	/** One line per step, as it happened. */
 	lines: string[];
@@ -364,7 +377,7 @@ export interface Run {
  * restart that ends it. A check `KNOWN` names does not end the run, unless it is the one to `enforce`.
  */
 export async function run(plan: Plan, dir: string, time: Timers, enforce?: string): Promise<Run> {
-	const world = createWorld(dir, time, plan.seconds);
+	const world = createWorld(dir, time, plan.seconds, { ticks: plan.ticks, rewrites: plan.rewrites });
 	const checker = createChecker(world, enforce);
 	const lines: string[] = [];
 	const known: Run["known"] = {};
@@ -372,7 +385,18 @@ export async function run(plan: Plan, dir: string, time: Timers, enforce?: strin
 	const check = (step: number | "end", end = false): Violation | undefined => {
 		const found = checker.check(end);
 		for (const { invariant, message } of found.known) known[invariant] ??= { step, message };
-		return found.violation;
+		return rewritten(found.violation, step);
+	};
+	// In a world where another extension rewrites every message, today's engine cannot prove a row
+	// by its prefix or its words. The checks it breaks (`BROKEN_BY_REWRITING`) are that one defect
+	// there, held under `KNOWN`; every other check fails such a world as it fails any other.
+	const rewritten = (violation: Violation | undefined, step: number | "end"): Violation | undefined => {
+		// The check a run is told to enforce stays itself, in a rewriting world as in any other.
+		if (!violation || !plan.rewrites || !(REWRITTEN_HOLDS in KNOWN) || violation.invariant === enforce || !BROKEN_BY_REWRITING.includes(violation.invariant)) return violation;
+		const broken = { invariant: REWRITTEN_HOLDS, message: `${violation.invariant}: ${violation.message}` };
+		if (enforce === REWRITTEN_HOLDS) return broken;
+		known[REWRITTEN_HOLDS] ??= { step, message: broken.message };
+		return undefined;
 	};
 	for (const [index, step] of plan.steps.entries()) {
 		world.facts = noFacts();
@@ -389,7 +413,7 @@ export async function run(plan: Plan, dir: string, time: Timers, enforce?: strin
 	let violation: Violation | undefined;
 	try {
 		const left = await killEveryProcessAndFinish(world, plan.closing, () => (violation = check("end")) === undefined);
-		if (!violation && left.length) violation = { invariant: AFTER_RESTART, message: `still queued, neither delivered nor reported: ${left.join(", ")}` };
+		if (!violation && left.length) violation = rewritten({ invariant: AFTER_RESTART, message: `still queued, neither delivered nor reported: ${left.join(", ")}` }, "end");
 		// Once more with nothing new to look at, for what can only be said when the schedule is over.
 		world.facts = noFacts();
 		violation ??= check("end", true);
