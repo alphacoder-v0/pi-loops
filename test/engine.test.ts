@@ -1905,7 +1905,15 @@ test("[settle-successor] a run that was handed back with its prompt written is d
 	claimIn(w.store, "c1");
 	w.runs.push(HANDED_BACK);
 	w.written("c1");
+	// The successor is written while the row still has its claim: a process that stops between the two leaves the claim, and the closing runs again.
+	const append = w.store.appendIfAbsent.bind(w.store);
+	const claimedAtAppend: unknown[] = [];
+	w.store.appendIfAbsent = (...args) => {
+		claimedAtAppend.push(w.store.list("s").find((r) => r.id === "c1")?.run?.id);
+		return append(...args);
+	};
 	await drain("s", w.store, w.executor, T0, w.sinks);
+	assert.deepEqual(claimedAtAppend, ["run-c1"]);
 	const next = plainRunId("j", "after c1");
 	const [successor] = w.store.list("s");
 	assert.deepEqual([w.store.list("s").length, successor.id, successor.source, successor.run, successor.attempts, successor.collapse_key, successor.payload?.text, successor.created_by.pid], [1, next, "cron:j", undefined, 0, "cron:j", `[Trigger ${next}] go`, 7]);
