@@ -19,7 +19,7 @@ import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, type RunReq
 import { openWhere, ownerSession, runsHere, whereRuns, type OwnerView } from "./job-owner.ts";
 import { shortSessionId } from "./session-head.ts";
 import type { BackgroundExecutor } from "./background-executor.ts";
-import { jobQueued, plainCollapseKey, plainJobRow, plainRunId, runningRun } from "./engine.ts";
+import { jobQueued, plainCollapseKey, plainJobRow, plainRunId, runningRun, sessionFileHas } from "./engine.ts";
 import { oneShotDone } from "./settle.ts";
 import { RequestStore, type Row } from "./requests.ts";
 import { RunList, STOPPED_BY_PERSON } from "./run-list.ts";
@@ -113,6 +113,8 @@ export interface PlainJobLeases {
 	hostRuns?(sessionId: string): boolean;
 	/** Why no host runs anything right now, when that is so (see OwnerView.hostPaused). */
 	hostPaused?(): string | undefined;
+	/** The file of a conversation pi-loops knows, when it knows one: read to see whether a prompt is in it. */
+	sessionFile?(sessionId: string): string | undefined;
 }
 
 /**
@@ -482,6 +484,17 @@ export class LoopScheduler {
 	 * it): its slot is spent, so the bookkeeping is finished from the record instead of rolling back
 	 * and running it a second time. Only a run with no record is owed again.
 	 */
+	/** Whether `[Trigger <runId>] ` is in the conversation's file, when pi-loops knows the file. */
+	private promptWritten(sessionId: string, runId: string): boolean {
+		const file = this.leases?.sessionFile?.(sessionId);
+		if (!file) return false;
+		try {
+			return sessionFileHas(file, runId);
+		} catch {
+			return false; // a file that cannot be read proves nothing: the slot is owed, as before
+		}
+	}
+
 	private clearStaleRunning(jobs: LoopJob[]): LoopJob[] {
 		// The wall clock, not `this.now()`: `os.uptime()` is measured against it, so the boot instant
 		// is only meaningful in the same terms — which is why a test cannot move this comparison.
@@ -517,6 +530,14 @@ export class LoopScheduler {
 				job.consecutiveFailures = record.ok ? undefined : (job.consecutiveFailures ?? 0) + 1;
 				job.interruptions = undefined;
 				if (job.schedule.kind === "once" && (record.ok || job.runCount >= 2)) retired.push(job);
+				continue;
+			}
+			// A plain job's marker is what an earlier version left: it ran the turn with no row, under an
+			// id of its own. When that turn's prompt is in the conversation, the slot is spent, as a row
+			// whose prompt is written is delivered: asked again under the slot's derived id, the same
+			// prompt would be answered twice.
+			if (!job.stateful && job.sessionId && this.promptWritten(job.sessionId, runId)) {
+				job.runCount++;
 				continue;
 			}
 			// The run that died is owed again: roll the bookkeeping back so the next tick re-fires it

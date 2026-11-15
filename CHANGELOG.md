@@ -43,7 +43,8 @@ All notable changes to pi-loops are documented here. The format follows
   the middle of it.** When pi-loops in the background stopped after it wrote a job's prompt into
   the conversation and before it recorded the run, the next start ran the same prompt again. The
   prompt is a queued request first now, under an id that comes from its slot, so the next start
-  finds the prompt in the conversation and does not ask it again.
+  finds the prompt in the conversation and does not ask it again. A turn that pi-loops 0.24.2
+  left in that state when you upgraded is not asked again either.
 - **A turn is not handed to pi beside one that pi holds and has not written.** When pi held a turn
   it had not started (a goal's continuation, a claimed finding's prompt, a message from the page),
   a message that sorts before it in the queue could be handed over as well, and one answer could

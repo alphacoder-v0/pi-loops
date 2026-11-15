@@ -98,6 +98,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	};
 	const heldLeases: PlainJobLeases = {
 		heldEpoch: (sessionId) => (leases.holds(sessionId, me()) ? leases.read(sessionId)?.epoch : undefined),
+		sessionFile: (sessionId) => leases.read(sessionId)?.sessionFile,
 		holderOf: (sessionId) => liveHolderPid(leases, sessionId),
 	};
 	/** The runs that are going in this process: the loops' runs and the held turns, one list. */

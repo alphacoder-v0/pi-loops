@@ -1323,6 +1323,29 @@ test("/cron run while the job's prompt is queued moves no stamp", async () => {
 	}
 });
 
+test("a marker that an earlier version left on a plain job, for a turn whose prompt is in the conversation, is a slot that is spent: the prompt is not asked again", async () => {
+	const dir = tmp("pi-loops-sched-");
+	// The conversation as 0.24.2 left it: its background process wrote the prompt under a run id of its own, and died.
+	const file = path.join(dir, "mine.jsonl");
+	const entry = (id: string) => `${JSON.stringify({ type: "message", id: `e-${id}`, timestamp: new Date().toISOString(), message: { role: "user", content: `[Trigger ${id}] remind me` } })}\n`;
+	fs.writeFileSync(file, entry("run-written"));
+	const leases = { heldEpoch: () => 1, holderOf: () => undefined, sessionFile: (id: string) => (id === "mine" ? file : undefined) };
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }), leases });
+	try {
+		const fired = new Date(Date.now() - 30_000).toISOString();
+		const base = { stateful: false, sessionId: "mine", schedule: { kind: "every" as const, ms: 3_600_000 }, createdAt: new Date(Date.now() - 3_700_000).toISOString(), prompt: "remind me", lastDueAt: fired, lastFiredAt: fired };
+		const written = await sched.store.add(makeJob({ ...base, name: "written", running: { runId: "run-written", pid: 999999, startedAt: fired } }));
+		const unwritten = await sched.store.add(makeJob({ ...base, name: "unwritten", running: { runId: "run-unwritten", pid: 999999, startedAt: fired } }));
+		await sched.tick();
+		const after = Object.fromEntries(sched.store.load().map((j) => [j.id, j]));
+		assert.deepEqual([after[written.id].running, after[written.id].lastFiredAt, after[written.id].owedSlot, after[written.id].runCount, after[written.id].interruptions], [undefined, fired, undefined, 1, undefined], "spent: the stamps stand, the slot is counted, and nothing is owed");
+		assert.deepEqual(rowsFor(dir, "mine").map((r) => r.source), [`cron:${unwritten.id}`], "only the turn that wrote no prompt is asked again");
+		assert.equal(after[unwritten.id].running, undefined);
+	} finally {
+		await sched.stop();
+	}
+});
+
 test("a window's clock waits for a plain job whose row a run has claimed: the slot stays owed, and /cron run says it is already running", async () => {
 	const dir = tmp("pi-loops-sched-");
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }) });

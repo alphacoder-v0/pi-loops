@@ -246,6 +246,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		instance,
 		leases: {
 			heldEpoch: (id) => binding.heldEpoch(id),
+			sessionFile: (id) => new LeaseStore(dir).read(id)?.sessionFile,
 			holderOf: (id) => binding.holderOf(id),
 			standsAside: () => binding.standingAside,
 			holderKind: (id) => binding.holderKindOf(id),
