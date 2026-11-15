@@ -16,6 +16,7 @@ import { until } from "./page-harness.ts";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { stamp } from "../src/schedule.ts";
 
 /**
  * The page server in this process over a stand-in pi, with one conversation open the way pi-loops
@@ -1185,14 +1186,12 @@ test("the panel and /cron agree about what this project is", { timeout: 30_000 }
 });
 
 test("with nothing running loops, the panel promises no next run, says paused, and still shows the last check", { timeout: 30_000 }, async () => {
-	// Loops run in the background now. Stopped, the panel kept showing "next 09:00" from next-runs.json
-	// (a window writes it while no background process runs). A loop's runs are the activity strip's.
+	// The panel computes a job's next time from the job, but promises it only while something runs it.
 	const dir = tmp("pi-loops-web-");
 	const project = tmp("pi-loops-proj-");
 	const loops = path.join(dir, "loops");
 	fs.mkdirSync(loops, { recursive: true });
 	fs.writeFileSync(path.join(loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-a", name: "nightly", schedule: { kind: "every", ms: 3600_000 }, stateful: true, prompt: "p", cwd: project, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 1, skippedOverlap: 0 }] }));
-	fs.writeFileSync(path.join(loops, "next-runs.json"), JSON.stringify({ at: new Date().toISOString(), next: { "cron-a": new Date(Date.now() + 3600_000).toISOString() } }));
 	const finished = new Date().toISOString();
 	fs.writeFileSync(path.join(loops, "runs.jsonl"), JSON.stringify({ runId: "run-1", jobId: "cron-a", jobName: "nightly", stateful: true, cwd: project, pid: 1, startedAt: finished, finishedAt: finished, ok: true, findings: 2, droppedFindings: 0, stateUpdated: true }) + "\n");
 	// A rule check's result, then a loop run's (which is not a check): the panel's "last check" is the first.
@@ -1234,26 +1233,24 @@ test("this chat's own plain job runs in the window, so the panel does not call i
 	}
 });
 
-test("the panel shows the next run of a cron-expression job, and never a time that has passed", { timeout: 30_000 }, async () => {
-	// The page used to work this out itself and understood only `every <interval>`; a `0 9 * * *`
-	// job showed nothing. It reads the scheduler's answers now — and refuses a stale one, because a
-	// next run in the past is a job that fired before the file was rewritten, not a next run.
+test("the panel shows each job's next run from the job itself, with no file between", { timeout: 30_000 }, async () => {
+	// The page server uses the scheduler's evaluator on each job when it builds the state.
 	const dir = tmp("pi-loops-web-");
 	const project = tmp("pi-loops-proj-");
 	const loops = path.join(dir, "loops");
 	fs.mkdirSync(loops, { recursive: true });
-	const job = (id: string) => ({
-		id, schedule: { kind: "cron", expr: "0 9 * * *" }, stateful: true, prompt: "p", cwd: project,
-		enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0,
+	const createdAt = stamp(Date.now() - 86_400_000);
+	const job = (id: string, schedule: unknown, enabled = true, extra = {}) => ({
+		id, schedule, stateful: true, prompt: "p", cwd: project, enabled, catchUp: true, createdAt, runCount: 0, skippedOverlap: 0, ...extra,
 	});
-	fs.writeFileSync(path.join(loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [job("cron-soon"), job("cron-stale")] }));
-	// A loop has a next run only while something runs it.
+	const fired = Math.floor((Date.now() - 600_000) / 1000) * 1000;
+	fs.writeFileSync(path.join(loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [
+		job("cron-soon", { kind: "cron", expr: "0 9 * * *" }),
+		job("every-fired", { kind: "every", ms: 3_600_000 }, true, { lastFiredAt: stamp(fired) }),
+		job("cron-off", { kind: "cron", expr: "0 9 * * *" }, false),
+		job("every-bad", { kind: "every", ms: 5 }),
+	] }));
 	fs.writeFileSync(path.join(loops, "host-service.json"), JSON.stringify({ v: 1, pid: process.pid, startedAt: new Date().toISOString() }));
-	const soon = new Date(Date.now() + 3 * 3600_000).toISOString();
-	fs.writeFileSync(
-		path.join(loops, "next-runs.json"),
-		JSON.stringify({ at: new Date().toISOString(), next: { "cron-soon": soon, "cron-stale": new Date(Date.now() - 60_000).toISOString() } }),
-	);
 
 	const answering = [
 		"#!/usr/bin/env node",
@@ -1274,11 +1271,19 @@ test("the panel shows the next run of a cron-expression job, and never a time th
 	const web = await startWeb(dir, answering);
 	try {
 		const { url, token } = web;
-		const state = (await (await fetch(`${url}state?token=${token}`)).json()) as any;
-		const byId = Object.fromEntries(state.automation.jobs.map((j: any) => [j.id, j.next]));
-
-		assert.equal(byId["cron-soon"], soon, "a cron expression now has a next run at all");
-		assert.equal(byId["cron-stale"], undefined, "and a stale answer is shown as none rather than as a past time");
+		const response = await fetch(`${url}state?token=${token}`);
+		assert.equal(response.status, 200);
+		const state = (await response.json()) as any;
+		assert.equal(state.automation.jobs.length, 4, "an unusable schedule does not fail the state request");
+		const byId = Object.fromEntries(state.automation.jobs.map((j: any) => [j.id, j]));
+		const soon = byId["cron-soon"].next;
+		assert.equal(typeof soon, "string");
+		assert.ok(Date.parse(soon) > Date.now());
+		assert.equal(new Date(soon).getHours(), 9);
+		assert.equal(new Date(soon).getMinutes(), 0);
+		assert.equal(byId["every-fired"].next, stamp(fired + 3_600_000));
+		assert.equal(byId["cron-off"].next, undefined);
+		assert.equal(byId["every-bad"].next, undefined);
 	} finally {
 		await web.stop();
 	}

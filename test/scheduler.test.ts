@@ -1207,33 +1207,6 @@ test("a cwd that stays missing does eventually disable the job", async () => {
 	await sched.stop();
 });
 
-test("pi-loops writes when each job runs next, including the cron expressions nothing else can work out", async () => {
-	// The browser panel computed this itself and understood only `every <interval>`, so a job on
-	// `0 9 * * *` — the first example in the README — showed no next run at all. A second cron
-	// parser in a page with no dependencies was the wrong fix; the host has the evaluator, so it
-	// writes the answers where that page already reads pi-loops' files.
-	const dir = tmp("pi-loops-sched-");
-	const sched = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }) });
-	const cron = await sched.store.add(makeJob({ name: "nightly", schedule: { kind: "cron", expr: "0 9 * * *" }, cwd: dir }));
-	const off = await sched.store.add(makeJob({ name: "paused", schedule: { kind: "cron", expr: "0 9 * * *" }, cwd: dir, enabled: false }));
-	await sched.tick();
-
-	const file = path.join(dir, "next-runs.json");
-	const doc = JSON.parse(fs.readFileSync(file, "utf8"));
-	assert.ok(doc.next[cron.id], "the cron job has a next run");
-	assert.ok(Date.parse(doc.next[cron.id]) > Date.now(), "and it is ahead of us");
-	assert.equal(doc.next[off.id], undefined, "a disabled job has none");
-
-	// The timestamp moves every tick and the answers do not: an unchanged tick rewrites nothing, or
-	// a machine with one nightly job writes this file 2880 times a day.
-	const before = fs.statSync(file).mtimeMs;
-	await new Promise((r) => setTimeout(r, 20));
-	await sched.tick();
-	assert.equal(fs.statSync(file).mtimeMs, before, "an unchanged tick leaves it alone");
-
-	await sched.stop();
-});
-
 test("a dead marker whose run record exists is cleared, its bookkeeping finished, and its slot not re-run", async () => {
 	// The process died between appending the run record and the store update after it: the run
 	// happened. Rolling the stamps back ran it a second time.
@@ -1379,21 +1352,6 @@ test("a process that dies with several runs in flight counts none of them toward
 			assert.deepEqual([job.id, job.enabled, job.interruptions], [job.id, true, 2], "retried, not counted");
 			assert.ok(job.owedSlot, "and owed again");
 		}
-	} finally {
-		await sched.stop();
-	}
-});
-
-test("a window that fires its plain job writes the job's next run at once, not a tick later", async () => {
-	// The browser panel showed no next run for a third of a minute after each fire: the next-runs
-	// file was written only on a tick, and the background process's still had the one just used.
-	const dir = tmp("pi-loops-sched-");
-	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }), writesNextRuns: () => false });
-	try {
-		const job = await sched.store.add(makeJob({ stateful: false, sessionId: "mine", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 61_000).toISOString(), prompt: "ping" }));
-		await sched.tick();
-		const doc = JSON.parse(fs.readFileSync(path.join(dir, "next-runs.json"), "utf8"));
-		assert.ok(Date.parse(doc.next[job.id]) > Date.now(), `the next run, ahead of us, right after the fire; got ${doc.next[job.id]}`);
 	} finally {
 		await sched.stop();
 	}

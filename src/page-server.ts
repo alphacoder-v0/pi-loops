@@ -20,7 +20,7 @@ import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, 
 import { buildSessionProjection, migrateSessionEntries, parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName, shouldReadAgain } from "./lease.ts";
 import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom, machineWide } from "./activity.ts";
-import { formatSchedule, scheduleWords, stamp } from "./schedule.ts";
+import { formatSchedule, nextRunStamp, scheduleWords, stamp } from "./schedule.ts";
 import { type Look, lookLine, watchOf } from "./path-precheck.ts";
 import { failingJobs } from "./job-health.ts";
 import { loopSignal, type LoopSignal, SIGNAL_WINDOW_MS } from "./job-signal.ts";
@@ -320,12 +320,6 @@ function isUnder(child: string, ancestor: string) {
 	const realPath = realpathish(child);
 	const rel = path.relative(realRoot, realPath);
 	return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-}
-
-/** An ISO time, but only if it is still ahead of us. */
-function futureOnly(iso: any) {
-	const at = Date.parse(iso ?? "");
-	return Number.isFinite(at) && at > Date.now() ? iso : undefined;
 }
 
 /* ------------------------------------------------------------------ what a prompt needs first */
@@ -1140,26 +1134,6 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const LOOPBACK = HOST_BIND === "127.0.0.1" || HOST_BIND === "::1" || HOST_BIND === "localhost";
 
 	/**
-	 * When each job runs next, as the scheduler worked it out.
-	 *
-	 * This used to be computed here, and understood only `every <interval>` — so a job on a cron
-	 * expression, which is the first example in the README, showed no next run at all. Writing a second
-	 * cron parser into this file was the wrong fix: the answer is a pure function of the job and the
-	 * clock, and the scheduler already has the evaluator. It writes the answers to
-	 * `next-runs.json` beside the store when one of them changes, and this reads them like every other
-	 * file pi-loops keeps.
-	 *
-	 * Missing file, older pi-loops, no host yet: no next run shown, which is what was shown before.
-	 */
-	function nextRuns() {
-		// The scheduler's one file. If two machines shared a `$HOME` they would both run every job and
-		// overwrite one another's answers here; that is unsupported rather than handled
-		// (docs/design.md §19).
-		const doc = readJson(path.join(LOOPS_DIR, "next-runs.json"), { next: {} });
-		return doc?.next && typeof doc.next === "object" ? doc.next : {};
-	}
-
-	/**
 	 * The run log and the inbox, read for the loop rows' signal once per change of either file: the
 	 * snapshot is rebuilt every 8 seconds per open page, and both files grow with every run.
 	 */
@@ -1244,7 +1218,6 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		 */
 		const inThisProject = (j: any) => sameProject(j.cwd, cwd);
 		const allJobs = jobsFile.jobs ?? [];
-		const nexts = nextRuns();
 		const now = Date.now();
 		const hostPid = liveHostPid(LOOPS_DIR);
 		const hostUp = hostPid !== undefined;
@@ -1288,12 +1261,9 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			// is the position in a numbered list — which this panel does not have, so telling someone to
 			// use one was telling them to go and find a terminal. A name or a full id resolves anywhere.
 			ref: j.name || j.id,
-			// Only for a job that is actually going to run: disabled, or belonging to another machine,
-			// and a next run would be a promise nothing intends to keep — which is the rule `/cron`
-			// follows. A time that has already passed is a stale answer rather than a next run (the job
-			// fired and no tick has rewritten the file yet), and saying nothing beats saying something
-			// visibly wrong.
-			next: j.enabled && runsSomewhere(owned(j), view) ? futureOnly(nexts[j.id]) : undefined,
+			// Only for a job that is actually going to run, which is the rule `/cron` follows. The time
+			// is computed from the job when the page asks for its state.
+			next: j.enabled && runsSomewhere(owned(j), view) ? nextRunStamp(j, now) : undefined,
 			// Where it runs when that is not here, in the terminal's words (src/job-owner.ts). A disabled
 			// one runs nowhere, and the card already says it is off.
 			asleep: j.enabled ? asleepNote(owned(j), view) : undefined,

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { clampFuture, computeDue, computeNext, cronLatestBetween, cronMatches, cronNextAfter, localOffset, parseCron, parseDuration, parseSchedule, scheduleWords, stamp } from "../src/schedule.ts";
+import { clampFuture, computeDue, computeNext, cronLatestBetween, cronMatches, cronNextAfter, localOffset, nextRunStamp, parseCron, parseDuration, parseSchedule, scheduleWords, stamp } from "../src/schedule.ts";
 
 const local = (y: number, mo: number, d: number, h = 0, mi = 0, s = 0) => new Date(y, mo - 1, d, h, mi, s).getTime();
 
@@ -132,6 +132,48 @@ test("computeDue for every/once", () => {
 	assert.equal(computeDue({ schedule: once, createdAt, lastDueAt: createdAt + 10 * 60_000 }, createdAt + 20 * 60_000), undefined);
 	assert.equal(computeDue({ schedule: once, createdAt }, createdAt + 20 * 60_000), createdAt + 10 * 60_000);
 	assert.equal(computeNext({ schedule: every, createdAt }, createdAt + 31 * 60_000), createdAt + 60 * 60_000);
+});
+
+test("nextRunStamp advances an every job only when its next time is reached", () => {
+	const t = local(2026, 11, 2, 8, 0);
+	const job = { schedule: { kind: "every", ms: 60_000 }, createdAt: stamp(t) };
+	assert.equal(nextRunStamp(job, t + 10_000), stamp(t + 60_000));
+	assert.equal(nextRunStamp(job, t + 60_000 - 1), stamp(t + 60_000));
+	assert.equal(nextRunStamp(job, t + 60_000), stamp(t + 120_000));
+});
+
+test("nextRunStamp bases an every job on its last fire", () => {
+	const t = local(2026, 11, 2, 8, 0);
+	assert.equal(nextRunStamp({ schedule: { kind: "every", ms: 60_000 }, createdAt: stamp(t), lastFiredAt: stamp(t + 90_000) }, t + 100_000), stamp(t + 150_000));
+});
+
+test("nextRunStamp finds the next cron time strictly after now", () => {
+	const createdAt = stamp(local(2026, 11, 1));
+	const job = { schedule: { kind: "cron", expr: "0 9 * * *" }, createdAt };
+	assert.equal(nextRunStamp(job, local(2026, 11, 2, 8, 0)), stamp(local(2026, 11, 2, 9, 0)));
+	assert.equal(nextRunStamp(job, local(2026, 11, 2, 9, 0)), stamp(local(2026, 11, 3, 9, 0)));
+});
+
+test("nextRunStamp ends a one-shot when it fires or its time passes", () => {
+	const t = local(2026, 11, 2, 8, 0);
+	const at = t + 3_600_000;
+	const job = { schedule: { kind: "once", at }, createdAt: stamp(t) };
+	assert.equal(nextRunStamp(job, t), stamp(at));
+	assert.equal(nextRunStamp(job, at), undefined);
+	assert.equal(nextRunStamp({ ...job, lastFiredAt: stamp(t) }, t), undefined);
+});
+
+test("nextRunStamp returns undefined for unusable jobs and ignores enabled", () => {
+	const now = local(2026, 11, 2, 8, 0);
+	for (const job of [
+		{},
+		{ schedule: { kind: "every", ms: 5 }, createdAt: stamp(now) },
+		{ schedule: { kind: "cron", expr: "not a cron" }, createdAt: stamp(now) },
+		{ schedule: { kind: "every", ms: 60_000 } },
+		{ schedule: { kind: "every", ms: 60_000 }, createdAt: 5 },
+	]) assert.doesNotThrow(() => assert.equal(nextRunStamp(job, now), undefined));
+	const enabled = { schedule: { kind: "every", ms: 60_000 }, createdAt: stamp(now), enabled: true };
+	assert.equal(nextRunStamp(enabled, now), nextRunStamp({ ...enabled, enabled: false }, now));
 });
 
 test("schedule aliases: hourly/daily/weekly, english phrases, chinese", () => {

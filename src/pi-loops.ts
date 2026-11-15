@@ -238,7 +238,6 @@ export default function piLoops(pi: ExtensionAPI) {
 	const subagentSlots = new SubagentSlots(() => config.maxConcurrentRuns);
 
 	const scheduler: LoopScheduler = new LoopScheduler({
-		writesNextRuns: () => !liveHostRecord(),
 		dir,
 		hop,
 		slots: subagentSlots,

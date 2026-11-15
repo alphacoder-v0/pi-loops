@@ -443,3 +443,17 @@ export function computeNext(input: DueInput, now: number): number | undefined {
 			return input.lastFiredAt === undefined && schedule.at > now ? schedule.at : undefined;
 	}
 }
+
+/**
+ * When a job runs next, as a stamp, or undefined: its schedule or its creation time is unusable,
+ * or it is a one-shot that has fired or whose time has passed. It takes a job as `jobs.json` holds
+ * it, so a reader of that file asks the question the scheduler asks, and no file is in between.
+ * It does not look at `enabled`: whether a job runs at all is the caller's question.
+ */
+export function nextRunStamp(job: { schedule?: unknown; createdAt?: unknown; lastFiredAt?: unknown }, now: number): string | undefined {
+	if (!isValidSchedule(job.schedule)) return undefined;
+	const createdAt = typeof job.createdAt === "string" ? Date.parse(job.createdAt) : NaN;
+	const fired = typeof job.lastFiredAt === "string" ? Date.parse(job.lastFiredAt) : NaN;
+	const at = computeNext({ schedule: job.schedule, createdAt, lastFiredAt: Number.isFinite(fired) ? fired : undefined }, now);
+	return at === undefined || !Number.isFinite(at) ? undefined : stamp(at);
+}

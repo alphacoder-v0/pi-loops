@@ -16,7 +16,6 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `runs.jsonl`, `triggers-audit.jsonl` | run log (halved past 1 MB) and trigger audit (2 MB) |
 | `spend.json` | per-day totals of what rotation dropped from the run log, so a daily budget still counts it |
 | `sessions/<job-id>/`, `sessions/triggers-<project>-<hash>/` | sub-agent transcripts (20 per job, 40 per project's checks; the hash of the project's path keeps two projects named alike apart) |
-| `next-runs.json` | job id → when it runs next, as computed by pi-loops, or by a window while pi-loops is not running (`{ at, next }`). Written only when an answer changes, so it can be older than the last tick; the browser panel reads it rather than parsing schedules a second time |
 | `presence/` | records written by pi-loops 0.22 windows, read only during an upgrade |
 | `host-service.json`, `host.log` | pi-loops process record (pid, version, heartbeat, the page's address and token, or why the page is waiting; 0600) and log |
 | `host-spawns.json` | pi-loops start attempts, the retry backoff and the crash pause |

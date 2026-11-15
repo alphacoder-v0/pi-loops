@@ -294,15 +294,14 @@ weaker, and worth converting whenever one of them breaks.
 - [x] **When each job runs next, whatever its schedule.** The page used to work this out itself and
       understood only `every <interval>`, so a job on `0 9 * * *` — the first example in the
       README — showed nothing. A second cron parser in a page with no dependencies was the wrong
-      fix: pi-loops has the evaluator, and writes the answers to
-      `next-runs.json` beside the store when one of them changes; when pi-loops is not running, a window
-      writes the same file, so a person with only plain jobs still sees their next run. Another
+      fix: pi-loops has the evaluator, and the page's server asks it for each job when the page asks
+      for its state, so no file is in between. Another
       conversation's plain job is marked as `/cron` marks it, from the same function: open in a
       terminal, in the page, in the background, or resume it to run. A time that has already passed is
       shown as no next run rather than as a past one, a job that is disabled or belongs to another
       machine is not promised one, and a next run that is not today says which day it is.
-      `test/scheduler.test.ts`: *pi-loops writes when each job runs next*.
-      `test/web.test.ts`: *the panel shows the next run of a cron-expression job*.
+      `test/schedule.test.ts`: *nextRunStamp finds the next cron time strictly after now*.
+      `test/web.test.ts`: *the panel shows each job's next run from the job itself, with no file between*.
       `test/web-page.test.ts`: *a next run in April does not render as a time of day*.
 - [x] The name of a job is never abbreviated: it is what `/cron set <name> …` takes, so a clipped
       one is a name you cannot act on. It wraps; the schedule beside it does not break in half.
@@ -354,9 +353,8 @@ weaker, and worth converting whenever one of them breaks.
       suggestion stays dismissed. `test/web-page.test.ts`: *a loop row shows its 30-day signal and
       one suggestion; Keep and the suggestion post only the job, the key and the choice*; *right
       after Apply the row's next run and the note say one time, in one format, and the note is set
-      apart from the signal*; the row never shows a next time earlier than now: once the applied
-      time has passed, it shows the store's (*an applied next run that has passed gives way to the
-      store's, so a row never shows a next time earlier than now*); *a
+      apart from the signal*; *a loop row's next run is the one in its state: a suggestion's answer
+      does not stand in for it*; *a
       suggestion that changed under the page says so instead of acting; nothing applies itself*;
       `test/page-server.test.ts`: *a loop row carries its run, its signal and one suggestion; apply
       writes one patch and a cron_control_plane row, Keep only the kept key, a stale key is 409*; *a

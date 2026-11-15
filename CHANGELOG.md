@@ -71,6 +71,9 @@ All notable changes to pi-loops are documented here. The format follows
 - **A loop or a rule check that keeps failing waits 1 minute after the third failure, then 5
   minutes, 30 minutes, 2 hours and 6 hours.** It waited 5 minutes after the third and doubled to
   6 hours. One table now gives every wait after a failure, the one a queued prompt already used.
+- **The page works out each job's next run when it is asked.** `next-runs.json` is gone: nothing
+  writes it and nothing reads it. A loop's next run on the page is right at once after an edit or
+  a run; it could be one tick behind.
 
 ## [0.24.2] - 2026-11-11
 

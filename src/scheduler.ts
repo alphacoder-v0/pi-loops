@@ -7,14 +7,13 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { PresenceRegistry, type PresenceEntry, type PresenceKind, type PresenceSelf } from "./presence.ts";
-import * as path from "node:path";
 import { Inbox } from "./inbox.ts";
-import { pidAlive, writeFileAtomic } from "./lock.ts";
+import { pidAlive } from "./lock.ts";
 import { composeCheckerPrompt, composeLoopPrompt, findingKind, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
-import { computeDue, computeNext, formatLocal, formatLocalZoned, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
+import { computeDue, formatLocal, formatLocalZoned, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
 import { backoffFor, FAILING_AFTER, failurePause } from "./backoff.ts";
 import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, type RunRequester, newId } from "./store.ts";
 import { openWhere, ownerSession, runsHere, whereRuns, type OwnerView } from "./job-owner.ts";
@@ -150,11 +149,9 @@ export interface SchedulerOptions {
 	hop?: number;
 	/** Live settings (re-read on every use so a config reload takes effect). */
 	getSettings?: () => SchedulerSettings;
-	/** A window: whether it should write next-runs.json this tick (no host is running to do it). */
-	writesNextRuns?: () => boolean;
 	/** Does pi still have this session? Plain jobs of deleted sessions are disabled (and `gc()` removes them). */
 	sessionExists?: (sessionId: string) => boolean;
-	/** "host" = the always-on process: it also writes next-runs.json and sweeps dead sessions. Default "interactive". */
+	/** "host" = the always-on process: it also sweeps dead sessions. Default "interactive". */
 	kind?: PresenceKind;
 	/**
 	 * Which jobs this scheduler dispatches. The host passes "loops only", a window "the plain jobs of
@@ -197,15 +194,11 @@ export class LoopScheduler {
 	private readonly now: () => number;
 	private readonly hop: number;
 	private readonly getSettings: () => SchedulerSettings;
-	private readonly writesNextRuns?: () => boolean;
 	/** Every sub-agent this process starts takes a slot from here, loop runs and trigger checks alike. */
 	readonly slots: SubagentSlots;
 	private readonly sessionExists?: (sessionId: string) => boolean;
 	readonly kind: PresenceKind;
 	private lastDeadSessionScan = 0;
-	/** The last set of next runs written, so an unchanged tick writes nothing. */
-	private lastNextRuns: string | undefined;
-	private readonly nextRunsFile: string;
 	private timer: NodeJS.Timeout | undefined;
 	private ticking = false;
 	private startedAt = 0;
@@ -226,10 +219,6 @@ export class LoopScheduler {
 		this.store = new JobStore(opts.dir);
 		this.inbox = new Inbox(opts.dir);
 		this.requests = new RequestStore(opts.dir);
-		// Written by the host alone. A cron expression is matched against local time, so if two
-		// machines sharing a `$HOME` both ran, they would write different answers over one another —
-		// which is why that arrangement is unsupported rather than handled (docs/design.md §19).
-		this.nextRunsFile = path.join(opts.dir, "next-runs.json");
 		this.getSession = opts.getSession;
 		this.hooks = opts.hooks ?? {};
 		this.tickMs = opts.tickMs ?? DEFAULT_TICK_MS;
@@ -237,7 +226,6 @@ export class LoopScheduler {
 		this.now = opts.now ?? Date.now;
 		this.hop = opts.hop ?? 0;
 		this.getSettings = opts.getSettings ?? (() => ({ maxConcurrentRuns: MAX_CONCURRENT_RUNS, catchUp: true }));
-		this.writesNextRuns = opts.writesNextRuns;
 		this.slots = opts.slots ?? new SubagentSlots(() => this.getSettings().maxConcurrentRuns);
 		this.instance = opts.instance ?? newId("sched");
 		this.leases = opts.leases;
@@ -422,15 +410,6 @@ export class LoopScheduler {
 				r.ctrl.abort();
 				this.log(`cron ${r.label}: removed while it ran; stopped run ${runId}`);
 			}
-			// What the store cannot say and every reader wants: when each job runs next. It is a pure
-			// function of the job, but computing it needs the cron evaluator — which the browser
-			// front end does not have and should not grow a second copy of. The host writes the
-			// answers where that front end already reads pi-loops' own files, and only when one of
-			// them changes, which for a nightly job is once a day.
-			// The host writes it; with no host running a window does, or the browser front end of a person
-			// with only plain jobs (who never starts a host) showed no next run at all. Every writer
-			// computes the same function of the same store, so two windows writing it agree.
-			if (host || this.writesNextRuns?.()) this.writeNextRuns(jobs, now);
 			if (host && this.sessionExists && now - this.lastDeadSessionScan >= DEAD_SESSION_SCAN_MS) {
 				this.lastDeadSessionScan = now;
 				try {
@@ -504,34 +483,6 @@ export class LoopScheduler {
 				j.lastError = `disabled: session ${shortSessionId(job.sessionId!)} ${DEAD_SESSION_MARKER}`;
 			});
 			this.log(`cron ${job.name ?? job.id}: disabled, its session ${shortSessionId(job.sessionId!)} no longer exists`, undefined, job);
-		}
-	}
-
-	/**
-	 * `next-runs.json`: job id → when it next runs, as the scheduler itself computes it.
-	 *
-	 * Derived, so it lives beside the store rather than in it — a next run is not a fact about the
-	 * job, it is an answer about the clock, and `jobs.json` is what several processes take a lock to
-	 * edit. Best effort throughout: a reader that finds it missing or stale shows no next run, which
-	 * is what it showed before this existed.
-	 */
-	private writeNextRuns(jobs: LoopJob[], now: number): void {
-		const next: Record<string, string> = {};
-		for (const job of jobs) {
-			if (!job.enabled || !isValidSchedule(job.schedule)) continue;
-			const at = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined }, now);
-			if (at !== undefined) next[job.id] = stamp(at);
-		}
-		const text = `${JSON.stringify({ at: stamp(now), next }, null, 1)}\n`;
-		// The timestamp moves every tick and the answers do not, so the comparison ignores it: this
-		// writes when a job fires or is edited, not 2880 times a day.
-		const fingerprint = JSON.stringify(next);
-		if (fingerprint === this.lastNextRuns) return;
-		this.lastNextRuns = fingerprint;
-		try {
-			writeFileAtomic(this.nextRunsFile, text);
-		} catch {
-			/* a derived file is a courtesy; never a reason to disturb the tick */
 		}
 	}
 
@@ -836,13 +787,6 @@ export class LoopScheduler {
 			// an upgrade): the row this call wrote would run the slot a second time. Only that row goes.
 			if (wrote) this.requests.remove(sessionId, [runId]);
 			return "lost";
-		}
-		// Its next run moved: written now, so the browser panel does not show a blank one until the
-		// next tick of whichever process writes it. Every writer computes the same answer.
-		try {
-			this.writeNextRuns(this.store.load(), now);
-		} catch {
-			/* a derived file is a courtesy (see writeNextRuns); the tick writes it too */
 		}
 		return collapsed ? "collapsed" : "fired";
 	}
