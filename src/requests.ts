@@ -154,9 +154,10 @@ function readLine(line: string): { row: Row; version: 2 | 3 } | undefined {
 	const target = row.target as unknown;
 	if (target !== undefined && !(target && typeof target === "object" && (typeof (target as { id?: unknown }).id === "string" || ((target as { current?: unknown }).current === true && typeof (target as { started_before?: unknown }).started_before === "string")))) return undefined;
 	// A claim of the wrong shape is not a free row: the line is kept, unread, as a newer one is. Only
-	// an input is ever a run, so a claim on a stop or a cancel is a wrong shape too.
+	// an input is ever a run, so a claim on a stop or a cancel is a wrong shape too. So is a claim on
+	// a version 2 line: no version writes one, and the version that reads such a line sees no claim.
 	const run = (row as { run?: unknown }).run as Record<string, unknown> | null | undefined;
-	if (run !== undefined && (row.kind !== "input" || !run || typeof run !== "object" || typeof run.id !== "string" || typeof run.pid !== "number" || typeof run.started_at !== "string" || (run.procStart !== undefined && typeof run.procStart !== "string"))) return undefined;
+	if (run !== undefined && (parsed.v === 2 || row.kind !== "input" || !run || typeof run !== "object" || typeof run.id !== "string" || typeof run.pid !== "number" || typeof run.started_at !== "string" || (run.procStart !== undefined && typeof run.procStart !== "string"))) return undefined;
 	return { row: { ...row, attempts: typeof row.attempts === "number" ? row.attempts : 0 } as Row, version: parsed.v === 2 ? 2 : 3 };
 }
 
@@ -164,9 +165,10 @@ function readLine(line: string): { row: Row; version: 2 | 3 } | undefined {
  * The one writer of a row's line. A row is written as version 3, with one exception: a row that
  * was read from a version 2 line and is only patched stays a version 2 line, so that the version
  * that wrote it still reads it (its window may hold the conversation again; its background
- * process keeps the images of the rows it can read). A claim writes version 3: an older version
- * must not read a claimed row, or it would hand the row to pi beside the run that has it. A
- * rewrite puts every line it does not change back as the bytes it read.
+ * process keeps the images of the rows it can read). A claimed row is always version 3: a claim
+ * writes version 3, and a version 2 line that carries one is not read. An older version must not
+ * read a claimed row, or it would hand the row to pi beside the run that has it. A rewrite puts
+ * every line it does not change back as the bytes it read.
  */
 function rowLine(row: Row, version: 2 | 3 = ROW_VERSION): string {
 	if (version === ROW_VERSION) return JSON.stringify(row);

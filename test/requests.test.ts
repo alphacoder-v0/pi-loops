@@ -305,6 +305,8 @@ test("a line whose claim is damaged is kept and not listed: a broken claim is no
 	const store = new RequestStore(tmp());
 	fs.mkdirSync(path.dirname(store.file("s1")), { recursive: true });
 	const lines = [{ run: "x" }, { run: { id: "r", pid: "1", started_at: "t" } }, { run: { id: "r", pid: 1 } }, { run: { pid: 1, started_at: "t" } }, { run: null }].map((over) => JSON.stringify({ ...row("d", { lane: "s1" }), ...over }));
+	// A version 2 line never has a claim: one that does is not a claimed row an older version would also read as free.
+	lines.push(JSON.stringify({ ...JSON.parse(v2Line), id: "d", run: { id: "r", pid: 1, started_at: "2026-11-01T00:00:00.000+00:00" } }));
 	fs.writeFileSync(store.file("s1"), `${lines.join("\n")}\n`);
 	assert.deepEqual(store.list("s1"), []);
 	store.remove("s1", ["d"]);
