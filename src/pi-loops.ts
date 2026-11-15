@@ -48,7 +48,7 @@ import { jobLines as cronJobLines } from "./job-lines.ts";
 import { plural } from "./plural.ts";
 import { openWhere, runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, type TurnMarks, closedConversation, markTurnEvent, openWindowPids, procStart, turnSinceOf } from "./lease.ts";
-import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
+import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, claimAlive, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, jobClaim, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
 import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
 import { RequestStore, type Row, type UnclaimedRow } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
@@ -850,11 +850,19 @@ export default function piLoops(pi: ExtensionAPI) {
 			...(hostSnapshot?.checks ?? []).map((c) => ({ id: c.traceId, source: c.sourceLabel, event: c.eventLabel, label: c.sourceLabel === "local:dynamic" ? "trigger-check" : c.sourceLabel, startedAt: c.startedAt, promptPreview: `${c.sourceLabel}/${c.eventLabel} in ${c.cwd}`, check: c.sourceLabel === "local:dynamic", inHost: true })),
 		];
 	}
-	/** Runs the store has a `running` marker for (src/store.ts RunningMarker), in machineRuns' shape. */
+	/** Runs the store has a `running` marker for (src/store.ts RunningMarker), and the held turns that have a claim, in machineRuns' shape. */
 	function storeRunning(): Array<{ id: string; source: string; event: string; label: string; startedAt: string; promptPreview: string; check: boolean; inHost: boolean }> {
 		try {
 			// A marker whose process is gone is not a run (the background process clears it on its tick).
-			return scheduler.store.load().filter((j) => j.running && (!j.running.host || j.running.host === os.hostname()) && pidAlive(j.running.pid)).map((j) => ({ id: j.running!.runId, source: "Cron", event: j.id, label: j.name ?? j.id, startedAt: j.running!.startedAt, promptPreview: previewRedacted(j.prompt, 80), check: false, inHost: true }));
+			const jobs = scheduler.store.load();
+			const marked = jobs.filter((j) => j.running && (!j.running.host || j.running.host === os.hostname()) && pidAlive(j.running.pid)).map((j) => ({ id: j.running!.runId, source: "Cron", event: j.id, label: j.name ?? j.id, startedAt: j.running!.startedAt, promptPreview: previewRedacted(j.prompt, 80), check: false, inHost: true }));
+			// A plain job's turn in a closed conversation has no marker: it is the claim on the job's row.
+			const held = jobs.flatMap((j) => {
+				if (j.stateful || !j.sessionId || j.running) return [];
+				const claimed = jobClaim(j.id, requests.list(j.sessionId));
+				return claimed && claimAlive(claimed) ? [{ id: claimed.run.id, source: "Cron", event: j.id, label: j.name ?? j.id, startedAt: claimed.run.started_at, promptPreview: previewRedacted(j.prompt, 80), check: false, inHost: true }] : [];
+			});
+			return [...marked, ...held];
 		} catch {
 			return []; // an unreadable store is said elsewhere (storeReadFailed)
 		}

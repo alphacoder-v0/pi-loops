@@ -106,6 +106,16 @@ test("a job with nothing queued looks as before", () => {
 	assert.doesNotMatch(linesFor([job()], { requests: () => [queuedRow("cron-b91def87", 60_000)] })[0], /queued/);
 });
 
+test("a plain job whose row a run has claimed says running with the run's id, and not queued: its turn is going in the background", () => {
+	const plain = job({ stateful: false, catchUp: false, sessionId: SESSION, runCount: 0 });
+	const claimed = { ...queuedRow(plain.id, 60_000), run: { id: "run-claimed", pid: 4242, started_at: new Date(NOW - 30_000).toISOString() } };
+	const [head] = linesFor([plain], { requests: (id) => (id === SESSION ? [claimed] : []) });
+	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  */15 * * * *  running run-claimed');
+	// Another job's claim in the same conversation is not this job's run.
+	const other = { ...queuedRow("cron-other", 60_000), run: claimed.run };
+	assert.equal(linesFor([plain], { requests: () => [other] })[0], ' 1. cron-b91def87 "pr-watch"  */15 * * * *');
+});
+
 test("a loop whose checkout is gone says so", () => {
 	const [head] = linesFor([job()], { cwdExists: () => false });
 	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  */15 * * * *  [stateful]  [orphan: cwd missing]');

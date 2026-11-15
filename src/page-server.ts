@@ -15,7 +15,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConversationIndex, holderOf, NeedsYouCounts, plainText, projectArgs, type RowReaders, titleOf } from "./conversation-rows.ts";
-import { CLAIM_QUEUE_LOCK, cancelRow, isPageClaim, PAGE_INSTANCE, pageClaimRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
+import { CLAIM_QUEUE_LOCK, cancelRow, isPageClaim, jobClaim, PAGE_INSTANCE, pageClaimRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
 import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines, type StopAnswer } from "./host-control-channel.ts";
 import { buildSessionProjection, migrateSessionEntries, parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName, shouldReadAgain } from "./lease.ts";
@@ -1222,6 +1222,21 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const paused = hostUp ? undefined : child.live.runtime?.paused || "pi-loops is not running";
 		const view = pageOwnerView(currentSession, child, paused);
 		const owned = (j: any) => ({ stateful: !!j.stateful, sessionId: typeof j.sessionId === "string" ? j.sessionId : undefined });
+		// A plain job's turn in a closed conversation: the claim on its row, read once per conversation.
+		const queues = new Map<string, Row[]>();
+		const heldClaim = (j: any): { id: string; pid: number; started_at: string } | undefined => {
+			if (j.stateful || typeof j.sessionId !== "string" || typeof j.id !== "string") return undefined;
+			let rows = queues.get(j.sessionId);
+			if (!rows) {
+				try {
+					rows = new RequestStore(LOOPS_DIR).list(j.sessionId);
+				} catch {
+					rows = []; // an id that is no lane: no queue
+				}
+				queues.set(j.sessionId, rows);
+			}
+			return jobClaim(j.id, rows)?.run;
+		};
 		const jobs = allJobs.filter(inThisProject).map((j: any) => ({
 			id: j.id,
 			name: j.name,
@@ -1235,11 +1250,12 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			lastError: maskSecrets(j.lastError),
 			// The streak, only for a loop that counts as failing by the rule `/cron` and the Background view use.
 			failing: failingJobs([j])[0]?.consecutiveFailures,
-			running: !!j.running,
+			running: !!j.running || heldClaim(j) !== undefined,
 			// The run Stop this run names: the whole id, which the page posts back as it is.
 			// Only a run pi-loops in the background holds (a loop's run, a held turn) can be stopped from
-			// here; a plain job's turn in a window is that window's to stop.
-			run: j.running && typeof j.running.runId === "string" && hostPid !== undefined && j.running.pid === hostPid ? { runId: j.running.runId, since: j.running.startedAt } : undefined,
+			// here; a plain job's turn in a window is that window's to stop. A held turn is the claim on
+			// the job's row, written by the background process.
+			run: j.running && typeof j.running.runId === "string" && hostPid !== undefined && j.running.pid === hostPid ? { runId: j.running.runId, since: j.running.startedAt } : heldClaim(j) && hostPid !== undefined && heldClaim(j)!.pid === hostPid ? { runId: heldClaim(j)!.id, since: heldClaim(j)!.started_at } : undefined,
 			// How the loop's latest run ended, which is what the row says once a stop is through.
 			lastEnd: lastEndOf(j.id),
 			// A loop's worth, and at most one suggestion that never applies itself (src/job-tune.ts).

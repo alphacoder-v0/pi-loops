@@ -663,7 +663,7 @@ export class LoopScheduler {
 				return;
 			}
 			// The lease first, then the slot's row and its count under that lease's epoch, then one drain.
-			this.track(this.background.fire(job, dueIso, slot, (held) => this.injectPlainJob(job, dueIso, now, note, "cron", held), now), slot);
+			this.track(this.background.fire(job, dueIso, slot, () => this.injectPlainJob(job, dueIso, now, note), now), slot);
 			return;
 		}
 		this.track(this.launch(job, dueIso, now, session, missedDue !== undefined), slot);
@@ -678,9 +678,10 @@ export class LoopScheduler {
 	 * A plain job firing: its prompt is a row in the conversation's requests first, then the slot is
 	 * spent. The timer (`dispatch`) and `/cron run` come through here, in a window and in the
 	 * background alike. In a window the engine hands the row to pi once pi is idle (src/engine.ts,
-	 * src/window-executor.ts); in the background a run claims it (src/background-executor.ts), and
-	 * `held` is the lease that was taken for it. A one-shot is retired when the row is done
-	 * (`oneShotDone`), not here.
+	 * src/window-executor.ts); in the background a run claims it (src/background-executor.ts), under
+	 * the lease that was taken for it first. A one-shot is retired when the row is done
+	 * (`oneShotDone`), not here. A job whose row has a claim does not come here: `dispatch` and
+	 * `runNow` wait for that turn.
 	 *
 	 * The row's id is derived from the slot (plainRunId), so a crash between the row and the stamps
 	 * leaves a queued row and an unspent slot: the next tick decides the same slot, its append is a
@@ -691,27 +692,25 @@ export class LoopScheduler {
 	 * `note` is appended to the prompt (the catch-up line). Returns what became of the slot, so
 	 * `/cron run` does not report a run that never happened.
 	 */
-	private async injectPlainJob(job: LoopJob, dueIso: string | undefined, now: number, note = "", source: "cron" | "cron-run" = "cron", held?: { readonly epoch: number }): Promise<"fired" | "collapsed" | "lost"> {
-		// A plain job's whole point is to land in a chat, and pi-loops in the background has none: there
-		// only the clock's slot is written, under the lease taken for it.
-		if (this.kind === "host" && !held) return "lost";
+	private async injectPlainJob(job: LoopJob, dueIso: string | undefined, now: number, note = "", source: "cron" | "cron-run" = "cron"): Promise<"fired" | "collapsed" | "lost"> {
 		const sessionId = job.sessionId;
 		if (!sessionId) return "lost";
 		// The epoch the lease had when this instance decided the job was its own. Read again inside
 		// the claim: a lease that moved since (this window closed its session, another took it) means
 		// the slot is no longer ours to fire.
-		const epoch = held?.epoch ?? this.leases?.heldEpoch(sessionId);
+		// pi-loops in the background holds a conversation only for the turn it is about to run there
+		// (src/background-executor.ts takes the lease, then calls this): with no lease it writes nothing.
+		const epoch = this.leases?.heldEpoch(sessionId);
 		if (this.leases && epoch === undefined) return "lost";
 		const runId = plainRunId(job.id, dueIso ?? stamp(now));
 		const key = plainCollapseKey(job.id);
 		// In the background an attended row (`/cron run`, typed in the conversation) waits for a window
 		// and is no reason for the clock's slots to: a slot there collapses onto a row the background runs.
-		const queued = this.requests.list(sessionId).find((row) => row.kind === "input" && row.wake === "turn" && row.collapse_key === key && !(held && row.mode === "attended"));
+		const queued = this.requests.list(sessionId).find((row) => row.kind === "input" && row.wake === "turn" && row.collapse_key === key && !(this.kind === "host" && row.mode === "attended"));
 		// A row pi did not take (`attempts` counts its refusals) is not what a new slot collapses onto:
 		// that slot is lost, as 0.22.8 lost a slot pi refused, and the new one asks in its place.
 		// A `/cron run` row is the person's: a slot collapses onto it, refused or not, so it keeps running as theirs.
-		// A row that a run has claimed is never replaced: it leaves through its closing only.
-		const refused = queued !== undefined && !queued.run && queued.id !== runId && queued.attempts > 0 && queued.source.startsWith("cron:");
+		const refused = queued !== undefined && queued.id !== runId && queued.attempts > 0 && queued.source.startsWith("cron:");
 		const collapsed = !!queued && !refused && queued.id !== runId;
 		// `/cron run` while the prompt is already queued asks for nothing new: no slot, no stamp.
 		if (collapsed && source === "cron-run") return "collapsed";

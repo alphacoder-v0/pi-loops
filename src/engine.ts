@@ -872,7 +872,12 @@ const jobOf = (source: string): string | undefined => (source.startsWith("cron:"
  * closes it, as a stale marker prints until the next tick clears it.
  */
 export function runningRun(job: Pick<LoopJob, "id" | "running">, rows: readonly Row[]): string | undefined {
-	return job.running?.runId ?? rows.find((r) => r.run && jobOf(r.source) === job.id)?.run?.id;
+	return job.running?.runId ?? jobClaim(job.id, rows)?.run.id;
+}
+
+/** The row of a plain job that a run has claimed, among its conversation's `rows`: the turn that is going for it. */
+export function jobClaim(jobId: string, rows: readonly Row[]): ClaimedRow | undefined {
+	return rows.find((r): r is ClaimedRow => r.run !== undefined && jobOf(r.source) === jobId);
 }
 
 /** Whether a row of the job is queued in its conversation's lane, claimed or not: the question of the one-shot rule. */

@@ -290,8 +290,10 @@ test("[proved-by-conversation] a turn that fails before its prompt is written co
 		const [row] = s.rows();
 		assert.deepEqual([row.run, row.attempts, row.last_error, Date.parse(row.not_before!) > Date.now()], [undefined, 1, "no credentials", true]);
 		assert.deepEqual([s.requestAudit(), s.job()?.consecutiveFailures, s.job()?.lastError], [["failed"], 1, "no credentials"]);
+		const epoch = new LeaseStore(s.dir).read(s.sessionId)?.epoch;
 		await s.tick();
 		assert.equal(s.calls.length, 1, "a row in backoff waits, and so does the job");
+		assert.equal(new LeaseStore(s.dir).read(s.sessionId)?.epoch, epoch, "and the conversation is not taken for a row that cannot start");
 		// A row that has failed twice already: this failure is its third.
 		const dead = scene(fails("no credentials", { written: false }));
 		try {
@@ -366,6 +368,69 @@ test("a rule's result that is queued while a held turn runs is not written besid
 		assert.deepEqual([s.rows(), fs.readFileSync(s.file, "utf8").includes("the deploy finished")], [[], true]);
 	} finally {
 		release();
+		await s.host.stop();
+	}
+});
+
+test("[R2] the lease names the run that is going, also when the slot's row took the place of a row that had failed", async () => {
+	let busy: any;
+	const s = scene((req) => {
+		busy = new LeaseStore(s.dir).read(s.sessionId)?.holder?.busy;
+		return ok(req);
+	});
+	try {
+		await s.host.scheduler.store.add(job(s) as any);
+		// A row of an earlier slot that failed once, its backoff over: the due slot asks in its place.
+		s.requests.append(leftRow(s, "run-refused", { attempts: 1, last_error: "no credentials", not_before: new Date(Date.now() - 1_000).toISOString() }));
+		await s.tick();
+		assert.equal(s.calls.length, 1);
+		assert.notEqual(s.calls[0].runId, "run-refused");
+		assert.deepEqual([busy.runId, busy.jobId], [s.calls[0].runId, "cron-held"]);
+		assert.deepEqual(s.rows(), []);
+	} finally {
+		await s.host.stop();
+	}
+});
+
+test("a rule's push that asks for a turn waits for a window: pi-loops in the background starts a plain job's row only, at its job's tick", async () => {
+	const s = scene(ok);
+	try {
+		const { ruleResultRow } = await import("../src/engine.ts");
+		s.requests.append({ ...ruleResultRow(s.sessionId, "[Trigger t-push] look at the alert", { traceId: "t-push", sourceLabel: "x", cwd: s.dir }, { pid: 1, instance: "w1", version: "0" }), source: "push:srv:key" as const, wake: "turn" as const, mode: "unattended" as const });
+		await s.host.scheduler.store.add(job(s) as any);
+		await s.tick();
+		assert.equal(s.calls.length, 1);
+		assert.match(s.calls[0].prompt, /remind me$/);
+		assert.deepEqual(s.rows().map((r) => [r.id, r.run, r.attempts]), [["t-push", undefined, 0]]);
+		// And a plain job's row is not started by a delivery: its turn starts at its job's tick, where its slot is.
+		const idle = scene(ok);
+		try {
+			await idle.host.scheduler.store.add(job(idle, { ...notDue(), enabled: false }) as any);
+			idle.requests.append(leftRow(idle, "run-left"));
+			await idle.tick();
+			assert.deepEqual([idle.calls.length, idle.rows().map((r) => [r.id, r.run, r.attempts])], [0, [["run-left", undefined, 0]]], "a disabled job's row waits, with no attempt counted");
+		} finally {
+			await idle.host.stop();
+		}
+	} finally {
+		await s.host.stop();
+	}
+});
+
+test("a claim of this process whose run is not going is closed at the next tick, also while a window holds the conversation: the window is not held by it", async () => {
+	const s = scene(ok);
+	try {
+		await s.host.scheduler.store.add(job(s, notDue()) as any);
+		s.requests.append(leftRow(s, "run-left"));
+		// The claim of a turn whose closing did not happen: this process lives, and nothing runs.
+		assert.equal(s.requests.claim(s.sessionId, "run-left", { id: "run-left", pid: process.pid, procStart: procStart(process.pid), started_at: new Date().toISOString() } as any), true);
+		new LeaseBinding(new LeaseStore(s.dir), "w1", () => ({ kind: "terminal", pid: process.pid, mode: "tui", pushServers: [] })).bind(s.sessionId, { sessionFile: s.file, cwd: s.dir });
+		await s.tick();
+		const [row] = s.rows();
+		assert.deepEqual([row.run, row.attempts, row.last_error], [undefined, 1, "the process running it stopped"]);
+		assert.deepEqual(s.runs().map((r) => [r.runId, r.interrupted]), [["run-left", true]]);
+		assert.equal(s.calls.length, 0);
+	} finally {
 		await s.host.stop();
 	}
 });

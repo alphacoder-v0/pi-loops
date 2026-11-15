@@ -1323,6 +1323,30 @@ test("/cron run while the job's prompt is queued moves no stamp", async () => {
 	}
 });
 
+test("a window's clock waits for a plain job whose row a run has claimed: the slot stays owed, and /cron run says it is already running", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }) });
+	try {
+		const job = await sched.store.add(makeJob({ stateful: false, sessionId: "mine", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "remind me" }));
+		// The turn pi-loops in the background was running for this job when its process stopped: the row and its claim.
+		const store = new RequestStore(dir);
+		store.append(plainJobRow(job, "run-claimed", `cron:${job.id}`, "", { pid: 1, instance: "host", version: "0" }));
+		assert.equal(store.claim("mine", "run-claimed", { id: "run-claimed", pid: 999_999_999, started_at: new Date().toISOString() } as any), true);
+		await sched.tick();
+		const after = sched.store.load()[0];
+		assert.deepEqual([after.lastFiredAt, after.lastDueAt, after.skippedOverlap, after.runCount], [undefined, undefined, 0, 0], "the slot is neither spent nor counted as an overlap");
+		assert.deepEqual(rowsFor(dir, "mine").map((r) => r.id), ["run-claimed"], "and no second row is written beside the claimed one");
+		assert.equal(await sched.runNow(job.id), "is already running");
+		// The claim is closed (here: cleared, as a drain does): the slot fires at the next tick.
+		store.update("mine", "run-claimed", { run: undefined });
+		store.remove("mine", ["run-claimed"]);
+		await sched.tick();
+		assert.equal(sched.store.load()[0].runCount, 1);
+	} finally {
+		await sched.stop();
+	}
+});
+
 test("a slot collapsed onto a queued prompt is counted as an overlap and sets no error", async () => {
 	// 0.22.8 fired every slot while the chat was busy and reported no error; 0.24 collapses the later
 	// slot onto the queued prompt (decision 6). The collapse is the count, not an error that outlives

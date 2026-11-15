@@ -69,12 +69,12 @@ export interface BackgroundExecutor {
 	 * releases it when the promise settles.
 	 *
 	 * In order: the lease (its `busy` names the row that is expected to run); `clock`, when a slot
-	 * is due, which writes the slot's row and counts the slot under the lease's epoch; one drain,
+	 * is due, which writes the slot's row and counts the slot under that lease's epoch; one drain,
 	 * which may start one turn of this job; the turn and its closing; the lease given back. A lease
 	 * that is refused, or a clock that answers `lost`, starts nothing, and the slot stays owed. It
 	 * resolves when the lease is given back, and never rejects.
 	 */
-	fire(job: LoopJob, due: string | undefined, permit: SubagentSlot, clock: (held: { readonly epoch: number }) => Promise<"fired" | "collapsed" | "lost">, now: number): Promise<void>;
+	fire(job: LoopJob, due: string | undefined, permit: SubagentSlot, clock: () => Promise<"fired" | "collapsed" | "lost">, now: number): Promise<void>;
 	/** Whether a row of `job` is queued that `fire` would start now. The tick asks it for a job with nothing due. */
 	owes(job: Pick<LoopJob, "id" | "sessionId" | "stateful">, now: number): boolean;
 	/**
@@ -153,7 +153,6 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 	 * with none (a delivery: it has no sub-agent slot) starts no turn.
 	 */
 	function viewOf(sessionId: string, job: LoopJob | undefined): ExecutorView {
-		const self = deps.holder();
 		const turn = runs.turnIn(sessionId);
 		return {
 			kind: "held",
@@ -167,9 +166,9 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 				if (jobOf(row) === undefined) return "turn rows wait for a window";
 				return job !== undefined && jobOf(row) === job.id ? undefined : "its turn starts at its job's next tick";
 			},
-			// A claim of this process is live while its run is in the list: a run that ended here and was
-			// not closed is closed by the next drain. Any other claim: the rule of a lease's holder.
-			claimLive: (row) => (row.run.pid === self.pid && row.run.procStart === self.procStart ? runs.get(row.run.id) !== undefined : claimAlive(row)),
+			// The rule of a lease's holder. A claim of this process whose run is not in the list (its
+			// closing threw) is closed by `deliverSession`, at every tick, before this is asked.
+			claimLive: (row) => claimAlive(row),
 			idle: turn === undefined,
 			running: turn && { requestId: turn.runId, startedAt: turn.startedAt },
 			inFlight: new Set(),
@@ -316,7 +315,7 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 		}
 	}
 
-	async function fire(job: LoopJob, due: string | undefined, _permit: SubagentSlot, clock: (held: { readonly epoch: number }) => Promise<"fired" | "collapsed" | "lost">, now: number): Promise<void> {
+	async function fire(job: LoopJob, due: string | undefined, _permit: SubagentSlot, clock: () => Promise<"fired" | "collapsed" | "lost">, now: number): Promise<void> {
 		const lane = parseLane(job.sessionId ?? "");
 		if (lane?.kind !== "conversation") return;
 		try {
@@ -325,7 +324,7 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 			const held = take(lane.id, { runId: owed?.id ?? plainRunId(job.id, due ?? ""), jobId: job.id, since: stamp(now) });
 			if (!held) return; // busy, open, or written a moment ago: the slot stays owed
 			try {
-				if (due !== undefined && (await clock(held)) === "lost") return;
+				if (due !== undefined && (await clock()) === "lost") return;
 				const executor = executorFor(held, job);
 				await drain(lane.id, requests, executor, now, deps.sinks());
 				// The run and its closing: the lease is this function's until then.
