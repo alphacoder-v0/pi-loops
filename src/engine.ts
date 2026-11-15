@@ -893,30 +893,6 @@ export function heldTurns(jobs: readonly Pick<LoopJob, "id" | "stateful" | "sess
 	});
 }
 
-/**
- * Whether the process that stopped with `run` going had another run going beside it. A process
- * that stopped with one run going points at that run. One that stopped with several says nothing
- * about any of them, and counting each would turn off every job that ran beside the one that
- * took the process down. Pure. The other runs of that process are looked for in three places, so
- * the answer is the same whichever run is settled first:
- *
- *   a marker  a job's `running` of the same pid (a loop's run) that has no record;
- *   a claim   a row of a plain job that a run of the same pid claimed, and that has no record;
- *   a record  an `interrupted` record of the same pid, written after `run` began: a run that was
- *             closed before this one.
- *
- * A loop's marker that the sweep cleared first is in none of the three. The sweep then marks the
- * plain job (`LoopJob.crowded`), and the closing reads the mark.
- */
-export function diedBeside(run: { readonly id: string; readonly pid: number; readonly started_at: string }, jobs: readonly Pick<LoopJob, "stateful" | "sessionId" | "running">[], rowsOf: (sessionId: string) => readonly Row[], records: readonly RunRecord[]): boolean {
-	const recorded = (id: string, from?: string): boolean => records.some((r) => r.runId === id && (from === undefined || Date.parse(r.startedAt) >= Date.parse(from)));
-	if (jobs.some((j) => j.running !== undefined && j.running.pid === run.pid && j.running.runId !== run.id && !recorded(j.running.runId))) return true;
-	const lanes = new Set(jobs.flatMap((j) => (!j.stateful && j.sessionId ? [j.sessionId] : [])));
-	for (const lane of lanes) if (rowsOf(lane).some((r) => r.run !== undefined && r.run.pid === run.pid && r.run.id !== run.id && !recorded(r.run.id, r.run.started_at))) return true;
-	const began = Date.parse(run.started_at);
-	return records.some((r) => r.interrupted === true && r.pid === run.pid && r.runId !== run.id && Date.parse(r.finishedAt) >= began);
-}
-
 /** Whether a row of the job is queued in its conversation's lane, claimed or not: the question of the one-shot rule. */
 export function jobQueued(jobId: string, rows: readonly Row[]): boolean {
 	return rows.some((r) => r.kind === "input" && r.collapse_key === plainCollapseKey(jobId));
@@ -1199,7 +1175,7 @@ export interface EngineSinks {
 	inbox: Pick<Inbox, "appendOnce" | "fileOnce">;
 	audit: Pick<TriggerStore, "appendAudit" | "listAudit">;
 	/** jobs.json and the run log, for the closing of a run: its record when none is there, and the job's patch. A window gives these too: it closes the claim of a background process that is gone. */
-	ledger: Pick<JobStore, "load" | "update" | "appendRun" | "allRuns">;
+	ledger: Pick<JobStore, "load" | "update" | "appendRun">;
 	/** This process, as the `created_by` of a row the closing writes. */
 	self(): Row["created_by"];
 }
@@ -1306,8 +1282,7 @@ export interface Closed {
  *
  * The writes, in order. Each is safe to repeat, and a process that stops after any of them leaves
  * the row with its claim, so the next drain starts again at the first:
- *   1. the record, when none belongs to the claim: `record`, else one that says `interrupted`,
- *      and `beside` when the process had other runs going (`diedBeside`);
+ *   1. the record, when none belongs to the claim: `record`, else one that says `interrupted`;
  *   2. the job's patch, which `settle` gives once per record;
  *   3. the successor row, under an id derived from this row's;
  *   4. the row, last: it leaves, or its claim is cleared, with or without an attempt.
@@ -1316,11 +1291,8 @@ export async function closeRun(store: RequestStore, sinks: EngineSinks, row: Cla
 	const jobId = jobOf(row.source);
 	let end = proof.ran(row);
 	if (!end) {
-		const jobs = sinks.ledger.load();
-		const named = jobId === undefined ? undefined : jobs.find((j) => j.id === jobId);
-		// A process that stopped with other runs going says nothing about this one. The record says so, and a closing that runs again reads it there.
-		const beside = record === undefined && (named?.crowded === row.run.id || diedBeside(row.run, jobs, (lane) => store.list(lane), sinks.ledger.allRuns()));
-		const written: RunRecord = record ?? { runId: row.run.id, jobId: jobId ?? "", ...(named?.name ? { jobName: named.name } : {}), stateful: false, cwd: row.payload?.cwd ?? named?.cwd ?? "", pid: row.run.pid, startedAt: row.run.started_at, finishedAt: stamp(now), ok: false, error: INTERRUPTED, findings: 0, droppedFindings: 0, stateUpdated: false, interrupted: true, ...(beside ? { beside: true as const } : {}) };
+		const named = jobId === undefined ? undefined : sinks.ledger.load().find((j) => j.id === jobId);
+		const written: RunRecord = record ?? { runId: row.run.id, jobId: jobId ?? "", ...(named?.name ? { jobName: named.name } : {}), stateful: false, cwd: row.payload?.cwd ?? named?.cwd ?? "", pid: row.run.pid, startedAt: row.run.started_at, finishedAt: stamp(now), ok: false, error: INTERRUPTED, findings: 0, droppedFindings: 0, stateUpdated: false, interrupted: true };
 		sinks.ledger.appendRun(written);
 		end = runEnd(written);
 	}

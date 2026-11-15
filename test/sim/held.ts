@@ -162,7 +162,6 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 			},
 			ledger: {
 				load: () => [job as any],
-				allRuns: () => records,
 				update: async (_id, patch) => {
 					before();
 					patch(job as any);

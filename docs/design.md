@@ -67,17 +67,21 @@ machine. Everything here follows from that, and each one has a price.
    failure is the job's. A turn that did not end is delivered only by its prompt in the
    conversation: one whose process stopped before the prompt was written is tried again and
    reported after the third time, and a job whose turns are interrupted three times in a row is
-   turned off. A turn is counted as interrupted only when it was the one run its process had
-   going, a loop's or a held turn's: a process that stopped with several says nothing about any
-   of them (`diedBeside`). The closing writes that into the record, and the sweep of stale
-   markers leaves it on the job when it clears a loop's marker first. The cost: the slot is counted when its row is written, so `runs N` counts a turn
+   turned off. The cost: the slot is counted when its row is written, so `runs N` counts a turn
    that a person stopped; a process that dies in a turn leaves a record that says so, written by
    the closing; a stop that arrives after the lease is taken and before the claim is written is
    answered as a stop of nothing; and the job's patch is applied only for a record newer than the
    job's last stamp, which is the slot's until a record is applied. So when a process stops in
    the middle of two closings of one job, the older record's failure or interruption can go
    uncounted, and so can a turn that ends before its slot's stamp because the system clock was
-   set back during it (never counted twice).
+   set back during it (never counted twice). One more cost: a turn is closed by itself, and
+   nothing records what else its process had going when it stopped. So a turn is counted as
+   interrupted also when other runs stopped with it, where a loop's run is counted only when no
+   other loop's run did, and a loop beside a turn is counted as the one run. A job that only ran
+   beside the run that stops the process can so be turned off with it. The count needs a record
+   of the process's stop that every run of that process reads, and one name for a process in a
+   lease, a claim and a marker (today: pid and instance, pid and start time, pid). Neither is
+   there yet.
 
 2. **Who runs what.** One always-on process runs stateful loops, dynamic-rule checks and MCP push
    evaluation for a loops directory. A window starts it when there is work to run, including the plain jobs and queued rule results of
