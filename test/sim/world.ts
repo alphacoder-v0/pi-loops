@@ -408,13 +408,17 @@ function windowProcess(world: World, base: Omit<Process, "executor">): Process {
 		abort: () => void (proc.pi.aborts += proc.pi.running ? 1 : 0),
 	};
 	type Args = ConstructorParameters<typeof WindowExecutor>;
-	const window = new WindowExecutor(pi as unknown as Args[0], { here: () => ({ sessionId: conversation.id, holds: conversation.holder === proc }) }, () => ctx as unknown as ReturnType<Args[2]>, { pid: proc.pid }, (row) => row.created_by.left === undefined && pidAlive(world, row.created_by.pid), () => world.store.list(conversation.id));
+	const window = new WindowExecutor(pi as unknown as Args[0], { here: () => ({ sessionId: conversation.id, holds: conversation.holder === proc }) }, () => ctx as unknown as ReturnType<Args[2]>, { pid: proc.pid }, (row) => row.created_by.left === undefined && pidAlive(world, row.created_by.pid), () => world.store.list(conversation.id), undefined, () => []);
 	proc.window = window;
 	proc.executor = window;
 	return proc;
 }
 
-/** The background process on a closed conversation, as src/host-runtime.ts builds it: `append` rows only, written into the file at once. */
+/**
+ * The background process on a closed conversation, in this world: `append` rows only, written into the
+ * file at once. It starts no turn here: a plain job's turn in the background has a world of its own
+ * (test/sim/held.ts), and this one keeps to what pi and the windows do to a queue.
+ */
 function backgroundProcess(world: World, base: Omit<Process, "executor">): Process {
 	const proc = base as Process;
 	const conversation = proc.conversation;
@@ -424,7 +428,7 @@ function backgroundProcess(world: World, base: Omit<Process, "executor">): Proce
 		view: () => ({ kind: "held", ceiling: CEILING.held, blocked: (row) => (row.wake === "turn" ? "turn rows wait for a window" : undefined), claimLive: () => false, idle: true, inFlight: new Set<string>(), connected: () => true, producerAlive: () => true, mine: () => false }),
 		append: (row) => write(world, proc, { text: row.payload?.text ?? "", custom: true, copy: copyFor(world, proc, row.payload?.text ?? "") }),
 		turn: () => {
-			throw new Error("the background process does not run turn requests yet");
+			throw new Error("this world's background starts no turn (test/sim/held.ts has that)");
 		},
 		abort: () => undefined,
 		abortWhenStarted: () => undefined,
@@ -557,6 +561,14 @@ function watchedStore(world: World, fuse: Fuse, remover?: Process, removed: () =
 		}
 		real.remove(sessionId, gone);
 		removed();
+	};
+	// The drain's removal of a row that landed and has no claim: the same look, through `remove`.
+	watched.removeIf = (sessionId, id, when) => {
+		const row = real.list(sessionId).find((r) => r.id === id);
+		if (!row) return { outcome: "missing" };
+		if (!when(row)) return { outcome: "kept", row };
+		watched.remove(sessionId, [id]);
+		return { outcome: "removed", row };
 	};
 	return watched;
 }

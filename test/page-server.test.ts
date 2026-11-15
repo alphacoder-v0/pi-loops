@@ -2362,7 +2362,14 @@ test("a loop row carries its run, its signal and one suggestion; apply writes on
 		// pi-loops in the background holds the busy loop's run: its pid is the service record's.
 		fs.writeFileSync(path.join(page.loops, "host-service.json"), JSON.stringify({ v: 1, pid: process.pid, startedAt: new Date().toISOString() }));
 		const inWindow = { runId: `run-${"9".repeat(32)}`, pid: 999_999_999, host: "h", startedAt: new Date().toISOString() };
-		fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [original, loopJob(dir, { id: "cron-cccccccc", name: "busy", running }), loopJob(dir, { id: "cron-dddddddd", name: "window", stateful: false, running: inWindow })] }));
+		fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [original, loopJob(dir, { id: "cron-cccccccc", name: "busy", running }), loopJob(dir, { id: "cron-dddddddd", name: "window", stateful: false, running: inWindow }), loopJob(dir, { id: "cron-eeeeeeee", name: "held", stateful: false, sessionId: "held-here" }), loopJob(dir, { id: "cron-ffffffff", name: "left", stateful: false, sessionId: "held-there" })] }));
+		// A plain job's turn in a closed conversation has no marker: it is the claim on the job's row. One is the background's, one a process's that is not.
+		const queue = new RequestStore(page.loops);
+		const claimedAt = new Date().toISOString();
+		for (const [session, job, pid] of [["held-here", "cron-eeeeeeee", process.pid], ["held-there", "cron-ffffffff", 999_999_999]] as const) {
+			queue.append({ v: 3, id: `run-${job}`, lane: session, kind: "input", source: `cron:${job}`, mode: "unattended", wake: "turn", payload: { text: `[Trigger run-${job}] go`, cwd: dir }, collapse_key: `cron:${job}`, created_at: claimedAt, created_by: { pid: 1, instance: "host", version: "0" }, attempts: 0 });
+			assert.equal(queue.claim(session, `run-${job}`, { id: `run-${job}`, pid, started_at: claimedAt } as any), true);
+		}
 		fs.writeFileSync(path.join(page.loops, "runs.jsonl"), quietRuns("cron-aaaaaaaa", 12));
 		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
 		const rows = (await page.get("c/s1/state")).body.automation.jobs;
@@ -2375,6 +2382,10 @@ test("a loop row carries its run, its signal and one suggestion; apply writes on
 		assert.equal(busy.suggestion, undefined, "no suggestion while it runs");
 		const window = rows.find((j: any) => j.id === "cron-dddddddd");
 		assert.deepEqual([window.running, window.run], [true, undefined], "a turn a window runs has no Stop this run: only what pi-loops in the background holds");
+		const held = rows.find((j: any) => j.id === "cron-eeeeeeee");
+		assert.deepEqual([held.running, held.run], [true, { runId: "run-cron-eeeeeeee", since: claimedAt }], "a held turn of pi-loops in the background: the claim is the run Stop this run names");
+		const left = rows.find((j: any) => j.id === "cron-ffffffff");
+		assert.deepEqual([left.running, left.run], [true, undefined], "a claim another process made is running, and is not this process's to stop");
 		assert.deepEqual(quiet.lastEnd, { runId: `run-${hex(111)}` }, "the latest record, which did not stop by a person");
 
 		assert.deepEqual(await page.post("loops/tune", { jobId: "cron-aaaaaaaa", key: "slower:cron-aaaaaaaa:every 10m", choice: "apply" }), { status: 409, body: { error: "the suggestion changed" } });

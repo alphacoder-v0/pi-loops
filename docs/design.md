@@ -50,12 +50,38 @@ machine. Everything here follows from that, and each one has a price.
    conversation during the seconds pi-loops spends on a turn there takes it back at once and the
    turn stops, but what pi-loops wrote meanwhile is on disk and not on that screen. Their next
    entry is a sibling branch (a pi session is a tree, so nothing is lost), and the window says so;
-   the slot is owed, so that window then runs the job once more, and the conversation shows the
-   stopped attempt before the answer. A pi with the conversation open but without pi-loops in it is
+   the prompt is owed, so that window then runs the job once more, and the conversation shows the
+   stopped attempt before the answer. What is owed is a row: the turn's own row when its prompt
+   was not written yet, and one successor row, under an id derived from it, when it was. A pi with the conversation open but without pi-loops in it is
    guarded against only by pi-loops leaving a file someone else wrote in the last two minutes alone.
    A held turn is a run like a loop's (a record, its own cost, a failure streak), and its extensions
    stay loaded for that conversation's later turns: up to eight conversations, released after an
-   hour idle.
+   hour idle. It is a row with a claim. pi-loops in the background takes the conversation's lease,
+   its clock writes the slot's row under an id derived from the slot and counts the slot, as a
+   window's clock does, and one drain claims the row (`row.run`) before the prompt is written
+   (`src/background-executor.ts`). The turn keeps that lease until its end. Its end is one closing
+   (`closeRun`), which needs no lease and is decided by one table (`src/settle.ts`): the record,
+   the job's patch, a successor row when one is due, and the row last. A later drain, in the
+   background or in a window, makes the same closing for a claim whose process is gone. A turn
+   that ended, well or with a failure, spends its slot: its record is in the run log, and the
+   failure is the job's. A turn that did not end is delivered only by its prompt in the
+   conversation: one whose process stopped before the prompt was written is tried again and
+   reported after the third time, and a job whose turns are interrupted three times in a row is
+   turned off. The cost: the slot is counted when its row is written, so `runs N` counts a turn
+   that a person stopped; a process that dies in a turn leaves a record that says so, written by
+   the closing; a stop that arrives after the lease is taken and before the claim is written is
+   answered as a stop of nothing; and the job's patch is applied only for a record newer than the
+   job's last stamp, which is the slot's until a record is applied. So when a process stops in
+   the middle of two closings of one job, the older record's failure or interruption can go
+   uncounted, and so can a turn that ends before its slot's stamp because the system clock was
+   set back during it (never counted twice). One more cost: a turn is closed by itself, and
+   nothing records what else its process had going when it stopped. So a turn is counted as
+   interrupted also when other runs stopped with it, where a loop's run is counted only when no
+   other loop's run did, and a loop beside a turn is counted as the one run. A job that only ran
+   beside the run that stops the process can so be turned off with it. The count needs a record
+   of the process's stop that every run of that process reads, and one name for a process in a
+   lease, a claim and a marker (today: pid and instance, pid and start time, pid). Neither is
+   there yet.
 
 2. **Who runs what.** One always-on process runs stateful loops, dynamic-rule checks and MCP push
    evaluation for a loops directory. A window starts it when there is work to run, including the plain jobs and queued rule results of
@@ -413,13 +439,15 @@ machine. Everything here follows from that, and each one has a price.
     that session's alone. A queue is a lane's (`src/lane.ts`): a conversation's lane is its
     session id, and a name that starts with `@` is a loop's or a project's checks' lane, which
     nothing writes yet. The engine takes a row out of its queue by a named exit and in no other
-    way: delivered, dead, cancelled, stale, refused, job-removed, stopped. Four others remove
+    way: delivered, dead, cancelled, stale, refused, job-removed, stopped. Three others remove
     rows, each for a reason of its own and with its own audit line where one is due: the page,
     which takes back or cancels a message it queued; a window, which drops its own goal's
-    continuations and what it queued once that ran; a window's clock, which puts a job's new slot
-    in the place of a prompt pi refused and takes back the row of a slot another process fired
-    first; and the background's turn in a closed conversation, which still removes the row it
-    ran. The lane is taken from all
+    continuations and what it queued once that ran; and a clock. A window's clock puts a job's
+    new slot in the place of a prompt that pi did not take. A window's clock or the
+    background's, under the lease it took, takes back the row of a slot another process fired
+    first. In the background a new slot is spent onto a row of its job that failed, and that row
+    keeps its attempts. A row that a run has claimed leaves
+    through the closing of that run only. The lane is taken from all
     the rows before any of them is started, so a turn that sorts first is not handed to pi beside
     an unwritten turn that only its text proves. A dead letter is filed once for a row, under an
     id derived from the row's lane and id (`Inbox.fileOnce`), so a crash between the finding and

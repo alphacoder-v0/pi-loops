@@ -6,7 +6,7 @@
  * Hop 1 does not get `new_trigger`, `remove_trigger` or `cron_remove`: nobody can approve any of them there.
  */
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal } from "./job-signal.ts";
-import { formatWait, queuedPrompt, type QueuedPrompt } from "./engine.ts";
+import { formatWait, queuedPrompt, type QueuedPrompt, runningRun } from "./engine.ts";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -257,6 +257,11 @@ function queuedForTool(job: LoopJob, host: Pick<ToolHost, "scheduler">, now: num
 	return !job.stateful && job.sessionId ? queuedPrompt(job, host.scheduler.requests.list(job.sessionId), now) : undefined;
 }
 
+/** The run a job is in, for a tool result: a loop's marker, or the claim on a plain job's row. */
+function runningRunForTool(job: LoopJob, host: Pick<ToolHost, "scheduler">): string | undefined {
+	return runningRun(job, !job.stateful && job.sessionId ? host.scheduler.requests.list(job.sessionId) : []);
+}
+
 /** Cron jobs, rendered for a tool result. */
 function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session" | "scheduler">): string {
 	if (!jobs.length) return "cron jobs: none";
@@ -273,7 +278,8 @@ function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session" |
 		if (asleep) lines.push(`  ${asleep}${kind === "asleep" ? " (no next run here)" : kind === "paused" ? " (no next run until pi-loops starts again)" : kind === "aside" ? "" : " (runs there, not here)"}`);
 		const next = nextRunForTool(job, now, view);
 		if (next) lines.push(`  next_run: ${stamp(next)}`);
-		if (job.running) lines.push(`  running_run_id: ${job.running.runId}`);
+		const run = runningRunForTool(job, host);
+		if (run) lines.push(`  running_run_id: ${run}`);
 		const queued = queuedForTool(job, host, now);
 		if (queued) lines.push(`  queued: ${formatWait(now - Date.parse(queued.since))} (since ${queued.since})${queued.reason ? ` — ${queued.reason}` : ""}`);
 		if (job.lastError) lines.push(`  last_error: ${previewRedacted(job.lastError, 120)}`);
@@ -524,7 +530,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const view = host.scheduler.ownerView();
 			const nextRun = (j: LoopJob) => nextRunForTool(j, nowMs, view);
 			const heldBy = (j: LoopJob) => { const where = whereRuns(j, view); return where.kind === "terminal" ? where.pid : undefined; };
-			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: host.scheduler.store.jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: j.running?.runId, last_due_at: j.lastDueAt, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, consecutive_failures: j.consecutiveFailures, skipped_overlap_count: j.skippedOverlap, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: whereRuns(j, view).kind === "asleep" || undefined, held_by_pid: heldBy(j), queued: queuedForTool(j, host, nowMs), created_at: j.createdAt })) } };
+			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: host.scheduler.store.jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: runningRunForTool(j, host), last_due_at: j.lastDueAt, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, consecutive_failures: j.consecutiveFailures, skipped_overlap_count: j.skippedOverlap, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: whereRuns(j, view).kind === "asleep" || undefined, held_by_pid: heldBy(j), queued: queuedForTool(j, host, nowMs), created_at: j.createdAt })) } };
 		},
 	});
 

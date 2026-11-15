@@ -780,7 +780,9 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			unsubscribe = session.subscribe((e: any) => {
 				// The per-event lease check of a held turn. pi persists at message and tool boundaries, so
 				// stopping at the first event after a window took the conversation bounds what is written
-				// after it to one entry.
+				// after it to what pi writes when a turn is aborted: the result of the tool that was
+				// running, and the turn's error. They are on a branch of their own: the window's next
+				// entry is a sibling.
 				if (req.stillHolds && e.type !== "message_update" && !takenBack && !req.stillHolds()) {
 					takenBack = true;
 					onAbort();

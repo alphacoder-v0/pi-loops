@@ -39,7 +39,8 @@ src/ts-entry.mjs            how an .mjs entry point imports this package's .ts: 
 
 the pipelines
 src/backoff.ts              the one table of waits after a failure: a row, a loop, a rule check
-src/scheduler.ts            tick loop, due/catch-up/overlap, sub-agent runs, checker; pi-loops runs loops, a window its conversation's plain jobs
+src/settle.ts               how a plain job's turn ends, as one table: what becomes of its row and of its job, for each way a run ends
+src/scheduler.ts            tick loop, due/catch-up/overlap, sub-agent runs, checker; pi-loops runs loops, a window its conversation's plain jobs; the clock that writes a plain job's row, in a window and, under the lease the background executor took, in the background
 src/trigger-runtime.ts      dynamic-rule evaluation, deliveries, promotion, audit
 src/triggers.ts             rule store, parsing, prompt, dedup window
 src/goal.ts                 /goal: the stop-condition state machine, evaluator prompts, continuation budget
@@ -52,6 +53,7 @@ src/recipe.ts               what /recipe decides: manifest parsing (each [[job]]
 src/args.ts                 /cron add argument parsing
 src/thinking.ts             which thinking levels exist, asked wherever one is typed or handed over
 src/slots.ts                the one sub-agent concurrency pool both pipelines and /goal draw from
+src/run-list.ts             the runs that are going in this process, as one list; a claim on a row is written only through it
 src/job-health.ts           which loops and trigger rules count as failing, and the badge/summary line and `[failing ×N]` mark that say so
 src/job-signal.ts           what a loop's runs came to: findings filed, claimed, dismissed, and the quiet streak `/cron` marks
 src/job-lines.ts            the `/cron` listing itself, out of the unimportable extension so a marker or column is testable
@@ -83,7 +85,8 @@ src/open-file.ts            the 0600 file `pi-loops` opens the browser on, so th
 src/browser-open.ts         which command opens a browser on each platform (WSL included), and whether one did
 src/page-children.ts        one `pi --mode rpc` per conversation open in the page: spawn, JSONL, idle stop and cap, orphans stopped
 src/held-read.ts            how big a conversation this process parses, and whether a conversation's file is readable here
-src/host-runtime.ts         what pi-loops runs (scheduler + triggers + per-request tools)
+src/host-runtime.ts         what pi-loops runs (scheduler + triggers + per-request tools), the one list of its runs, and the wiring of the background executor
+src/background-executor.ts  what pi-loops in the background does to the queue of a closed conversation: takes its lease, delivers a rule's result, claims a plain job's row, runs its turn and closes it
 src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid, or by a terminal from the page's pi (`page`) while no turn runs (`turnSince`)
 src/requests.ts             requests/<lane>.jsonl: what is addressed to a lane (a conversation's is its session id), kept until it is in it (the row, claimed or not, append, remove, claim)
 src/engine.ts               decideDrain, the pure decision for a lane's rows: classify, take the lane, start; drain, which applies it through an executor; the exits, attempts and dead letters
@@ -123,8 +126,8 @@ recipes/<name>/             a recipe: recipe.toml, the playbooks its jobs read, 
 examples/                   a dependency-free MCP push server, and an mcp.toml to point at it
 test/                       node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
 test/downstream/            the contract in docs/downstream.md checked from the outside: sh + jq driving `pi-loops`, a loop run in the background against fake-model.mjs, no import of src/
-test/journey/               the journeys J1-J10 (`npm run journey -- J1 …`) and `boot.mjs`, a sandboxed page with a stand-in model
-test/sim/                   the seeded simulation of the request engine that test/sim.test.ts runs: world.ts (the real engine and stores around a simulated pi, lease, clock and crashes, and what that leaves out), schedule.ts (the steps a seed draws), invariants.ts (what is checked after every step), prng.ts; claims.ts (a lane the background runs: rows a run claims, runs that end in every way, a process that dies at any write), which test/sim-claims.test.ts runs
+test/journey/               the journeys J1-J11 (`npm run journey -- J1 …`) and `boot.mjs`, a sandboxed page with a stand-in model
+test/sim/                   the seeded simulation of the request engine that test/sim.test.ts runs: world.ts (the real engine and stores around a simulated pi, lease, clock and crashes, and what that leaves out), schedule.ts (the steps a seed draws), invariants.ts (what is checked after every step), prng.ts; claims.ts (a lane the background runs: rows a run claims, runs that end in every way, a process that dies at any write), which test/sim-claims.test.ts runs; held.ts (a held turn in a closed conversation: the real closing and settle table around a simulated runner, a window that takes the conversation, a process that dies at any write), which test/sim-held.test.ts runs
 test/tmp.ts                 every test's temporary directory: removed when the test passes, kept and named when it fails (PI_LOOPS_KEEP_TMP=1 keeps all), strays it started ended
 scripts/                    typecheck.mjs, lint.mjs, check-docs.mjs — TypeScript comes through npx, nothing is a dependency
 ```
@@ -168,9 +171,14 @@ nobody has fixed: it runs under `todo`, visible and not red. Fix the defect, the
 
 A second simulation, `test/sim-claims.test.ts`, runs 400 schedules of a lane that pi-loops in the
 background runs: rows a run claims (`row.run`), runs that end in every way, and a process that dies
-at any write. Its executor is simulated, because nothing in `src/` claims a row yet; the engine's
-rules for a claimed row are the real ones. It takes the same `SIM_SEED`, `SIM_SCHEDULES` and
-`SIM_STEPS`.
+at any write. Its executor is simulated; the engine's rules for a claimed row are the real ones.
+It takes the same `SIM_SEED`, `SIM_SCHEDULES` and `SIM_STEPS`.
+
+A third, `test/sim-held.test.ts`, runs 400 schedules of a held turn: a plain job's row in a closed
+conversation, claimed through the real `RunList`, its prompt written or not, its run ended in every
+way and closed by the real `closeRun` and `settle`, a window that takes the conversation at any
+step, and a process that dies at any write. It checks that a run has one record, that no prompt is
+answered twice, that no attempt or failure is counted twice, and that no row is stuck.
 
 `check:docs` is there because nothing else in CI reads a README: 0.17.0 was tagged green with an
 install line that answered 404. It holds every install command in every document to what

@@ -325,6 +325,24 @@ test("cron_list counts this project's new findings, and the machine's only with 
 	}
 });
 
+test("cron_list says a plain job is running when a run has claimed its row, in the text and in the details", async () => {
+	const f = fixture();
+	try {
+		const job = await f.scheduler.store.add({ id: "cron-held", name: "held", schedule: { kind: "cron", expr: "0 9 * * *" } as const, stateful: false, sessionId: "s", prompt: "p", cwd: f.mine, enabled: true, catchUp: false, createdAt: new Date().toISOString(), runCount: 1, skippedOverlap: 0 });
+		const cronList = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_list")!;
+		const list = async () => await cronList.execute("i", {}, undefined, undefined, ctx);
+		f.scheduler.requests.append(plainJobRow(job, "run-claimed", `cron:${job.id}`, "", { pid: 1, instance: "host", version: "0" }));
+		assert.doesNotMatch(String((await list()).content[0].text), /running_run_id/, "a queued row is not a run");
+		assert.equal(f.scheduler.requests.claim("s", "run-claimed", { id: "run-claimed", pid: 4242, started_at: new Date().toISOString() } as any), true);
+		const out = await list();
+		assert.match(String(out.content[0].text), /^  running_run_id: run-claimed$/m);
+		assert.doesNotMatch(String(out.content[0].text), /^  queued: /m, "a claimed row is running, not waiting");
+		assert.equal((out.details as any).jobs.find((j: any) => j.id === "cron-held").running_run_id, "run-claimed");
+	} finally {
+		await f.scheduler.stop();
+	}
+});
+
 test("cron_list says how many runs in a row a loop has failed, so a playbook need not read the store", async () => {
 	const f = fixture();
 	try {

@@ -6,20 +6,21 @@
  * operations by sub-agents are audited into `triggers-audit.jsonl`. Injected so it can be unit-tested.
  */
 import * as fs from "node:fs";
-import { SessionManager, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
 import type { LoopsConfig } from "./config.ts";
 import { HookRunner, runEndEvent, runStartEvent } from "./hooks.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { redact } from "./redact.ts";
 import { keepNotice, parseRingNote, type Notice } from "./host-control-channel.ts";
-import { parseLane } from "./lane.ts";
-import type { RunnerResult, SubagentRequest, SubagentRunner } from "./runner.ts";
-import { DELIVERY_JOB_ID, type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart, sameHolder } from "./lease.ts";
-import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileMark, type QuietMark, bury, changesSomething, conversationHas, proofOf, decideDrain, drain, promotionTarget, promotionView, quietMark, ruleResultRow, sessionFileEntries, stillQuiet, claimAlive } from "./engine.ts";
-import { RequestStore } from "./requests.ts";
+import type { SubagentRequest, SubagentRunner } from "./runner.ts";
+import { type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart, sameHolder } from "./lease.ts";
+import { type EngineSinks, promotionTarget, promotionView, ruleResultRow } from "./engine.ts";
+import { RequestStore, type Row } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
-import { DEFAULT_RUN_TIMEOUT_MS, type HeldSession, LoopScheduler, type PlainJobLeases, STOPPED_BY_PERSON, type SessionSnapshot } from "./scheduler.ts";
+import { type BackgroundExecutor, createBackgroundExecutor } from "./background-executor.ts";
+import { RunList } from "./run-list.ts";
+import { DEFAULT_RUN_TIMEOUT_MS, LoopScheduler, type PlainJobLeases, type SessionSnapshot } from "./scheduler.ts";
 import { stamp } from "./schedule.ts";
 import { SubagentSlots } from "./slots.ts";
 import { type LoopJob, newId } from "./store.ts";
@@ -84,6 +85,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const requests = new RequestStore(dir);
 	/** The host as a lease holder: it holds a closed conversation for one piece of work, then lets go. */
 	const ownStart = procStart(process.pid);
+	/** This process, as the rows it writes name it. */
+	const createdBy = (): Row["created_by"] => ({ pid: process.pid, instance: "host", procStart: ownStart, version: PI_LOOPS_VERSION });
 	const me = (busy?: LeaseHolder["busy"]): LeaseHolder => ({ kind: "host", pid: process.pid, instance: "host", procStart: ownStart, acquiredAt: stamp(), pushServers: [], ...(busy ? { busy } : {}) });
 	const fileMtime = (file: string | undefined): number | undefined => {
 		if (!file) return undefined;
@@ -93,137 +96,20 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			return undefined; // gone: nothing for the quiet guard to remember
 		}
 	};
-	const fileMark = (file: string): FileMark => {
-		try {
-			const { size, mtimeMs } = fs.statSync(file);
-			return { size, mtimeMs };
-		} catch {
-			return undefined; // not there: a mark of its own, so its appearance is a change
-		}
-	};
-	/** Per closed conversation, the quiet mark of its last "nothing to do" (src/engine.ts quietMark). */
-	const quiet = new Map<string, QuietMark>();
 	const heldLeases: PlainJobLeases = {
 		heldEpoch: (sessionId) => (leases.holds(sessionId, me()) ? leases.read(sessionId)?.epoch : undefined),
+		sessionFile: (sessionId) => leases.read(sessionId)?.sessionFile,
 		holderOf: (sessionId) => liveHolderPid(leases, sessionId),
-		acquireForWork: (sessionId, runId, jobId) => {
-			if (deps.pageHolds?.(sessionId)) return undefined;
-			const got = leases.acquireForHost(sessionId, me({ runId, jobId, since: stamp() }));
-			if (!("lease" in got) || !got.lease.sessionFile) return undefined;
-			return { sessionId, epoch: got.lease.epoch, sessionFile: got.lease.sessionFile, cwd: got.lease.cwd };
-		},
-		// With the epoch it took, and the mtime it left: see LeaseStore.release.
-		releaseWork: (sessionId, epoch) => void leases.release(sessionId, me(), { epoch, fileMtimeMs: fileMtime(leases.read(sessionId)?.sessionFile) }),
 	};
+	/** The runs that are going in this process: the loops' runs and the held turns, one list. */
+	const runs = new RunList();
+	/** What this process does to the queue of a closed conversation (src/background-executor.ts). Made below, once the scheduler's stores are there. */
+	let background: BackgroundExecutor;
 	/** A plain job the host may fire: a conversation pi-loops knows the file of, that nobody holds and the page does not have open. */
 	const canHold = (sessionId: string | undefined): boolean => !(sessionId !== undefined && deps.pageHolds?.(sessionId)) && closedConversation(leases, sessionId);
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
-	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), enabled: (id) => scheduler.store.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: scheduler.inbox, audit: triggers.store });
-
-	/**
-	 * The held turns this process is in, by session: the run (the lease's `busy.runId`), when it
-	 * started, and whether the runner has the file (`writing`). A stop may name the run from the turn's
-	 * own first drain on; nothing is appended beside the runner once it writes.
-	 */
-	const turnOpen = new Map<string, { requestId: string; startedAt: string; writing: boolean; label: string }>();
-	/**
-	 * The engine's executor while this process holds a closed conversation: an `append` row is written
-	 * into the file at once, each one once (the `[Trigger <id>]` already in the file is the check).
-	 * No attended row runs here (`CEILING.held`); a turn row is held back as well (held turns move
-	 * onto rows in a later stage), so it waits for a window instead of failing here. While a turn of
-	 * this process runs in the conversation its runner is writing the file, so nothing is appended
-	 * beside it: only a stop or a cancel acts, and the inputs wait.
-	 */
-	const heldView = (sessionId: string): ExecutorView => {
-		const open = turnOpen.get(sessionId);
-		const writing = open?.writing ?? false;
-		return { kind: "held", ceiling: CEILING.held, blocked: (row) => (writing ? "a turn of pi-loops is writing this conversation" : row.wake === "turn" ? "turn rows wait for a window" : undefined), claimLive: (row) => claimAlive(row), idle: !writing, running: open && { requestId: open.requestId, startedAt: open.startedAt }, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false };
-	};
-	function heldExecutor(held: HeldSession): Executor {
-		const sm = SessionManager.open(held.sessionFile);
-		return {
-			holds: (sessionId) => leases.holds(sessionId, me(), held.epoch),
-			proof: () => proofOf(() => sm.getEntries(), () => scheduler.store.allRuns()),
-			view: () => heldView(held.sessionId),
-			append: (row) => {
-				sm.appendCustomMessageEntry("pi-loops:trigger", row.payload?.text ?? "", true);
-				// Written into a closed conversation, so no screen showed it: the audit row says so. The
-				// "since you last looked" line counts the rule's finding in the inbox (src/seen.ts).
-				triggers.store.appendAudit({ cwd: row.payload?.cwd ?? "", type: "trigger_promotion", traceId: row.id, state: "appended", details: { session_id: held.sessionId } });
-				// And said in the project's open windows: the person is likely in another conversation of
-				// it now, where a rule's result used to land (0.22), and would not know to look there.
-				// Once an hour per conversation (keepNotice keeps one of each text an hour).
-				notice(`a rule's result was added to conversation ${shortSessionId(held.sessionId)}, which is closed: pi --session ${held.sessionFile} shows it`, row.payload?.cwd);
-			},
-			turn: () => {
-				throw new Error("the background process does not run turn requests yet");
-			},
-			// As `/triggers abort` does: the run's AbortController, through the scheduler.
-			abort: () => {
-				const run = turnOpen.get(held.sessionId);
-				if (run) scheduler.abortRun(run.requestId);
-			},
-			// Never asked: nothing is in flight here (the view's set is empty), a row is in the file or not.
-			abortWhenStarted: () => undefined,
-			// Never asked either: a person row is attended, above this executor's ceiling.
-			refused: () => undefined,
-		};
-	}
-
-	/** Requests queued for a conversation this process holds: delivered now, while it holds it. */
-	async function drainInto(held: HeldSession): Promise<void> {
-		await drain(held.sessionId, requests, heldExecutor(held), Date.now(), sinks());
-	}
-
-	/** One plain job's turn in a closed conversation (src/scheduler.ts launchHeld). */
-	async function heldTurn(job: LoopJob, prompt: string, runId: string, held: HeldSession, signal: AbortSignal): Promise<{ preempted: boolean; result: RunnerResult; landed: boolean }> {
-		const stillHolds = () => leases.holds(held.sessionId, me(), held.epoch);
-		// The run exists from here: a stop that arrives during this first drain names it.
-		// What the page's waiting line calls it: a job's id is 32 characters no person typed.
-		const open = { requestId: runId, startedAt: scheduler.runningRuns().find((r) => r.runId === runId)?.startedAt ?? stamp(), label: job.name ?? runId.slice(0, 12) };
-		turnOpen.set(held.sessionId, { ...open, writing: false });
-		log(`cron ${job.name ?? job.id}: turn ${runId.slice(0, 12)} in session ${shortSessionId(held.sessionId)}`);
-		let result: RunnerResult;
-		try {
-			try {
-				await drainInto(held);
-			} catch (err: any) {
-				log(`requests for session ${shortSessionId(held.sessionId)}: ${err?.message ?? err}`);
-			}
-			if (signal.aborted) {
-				// Stopped before it began: nothing to run, and no model call to start for a turn already over.
-				log(`cron ${job.name ?? job.id}: turn ${runId.slice(0, 12)} stopped before it began`);
-				return { preempted: false, result: { ok: false, exitCode: 1, timedOut: false, text: "", errorMessage: "aborted", stopReason: "aborted", usage: { input: 0, output: 0, cost: 0, turns: 0 } }, landed: false };
-			}
-			// As the conversation's owner: pi's own trust for its directory, read now, and the job's declared tools.
-			// Without the conversation's own directory (an older lease), the job's cwd could be one a model
-			// chose: no owner trust then.
-			const cwd = held.cwd ?? job.cwd;
-			turnOpen.set(held.sessionId, { ...open, writing: true });
-			// No model or thinking level: the turn is the conversation's own and runs on what the
-			// conversation is on, as its window turn does (a 0.22 job's captured `model` was never used).
-			// The conversation is the turn's parent session, so the tools act for it: `cron_create
-			// stateful:false` binds to it, `all_projects` lists as a window's does.
-			result = await deps.runner({ cwd, prompt, tools: job.tools, builtinTools: job.builtinTools, trusted: held.cwd ? !!deps.ownerTrusts?.(held.cwd) : false, timeoutMs: job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS, signal, hop: 1, kind: "held", jobId: job.id, runId, sessionFile: held.sessionFile, stillHolds, parentSessionId: held.sessionId, parentCwd: cwd });
-		} finally {
-			turnOpen.delete(held.sessionId);
-		}
-		// Taken back only if the turn did not complete: a window that arrives as the answer is saved has
-		// nothing to run again, and rolling the slot back would answer the same prompt twice.
-		const preempted = !result.ok && !stillHolds();
-		const byPerson = !result.ok && signal.aborted && signal.reason === STOPPED_BY_PERSON;
-		log(`cron ${job.name ?? job.id}: ${preempted ? "a window took the session back; its turn stopped" : result.ok ? "turn done" : byPerson ? `turn stopped by you (from ${scheduler.stopFrom(runId) === "page" ? "the page" : "a terminal"})` : `turn FAILED (${redact(result.errorMessage ?? "")})`}`);
-		// Read from the file, not from the result: a turn cut off after pi wrote the prompt has landed
-		// it, and the row it came from is done either way.
-		let landed = result.ok;
-		try {
-			landed = conversationHas(SessionManager.open(held.sessionFile).getEntries(), runId);
-		} catch (err: any) {
-			log(`cron ${job.name ?? job.id}: could not read session ${shortSessionId(held.sessionId)} after its turn: ${err?.message ?? err}`);
-		}
-		return { preempted, result, landed };
-	}
+	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), enabled: (id) => scheduler.store.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: scheduler.inbox, audit: triggers.store, ledger: scheduler.store, self: createdBy });
 
 	/* ------------------------------------------------------ lifecycle hooks */
 
@@ -286,9 +172,10 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		// its conversation, so the host fires one only where no window holds it.
 		owns: (job) => job.stateful || canHold(job.sessionId),
 		leases: heldLeases,
+		runs,
+		background: { fire: (...args) => background.fire(...args), owes: (...args) => background.owes(...args) },
 		sessionExists: deps.sessionExists,
 		hooks: {
-			onHeldTurn: heldTurn,
 			onRunStart: (job, runId) => {
 				// The same rows the interactive extension writes: without them `/triggers audit` is
 				// blank for every hour the host had the clock.
@@ -345,6 +232,36 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		await promotionToInbox(scheduler.inbox, triggers.store, content, trigger, { cwd: trigger.cwd ?? "", sessionId: forSession });
 		return "inbox" as const;
 	};
+
+	background = createBackgroundExecutor({
+		dir,
+		requests,
+		leases,
+		jobs: scheduler.store,
+		runs,
+		runner: deps.runner,
+		sinks,
+		holder: me,
+		pageHolds: deps.pageHolds,
+		ownerTrusts: deps.ownerTrusts,
+		turnTimeoutMs: DEFAULT_RUN_TIMEOUT_MS,
+		appended: (row, into) => {
+			// Written into a closed conversation, so no screen showed it: the audit row says so. The
+			// "since you last looked" line counts the rule's finding in the inbox (src/seen.ts).
+			triggers.store.appendAudit({ cwd: row.payload?.cwd ?? "", type: "trigger_promotion", traceId: row.id, state: "appended", details: { session_id: into.sessionId } });
+			// And said in the project's open windows: the person is likely in another conversation of
+			// it now, where a rule's result used to land (0.22), and would not know to look there.
+			// Once an hour per conversation (keepNotice keeps one of each text an hour).
+			notice(`a rule's result was added to conversation ${shortSessionId(into.sessionId)}, which is closed: pi --session ${into.sessionFile} shows it`, row.payload?.cwd);
+		},
+		deliveryFailed: (sessionId) => void quietUntilTick.add(sessionId),
+		// A plain job failing night after night: said in its project's windows, as a loop's is.
+		failing: (message, job) => {
+			log(redact(message));
+			notice(message, job.cwd);
+		},
+		log,
+	});
 	/**
 	 * A rule's result is a request addressed to a conversation (src/engine.ts promotionTarget): the one
 	 * that created the rule while a window holds it, else one a window holds in the rule's project,
@@ -355,36 +272,10 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const promote = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string): Promise<"queued" | "chat" | "inbox"> => {
 		const route = promotionTarget(forSession, promotionView(leases, trigger.cwd));
 		if (route.to === "inbox") return toInbox(content, trigger, route.sessionId);
-		requests.append(ruleResultRow(route.sessionId, content, trigger, { pid: process.pid, instance: "host", procStart: ownStart, version: PI_LOOPS_VERSION }));
+		requests.append(ruleResultRow(route.sessionId, content, trigger, createdBy()));
 		if (!canHold(route.sessionId)) return "queued";
-		return (await deliverQueued(route.sessionId, trigger.traceId)) ? "chat" : "queued";
+		return (await background.deliverQueued(route.sessionId, trigger.traceId)) ? "chat" : "queued";
 	};
-
-	/**
-	 * Take a closed conversation for one write and deliver what is queued for it. True when `traceId`
-	 * (if given) is now in the conversation. The tick calls it for every closed conversation with a
-	 * queue, so a result queued while the file was busy, or for a window that quit before reading it,
-	 * still arrives.
-	 */
-	async function deliverQueued(sessionId: string, traceId?: string): Promise<boolean> {
-		const held = heldLeases.acquireForWork?.(sessionId, traceId ?? "requests", DELIVERY_JOB_ID);
-		if (!held) return false;
-		try {
-			await drainInto(held);
-			if (traceId === undefined) return true;
-			const delivered = conversationHas(SessionManager.open(held.sessionFile).getEntries(), traceId);
-			if (delivered) log(`trigger ${traceId.slice(0, 8)}: appended to session ${shortSessionId(sessionId)}`);
-			return delivered;
-		} catch (err: any) {
-			log(`requests for session ${shortSessionId(sessionId)}: ${err?.message ?? err}`);
-			// Giving the lease back below rings this process again; with the same failure waiting
-			// (an inbox it cannot write), that ring would fail the same way, for ever.
-			quietUntilTick.add(sessionId);
-			return false;
-		} finally {
-			heldLeases.releaseWork?.(sessionId, held.epoch);
-		}
-	}
 
 	/**
 	 * A conversation this process still holds for a turn that is no longer running: the release at
@@ -406,56 +297,6 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	}
 
 	/**
-	 * What is queued for one conversation nobody has open: delivered by this process, not left waiting
-	 * for a resume. A conversation whose file is gone can never take it, so its rows become dead
-	 * letters in the inbox, marked for it, instead of waiting there for ever.
-	 *
-	 * Writes nothing when the drain would change nothing. Taking the lease is itself a write, and this
-	 * process hears its own writes as rings (`watch` below): a delivery that took the lease only to
-	 * find every row waiting would ring itself into the next one, for ever.
-	 */
-	async function deliverSession(sessionId: string): Promise<void> {
-		// Only a conversation is delivered to here, or buried as one that is gone: a lane of another kind has no session file.
-		const conversation = parseLane(sessionId);
-		if (conversation?.kind !== "conversation") return;
-		const rows = requests.list(sessionId);
-		if (!rows.length) {
-			quiet.delete(sessionId);
-			return;
-		}
-		// A turn of this process's own is running there: the conversation is held already, for that
-		// turn, so a stop or cancel is applied through that lease, with the epoch it took, and nothing
-		// is taken a second time. The executor holds every input back while the runner has the file.
-		const lease = leases.read(sessionId);
-		if (turnOpen.has(sessionId) && lease?.holder && sameHolder(lease.holder, me()) && lease.sessionFile) {
-			await drainInto({ sessionId, epoch: lease.epoch, sessionFile: lease.sessionFile, cwd: lease.cwd });
-			return;
-		}
-		if (!canHold(sessionId)) {
-			if (liveHolderPid(leases, sessionId) !== undefined || deps.pageHolds?.(sessionId)) return; // its holder drains it
-			const file = leases.read(sessionId)?.sessionFile;
-			if (file && fs.existsSync(file)) return; // there, only busy or recently written: a later tick
-			const buried = await bury(conversation.id, requests, sinks(), "its conversation is gone");
-			if (buried.length) log(`${buried.length} queued request(s) for session ${shortSessionId(sessionId)} went to the inbox: its conversation is gone`);
-			return;
-		}
-		// The same decision the drain makes, read without the lease (a read needs none). Marked before
-		// the read, so a write that lands during it shows as a change on the next tick, not a miss.
-		const file = leases.read(sessionId)?.sessionFile;
-		if (!file) return;
-		const files = [fileMark(file), fileMark(path.join(dir, "jobs.json"))];
-		const now = Date.now();
-		if (stillQuiet(quiet.get(sessionId), files, rows, now)) return;
-		quiet.delete(sessionId);
-		const entries = sessionFileEntries(file);
-		if (!changesSomething(decideDrain("conversation", rows, proofOf(() => entries, () => scheduler.store.allRuns()), sinks().jobs, heldView(sessionId), now))) {
-			quiet.set(sessionId, quietMark(files, rows, now));
-			return;
-		}
-		await deliverQueued(sessionId);
-	}
-
-	/**
 	 * Every closed conversation with something queued, on the tick: the floor under the doorbell, so a
 	 * ring that was lost costs at most one tick. One conversation's failure (a lock that timed out)
 	 * does not keep the others, or the rule checks after this, from their tick.
@@ -472,7 +313,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		}
 		for (const sessionId of requests.sessions()) {
 			try {
-				await deliverSession(sessionId);
+				await background.deliverSession(sessionId);
 			} catch (err: any) {
 				log(`requests for session ${shortSessionId(sessionId)}: ${err?.message ?? err}`);
 			}
@@ -510,7 +351,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			return;
 		}
 		delivering.add(sessionId);
-		deliverSession(sessionId)
+		background
+			.deliverSession(sessionId)
 			.catch((err: any) => log(`requests for session ${shortSessionId(sessionId)}: ${err?.message ?? err}`))
 			.then(() => {
 				delivering.delete(sessionId);
@@ -603,8 +445,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		notices: () => [...kept],
 		ring,
 		heldTurn: (sessionId) => {
-			const open = turnOpen.get(sessionId);
-			return open && { runId: open.requestId, label: open.label };
+			const turn = runs.turnIn(sessionId);
+			return turn && { runId: turn.runId, label: turn.label };
 		},
 		customTools: async (req) => {
 			const shared = deps.mcpTools();

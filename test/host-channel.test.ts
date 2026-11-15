@@ -516,3 +516,21 @@ test("a path that holds something that is not a socket is left as it is, and is 
 		bound.close();
 	}
 });
+
+test("a row that a run has claimed is running, not waiting: the count of waiting messages leaves it out", async () => {
+	const { requestQueues, requestLines } = await import("../src/host-control-channel.ts");
+	const { RequestStore } = await import("../src/requests.ts");
+	const { LeaseStore } = await import("../src/lease.ts");
+	const { plainJobRow, ruleResultRow } = await import("../src/engine.ts");
+	const dir = tmp("pi-loops-channel-");
+	const store = new RequestStore(dir);
+	const by = { pid: 1, instance: "w", version: "0" };
+	const job = { id: "cron-j", sessionId: "s1", prompt: "go", cwd: dir, model: undefined, thinking: undefined, tools: undefined, builtinTools: undefined };
+	store.append(plainJobRow(job, "run-claimed", "cron:cron-j", "", by));
+	assert.equal(store.claim("s1", "run-claimed", { id: "run-claimed", pid: 4242, started_at: new Date().toISOString() } as any), true);
+	assert.deepEqual(requestQueues(store, new LeaseStore(dir)), [], "a conversation whose only row is running has nothing waiting");
+	store.append(ruleResultRow("s1", "[Trigger t1] a result", { traceId: "t1", sourceLabel: "x", cwd: dir }, by));
+	const queues = requestQueues(store, new LeaseStore(dir));
+	assert.deepEqual(queues.map((q) => [q.sessionId, q.count]), [["s1", 1]]);
+	assert.match(requestLines(queues, Date.now())[0], /^  1 message waiting for 1 conversation$/);
+});

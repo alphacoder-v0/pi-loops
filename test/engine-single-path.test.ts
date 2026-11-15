@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
 const ONLY_SENDER = "window-executor.ts";
 /** A session write into a conversation nobody has open, not a send to pi: the held adapter's `append`. */
-const SESSION_WRITE = { file: "host-runtime.ts", call: 'appendCustomMessageEntry("pi-loops:trigger"' };
+const SESSION_WRITE = { file: "background-executor.ts", call: 'appendCustomMessageEntry("pi-loops:trigger"' };
 
 function sources(dir: string): string[] {
 	return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {

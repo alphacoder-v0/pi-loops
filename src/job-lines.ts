@@ -7,7 +7,7 @@
  * a job, a run log and an inbox and read the lines a person reads.
  */
 import { projectLabel } from "./conversation-rows.ts";
-import { formatWait, queueOrder, queuedPrompt } from "./engine.ts";
+import { formatWait, queueOrder, queuedPrompt, runningRun } from "./engine.ts";
 import { shortSessionId } from "./session-head.ts";
 import type { InboxEntry } from "./inbox.ts";
 import { asleepNote, runsSomewhere, type OwnerView } from "./job-owner.ts";
@@ -178,7 +178,9 @@ export function jobLines(jobs: LoopJob[], opts: JobLinesInput): string[] {
 			// behind another turn): without this mark it looked exactly like one that is not queued.
 			const waiting = !job.stateful && job.sessionId ? queuedPrompt(job, requests(job.sessionId), now) : undefined;
 			const queued = waiting ? `[queued ${formatWait(now - Date.parse(waiting.since))}${waiting.reason ? ` — ${waiting.reason}` : ""}]` : undefined;
-			const marks = [job.stateful ? "[stateful]" : undefined, job.verify ? "[verify]" : undefined, dormant, orphan, quiet, queued, job.running ? `running ${job.running.runId}` : undefined, catchUpMark(job)]
+			// A loop's run is its marker; a plain job's turn in a closed conversation is the claim on its row.
+			const run = runningRun(job, !job.stateful && job.sessionId ? requests(job.sessionId) : []);
+			const marks = [job.stateful ? "[stateful]" : undefined, job.verify ? "[verify]" : undefined, dormant, orphan, quiet, queued, run ? `running ${run}` : undefined, catchUpMark(job)]
 				.filter(Boolean)
 				.join("  ");
 			const head = `${String(i + 1).padStart(2)}. ${job.id}${job.name ? ` "${job.name}"` : ""}${job.enabled ? "" : "  disabled"}  ${formatSchedule(job.schedule)}${marks ? `  ${marks}` : ""}`;

@@ -194,7 +194,8 @@ export function requestQueues(store: Pick<RequestStore, "sessions" | "list">, le
 		.sessions()
 		.sort()
 		.flatMap((sessionId): RequestQueue[] => {
-			const rows = store.list(sessionId);
+			// A row that a run has claimed is running, not waiting: it is in the list of runs.
+			const rows = store.list(sessionId).filter((row) => !row.run);
 			if (!rows.length) return [];
 			const holder = leases.read(sessionId)?.holder;
 			const live = holder && holderAlive(holder, probe) ? holder : undefined;

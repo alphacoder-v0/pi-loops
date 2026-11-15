@@ -540,9 +540,13 @@ test("a held turn runs in the closed conversation's file and stops once a window
 		await host.scheduler.drain(5000);
 		assert.deepEqual(seen[0], { kind: "held", sessionFile: file, before: true }, "the turn runs in that conversation's own file, holding it");
 		assert.deepEqual(seen[1], { after: false }, "the window's acquisition is what the turn sees");
+		// The slot was counted when its row was written, as a window counts it; what is owed is the row.
 		const job = host.scheduler.store.load()[0];
-		assert.equal(job.runCount, 0, "the interrupted turn is not counted");
-		assert.equal(job.lastFiredAt, undefined, "its slot is owed to the window now holding the conversation");
+		assert.deepEqual([job.runCount, !!job.lastFiredAt, job.owedSlot, job.consecutiveFailures], [1, true, undefined, undefined]);
+		const [row] = new RequestStore(dir).list(sessionId);
+		assert.deepEqual([row.source, row.run, row.attempts, row.not_before], ["cron:cron-held", undefined, 0, undefined], "its row is owed to the window now holding the conversation: no claim, no attempt");
+		const [record] = host.scheduler.store.allRuns();
+		assert.deepEqual([record.runId, record.aborted, record.stoppedBy, record.error], [row.id, true, undefined, "taken back"]);
 	} finally {
 		await host.stop();
 	}
@@ -821,7 +825,7 @@ test("a held turn a person stopped runs exactly once: no successor row, no owed 
 		assert.deepEqual(requests.list(sessionId), [], "no successor row asks the stopped prompt again");
 		const job = host.scheduler.store.load()[0];
 		assert.equal(job.owedSlot, undefined, "the slot is spent");
-		assert.equal(job.runCount, 0, "a stop is not a run, as for a loop's");
+		assert.equal(job.runCount, 1, "the slot was counted when its row was written, as a window counts it");
 		assert.equal(job.lastError, undefined, "and not a failure: no failing mark, nothing under failures in pi-loops status");
 		assert.equal(job.consecutiveFailures, undefined);
 		await host.scheduler.tick();
@@ -856,7 +860,8 @@ test("a stop read by the held turn's own first drain stops it", { timeout: 30_00
 		assert.equal(prompts.length, 0, "stopped before the model was asked");
 		assert.deepEqual(requests.list(sessionId), []);
 		const job = host.scheduler.store.load()[0];
-		assert.deepEqual([job.owedSlot, !!job.lastFiredAt, job.runCount], [undefined, true, 0], "done, not owed: the slot is spent, and a stop is not counted as a run");
+		assert.deepEqual([job.owedSlot, !!job.lastFiredAt, job.runCount, job.consecutiveFailures], [undefined, true, 1, undefined], "done, not owed: the slot is spent, and a stop is no failure");
+		assert.deepEqual(host.triggers.store.listAudit(5, (r) => r.type === "request" && r.state === "stopped").length, 1, "the row left as stopped, with its audit line");
 	} finally {
 		await host.stop();
 	}
@@ -978,18 +983,22 @@ test("a lane's rows are not buried as a conversation that is gone: a loop's queu
 	}
 });
 
-test("the background closes a claim whose process is gone, by what the run log says: an aborted run leaves its row owed, an ended run lets it leave", async () => {
+test("the background closes a claim whose process is gone, by what the run log and the conversation say: a handed-back run leaves its row owed, a written prompt lets it leave, and a run that ended has spent its slot", async () => {
 	// No code claims a row yet; this is the wiring a claim will meet: the view asks the claim's
 	// process, the proof reads the run log, and a queue with a dead claim is not left as quiet.
 	const dir = tmp("pi-loops-hostrt-");
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
 	try {
-		const { sessionId } = closedConversation(dir);
+		const { sessionId, file } = closedConversation(dir);
+		// The prompt of one row is in the conversation already, as its runner wrote it.
+		SessionManager.open(file).appendMessage({ role: "user", content: "[Trigger t-ended] go", timestamp: Date.now() } as any);
+		const old = new Date(Date.now() - 10 * 60_000);
+		fs.utimesSync(file, old, old);
 		const store = new RequestStore(dir);
 		const by = { pid: process.pid, instance: "test", version: "0" };
 		const turn = (id: string) => ({ ...ruleResultRow(sessionId, `[Trigger ${id}] go`, { traceId: id, sourceLabel: "x", cwd: dir }, by), source: "push:srv:key" as const, wake: "turn" as const, mode: "unattended" as const });
 		const record = (runId: string, over: Record<string, unknown>) => host.scheduler.store.appendRun({ runId, jobId: "", stateful: false, cwd: dir, pid: 999_999_999, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), ok: false, findings: 0, ...over } as any);
-		for (const id of ["t-aborted", "t-ended", "t-cut"]) {
+		for (const id of ["t-aborted", "t-ended", "t-unwritten", "t-cut"]) {
 			store.append(turn(id));
 			assert.equal(store.claim(sessionId, id, { id: `run-${id}`, pid: 999_999_999, started_at: new Date().toISOString() }), true);
 		}
@@ -999,12 +1008,16 @@ test("the background closes a claim whose process is gone, by what the run log s
 		record("run-t-live", { ok: true });
 		record("run-t-aborted", { aborted: true });
 		record("run-t-ended", { ok: true });
+		record("run-t-unwritten", { ok: true });
 		await host.scheduler.tick();
 		const left = Object.fromEntries(store.list(sessionId).map((r) => [r.id, r]));
-		assert.deepEqual(Object.keys(left).sort(), ["t-aborted", "t-cut", "t-live"], "the row whose run ended has left");
+		assert.deepEqual(Object.keys(left).sort(), ["t-aborted", "t-cut", "t-live"], "the row whose prompt is in the conversation has left, and so has the row of a run that ended with none written: its slot is spent");
 		assert.equal(left["t-live"].run?.id, "run-t-live", "a run that is going keeps its claim");
 		assert.deepEqual([left["t-aborted"].run, left["t-aborted"].attempts], [undefined, 0], "aborted by no person: owed again, and no attempt counted");
 		assert.deepEqual([left["t-cut"].run, left["t-cut"].attempts, left["t-cut"].last_error], [undefined, 1, "the process running it stopped"], "no record: the run was cut off, and that is an attempt");
+		// The closing wrote the record that the dead process did not.
+		const cut = host.scheduler.store.allRuns().filter((r) => r.runId === "run-t-cut");
+		assert.deepEqual(cut.map((r) => [r.interrupted, r.ok, r.error, r.pid]), [[true, false, "the process running it stopped", 999_999_999]]);
 		assert.equal(host.scheduler.inbox.list().length, 0);
 	} finally {
 		await host.stop();
