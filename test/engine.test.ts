@@ -7,7 +7,7 @@ import { TriggerStore } from "../src/triggers.ts";
 import { type ImageContent, RequestStore, type Row } from "../src/requests.ts";
 import * as path from "node:path";
 import { BACKOFF_MS } from "../src/backoff.ts";
-import { type Action, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, conversationView, landed, personRow, plainJobRow, plainRunId, stripImageNotes } from "../src/engine.ts";
+import { type Action, type Proof, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, proofOf, landed, personRow, plainJobRow, plainRunId, stripImageNotes } from "../src/engine.ts";
 
 test("a row removed between the drain's read and its hand-over is not handed over: the stamp that found no row says so", async () => {
 	// The page's send-here takes a message out of the queue and sends it over rpc. A drain that had
@@ -19,11 +19,11 @@ test("a row removed between the drain's read and its hand-over is not handed ove
 	const turned: string[] = [];
 	const executor: Executor = {
 		holds: () => true,
-		entries: () => ({ has: () => false, personEntries: () => 0 }),
+		proof: () => ({ has: () => false, personEntries: () => 0, ran: () => undefined }),
 		view: () => {
 			// The second view is the re-check just before the hand-over: the page removes the row now.
 			if (++views === 2) store.remove("s", ["p1"]);
-			return { kind: "window", ceiling: () => true, admits: () => true, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => true };
+			return { kind: "window", ceiling: () => true, blocked: () => undefined, claimLive: () => false, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => true };
 		},
 		append: () => undefined,
 		turn: (row) => void turned.push(row.id),
@@ -97,8 +97,8 @@ function fakeExecutor(opts: { holds?: () => boolean; idle?: boolean; deliver?: (
 	const inFlight = new Set<string>();
 	const executor: Executor = {
 		holds: opts.holds ?? (() => true),
-		entries: () => ({ has: (id) => written.has(id), personEntries: () => 0 }),
-		view: () => ({ kind: "window", ceiling: () => true, admits: () => true, idle: opts.idle ?? true, inFlight, connected: () => true, producerAlive: () => true, mine: () => true }),
+		proof: () => ({ has: (id) => written.has(id), personEntries: () => 0, ran: () => undefined }),
+		view: () => ({ kind: "window", ceiling: () => true, blocked: () => undefined, claimLive: () => false, idle: opts.idle ?? true, inFlight, connected: () => true, producerAlive: () => true, mine: () => true }),
 		append: (r) => {
 			(opts.deliver ?? ((d, w) => w.add(d.id)))(r, written);
 			given.push(r.id);
@@ -293,31 +293,31 @@ test("a row of a newer version is kept and skipped", async () => {
 });
 
 test("modeOf gives each source the mode its trigger decided", () => {
-	assert.equal(modeOf("input", "rule:local:dynamic", "append"), "none");
-	assert.equal(modeOf("input", "push:srv:key", "append"), "none");
-	assert.equal(modeOf("input", "push:srv:key", "turn"), "unattended");
-	assert.equal(modeOf("input", "cron:job-1", "turn"), "unattended");
-	for (const source of ["cron-run:job-1", "person", "goal", "inbox:inb-1", "recipe:daily", "new-trigger", "cli", "window"] as const) assert.equal(modeOf("input", source, "turn"), "attended", source);
-	assert.equal(modeOf("stop", "cli"), "none");
-	assert.equal(modeOf("cancel", "person"), "none");
+	assert.equal(modeOf("conversation", "input", "rule:local:dynamic", "append"), "none");
+	assert.equal(modeOf("conversation", "input", "push:srv:key", "append"), "none");
+	assert.equal(modeOf("conversation", "input", "push:srv:key", "turn"), "unattended");
+	assert.equal(modeOf("conversation", "input", "cron:job-1", "turn"), "unattended");
+	for (const source of ["cron-run:job-1", "person", "goal", "inbox:inb-1", "recipe:daily", "new-trigger", "cli", "window"] as const) assert.equal(modeOf("conversation", "input", source, "turn"), "attended", source);
+	assert.equal(modeOf("conversation", "stop", "cli"), "none");
+	assert.equal(modeOf("conversation", "cancel", "person"), "none");
 });
 
-const view = (over: Partial<ExecutorView> = {}): ExecutorView => ({ kind: "window", ceiling: () => true, admits: () => true, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => true, ...over });
-const none = { has: () => false, personEntries: () => 0 };
+const view = (over: Partial<ExecutorView> = {}): ExecutorView => ({ kind: "window", ceiling: () => true, blocked: () => undefined, claimLive: () => false, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => true, ...over });
+const none: Proof = { has: () => false, personEntries: () => 0, ran: () => undefined };
 const jobs = { exists: () => true, enabled: () => true, goalActive: () => true };
 
 test("a row wider than its source is refused, audited and removed, never run or left waiting", async () => {
 	// A plain job's row with `attended` written into the file: the clock's row gets `unattended`.
 	const widened = row("w1", { wake: "turn", source: "cron:j", mode: "attended", payload: { text: "[Trigger w1] hello", cwd: "/" } });
-	assert.deepEqual(decideDrain([widened], none, jobs, view(), T0), [{ do: "remove", row: widened, why: "refused" }]);
+	assert.deepEqual(decideDrain("conversation", [widened], none, jobs, view(), T0), [{ do: "exit", row: widened, exit: "refused" }]);
 	// The rule is equality, so a narrower row is refused too: the executor runs a row only as its source.
 	const narrowed = row("n1", { wake: "turn", source: "inbox:inb-1", mode: "unattended", payload: { text: "[Trigger n1] hello", cwd: "/" } });
-	assert.deepEqual(decideDrain([narrowed], none, jobs, view(), T0), [{ do: "remove", row: narrowed, why: "refused" }]);
+	assert.deepEqual(decideDrain("conversation", [narrowed], none, jobs, view(), T0), [{ do: "exit", row: narrowed, exit: "refused" }]);
 	const result = row("r1", { mode: "attended" });
-	assert.deepEqual(decideDrain([result], none, jobs, view(), T0), [{ do: "remove", row: result, why: "refused" }], "an append row too");
+	assert.deepEqual(decideDrain("conversation", [result], none, jobs, view(), T0), [{ do: "exit", row: result, exit: "refused" }], "an append row too");
 	const honest = row("h1", { wake: "turn", source: "cron:j", mode: "unattended", payload: { text: "[Trigger h1] hello", cwd: "/" } });
-	assert.deepEqual(decideDrain([widened, honest], none, jobs, view(), T0), [
-		{ do: "remove", row: widened, why: "refused" },
+	assert.deepEqual(decideDrain("conversation", [widened, honest], none, jobs, view(), T0), [
+		{ do: "exit", row: widened, exit: "refused" },
 		{ do: "turn", row: honest },
 	], "the refused row blocks nothing behind it");
 	// Through the engine: gone from the file, and the audit says why.
@@ -339,12 +339,12 @@ test("an attended row never runs in the background process; it waits for a windo
 	const goal = goalRow("go on", { condition: "c", iterations: 1, updatedAt: "t" }, { sessionId: "s", cwd: "/", createdBy: { pid: 99, instance: "w", version: "0" } }, T0);
 	const person = row("p1", { wake: "turn", source: "person", mode: "attended", payload: { text: "hi", cwd: "/" } });
 	// Their producers are gone, so nothing but the ceiling keeps them from this executor.
-	for (const attended of [claim, goal, person]) assert.deepEqual(decideDrain([attended], none, jobs, held({ producerAlive: () => false }), T0), [{ do: "wait", row: attended, why: "attended rows wait for a window" }], attended.source);
+	for (const attended of [claim, goal, person]) assert.deepEqual(decideDrain("conversation", [attended], none, jobs, held({ producerAlive: () => false }), T0), [{ do: "wait", row: attended, why: "attended rows wait for a window" }], attended.source);
 	const cron = row("c1", { wake: "turn", source: "cron:j", mode: "unattended", payload: { text: "[Trigger c1] hello", cwd: "/" } });
-	assert.deepEqual(decideDrain([cron], none, jobs, held(), T0), [{ do: "turn", row: cron }], "an unattended row is under the ceiling");
-	assert.deepEqual(decideDrain([row("r1")], none, jobs, held(), T0), [{ do: "append", row: row("r1"), wakeAgent: false }], "and so is a result");
+	assert.deepEqual(decideDrain("conversation", [cron], none, jobs, held(), T0), [{ do: "turn", row: cron }], "an unattended row is under the ceiling");
+	assert.deepEqual(decideDrain("conversation", [row("r1")], none, jobs, held(), T0), [{ do: "append", row: row("r1"), wakeAgent: false }], "and so is a result");
 	assert.equal(CEILING.window("attended"), true, "a window runs every mode");
-	assert.deepEqual(decideDrain([claim], none, jobs, view(), T0), [{ do: "turn", row: claim }]);
+	assert.deepEqual(decideDrain("conversation", [claim], none, jobs, view(), T0), [{ do: "turn", row: claim }]);
 });
 
 test("decideDrain: stops and cancels act first, idle or busy, and never on whatever runs next", () => {
@@ -352,18 +352,18 @@ test("decideDrain: stops and cancels act first, idle or busy, and never on whate
 	const b = row("b");
 	const cancel = row("c1", { kind: "cancel", source: "person", target: { id: "a" } });
 	const stop = row("s1", { kind: "stop", source: "cli", target: { id: "b" } });
-	assert.deepEqual(decideDrain([a, b, cancel, stop], none, jobs, view({ idle: false }), T0), [
-		{ do: "remove", row: a, why: "cancelled" },
-		{ do: "remove", row: cancel, why: "done" },
-		{ do: "remove", row: b, why: "cancelled" },
-		{ do: "remove", row: stop, why: "done" },
+	assert.deepEqual(decideDrain("conversation", [a, b, cancel, stop], none, jobs, view({ idle: false }), T0), [
+		{ do: "exit", row: a, exit: "cancelled" },
+		{ do: "exit", row: cancel, exit: "delivered" },
+		{ do: "exit", row: b, exit: "cancelled" },
+		{ do: "exit", row: stop, exit: "delivered" },
 	]);
 	const running = row("s2", { kind: "stop", source: "cli", target: { id: "r" } });
-	assert.deepEqual(decideDrain([running], none, jobs, view({ running: { requestId: "r", startedAt: "2026-06-01T11:00:00Z" } }), T0), [{ do: "abort", stop: running }, { do: "remove", row: running, why: "done" }]);
+	assert.deepEqual(decideDrain("conversation", [running], none, jobs, view({ running: { requestId: "r", startedAt: "2026-06-01T11:00:00Z" } }), T0), [{ do: "abort", stop: running }, { do: "exit", row: running, exit: "delivered" }]);
 	const late = row("s3", { kind: "stop", source: "cli", target: { current: true, started_before: "2026-06-01T11:00:00Z" } });
-	assert.deepEqual(decideDrain([late], none, jobs, view({ running: { startedAt: "2026-06-01T11:30:00Z" } }), T0), [{ do: "remove", row: late, why: "stale" }], "a late stop never stops the next turn");
-	assert.deepEqual(decideDrain([late], none, jobs, view({ running: { startedAt: "2026-06-01T10:30:00Z" } }), T0), [{ do: "abort", stop: late }, { do: "remove", row: late, why: "done" }]);
-	assert.deepEqual(decideDrain([stop], none, jobs, view(), T0), [{ do: "remove", row: stop, why: "stale" }], "nothing to stop: stale");
+	assert.deepEqual(decideDrain("conversation", [late], none, jobs, view({ running: { startedAt: "2026-06-01T11:30:00Z" } }), T0), [{ do: "exit", row: late, exit: "stale" }], "a late stop never stops the next turn");
+	assert.deepEqual(decideDrain("conversation", [late], none, jobs, view({ running: { startedAt: "2026-06-01T10:30:00Z" } }), T0), [{ do: "abort", stop: late }, { do: "exit", row: late, exit: "delivered" }]);
+	assert.deepEqual(decideDrain("conversation", [stop], none, jobs, view(), T0), [{ do: "exit", row: stop, exit: "stale" }], "nothing to stop: stale");
 });
 
 test("decideDrain: one lane, oldest first; a row that cannot go now blocks nothing behind it", () => {
@@ -371,28 +371,28 @@ test("decideDrain: one lane, oldest first; a row that cannot go now blocks nothi
 	const result = row("y");
 	const turn = row("z", { wake: "turn", source: "cron:j", mode: "unattended" });
 	const another = row("w", { wake: "turn", source: "cron:j", mode: "unattended" });
-	assert.deepEqual(decideDrain([backoff, result, turn, another], none, jobs, view(), T0), [
+	assert.deepEqual(decideDrain("conversation", [backoff, result, turn, another], none, jobs, view(), T0), [
 		{ do: "wait", row: backoff, why: `backing off until ${backoff.not_before}` },
 		{ do: "append", row: result, wakeAgent: false },
 		{ do: "turn", row: turn },
 		{ do: "wait", row: another, why: "pi is busy" },
 	], "idle: a result lands without a turn, one turn is handed over, the next waits");
-	assert.deepEqual(decideDrain([result, turn], none, jobs, view({ idle: false }), T0), [
+	assert.deepEqual(decideDrain("conversation", [result, turn], none, jobs, view({ idle: false }), T0), [
 		{ do: "append", row: result, wakeAgent: true },
 		{ do: "wait", row: turn, why: "pi is busy" },
 	], "busy: a result goes as a follow-up that wakes the agent, a turn waits");
-	assert.deepEqual(decideDrain([result], none, jobs, view({ admits: () => false }), T0), [{ do: "wait", row: result, why: "not admitted by this executor" }]);
-	assert.deepEqual(decideDrain([result], none, jobs, view({ inFlight: new Set(["y"]) }), T0), [{ do: "wait", row: result, why: "handed to pi, not yet in the conversation" }]);
+	assert.deepEqual(decideDrain("conversation", [result], none, jobs, view({ blocked: () => "held back for a reason of its own" }), T0), [{ do: "wait", row: result, why: "held back for a reason of its own" }]);
+	assert.deepEqual(decideDrain("conversation", [result], none, jobs, view({ inFlight: new Set(["y"]) }), T0), [{ do: "wait", row: result, why: "handed to pi, not yet in the conversation" }]);
 	const needs = row("n", { wake: "turn", source: "cron:j", mode: "unattended", payload: { text: "[Trigger n] t", cwd: "/", requires: ["gh"] } });
-	assert.deepEqual(decideDrain([needs], none, jobs, view({ connected: () => false }), T0), [{ do: "wait", row: needs, why: "waiting for mcp server gh" }]);
-	assert.deepEqual(decideDrain([result], { has: () => true }, jobs, view(), T0), [{ do: "remove", row: result, why: "done" }]);
-	assert.deepEqual(decideDrain([turn], none, { ...jobs, exists: () => false }, view(), T0), [{ do: "remove", row: turn, why: "job-removed" }], "removing a job cancels its queued rows");
+	assert.deepEqual(decideDrain("conversation", [needs], none, jobs, view({ connected: () => false }), T0), [{ do: "wait", row: needs, why: "waiting for mcp server gh" }]);
+	assert.deepEqual(decideDrain("conversation", [result], { ...none, has: () => true }, jobs, view(), T0), [{ do: "exit", row: result, exit: "delivered" }]);
+	assert.deepEqual(decideDrain("conversation", [turn], none, { ...jobs, exists: () => false }, view(), T0), [{ do: "exit", row: turn, exit: "job-removed" }], "removing a job cancels its queued rows");
 	const goal = row("g", { wake: "turn", source: "goal", mode: "attended" });
-	assert.deepEqual(decideDrain([goal], none, { ...jobs, enabled: () => true, goalActive: () => false }, view(), T0), [{ do: "remove", row: goal, why: "stale" }]);
+	assert.deepEqual(decideDrain("conversation", [goal], none, { ...jobs, enabled: () => true, goalActive: () => false }, view(), T0), [{ do: "exit", row: goal, exit: "stale" }]);
 	const tired = row("t", { attempts: 3, last_error: "no" });
-	assert.deepEqual(decideDrain([tired], none, jobs, view(), T0), [{ do: "dead", row: tired, why: "failed 3 times: no" }]);
+	assert.deepEqual(decideDrain("conversation", [tired], none, jobs, view(), T0), [{ do: "exit", row: tired, exit: "dead", why: "failed 3 times: no" }]);
 	const empty = row("e", { payload: undefined });
-	assert.deepEqual(decideDrain([empty], none, jobs, view(), T0), [{ do: "dead", row: empty, why: "an input row without text" }]);
+	assert.deepEqual(decideDrain("conversation", [empty], none, jobs, view(), T0), [{ do: "exit", row: empty, exit: "dead", why: "an input row without text" }]);
 });
 
 test("two drains that overlap hand a row over once", async () => {
@@ -557,7 +557,7 @@ test("pushRunRow: the trace id is the row id, the prompt keeps its one prefix, p
 	assert.equal(r.payload?.text, "[Trigger t-1] gh fired: issue opened", "no second prefix");
 	assert.equal(r.payload?.cwd, "/proj");
 	assert.equal(r.lane, "s");
-	assert.equal(modeOf(r.kind, r.source, r.wake), r.mode);
+	assert.equal(modeOf("conversation", r.kind, r.source, r.wake), r.mode);
 	assert.equal(showsTriggeredTurnLine(r.source), true, "a push announces its turn as it did");
 });
 
@@ -596,7 +596,7 @@ test("inboxClaimRow, recipeRow, newTriggerRow: a fresh id each, the person's own
 
 	for (const r of [claim, recipe, nt]) {
 		assert.match(r.id.replace(/^[a-z]+-/, ""), HEX32);
-		assert.equal(modeOf(r.kind, r.source, r.wake), r.mode);
+		assert.equal(modeOf("conversation", r.kind, r.source, r.wake), r.mode);
 		assert.equal(typedByPerson(r.source), true, `${r.source} is typed by the person`);
 		assert.equal(showsTriggeredTurnLine(r.source), false, `${r.source} keeps its own notice`);
 	}
@@ -845,7 +845,7 @@ test("a claim typed while pi is busy runs before an older queued cron row once p
 	const out = await drain("s", store, w.executor, T0 + 3_000, sinks);
 	assert.deepEqual(w.sent.map((s) => s.text), [claim.payload!.text], "what the person typed goes first");
 	assert.deepEqual([out.delivered, out.waiting], [[claim.id], [cron.id]]);
-	assert.deepEqual(decideDrain([cron, claim], none, jobs, view(), T0).map((a) => a.do === "turn" || a.do === "wait" ? `${a.do} ${a.row.id}` : a.do), [`turn ${claim.id}`, "wait t1"], "typed first, then oldest first");
+	assert.deepEqual(decideDrain("conversation", [cron, claim], none, jobs, view(), T0).map((a) => a.do === "turn" || a.do === "wait" ? `${a.do} ${a.row.id}` : a.do), [`turn ${claim.id}`, "wait t1"], "typed first, then oldest first");
 });
 
 test("a push collapsed onto a queued one is audited as collapsed", async () => {
@@ -947,8 +947,8 @@ test("a page's claim is born left: the holder runs it capped, attended once rung
 	const viewer = fakeWindowPi(true, { holds: false, self: page });
 	await drain("s", store, viewer.executor, Date.now(), sinks);
 	assert.deepEqual(viewer.sent, [], "a pi that only views the conversation leaves it to the holder, even one signed as the page");
-	const host: ExecutorView = { kind: "held", ceiling: CEILING.held, admits: (r) => r.wake !== "turn", idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false };
-	assert.deepEqual(decideDrain([claim], conversationView(() => []), sinks.jobs, host, Date.now()).map((a) => a.do), ["wait"], "pi-loops in the background never runs it");
+	const host: ExecutorView = { kind: "held", ceiling: CEILING.held, blocked: (r) => (r.wake === "turn" ? "turn rows wait for a window" : undefined), claimLive: () => false, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false };
+	assert.deepEqual(decideDrain("conversation", [claim], proofOf(() => [], () => []), sinks.jobs, host, Date.now()).map((a) => a.do), ["wait"], "pi-loops in the background never runs it");
 
 	const holder = fakeWindowPi(true, { holds: true, self: { pid: 22, procStart: "start-22" }, alive: producerAlive });
 	await drain("s", store, holder.executor, Date.now(), sinks);
@@ -985,9 +985,9 @@ test("an older rule result before a typed claim is appended without waking the a
 	const cron = turnRow("t1");
 	const claim = inboxClaimRow("x", "inb-1", to, T0);
 	const brief = (a: Action) => (a.do === "append" ? `append ${a.row.id} wake=${a.wakeAgent}` : a.do === "turn" || a.do === "wait" ? `${a.do} ${a.row.id}` : a.do);
-	assert.deepEqual(decideDrain([result, cron, claim], none, jobs, view(), T0).map(brief), ["append r1 wake=false", `turn ${claim.id}`, "wait t1"], "the result keeps its place and lands first, without a turn; the claim takes the first turn slot");
-	assert.deepEqual(decideDrain([cron, result, claim], none, jobs, view(), T0).map(brief), [`turn ${claim.id}`, "append r1 wake=true", "wait t1"], "a result queued after a turn slot is a follow-up, as before");
-	assert.deepEqual(decideDrain([result, claim], none, jobs, view({ idle: false }), T0).map(brief), ["append r1 wake=true", `wait ${claim.id}`]);
+	assert.deepEqual(decideDrain("conversation", [result, cron, claim], none, jobs, view(), T0).map(brief), ["append r1 wake=false", `turn ${claim.id}`, "wait t1"], "the result keeps its place and lands first, without a turn; the claim takes the first turn slot");
+	assert.deepEqual(decideDrain("conversation", [cron, result, claim], none, jobs, view(), T0).map(brief), [`turn ${claim.id}`, "append r1 wake=true", "wait t1"], "a result queued after a turn slot is a follow-up, as before");
+	assert.deepEqual(decideDrain("conversation", [result, claim], none, jobs, view({ idle: false }), T0).map(brief), ["append r1 wake=true", `wait ${claim.id}`]);
 });
 
 test("a window leaving a conversation removes a local row it already ran there instead of leaving it to the holder", () => {
@@ -1036,8 +1036,8 @@ async function doorbellWorld(dropProbability: number, seed: number) {
 	const failures: unknown[] = [];
 	const executorFor = (sid: string): Executor => ({
 		holds: () => true,
-		entries: () => ({ has: (id) => written.get(sid)!.has(id) }),
-		view: () => ({ kind: "window", ceiling: () => true, admits: () => true, idle: true, inFlight: inFlight.get(sid)!, connected: () => true, producerAlive: () => true, mine: () => true }),
+		proof: () => ({ has: (id) => written.get(sid)!.has(id), personEntries: () => 0, ran: () => undefined }),
+		view: () => ({ kind: "window", ceiling: () => true, blocked: () => undefined, claimLive: () => false, idle: true, inFlight: inFlight.get(sid)!, connected: () => true, producerAlive: () => true, mine: () => true }),
 		append: (r) => {
 			inFlight.get(sid)!.add(r.id);
 			offers.set(r.id, (offers.get(r.id) ?? 0) + 1);
@@ -1168,10 +1168,10 @@ test("a stale stop is a no-op and never stops the next turn", async () => {
 test("started_before compares times, not strings", () => {
 	// 20:00+09:00 is 11:00Z: before 11:30Z as a time, after it as a string.
 	const early = row("s4", { kind: "stop", source: "cli", target: { current: true, started_before: "2026-06-01T11:30:00Z" } });
-	assert.deepEqual(decideDrain([early], none, jobs, view({ running: { startedAt: "2026-06-01T20:00:00+09:00" } }), T0), [{ do: "abort", stop: early }, { do: "remove", row: early, why: "done" }]);
+	assert.deepEqual(decideDrain("conversation", [early], none, jobs, view({ running: { startedAt: "2026-06-01T20:00:00+09:00" } }), T0), [{ do: "abort", stop: early }, { do: "exit", row: early, exit: "delivered" }]);
 	// 03:00-09:00 is 12:00Z: after 11:30Z as a time, before it as a string.
 	const late = row("s5", { kind: "stop", source: "cli", target: { current: true, started_before: "2026-06-01T11:30:00Z" } });
-	assert.deepEqual(decideDrain([late], none, jobs, view({ running: { startedAt: "2026-06-01T03:00:00-09:00" } }), T0), [{ do: "remove", row: late, why: "stale" }]);
+	assert.deepEqual(decideDrain("conversation", [late], none, jobs, view({ running: { startedAt: "2026-06-01T03:00:00-09:00" } }), T0), [{ do: "exit", row: late, exit: "stale" }]);
 });
 
 test("a stop for a row pi has queued but not started aborts it when it starts", async () => {
@@ -1285,7 +1285,7 @@ test("a person row is done once a user message with its text follows its hand-ov
 	const row = personRow("p1", "look", [image], { sessionId: "s", cwd: "/p", createdBy: page }, T0);
 	const note = "look\n\n[Image: original 2880x1800, displayed at 2000x1250. Multiply coordinates by 1.44 to map to original image.]";
 	const entries: unknown[] = [userEntry("look", T0 - 3_600_000)];
-	const conv = conversationView(() => entries);
+	const conv = proofOf(() => entries, () => []);
 	assert.equal(landed(row, conv), false, "never handed over: never done");
 	const handed = { ...row, handed_at: stamp(T0 + 1_000) };
 	assert.equal(landed(handed, conv), false, "a 'look' from an hour ago is not this delivery");
@@ -1381,11 +1381,11 @@ test("a person row goes to pi as the person's message, images with it, and a per
 	// A row with no text is proved by a message with no text of its own once pi's image notes are
 	// stripped, and by nothing else: not a cron turn, not words the person typed in the terminal.
 	const imageOnly = { ...personRow("p2", "", [image], { sessionId: "s", cwd: "/p", createdBy: page }, T0), handed_at: stamp(T0 + 100) };
-	assert.equal(landed(imageOnly, conversationView(() => [])), false);
-	assert.equal(landed(imageOnly, conversationView(() => [userEntry("[Trigger abc] run the nightly check", T0 + 200)])), false, "a cron turn is not the person's image");
-	assert.equal(landed(imageOnly, conversationView(() => [userEntry("look at this", T0 + 200)])), false, "nor are words typed in the terminal");
-	assert.equal(landed(imageOnly, conversationView(() => [userEntry("\n\n[Image: original 2880x1800, displayed at 2000x1250. Multiply coordinates by 1.44 to map to original image.]", T0 + 200)])), true, "its own entry: pi's note and nothing else");
-	assert.equal(landed(imageOnly, conversationView(() => [{ type: "message", timestamp: new Date(T0 + 200).toISOString(), message: { role: "user", content: [image] } }])), true, "or no text at all");
+	assert.equal(landed(imageOnly, proofOf(() => [], () => [])), false);
+	assert.equal(landed(imageOnly, proofOf(() => [userEntry("[Trigger abc] run the nightly check", T0 + 200)], () => [])), false, "a cron turn is not the person's image");
+	assert.equal(landed(imageOnly, proofOf(() => [userEntry("look at this", T0 + 200)], () => [])), false, "nor are words typed in the terminal");
+	assert.equal(landed(imageOnly, proofOf(() => [userEntry("\n\n[Image: original 2880x1800, displayed at 2000x1250. Multiply coordinates by 1.44 to map to original image.]", T0 + 200)], () => [])), true, "its own entry: pi's note and nothing else");
+	assert.equal(landed(imageOnly, proofOf(() => [{ type: "message", timestamp: new Date(T0 + 200).toISOString(), message: { role: "user", content: [image] } }], () => [])), true, "or no text at all");
 	assert.equal(stripImageNotes("fix\n\n[Image: original 2880x1800, displayed at 2000x1250. Multiply coordinates by 1.44 to map to original image.][Image omitted: could not be resized below the inline image size limit.]\n[Image converted from image/avif to image/png.]"), "fix");
 	const alone = world();
 	alone.store.append(personRow("p2", "", [image], { sessionId: "s", cwd: "/p", createdBy: page }, T0), [image]);
@@ -1600,7 +1600,7 @@ test("a damaged jobs.json costs only the rows that name a job: the person's mess
 	const out = await drain("s", store, w.executor, T0 + 5_000, broken);
 	assert.deepEqual([out.delivered.sort(), out.waiting], [[page.id, "tr-1"].sort(), [clock.id]], "the queue drains around the one row that cannot be judged");
 	assert.deepEqual([w.sent.length, w.appended.length], [1, 1]);
-	const why = decideDrain(store.list("s"), conversationView(() => []), broken.jobs, w.executor.view("s"), T0 + 5_000).find((a) => a.row?.id === clock.id);
+	const why = decideDrain("conversation", store.list("s"), proofOf(() => [], () => []), broken.jobs, w.executor.view("s"), T0 + 5_000).find((a) => a.row?.id === clock.id);
 	assert.equal(why?.do, "wait");
 	assert.match((why as { why: string }).why, /^cannot read the jobs: jobs\.json is empty/);
 });
@@ -1614,7 +1614,7 @@ test("a disabled job's queued prompt waits until the job is enabled again; /cron
 	const w = windowOn(store);
 	let out = await drain("s", store, w.executor, T0, sinks);
 	assert.deepEqual([out.delivered, out.waiting, w.sent.length], [[], [parked.id], 0], "a parked job's prompt is not handed to pi because a window opened the conversation");
-	assert.deepEqual(decideDrain(store.list("s"), conversationView(() => []), sinks.jobs, w.executor.view("s"), T0).map((a) => (a.do === "wait" ? a.why : a.do)), ["its job is disabled"]);
+	assert.deepEqual(decideDrain("conversation", store.list("s"), proofOf(() => [], () => []), sinks.jobs, w.executor.view("s"), T0).map((a) => (a.do === "wait" ? a.why : a.do)), ["its job is disabled"]);
 	enabled = true;
 	out = await drain("s", store, w.executor, T0 + 1, sinks);
 	assert.deepEqual(out.delivered, [parked.id], "enabled again: it runs");
@@ -1657,8 +1657,8 @@ test("the background process leaves a goal continuation a quitting window left f
 	const now = Date.now();
 	const left = goalRow("[goal] keep going", { condition: "tests pass", iterations: 2, updatedAt: stamp(now) }, { sessionId: "s", cwd: "/x", createdBy: { ...plainBy, left: stamp(now) } }, now);
 	// heldView in src/host-runtime.ts, and its sinks: goalActive is always false there.
-	const host: ExecutorView = { kind: "held", ceiling: CEILING.held, admits: (r) => r.wake !== "turn", idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false };
-	assert.deepEqual(decideDrain([left], conversationView(() => []), { exists: () => true, enabled: () => true, goalActive: () => false }, host, now).map((a) => a.do), ["wait"]);
+	const host: ExecutorView = { kind: "held", ceiling: CEILING.held, blocked: (r) => (r.wake === "turn" ? "turn rows wait for a window" : undefined), claimLive: () => false, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false };
+	assert.deepEqual(decideDrain("conversation", [left], proofOf(() => [], () => []), { exists: () => true, enabled: () => true, goalActive: () => false }, host, now).map((a) => a.do), ["wait"]);
 });
 
 test("a prompt an input extension rewrites runs once, under its row's cap, as 0.22 did", async () => {
@@ -1726,4 +1726,19 @@ test("a dead letter's text is read back as why and the prompt, so a claim asks f
 	assert.deepEqual(deadLetterParts({ text, undelivered: true }), { why: "pi did not start a turn for it", prompt: "[Trigger run-1] check CI" });
 	assert.equal(deadLetterParts({ text: "a finding a loop reported", undelivered: true }), undefined, "any other text is left as it is");
 	assert.equal(deadLetterParts({ text }), undefined, "and the text alone is not a dead letter: a loop can write it");
+});
+
+test("a turn that sorts first is not handed to pi beside an unwritten turn that only its text proves (#245)", () => {
+	// The goal's continuation is with pi and not written yet: it has the lane. The person's message
+	// sorts before it (`queueOrder`), so it was decided before the lane was known to be taken.
+	const held = row("g1", { source: "goal", mode: "attended", wake: "turn", payload: { text: "keep going", cwd: "/" }, handed_at: "2026-01-01T00:00:00Z" });
+	const person = row("p1", { source: "person", mode: "attended", wake: "turn", payload: { text: "hello", cwd: "/" } });
+	for (const fileOrder of [[held, person], [person, held]]) {
+		const actions = decideDrain("conversation", fileOrder, none, jobs, view({ inFlight: new Set(["g1"]) }), T0);
+		assert.deepEqual(actions.map((a) => [a.do, "row" in a ? a.row.id : "", "why" in a ? a.why : ""]), [["wait", "p1", "pi is busy"], ["wait", "g1", "handed to pi, not yet in the conversation"]]);
+	}
+	// An append row beside it is still written, and wakes the agent only when it comes after the held turn, as before.
+	const result = row("r1");
+	assert.deepEqual(decideDrain("conversation", [result, held], none, jobs, view({ inFlight: new Set(["g1"]) }), T0).map((a) => [a.do, "row" in a ? a.row.id : "", "wakeAgent" in a ? a.wakeAgent : ""]), [["append", "r1", false], ["wait", "g1", ""]]);
+	assert.deepEqual(decideDrain("conversation", [held, result], none, jobs, view({ inFlight: new Set(["g1"]) }), T0).map((a) => [a.do, "row" in a ? a.row.id : "", "wakeAgent" in a ? a.wakeAgent : ""]), [["wait", "g1", ""], ["append", "r1", true]]);
 });

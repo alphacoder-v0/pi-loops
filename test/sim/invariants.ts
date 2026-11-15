@@ -22,7 +22,7 @@ interface Memory {
 	/** The rows in the queues after the last step: `<conversation> <id>` to the row's name. */
 	queued: Map<string, string>;
 	/** The findings and audit lines already counted for an earlier exit of the same row id. */
-	spent: Map<string, { findings: number; audited: number }>;
+	spent: Map<string, { dead: number; audited: number }>;
 	/** Rows that left by a named exit at least once. */
 	exited: Set<string>;
 	/** Each finding's status when it was last read. */
@@ -55,7 +55,7 @@ const conversationOf = (world: World, sessionId: string): Conversation => world.
 
 /**
  * I2. A row leaves its queue only by a named exit, and the trace of that exit is there before the
- * row goes: delivered (pi wrote the row), dead (a finding carries its id), or
+ * row goes: delivered (pi wrote the row), dead (a finding carries its id, and a `dead` audit line), or
  * cancelled, stale, refused, job-removed, done (an audit line). Each exit is also one the row could
  * take: only a stop or a cancel is `done`; `stale` is theirs too, a goal's continuation's once the
  * goal is over, and a person's message's when its conversation is gone; `cancelled` needs a stop or
@@ -76,13 +76,16 @@ function namedExit(world: World, memory: Memory, queues: Queues, coverage: Cover
 		const key = keyOf(row.lane, row.id);
 		const name = label(world, row.id);
 		removed.add(key);
-		const spent = memory.spent.get(key) ?? { findings: 0, audited: 0 };
+		const spent = memory.spent.get(key) ?? { dead: 0, audited: 0 };
 		if (gone.delivered) gone.exit = "delivered";
-		else if (gone.findings > spent.findings) gone.exit = "dead";
+		// A dead letter: a finding carries the row's id, and the audit has a `dead` line this exit wrote.
+		// The finding is filed once for a row id (`Inbox.fileOnce`), so a row that is queued again
+		// under the same id and dies again has the one finding and a second line.
+		else if (gone.findings > 0 && gone.dead > spent.dead) gone.exit = "dead";
 		else if (gone.audited.length > spent.audited) gone.exit = gone.audited[0];
 		// The window's word that the row's turn ran, which no file proves: an exit the engine has, held under `KNOWN`.
 		else if (gone.ranUnproved) gone.exit = "ran";
-		memory.spent.set(key, { findings: gone.findings, audited: gone.audited.length });
+		memory.spent.set(key, { dead: gone.dead, audited: gone.audited.length });
 		if (gone.exit === undefined) {
 			out.push(`${name} left the queue of ${row.lane} with nothing to account for it: pi wrote no message for it, no finding carries its id, no audit line names it`);
 			continue;
@@ -368,7 +371,7 @@ const KNOWN_SECOND_DELIVERIES: Readonly<Record<string, Excuse>> = {
  * test/sim.test.ts shows it under `todo` on the first seed of its run that breaks it, or on this one.
  */
 export const KNOWN: Readonly<Record<string, { defect: string; seed: number }>> = {
-	"I3 no turn beside an unwritten turn only its text proves": { seed: 177, defect: "decideDrain gives the lane to an in-flight text-proved turn only against the rows after it in queue order: a turn row that sorts before it is handed over beside it (#245)" },
+	"I3 no turn beside an unwritten turn only its text proves": { seed: 341, defect: "a turn pi holds unwritten, of a row only its text proves, is taken for delivered by an earlier message with the same words (#250): the row leaves, the lane is free again, and the next turn is handed to a pi that still holds the first. The order of the rows no longer matters: the lane is taken before any row is started (#245, closed)" },
 	"I2 a person's message is answered even when another has the same words": { seed: 7, defect: "landed takes a row only its text proves for delivered by another row's message with the same words, written at or after its hand-over stamp: when its own hand-over came to nothing (it threw and left last_error, or its window died), the row is removed as done, not given back to the page, and the person, who said the same words twice, is answered once. Needs no more of pi than a failed hand-over or a crash (#250)" },
 	"I2 a row is done only by its proof": { seed: 3346, defect: "a message without a prefix that no handed-over row claims (a text-proved row's late send, once that row has left the queue) is taken for the oldest prefixed turn pi was handed and has not started: that row is removed as done while pi still holds it unwritten. Narrow: pi's phase before a run has to outlast the ten-second grace (#247)" },
 	"a row is delivered once when the lease moves while pi holds its turn unstarted": { seed: 618, defect: "a window takes the lease while the holder's pi holds a turn it was handed and has not started (the lease says a turn runs only from agent_start): the new holder hands the row over again, and both pis write it; for a person's message that is one prompt answered twice. Narrow: the lease has to be taken during pi's phase before a run (#248)" },

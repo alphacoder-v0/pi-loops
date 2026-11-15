@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { RequestStore } from "../src/requests.ts";
 import { Inbox } from "../src/inbox.ts";
 import { TriggerStore } from "../src/triggers.ts";
-import { type EngineSinks, PERSON_SEND_GRACE_MS, drain, personRow, pushRunRow, personTextMatches, landed, conversationView } from "../src/engine.ts";
+import { type EngineSinks, PERSON_SEND_GRACE_MS, drain, personRow, pushRunRow, personTextMatches, landed, proofOf } from "../src/engine.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
 import { LeaseBinding, LeaseStore, type LeaseHolder } from "../src/lease.ts";
 import { stamp } from "../src/schedule.ts";
@@ -105,7 +105,7 @@ test("a refused row that pi runs late, after another person row was handed over,
 test("only pi's own image notes are stripped: a person's [Imagine …] or [Image: …] does not prove an images-only row", () => {
 	assert.equal(personTextMatches("[Imagine that]", ""), false);
 	const row = { ...fromPage("p1", "", T0, [img]), handed_at: stamp(T0 + 100) };
-	assert.equal(landed(row, conversationView(() => [{ type: "message", timestamp: new Date(T0 + 200).toISOString(), message: { role: "user", content: "[Image: see above]" } }])), false);
+	assert.equal(landed(row, proofOf(() => [{ type: "message", timestamp: new Date(T0 + 200).toISOString(), message: { role: "user", content: "[Image: see above]" } }], () => [])), false);
 });
 
 test("a pi-loops turn pi never started does not hold the lane: the rows behind it still go", async () => {

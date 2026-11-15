@@ -8,7 +8,7 @@
  * forgets what pi dropped (Esc clears its queues), so the next drain offers it again.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CEILING, type ConversationView, type Executor, type ExecutorView, type Producer, carriesPrefix, conversationView, landed, modeOf, personTextMatches, queuedTriggeredTurn, requestFingerprint, sameProducer } from "./engine.ts";
+import { CEILING, type Executor, type ExecutorView, type Producer, carriesPrefix, proofOf, landed, modeOf, personTextMatches, queuedTriggeredTurn, requestFingerprint, sameProducer, type Proof, claimAlive } from "./engine.ts";
 import { type LeaseBinding, type ProcessProbe, systemProbe } from "./lease.ts";
 import type { ImageContent, RequestMode, Row } from "./requests.ts";
 import { stamp } from "./schedule.ts";
@@ -185,9 +185,10 @@ export class WindowExecutor implements Executor {
 		return !!ctx && here.sessionId === sessionId && here.holds && (ctx.mode === "tui" || ctx.mode === "rpc");
 	}
 
-	entries(_sessionId: string): ConversationView {
+	proof(_lane: string): Proof {
 		const ctx = this.ctx();
-		return conversationView(() => ctx?.sessionManager.getEntries() ?? []);
+		// A window writes no run record for a turn it runs: its rows are proved by the conversation alone.
+		return proofOf(() => ctx?.sessionManager.getEntries() ?? [], () => []);
 	}
 
 	/**
@@ -197,7 +198,7 @@ export class WindowExecutor implements Executor {
 	 */
 	delivered(id: string): boolean {
 		const row = this.rows().find((r) => r.id === id);
-		return row ? landed(row, this.entries("")) : this.entries("").has(id);
+		return row ? landed(row, this.proof("")) : this.proof("").has(id);
 	}
 
 	view(sessionId: string): ExecutorView {
@@ -220,7 +221,8 @@ export class WindowExecutor implements Executor {
 		return {
 			kind: "window",
 			ceiling: CEILING.window,
-			admits: () => true,
+			blocked: () => undefined,
+			claimLive: (row) => claimAlive(row),
 			idle: this.ctx()?.isIdle() ?? true,
 			running: this.running,
 			inFlight: this.handedOver,
@@ -257,7 +259,7 @@ export class WindowExecutor implements Executor {
 	 * asks the person in the window.
 	 */
 	private capOf(row: Row): CurrentTurn & { kind: "row" } {
-		const mode = modeOf(row.kind, row.source, row.wake);
+		const mode = modeOf("conversation", row.kind, row.source, row.wake);
 		if (mode === "attended" && this.producedRows.get(row.id) !== requestFingerprint(row)) return { kind: "row", id: row.id, mode: "unattended" };
 		return { kind: "row", id: row.id, mode, tools: row.payload?.tools, builtinTools: row.payload?.builtin_tools };
 	}

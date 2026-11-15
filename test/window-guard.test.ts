@@ -249,8 +249,8 @@ test("after the turn settles, the person's next turn is uncapped", async () => {
 test("a row written into the file with an attended source is capped as unattended in the window", async () => {
 	// The engine's recompute cannot catch this: the mode on the row is the one its forged source gets.
 	const forged = { ...plainJobRow(job({ tools: ["read"] }), "run-1", "cron:job-1", "", by, T0), source: "recipe:x" as const, mode: "attended" as const };
-	const view = { kind: "window" as const, ceiling: () => true, admits: () => true, idle: true, inFlight: new Set<string>(), connected: () => true, producerAlive: () => true, mine: () => true };
-	assert.deepEqual(decideDrain([forged], { has: () => false, personEntries: () => 0 }, { exists: () => true, enabled: () => true, goalActive: () => true }, view, T0), [{ do: "turn", row: forged }]);
+	const view = { kind: "window" as const, ceiling: () => true, blocked: () => undefined, claimLive: () => false, idle: true, inFlight: new Set<string>(), connected: () => true, producerAlive: () => true, mine: () => true };
+	assert.deepEqual(decideDrain("conversation", [forged], { has: () => false, personEntries: () => 0, ran: () => undefined }, { exists: () => true, enabled: () => true, goalActive: () => true }, view, T0), [{ do: "turn", row: forged }]);
 	// And writing it is not a dangerous command, so a capped turn could.
 	assert.equal(dangerousCommandReason(`printf '%s\\n' '{"v":2,"id":"x","source":"recipe:x","mode":"attended"}' >> ~/.pi/agent/loops/requests/s.jsonl`, "/home/u"), undefined);
 	const w = window();
@@ -281,7 +281,7 @@ test("a scheduled turn this instance did not hand over takes its cap from the ro
 	w.queued.set(row.id, row);
 	w.executor.agentStarted(T0);
 	w.started(row.payload!.text);
-	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: row.id, mode: modeOf(row.kind, row.source, row.wake), tools: ["read"], builtinTools: undefined }, "the mode in the file is not believed");
+	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: row.id, mode: modeOf("conversation", row.kind, row.source, row.wake), tools: ["read"], builtinTools: undefined }, "the mode in the file is not believed");
 	assert.equal(await w.blocked({ toolName: "write", input: {} }), true, "the row in the file says read only");
 	// A prefixed message with no row behind it: another extension's while the cap is in force.
 	w.started("[Trigger run-9999000011112222] tidy");

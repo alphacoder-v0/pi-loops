@@ -39,7 +39,7 @@
  *   even while the drain waits on the inbox for a dead letter.
  * - Time is the schedule's: `Date` and `setTimeout` are node:test's mocks, and nothing waits.
  */
-import { CEILING, type DrainResult, type EngineSinks, type Executor, bury, conversationView, drain } from "../../src/engine.ts";
+import { CEILING, type DrainResult, type EngineSinks, type Executor, bury, proofOf, drain } from "../../src/engine.ts";
 import { Inbox } from "../../src/inbox.ts";
 import { RequestStore, type Row } from "../../src/requests.ts";
 import { TriggerStore } from "../../src/triggers.ts";
@@ -147,6 +147,8 @@ export interface Removal {
 	/** For an input: how its delivery shows in what pi wrote (`deliveredBy`). */
 	delivered?: "its own message" | "another row's message";
 	findings: number;
+	/** How many `dead` lines the audit holds for the row: a dead letter writes one each time, and its finding once. */
+	dead: number;
 	/** The exit states the audit holds for the row, newest first. */
 	audited: string[];
 	failures: number;
@@ -300,6 +302,8 @@ export function deliveredBy(world: World, row: Row): Removal["delivered"] {
 }
 export const findingsFor = (world: World, rowId: string): number => world.inbox.list().filter((entry) => entry.run_id === rowId).length;
 /** The states the audit's `request` lines give row `rowId`, newest first, without `failed` and `dead`: those two are not exits a line alone proves. */
+/** How many times the audit says row `rowId` became a dead letter. */
+export const deadLines = (world: World, rowId: string): number => world.audit.listAudit(Number.MAX_SAFE_INTEGER, (r) => r.type === "request" && r.traceId === rowId && r.state === "dead").length;
 export const auditedExits = (world: World, rowId: string): string[] => world.audit.listAudit(Number.MAX_SAFE_INTEGER, (r) => r.type === "request" && r.traceId === rowId && r.state !== "failed" && r.state !== "dead").map((r) => r.state);
 
 /** The copies `process`'s pi holds unwritten. */
@@ -416,8 +420,8 @@ function backgroundProcess(world: World, base: Omit<Process, "executor">): Proce
 	const conversation = proc.conversation;
 	proc.executor = {
 		holds: () => proc.alive && conversation.holder === proc,
-		entries: () => conversationView(() => conversation.entries),
-		view: () => ({ kind: "held", ceiling: CEILING.held, admits: (row) => row.wake !== "turn", idle: true, inFlight: new Set<string>(), connected: () => true, producerAlive: () => true, mine: () => false }),
+		proof: () => proofOf(() => conversation.entries, () => []),
+		view: () => ({ kind: "held", ceiling: CEILING.held, blocked: (row) => (row.wake === "turn" ? "turn rows wait for a window" : undefined), claimLive: () => false, idle: true, inFlight: new Set<string>(), connected: () => true, producerAlive: () => true, mine: () => false }),
 		append: (row) => write(world, proc, { text: row.payload?.text ?? "", custom: true, copy: copyFor(world, proc, row.payload?.text ?? "") }),
 		turn: () => {
 			throw new Error("the background process does not run turn requests yet");
@@ -539,7 +543,7 @@ function watchedStore(world: World, fuse: Fuse, remover?: Process, removed: () =
 		const rows = real.list(sessionId);
 		for (const row of rows) {
 			if (!gone.includes(row.id)) continue;
-			const removal: Removal = { row, delivered: row.kind === "input" ? deliveredBy(world, row) : undefined, findings: findingsFor(world, row.id), audited: auditedExits(world, row.id), failures: failedHandOvers(world, row.id), buried: conversation.deleted, heldByRemover: !!remover && held(remover).some((copy) => copy.rowId === row.id && !copy.gaveUp) };
+			const removal: Removal = { row, delivered: row.kind === "input" ? deliveredBy(world, row) : undefined, findings: findingsFor(world, row.id), dead: deadLines(world, row.id), audited: auditedExits(world, row.id), failures: failedHandOvers(world, row.id), buried: conversation.deleted, heldByRemover: !!remover && held(remover).some((copy) => copy.rowId === row.id && !copy.gaveUp) };
 			if (row.kind === "input" && !removal.delivered) removal.ranUnproved = remover?.window?.view(sessionId).ran?.has(row.id) ?? false;
 			const target = row.kind !== "input" && row.target && "id" in row.target ? row.target.id : undefined;
 			// A pi was handed the named row and has neither written nor lost it; one that refused it in silence counts until a tick judges the refusal: its window cannot know before.
@@ -561,9 +565,9 @@ function watchedSinks(world: World, fuse: Fuse): EngineSinks {
 	return {
 		jobs: { exists: (id) => world.jobs.get(id)?.exists ?? false, enabled: (id) => world.jobs.get(id)?.enabled ?? false, goalActive: (sessionId) => world.conversations.find((c) => c.id === sessionId)?.goalActive ?? false },
 		inbox: {
-			append: async (entry) => {
+			fileOnce: async (entry, id) => {
 				fuse.write();
-				return world.inbox.append(entry);
+				return world.inbox.fileOnce(entry, id);
 			},
 			appendOnce: async (entry, key, opts) => {
 				fuse.write();
@@ -627,7 +631,7 @@ export async function drainAs(world: World, proc: Process, tick: boolean, fault:
 			return inner.holds(sessionId);
 		},
 		view: (sessionId) => inner.view(sessionId),
-		entries: (sessionId) => inner.entries(sessionId),
+		proof: (sessionId) => inner.proof(sessionId),
 		turn: (row, at) => handOver(row, "turn", () => inner.turn(row, at)),
 		append: (row, wakeAgent) => handOver(row, "append", () => inner.append(row, wakeAgent)),
 		abort: () => inner.abort(),

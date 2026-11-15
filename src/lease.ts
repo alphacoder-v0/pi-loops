@@ -167,7 +167,7 @@ export function openWindowPids(leases: Pick<LeaseStore, "list">, probe: ProcessP
 	return pids;
 }
 
-export function holderAlive(h: LeaseHolder, probe: ProcessProbe = systemProbe): boolean {
+export function holderAlive(h: Pick<LeaseHolder, "pid" | "procStart" | "acquiredAt">, probe: ProcessProbe = systemProbe): boolean {
 	if (!probe.alive(h.pid)) return false;
 	const start = probe.startTime(h.pid);
 	if (h.procStart !== undefined && start !== undefined && start !== h.procStart) return false;

@@ -14,15 +14,16 @@
  */
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import type { Inbox } from "./inbox.ts";
+import { type Inbox, findingId } from "./inbox.ts";
+import { type ConversationId, type Lane, type LaneId, parseLane } from "./lane.ts";
 import { redact } from "./redact.ts";
 import { type LeaseHolder, type LeaseStore, type ProcessProbe, type SessionLease, holderAlive, holderDelivers, systemProbe } from "./lease.ts";
 import { withinProject } from "./paths.ts";
-import { type ImageContent, type RequestMode, type RequestStore, type Row, imageRef, type UnclaimedRow } from "./requests.ts";
+import { type ImageContent, type RequestMode, type RequestStore, type Row, imageRef, type UnclaimedRow, type ClaimedRow } from "./requests.ts";
 import type { LockOptions } from "./lock.ts";
 import { backoffFor } from "./backoff.ts";
 import { stamp } from "./schedule.ts";
-import { type LoopJob, newId } from "./store.ts";
+import { type LoopJob, type RunRecord, newId } from "./store.ts";
 import { type TriggerStore, checkDecidedFinding } from "./triggers.ts";
 
 /** Failures of one row before it is a dead letter. */
@@ -36,8 +37,10 @@ export const DEAD_LETTER_CHARS = 400;
  * `none` asks for no model call of its own (a chat busy with a turn is still woken to see it, as a
  * follow-up is: docs/design.md decision 9).
  */
-export function modeOf(kind: Row["kind"], source: Row["source"], wake?: Row["wake"]): RequestMode {
+export function modeOf(lane: Lane["kind"], kind: Row["kind"], source: Row["source"], wake?: Row["wake"]): RequestMode {
 	if (kind !== "input") return "none";
+	// A loop's lane and a check's lane are run by pi-loops in the background, whatever asked for the run.
+	if (lane !== "conversation") return "unattended";
 	if (source.startsWith("rule:")) return "none";
 	if (source.startsWith("push:")) return wake === "turn" ? "unattended" : "none";
 	if (source.startsWith("cron:")) return "unattended";
@@ -47,7 +50,7 @@ export function modeOf(kind: Row["kind"], source: Row["source"], wake?: Row["wak
 /** A rule's result as the row its creating conversation gets: an `append` with no model call, its trace id the proof of delivery. */
 export function ruleResultRow(sessionId: string, content: string, trigger: { traceId: string; sourceLabel: string; cwd?: string }, createdBy: Row["created_by"], now = Date.now()): UnclaimedRow {
 	const source = `rule:${trigger.sourceLabel}` as const;
-	return { v: 3, id: trigger.traceId, lane: sessionId, kind: "input", source, mode: modeOf("input", source, "append"), wake: "append", payload: { text: content, cwd: trigger.cwd ?? "" }, created_at: stamp(now), created_by: createdBy, attempts: 0 };
+	return { v: 3, id: trigger.traceId, lane: sessionId, kind: "input", source, mode: modeOf("conversation", "input", source, "append"), wake: "append", payload: { text: content, cwd: trigger.cwd ?? "" }, created_at: stamp(now), created_by: createdBy, attempts: 0 };
 }
 
 /**
@@ -75,7 +78,7 @@ export function plainJobRow(job: Pick<LoopJob, "id" | "sessionId" | "prompt" | "
 		lane: job.sessionId ?? "",
 		kind: "input",
 		source,
-		mode: modeOf("input", source, "turn"),
+		mode: modeOf("conversation", "input", source, "turn"),
 		wake: "turn",
 		payload: { text: `[Trigger ${id}] ${job.prompt}${note}`, cwd: job.cwd, model: job.model, thinking: job.thinking, tools: job.tools, builtin_tools: job.builtinTools },
 		collapse_key: plainCollapseKey(job.id),
@@ -110,7 +113,7 @@ function turnRow(id: string, source: Row["source"], text: string, to: RowAddress
 		lane: to.sessionId,
 		kind: "input",
 		source,
-		mode: modeOf("input", source, "turn"),
+		mode: modeOf("conversation", "input", source, "turn"),
 		wake: "turn",
 		payload: { text, cwd: to.cwd },
 		...(collapseKey === undefined ? {} : { collapse_key: collapseKey }),
@@ -204,7 +207,7 @@ export function personRow(id: string, text: string, images: ImageContent[] | und
 		lane: to.sessionId,
 		kind: "input",
 		source: "person",
-		mode: modeOf("input", "person", "turn"),
+		mode: modeOf("conversation", "input", "person", "turn"),
 		wake: "turn",
 		payload: { text, ...(images?.length ? { images: images.map(imageRef) } : {}), cwd: to.cwd },
 		created_at: stamp(now),
@@ -246,12 +249,12 @@ export function ringProduced(rows: readonly Row[], id: string, fingerprint: stri
  * never stops the next turn.
  */
 export function stopRow(sessionId: string, target: NonNullable<Row["target"]>, source: Row["source"], createdBy: Row["created_by"], now = Date.now()): UnclaimedRow {
-	return { v: 3, id: newId("stop"), lane: sessionId, kind: "stop", source, mode: modeOf("stop", source), target, created_at: stamp(now), created_by: createdBy, attempts: 0 };
+	return { v: 3, id: newId("stop"), lane: sessionId, kind: "stop", source, mode: modeOf("conversation", "stop", source), target, created_at: stamp(now), created_by: createdBy, attempts: 0 };
 }
 
 /** Take a queued row out before it runs. One pi already holds is not cancelled: a stop aborts it as it starts. */
 export function cancelRow(sessionId: string, target: { id: string }, source: Row["source"], createdBy: Row["created_by"], now = Date.now()): UnclaimedRow {
-	return { v: 3, id: newId("cancel"), lane: sessionId, kind: "cancel", source, mode: modeOf("cancel", source), target, created_at: stamp(now), created_by: createdBy, attempts: 0 };
+	return { v: 3, id: newId("cancel"), lane: sessionId, kind: "cancel", source, mode: modeOf("conversation", "cancel", source), target, created_at: stamp(now), created_by: createdBy, attempts: 0 };
 }
 
 export type HeldTurnMatch = { kind: "turn"; sessionId: string; runId: string } | { kind: "ambiguous"; matches: string[] };
@@ -553,11 +556,20 @@ export function promotionView(leases: Pick<LeaseStore, "read" | "list">, cwd: st
 }
 
 /** What a row's proof of delivery is read from: the conversation, as `landed` asks it. */
-export interface ConversationView {
-	/** Whether `[Trigger <id>] ` is in it (`conversationHas`). */
+export interface Proof {
+	/** Whether `[Trigger <id>] ` is in the session the row writes into (`conversationHas`). False when that session has no file. */
 	has(id: string): boolean;
 	/** How many user messages whose text is `text`'s (`personTextMatches`) it holds, written at or after `since` (`conversationPersonEntries`). */
 	personEntries(text: string, since: string): number;
+	/**
+	 * What the run records say of the run that claimed the row (`row.run`): `ended` (a failed run
+	 * has ended too: it spent its slot), `stopped` (a person stopped it), `aborted` (a quit, an
+	 * upgrade, the budget, or a window that took the conversation back), or undefined when the row
+	 * has no claim or no record has the claim's run id. No record says `interrupted` yet: the
+	 * closing of a run whose process is gone writes it, and that is not built. A fake can answer
+	 * it. Whether the run is still going is the executor's question (`ExecutorView.claimLive`).
+	 */
+	ran(row: Row): "ended" | "stopped" | "aborted" | "interrupted" | undefined;
 }
 
 /**
@@ -569,9 +581,15 @@ export interface ConversationView {
  * row's, is older than the stamp and proves nothing; a row never handed over has no stamp and is
  * never done.
  */
-export function landed(row: Row, conversation: ConversationView): boolean {
-	if (carriesPrefix(row.source)) return conversation.has(row.id);
-	return row.handed_at !== undefined && conversation.personEntries(row.payload?.text ?? "", row.handed_at) > 0;
+export function landed(row: Row, proof: Proof): boolean {
+	const ran = proof.ran(row);
+	return ran === "ended" || ran === "stopped" || written(row, proof);
+}
+
+/** Whether the row's prompt is in the session it writes into: by its prefix, or by its text since its hand-over stamp. */
+function written(row: Row, proof: Proof): boolean {
+	if (carriesPrefix(row.source)) return proof.has(row.id);
+	return row.handed_at !== undefined && proof.personEntries(row.payload?.text ?? "", row.handed_at) > 0;
 }
 
 /**
@@ -615,9 +633,31 @@ export function conversationPersonEntries(entries: readonly unknown[], text: str
 	}).length;
 }
 
-/** `conversationHas` and `conversationPersonEntries` over one list of entries. */
-export function conversationView(entries: () => readonly unknown[]): ConversationView {
-	return { has: (id) => conversationHas(entries(), id), personEntries: (text, since) => conversationPersonEntries(entries(), text, since) };
+/** Whether the process of the run that claimed `row` is still there, by the rule of a lease's holder (`holderAlive`). */
+export function claimAlive(row: ClaimedRow, probe: ProcessProbe = systemProbe): boolean {
+	return holderAlive({ pid: row.run.pid, procStart: row.run.procStart, acquiredAt: row.run.started_at }, probe);
+}
+
+/**
+ * The one builder of a `Proof`: `conversationHas` and `conversationPersonEntries` over the entries
+ * of the session the rows write into, and `ran` over the run records. Who builds a proof says where
+ * its records come from; a window writes no run record for a turn it runs, and passes `() => []`.
+ * `runs` is read only when a row with a claim is asked about.
+ */
+export function proofOf(entries: () => readonly unknown[], runs: () => readonly RunRecord[]): Proof {
+	return {
+		has: (id) => conversationHas(entries(), id),
+		personEntries: (text, since) => conversationPersonEntries(entries(), text, since),
+		ran: (row) => {
+			if (!row.run) return undefined;
+			const id = row.run.id;
+			let record: RunRecord | undefined;
+			for (const r of runs()) if (r.runId === id) record = r; // the newest one
+			if (!record) return undefined;
+			if (record.aborted) return record.stoppedBy === "person" ? "stopped" : "aborted";
+			return "ended";
+		},
+	};
 }
 
 /** Whether `[Trigger <id>] ` is in the conversation: a user message or a custom message that starts with it. */
@@ -669,11 +709,19 @@ export interface ExecutorView {
 	/** Whether this executor runs rows of `mode` (`CEILING`); a row above it waits for an executor that does. */
 	ceiling(mode: RequestMode): boolean;
 	/**
-	 * This executor's own reasons to leave a row for later, its mode apart (that is `ceiling`, and the
-	 * engine recomputes the mode itself): the background process takes nothing while a held turn has
-	 * the conversation's file, and no turn row until held turns ride rows.
+	 * Why this executor leaves the row for later, its mode apart (that is `ceiling`, and the engine
+	 * recomputes the mode itself); undefined when nothing of its own holds the row. `decideDrain` waits
+	 * with this reason, which is computed each time and stored nowhere. A window: always undefined.
+	 * The background process: a turn of its own is writing the conversation, or the row is a turn row
+	 * (until held turns ride rows).
 	 */
-	admits(row: Row): boolean;
+	blocked(row: UnclaimedRow): string | undefined;
+	/**
+	 * Whether the run that claimed the row is still going. The executor's question and not the
+	 * proof's: an executor that runs rows knows its own runs. Until one does, both answer with the
+	 * rule of a lease's holder (`holderAlive`) for the claim's process.
+	 */
+	claimLive(row: ClaimedRow): boolean;
 	/** window: `ctx.isIdle()`; the background process writes into a conversation nobody has open. */
 	idle: boolean;
 	running?: { requestId?: string; startedAt: string };
@@ -718,20 +766,53 @@ export interface ExecutorView {
 	holderDelivers?: boolean;
 }
 
+/** Every way a row leaves its queue (docs/design.md; the request engine's exits). */
+type Exit = "delivered" | "dead" | "cancelled" | "stale" | "refused" | "job-removed" | "stopped";
+
+/**
+ * The audit line's `state` for each exit, and the one place the strings are written: `pi-loops
+ * abort` and the simulation read them. `delivered` writes `done`, and only for a stop or a cancel:
+ * a delivered input's record is its session file.
+ */
+const AUDIT_STATE = {
+	delivered: "done",
+	dead: "dead",
+	cancelled: "cancelled",
+	stale: "stale",
+	refused: "refused",
+	"job-removed": "job-removed",
+	stopped: "stopped",
+} as const satisfies Record<Exit, string>;
+
+/**
+ * What a drain does with a row. A row leaves its queue by `exit`, or by `close` with an exit;
+ * nothing else removes one. A row with a claim (`ClaimedRow`) is never handed to pi, and leaves or
+ * loses its claim only through `close`.
+ */
 export type Action =
-	| { do: "append"; row: Row; wakeAgent: boolean }
-	| { do: "turn"; row: Row }
-	| { do: "abort"; stop: Row }
-	| { do: "abortWhenStarted"; stop: Row; target: string }
-	| { do: "remove"; row: Row; why: "done" | "cancelled" | "stale" | "job-removed" | "refused" }
-	| { do: "dead"; row: Row; why: string }
+	| { do: "append"; row: UnclaimedRow; wakeAgent: boolean }
+	| { do: "turn"; row: UnclaimedRow }
+	| { do: "abort"; stop: UnclaimedRow }
+	| { do: "abortWhenStarted"; stop: UnclaimedRow; target: string }
+	/** `why`, when given, is the audit line's `details.reason`. */
+	| { do: "exit"; row: UnclaimedRow; exit: Exclude<Exit, "dead" | "stopped">; why?: string }
+	/** The dead letter. It cannot be written without its reason, which the finding's text carries. */
+	| { do: "exit"; row: UnclaimedRow; exit: "dead"; why: string }
 	/**
 	 * pi did not write the row it was handed. An attempt is counted; at `DEAD_AFTER_ATTEMPTS` a pi-loops
 	 * row is a dead letter. `retry` says when it is offered again: `never` for a person row (the page
 	 * takes it back: a retry that did land would answer one prompt twice), `backoff` for a hand-over
 	 * pi refused, `now` for one pi dropped (Esc), which the hold after a stop already paces.
 	 */
-	| { do: "fail"; row: Row; why: string; retry: "never" | "backoff" | "now" }
+	| { do: "fail"; row: UnclaimedRow; why: string; retry: "never" | "backoff" | "now" }
+	/**
+	 * The process that ran a claimed row is gone. The run is closed first; then the row gets `then`:
+	 * an exit (`delivered`: its run ended or its prompt is written; `stopped`: a person stopped the
+	 * run, the slot is spent, no attempt is counted), `owed` (the run was aborted by no person: the
+	 * claim is cleared, no attempt is counted, the row stays), or a failure (the claim is cleared, an
+	 * attempt is counted, the row backs off; at `DEAD_AFTER_ATTEMPTS` it is a dead letter).
+	 */
+	| { do: "close"; row: ClaimedRow; then: { exit: Extract<Exit, "delivered" | "stopped"> } | { fail: string } | "owed" }
 	/** `until`: when the wait ends on its own (the ring wait), for a drain to be scheduled then. */
 	| { do: "wait"; row: Row; why: string; until?: number };
 
@@ -766,7 +847,7 @@ export const PERSON_RING_WAIT_MS = 2_000;
  * take a lease to drain can see from this alone that there is nothing to take it for.
  */
 export function changesSomething(actions: readonly Action[]): boolean {
-	return actions.some((a) => a.do === "append" || a.do === "turn" || a.do === "remove" || a.do === "dead" || a.do === "fail");
+	return actions.some((a) => a.do === "append" || a.do === "turn" || a.do === "exit" || a.do === "close" || a.do === "fail");
 }
 
 /**
@@ -809,7 +890,7 @@ export interface QueuedPrompt {
 export function queuedPrompt(job: Pick<LoopJob, "id" | "running">, rows: readonly Row[], now: number): QueuedPrompt | undefined {
 	// Only a row the engine would run for this job: its own prefix, its source's mode, not dead. A row
 	// written into the file under a job's name is not that job's prompt, and the listing must not say so.
-	const row = rows.find((r) => r.kind === "input" && jobOf(r.source) === job.id && r.id !== job.running?.runId && r.payload?.text.startsWith(`[Trigger ${r.id}] `) && modeOf(r.kind, r.source, r.wake) === r.mode && r.attempts < DEAD_AFTER_ATTEMPTS);
+	const row = rows.find((r) => r.kind === "input" && jobOf(r.source) === job.id && r.id !== job.running?.runId && r.payload?.text.startsWith(`[Trigger ${r.id}] `) && modeOf("conversation", r.kind, r.source, r.wake) === r.mode && r.attempts < DEAD_AFTER_ATTEMPTS);
 	if (!row) return undefined;
 	// Stamps from the file are re-written from what they parse to, never echoed: they reach a terminal and the model.
 	const created = Date.parse(row.created_at);
@@ -831,7 +912,12 @@ export function formatWait(ms: number): string {
 }
 
 /**
- * Pure. Stops and cancels first, idle or busy; then the inputs, oldest first, one lane: a row in
+ * Pure. `lane` is the kind of the lane the rows are in. Stops and cancels first, idle or busy; then
+ * every input is classified with no regard to whether the lane is free; then the lane is taken, from
+ * all the rows; then the rows that could start are started, in order. So where a row sorts does not
+ * decide whether a turn is handed over beside one that has the lane. A row with a claim (`row.run`)
+ * is decided before any other rule: its run is still going and has the lane, or its run is closed
+ * and the row leaves, stays owed, or fails. For the others, oldest first, one lane: a row in
  * backoff, waiting for a server, handed over, above this executor's ceiling or not admitted here is
  * skipped and blocks nothing; one whose mode is not its source's is refused and removed.
  * `append` rows land at once while idle, with no turn; during a turn they go as a follow-up, which
@@ -842,13 +928,14 @@ export function formatWait(ms: number): string {
  * producer while that process lives; every other executor skips it, judges nothing about it and
  * counts no attempt.
  */
-export function decideDrain(rows: readonly Row[], entries: ConversationView, jobs: JobsView, view: ExecutorView, now: number, opts: DrainOptions = {}): Action[] {
+export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Proof, jobs: JobsView, view: ExecutorView, now: number, opts: DrainOptions = {}): Action[] {
 	const actions: Action[] = [];
-	const queued = new Map(rows.filter((row) => row.kind === "input").map((row) => [row.id, row]));
+	// What a stop or a cancel can take out of the queue: an input no run has claimed.
+	const queued = new Map(rows.flatMap((row) => (row.kind === "input" && !row.run ? [[row.id, row] as const] : [])));
 	const inputs = queueOrder(rows);
 	const cancelled = new Set<string>();
 	for (const row of rows) {
-		if (row.kind === "input") continue;
+		if (row.kind === "input" || row.run) continue;
 		let done = false;
 		const target = row.target;
 		if (target && "id" in target) {
@@ -861,7 +948,7 @@ export function decideDrain(rows: readonly Row[], entries: ConversationView, job
 				done = true;
 			} else if (queued.has(target.id) && !view.inFlight.has(target.id) && !cancelled.has(target.id)) {
 				cancelled.add(target.id);
-				actions.push({ do: "remove", row: queued.get(target.id)!, why: "cancelled" });
+				actions.push({ do: "exit", row: queued.get(target.id)!, exit: "cancelled" });
 				done = true;
 			}
 		} else if (target && row.kind === "stop" && view.running && Date.parse(view.running.startedAt) < Date.parse(target.started_before)) {
@@ -869,22 +956,38 @@ export function decideDrain(rows: readonly Row[], entries: ConversationView, job
 			actions.push({ do: "abort", stop: row });
 			done = true;
 		}
-		actions.push({ do: "remove", row, why: done ? "done" : "stale" });
+		actions.push({ do: "exit", row, exit: done ? "delivered" : "stale" });
 	}
-	let laneTaken = false;
-	for (const row of inputs) {
-		if (cancelled.has(row.id)) continue;
-		if (landed(row, entries)) {
-			actions.push({ do: "remove", row, why: "done" });
-			continue;
+
+	/** What one input row comes to: its actions, whether it has the lane, and the row itself when it would land or start now. */
+	type Sorted = { actions: Action[]; holding: boolean; ready?: UnclaimedRow };
+	const settled = (...own: Action[]): Sorted => ({ actions: own, holding: false });
+
+	/** A row a run has claimed: its run is going, or it is closed and the row gets what the run came to. */
+	const claimed = (row: ClaimedRow): Sorted => {
+		if (view.claimLive(row)) return { actions: [{ do: "wait", row, why: "running" }], holding: true };
+		// No process and no record: what the closing writes for such a run.
+		const end = proof.ran(row) ?? "interrupted";
+		if (end === "ended" || written(row, proof)) return settled({ do: "close", row, then: { exit: "delivered" } });
+		if (end === "stopped") return settled({ do: "close", row, then: { exit: "stopped" } });
+		if (end === "aborted") return settled({ do: "close", row, then: "owed" });
+		return settled({ do: "close", row, then: { fail: "the process running it stopped" } });
+	};
+
+	const unclaimed = (row: UnclaimedRow): Sorted => {
+		const actions: Action[] = [];
+		const done = (): Sorted => ({ actions, holding: false });
+		if (landed(row, proof)) {
+			actions.push({ do: "exit", row, exit: "delivered" });
+			return done();
 		}
 		if (view.stopped?.has(row.id)) {
-			actions.push({ do: "remove", row, why: "cancelled" });
-			continue;
+			actions.push({ do: "exit", row, exit: "cancelled" });
+			return done();
 		}
 		if (view.ran?.has(row.id)) {
-			actions.push({ do: "remove", row, why: "done" });
-			continue;
+			actions.push({ do: "exit", row, exit: "delivered" });
+			return done();
 		}
 		const wait = (why: string, until?: number) => actions.push({ do: "wait", row, why, ...(until === undefined ? {} : { until }) });
 		// Judged on a tick only: the drain that handed the row over, and the one `agent_settled` runs
@@ -897,46 +1000,46 @@ export function decideDrain(rows: readonly Row[], entries: ConversationView, job
 			// is never handed over again, since retrying would answer one prompt twice if it did land.
 			if (row.last_error !== undefined) {
 				wait(`pi refused it: ${row.last_error}`);
-				continue;
+				return done();
 			}
 			if (refused) {
 				actions.push({ do: "fail", row, why: "pi did not start a turn for it", retry: "never" });
-				continue;
+				return done();
 			}
 		} else if (refused) {
 			// A pi-loops row is proved by its prefix, or by its hand-over stamp and text, so offering it again is safe; one refusal must not
 			// hold the slot for ever, nor the job's later slots, which collapse onto a queued row.
 			actions.push({ do: "fail", row, why: "pi did not start a turn for it", retry: "backoff" });
-			continue;
+			return done();
 		}
 		// A person row pi dropped is offered again uncounted: a Stop put it back, and the next idle
 		// drain hands it over, as the message they queued would have gone.
 		if (row.source !== "person" && view.dropped?.has(row.id)) {
 			actions.push({ do: "fail", row, why: "pi dropped it before it was written", retry: "now" });
 			// The attempt that buries it: nothing below may hand it over as well.
-			if (row.attempts + 1 >= DEAD_AFTER_ATTEMPTS) continue;
+			if (row.attempts + 1 >= DEAD_AFTER_ATTEMPTS) return done();
 		}
 		if (row.attempts >= DEAD_AFTER_ATTEMPTS) {
-			actions.push({ do: "dead", row, why: `failed ${row.attempts} times${row.last_error ? `: ${row.last_error}` : ""}` });
-			continue;
+			actions.push({ do: "exit", row, exit: "dead", why: `failed ${row.attempts} times${row.last_error ? `: ${row.last_error}` : ""}` });
+			return done();
 		}
 		// A person's message may be an image alone; everything else is text.
 		if (!row.payload?.text && !(row.source === "person" && row.payload?.images?.length)) {
-			actions.push({ do: "dead", row, why: "an input row without text" });
-			continue;
+			actions.push({ do: "exit", row, exit: "dead", why: "an input row without text" });
+			return done();
 		}
 		// The prefix is the proof of delivery: a row of such a source without it would be written again on
 		// every drain, with nothing to tell that it landed.
 		if (carriesPrefix(row.source) && !row.payload?.text.startsWith(`[Trigger ${row.id}] `)) {
-			actions.push({ do: "dead", row, why: "an input row without its [Trigger <id>] prefix" });
-			continue;
+			actions.push({ do: "exit", row, exit: "dead", why: "an input row without its [Trigger <id>] prefix" });
+			return done();
 		}
 		// The producer wrote the mode; the executor runs the row under the one its source gets, and
 		// nothing else. A line edited in the file, or written by another version, cannot widen what
 		// the turn may do: it is refused, and the audit says so.
-		if (modeOf(row.kind, row.source, row.wake) !== row.mode) {
-			actions.push({ do: "remove", row, why: "refused" });
-			continue;
+		if (modeOf(lane, row.kind, row.source, row.wake) !== row.mode) {
+			actions.push({ do: "exit", row, exit: "refused" });
+			return done();
 		}
 		const jobId = jobOf(row.source);
 		if (jobId !== undefined) {
@@ -948,86 +1051,97 @@ export function decideDrain(rows: readonly Row[], entries: ConversationView, job
 				job = { exists, enabled: exists && jobs.enabled(jobId) };
 			} catch (err: any) {
 				wait(`cannot read the jobs: ${redact(err?.message ?? String(err))}`);
-				continue;
+				return done();
 			}
 			if (!job.exists) {
-				actions.push({ do: "remove", row, why: "job-removed" });
-				continue;
+				actions.push({ do: "exit", row, exit: "job-removed" });
+				return done();
 			}
 			// The clock's prompt waits with its clock; `/cron run` was asked for, and `/cron run` itself
 			// refuses a job that is disabled when it is typed.
 			if (!job.enabled && row.source.startsWith("cron:")) {
 				wait("its job is disabled");
-				continue;
+				return done();
 			}
 		}
 		if (isLocal(row) && !view.mine(row) && view.producerAlive(row)) {
 			wait("runs in the window that produced it");
-			continue;
+			return done();
 		}
 		// Judged by the executor that runs the row: the goal is that process's state.
 		if (row.source === "goal" && !jobs.goalActive(row.lane)) {
-			actions.push({ do: "remove", row, why: "stale" });
-			continue;
+			actions.push({ do: "exit", row, exit: "stale" });
+			return done();
 		}
 		if (!view.ceiling(row.mode)) {
 			wait(`${row.mode} rows wait for a window`);
-			continue;
+			return done();
 		}
-		if (!view.admits(row)) {
-			wait("not admitted by this executor");
-			continue;
+		const blocked = view.blocked(row);
+		if (blocked !== undefined) {
+			wait(blocked);
+			return done();
 		}
 		if (row.not_before !== undefined && Date.parse(row.not_before) > now) {
 			wait(`backing off until ${row.not_before}`);
-			continue;
+			return done();
 		}
 		if (view.inFlight.has(row.id)) {
-			// A turn pi holds and has not written, of a row proved by its text, is the lane's: handed over too, a second row
+			// A turn pi holds and has not written, of a row proved by its text, has the lane: handed over too, a second row
 			// with the same words would be proved by the first one's message. A prefixed row is proved by
 			// its own prefix, and one pi silently dropped must not stall the rows behind it.
-			if (row.wake === "turn" && !carriesPrefix(row.source)) laneTaken = true;
 			wait("handed to pi, not yet in the conversation");
-			continue;
+			return { actions, holding: row.wake === "turn" && !carriesPrefix(row.source) };
 		}
 		// A person's message is sent only for the page that wrote it (design §5); every other row
 		// outlives its producer, and a local one is the holder's to run once the producer is gone.
 		if (row.source === "person" && !view.producerAlive(row)) {
 			wait("its producer is gone");
-			continue;
+			return done();
 		}
 		if (row.source === "person" && view.believed && !view.believed(row) && now - Date.parse(row.created_at) < PERSON_RING_WAIT_MS) {
 			wait("waiting for the page's ring", Date.parse(row.created_at) + PERSON_RING_WAIT_MS);
-			continue;
+			return done();
 		}
 		const missing = row.payload?.requires?.find((server) => !view.connected(server));
 		if (missing !== undefined) {
 			wait(`waiting for mcp server ${missing}`);
+			return done();
+		}
+		return { actions, holding: false, ready: row };
+	};
+
+	const sorted = inputs.filter((row) => !cancelled.has(row.id)).map((row) => (row.run ? claimed(row) : unclaimed(row)));
+	// The lane is taken from all the rows, before any of them is started.
+	const taken = sorted.some((s) => s.holding);
+	let busy = !view.idle;
+	for (const { actions: own, holding, ready } of sorted) {
+		actions.push(...own);
+		if (holding) busy = true;
+		if (!ready) continue;
+		if (ready.wake !== "turn") {
+			actions.push({ do: "append", row: ready, wakeAgent: busy });
 			continue;
 		}
-		const idle = view.idle && !laneTaken;
-		if (row.wake !== "turn") {
-			actions.push({ do: "append", row, wakeAgent: !idle });
+		if (busy || taken) {
+			actions.push({ do: "wait", row: ready, why: "pi is busy" });
 			continue;
 		}
-		if (!idle) {
-			wait("pi is busy");
-			continue;
-		}
-		laneTaken = true;
-		actions.push({ do: "turn", row });
+		busy = true;
+		actions.push({ do: "turn", row: ready });
 	}
 	return actions;
 }
 
 export interface Executor {
 	/** Read from disk each call: the conversation can be taken while a drain runs. A non-holder still drains the local rows it produced (`ExecutorView.mine`). */
-	holds(sessionId: string): boolean;
-	view(sessionId: string): ExecutorView;
-	entries(sessionId: string): ConversationView;
-	/** Hand a turn row to pi; `now` is when, for `ExecutorView.inFlightSince`. */
-	turn(row: Row, now: number): void;
-	append(row: Row, wakeAgent: boolean): void;
+	holds(lane: LaneId): boolean;
+	view(lane: LaneId): ExecutorView;
+	/** What a row of the lane is proved by: the session it writes into, and the run records. */
+	proof(lane: LaneId): Proof;
+	/** Hand a turn row to pi; `now` is when, for `ExecutorView.inFlightSince`. A row with a claim cannot be handed over. */
+	turn(row: UnclaimedRow, now: number): void;
+	append(row: UnclaimedRow, wakeAgent: boolean): void;
 	/** Stop the turn running now. */
 	abort(): void;
 	/** Stop the turn of row `id`, handed to pi and not started yet, as it starts. */
@@ -1039,7 +1153,8 @@ export interface Executor {
 /** Where the engine records what it did: the jobs it checks rows against, the inbox for dead letters, the audit. */
 export interface EngineSinks {
 	jobs: JobsView;
-	inbox: Pick<Inbox, "append" | "appendOnce">;
+	/** A dead letter is filed once, under an id derived from its row's; a rule's result keeps `appendOnce`. */
+	inbox: Pick<Inbox, "appendOnce" | "fileOnce">;
 	audit: Pick<TriggerStore, "appendAudit" | "listAudit">;
 }
 
@@ -1073,7 +1188,9 @@ export function deadLetterParts(entry: { text: string; undelivered?: true }, tex
 	return m ? { why: m[1], prompt: m[2] } : undefined;
 }
 
-async function deadLetter(store: RequestStore, sinks: EngineSinks, sessionId: string, row: Row, why: string): Promise<void> {
+async function deadLetter(store: RequestStore, sinks: EngineSinks, row: Row, why: string): Promise<void> {
+	// A finding names the conversation it is for; a lane of another kind is no conversation.
+	const session = parseLane(row.lane)?.kind === "conversation" ? { session_id: row.lane } : {};
 	const text = stripPrefix(row.payload?.text ?? "");
 	const cwd = row.payload?.cwd ?? "";
 	// A rule's result keeps the finding it always had in the inbox (`trigger:<label>`): the
@@ -1084,11 +1201,12 @@ async function deadLetter(store: RequestStore, sinks: EngineSinks, sessionId: st
 	// filed it, or skipped a repeat), so its dead letter files nothing; a result no check decided is
 	// filed once by its run (Inbox.appendOnce).
 	if (rule !== undefined) {
-		if (!checkDecidedFinding(sinks.audit, row.id)) await sinks.inbox.appendOnce({ source: `trigger:${rule}`, run_id: row.id, job_id: rule, cwd, text: text || `rule result ${row.id}`, session_id: sessionId }, { run_id: row.id, source: `trigger:${rule}` });
+		if (!checkDecidedFinding(sinks.audit, row.id)) await sinks.inbox.appendOnce({ source: `trigger:${rule}`, run_id: row.id, job_id: rule, cwd, text: text || `rule result ${row.id}`, ...session, lane: row.lane }, { run_id: row.id, source: `trigger:${rule}` });
 	}
-	else await sinks.inbox.append({ source: row.source, run_id: row.id, cwd, text: deadLetterText(why, text.slice(0, DEAD_LETTER_CHARS) || `${row.kind} request ${row.id}`), session_id: sessionId, undelivered: true });
+	// Filed once: a crash between the finding and the removal repeats this at the next drain, and files nothing.
+	else await sinks.inbox.fileOnce({ source: row.source, run_id: row.id, cwd, text: deadLetterText(why, text.slice(0, DEAD_LETTER_CHARS) || `${row.kind} request ${row.id}`), ...session, lane: row.lane, undelivered: true }, findingId(`dead | ${row.id}`));
 	sinks.audit.appendAudit({ cwd, type: "request", traceId: row.id, state: "dead", sourceLabel: row.source, eventLabel: row.lane, summary: text, details: { session_id: row.lane, kind: row.kind, attempts: row.attempts, last_error: row.last_error, reason: why } });
-	store.remove(sessionId, [row.id]);
+	store.remove(row.lane, [row.id]);
 }
 
 /**
@@ -1127,8 +1245,9 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 	const own = (row: Row) => view.mine(row) && (isLocal(row) || (row.source === "person" && view.holderDelivers === false));
 	const may = (row?: Row) => executor.holds(sessionId) || (!!row && own(row));
 	const rows = may() ? store.list(sessionId) : store.list(sessionId).filter(own);
-	if (!rows.length) return out;
-	const actions = decideDrain(rows, executor.entries(sessionId), sinks.jobs, view, now, opts);
+	const lane = parseLane(sessionId);
+	if (!rows.length || !lane) return out;
+	const actions = decideDrain(lane.kind, rows, executor.proof(sessionId), sinks.jobs, view, now, opts);
 	/**
 	 * One more failure of `row`: at `DEAD_AFTER_ATTEMPTS` a pi-loops row is a dead letter; a person row
 	 * never is (design §5), it keeps its error for the page. Otherwise the count, the error and, when
@@ -1138,12 +1257,20 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 		const attempts = row.attempts + 1;
 		out.failed.push(row.id);
 		if (row.source !== "person" && attempts >= DEAD_AFTER_ATTEMPTS) {
-			await deadLetter(store, sinks, sessionId, { ...row, attempts, last_error: why }, `failed ${attempts} times: ${why}`);
+			await deadLetter(store, sinks, { ...row, attempts, last_error: why }, `failed ${attempts} times: ${why}`);
 			out.dead.push(row.id);
 			return;
 		}
-		store.update(sessionId, row.id, { attempts, last_error: why, ...(retry === "backoff" ? { not_before: stamp(now + backoffFor(attempts)) } : {}) });
+		// A row that fails has no run: a claim is cleared in the same write.
+		store.update(sessionId, row.id, { attempts, last_error: why, ...(retry === "backoff" ? { not_before: stamp(now + backoffFor(attempts)) } : {}), ...(row.run ? { run: undefined } : {}) });
 		sinks.audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "failed", sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, attempts, error: why } });
+	};
+	/** The one way a row leaves its queue here, the dead letter apart: its audit line, then the removal. */
+	const leave = (row: Row, exit: Exclude<Exit, "dead">, why?: string): void => {
+		// A delivered input row's record is the session file; everything else ends in the audit.
+		if (exit !== "delivered" || row.kind !== "input") sinks.audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: AUDIT_STATE[exit], sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, kind: row.kind, ...(why === undefined ? {} : { reason: why }) } });
+		store.remove(sessionId, [row.id]);
+		out.removed.push(row.id);
 	};
 	for (const action of actions) {
 		// Before each one, not once: the conversation can be taken while this drains.
@@ -1153,16 +1280,25 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 				out.waiting.push(action.row.id);
 				if (action.until !== undefined && (out.retryAt === undefined || action.until < out.retryAt)) out.retryAt = action.until;
 				break;
-			case "remove":
-				// A done input row's record is the session file; everything else ends in the audit.
-				if (action.why !== "done" || action.row.kind !== "input") sinks.audit.appendAudit({ cwd: action.row.payload?.cwd ?? "", type: "request", traceId: action.row.id, state: action.why, sourceLabel: action.row.source, eventLabel: action.row.lane, details: { session_id: action.row.lane, kind: action.row.kind } });
-				store.remove(sessionId, [action.row.id]);
-				out.removed.push(action.row.id);
+			case "exit":
+				if (action.exit === "dead") {
+					await deadLetter(store, sinks, action.row, action.why);
+					out.dead.push(action.row.id);
+					break;
+				}
+				leave(action.row, action.exit, action.why);
 				break;
-			case "dead":
-				await deadLetter(store, sinks, sessionId, action.row, action.why);
-				out.dead.push(action.row.id);
+			case "close": {
+				// The run's closing writes go here when a run is closed by the engine: its record when
+				// none has its id, then its `run_end`. Until then a claim is only read, never made.
+				const { row, then } = action;
+				if (then === "owed") {
+					store.update(sessionId, row.id, { run: undefined });
+					out.waiting.push(row.id);
+				} else if ("fail" in then) await failed(row, then.fail, "backoff");
+				else leave(row, then.exit);
 				break;
+			}
 			case "abort":
 				executor.abort();
 				break;
@@ -1178,7 +1314,7 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 				const row = action.row;
 				// Drains overlap (the tick, the bell, a promotion), and one can hand a row over while this
 				// one awaits a dead letter: ask again at the moment of handing it over.
-				if (executor.view(sessionId).inFlight.has(row.id) || landed(row, executor.entries(sessionId))) break;
+				if (executor.view(sessionId).inFlight.has(row.id) || landed(row, executor.proof(sessionId))) break;
 				try {
 					// The stamp first, under the lock: the proof of a text-proved row's delivery is a user message
 					// written at or after it. A crash between the two leaves a stamped row with no message,
@@ -1196,7 +1332,7 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 				out.delivered.push(row.id);
 				// Written into the conversation already (an idle window, the background process): gone now.
 				// Otherwise pi holds it as a follow-up and the next drain finds it in the file, or not.
-				if (landed(row, executor.entries(sessionId))) {
+				if (landed(row, executor.proof(sessionId))) {
 					store.remove(sessionId, [row.id]);
 					out.removed.push(row.id);
 				}
@@ -1214,12 +1350,12 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
  * §5: the page is where it is answered or given back), so those are audited `stale` and removed,
  * with no finding.
  */
-export async function bury(sessionId: string, store: RequestStore, sinks: EngineSinks, why: string): Promise<string[]> {
+export async function bury(sessionId: ConversationId, store: RequestStore, sinks: EngineSinks, why: string): Promise<string[]> {
 	const ids: string[] = [];
 	for (const row of store.list(sessionId)) {
-		if (row.kind === "input" && row.source !== "person") await deadLetter(store, sinks, sessionId, row, why);
+		if (row.kind === "input" && row.source !== "person") await deadLetter(store, sinks, row, why);
 		else {
-			sinks.audit.appendAudit({ cwd: "", type: "request", traceId: row.id, state: "stale", sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, kind: row.kind, reason: why } });
+			sinks.audit.appendAudit({ cwd: "", type: "request", traceId: row.id, state: AUDIT_STATE.stale, sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, kind: row.kind, reason: why } });
 			store.remove(sessionId, [row.id]);
 		}
 		ids.push(row.id);

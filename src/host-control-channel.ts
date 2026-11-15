@@ -17,7 +17,8 @@ import * as path from "node:path";
 import { DEAD_AFTER_ATTEMPTS, formatWait, heldTurnFor, stopRow } from "./engine.ts";
 import { snapshotLoopLabel } from "./job-lines.ts";
 import { plural } from "./plural.ts";
-import { type LeaseStore, type ProcessProbe, holderAlive, sessionFileName } from "./lease.ts";
+import { type ConversationId, parseLane } from "./lane.ts";
+import { type LeaseStore, type ProcessProbe, holderAlive } from "./lease.ts";
 import { conversationLabel, shortSessionId } from "./session-head.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import type { RequestStore, Row, UnclaimedRow } from "./requests.ts";
@@ -438,23 +439,21 @@ export interface HostChannelHandlers {
 }
 
 /** What a doorbell note may say: which store changed, and for which session. */
-export type RingNote = { kind: "request" | "lease"; sessionId: string };
+export type RingNote = { kind: "request" | "lease"; sessionId: ConversationId };
 const MAX_RING_NOTE = 200;
 
 /**
  * A note arrives over the socket, or is a file name a watcher saw: the session id in it becomes a
- * path under the loops directory, so anything `sessionFileName` refuses is refused here, and the
+ * path under the loops directory, so anything that is no session id (src/lane.ts) is refused here, and the
  * note never reaches the stores.
  */
 export function parseRingNote(note: unknown): RingNote | undefined {
 	if (typeof note !== "string" || note.length > MAX_RING_NOTE) return undefined;
 	const m = /^(request|lease):(.+)$/s.exec(note);
 	if (!m) return undefined;
-	try {
-		return { kind: m[1] as RingNote["kind"], sessionId: sessionFileName(m[2]) };
-	} catch {
-		return undefined; // not a session id: a path, an empty name
-	}
+	// Not a session id (a path, an empty name, a lane of another kind): no note.
+	const lane = parseLane(m[2]);
+	return lane?.kind === "conversation" ? { kind: m[1] as RingNote["kind"], sessionId: lane.id } : undefined;
 }
 
 /**

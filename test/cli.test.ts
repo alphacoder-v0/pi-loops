@@ -1238,7 +1238,7 @@ test("pi-loops abort of a session takes effect with the socket closed", { timeou
 	const sinks: EngineSinks = { jobs: { exists: () => true, enabled: () => true, goalActive: () => false }, inbox: new Inbox(loops), audit: new TriggerStore(loops) };
 	let running: ExecutorView["running"] = { startedAt: stamp(Date.now() - 5_000) };
 	let aborted = 0;
-	const holder: Executor = { holds: () => true, entries: () => ({ has: () => false, personEntries: () => 0 }), view: () => ({ kind: "window", admits: () => true, idle: false, running, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false }), turn: () => undefined, append: () => undefined, abort: () => void aborted++, abortWhenStarted: () => undefined, refused: () => undefined };
+	const holder: Executor = { holds: () => true, proof: () => ({ has: () => false, personEntries: () => 0, ran: () => undefined }), view: () => ({ kind: "window", blocked: () => undefined, claimLive: () => false, idle: false, running, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false }), turn: () => undefined, append: () => undefined, abort: () => void aborted++, abortWhenStarted: () => undefined, refused: () => undefined };
 	const poll = setInterval(() => void drain(sessionId, requests, holder, Date.now(), sinks).catch(() => undefined), 50);
 	try {
 		const lines: string[] = [];
