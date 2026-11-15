@@ -16,8 +16,6 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `runs.jsonl`, `triggers-audit.jsonl` | run log (halved past 1 MB) and trigger audit (2 MB) |
 | `spend.json` | per-day totals of what rotation dropped from the run log, so a daily budget still counts it |
 | `sessions/<job-id>/`, `sessions/triggers-<project>-<hash>/` | sub-agent transcripts (20 per job, 40 per project's checks; the hash of the project's path keeps two projects named alike apart) |
-| `next-runs.json` | job id → when it runs next, as computed by pi-loops, or by a window while pi-loops is not running (`{ at, next }`). Written only when an answer changes, so it can be older than the last tick; the browser panel reads it rather than parsing schedules a second time |
-| `presence/` | records written by pi-loops 0.22 windows, read only during an upgrade |
 | `host-service.json`, `host.log` | pi-loops process record (pid, version, heartbeat, the page's address and token, or why the page is waiting; 0600) and log |
 | `host-spawns.json` | pi-loops start attempts, the retry backoff and the crash pause |
 | `host-service.sock` | pi-loops' control socket (0600): status, abort, run, stop, and opening a conversation in the page |
@@ -26,9 +24,8 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `leases/<session>.json` | which process holds each conversation |
 | `requests/<session>.jsonl` | requests addressed to a conversation (rule results), each kept until it is in the conversation or in the inbox as a dead letter |
 | `seen.json` | when each project was last looked at (`/inbox`, or the page's Mark all seen), for the "since you last looked" line and the page's away card |
-| `scheduler.json` | written by pi-loops during an upgrade only, so pi-loops 0.22 windows do not run loops beside it |
 | `*.lock` | short-lived locks around writes |
-| `polls.json` | last dynamic check per project (shared with 0.22 windows during an upgrade, so a project is not checked twice in one interval) |
+| `polls.json` | last dynamic check per project, so a project is not checked twice in one interval |
 | `dedup.json` | machine-wide trigger dedup window (5 minutes) |
 | `web-token` | the browser page's token, mode 0600. It lives in a file rather than being made per start so the address stays the same one and a signed-in device stays signed in across restarts and upgrades. Delete it and run `pi-loops restart` to sign every device out. The first 0.24 start replaces a token from an earlier version once, and writes `web-token.v024` beside it to record that; a token you write into `web-token` after that is kept. A `web-token.v024` that is not a regular file (a symlink, even a dangling one) stops pi-loops from starting, as a `web-token` symlink does |
 

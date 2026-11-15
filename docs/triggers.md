@@ -91,8 +91,8 @@ Pushed MCP notifications (see [mcp.md](mcp.md)) enter the same runtime and are e
 the rules unless the server is configured as an `inject_summary` / `inject_and_run` feed.
 
 A rule whose check keeps failing is polled with a widening gap instead of at every interval: after
-three failed checks in a row the rule waits 5 minutes, then 10, 20, … up to 6 hours (the scheduler's
-job backoff, same numbers — literally the same function, `backoffWaitMs` in `src/schedule.ts`).
+three failed checks in a row it waits 1 minute, then 5 minutes, 30 minutes, 2 hours and 6 hours from
+the seventh failure on. Loops and rule checks use the same table in `src/backoff.ts`.
 The count lives on the rule (`consecutive_failures`,
 `last_check_failed_at`), a check that completes clears it — including `/triggers run <id>`, which is
 the way to retry a backed-off rule now — and entering the backoff is audited as `backoff` with the
@@ -158,7 +158,7 @@ shows this project's rows with decisions and transcript paths. The complete set 
 - the run — `running`, then `completed` / `failed` / `aborted`, or `no_rules`;
 - promotion — `promoted` (into this chat, or queued for the conversation), `appended` (pi-loops wrote
   a queued result into the closed conversation), `redirected` (to the inbox: no window is open in the rule's project, and the rule has no
-  conversation or its conversation's file is unknown or gone; or a pi-loops 0.22 window has it open), `skipped` (no matched rule has `promote_to_chat`).
+  conversation or its conversation's file is unknown or gone), `skipped` (no matched rule has `promote_to_chat`).
 
 Rows of type `request` record what became of a row in `requests/<session>.jsonl` that did not end
 in the conversation: `failed` (one delivery failed, pi refused the hand-over, or pi dropped it

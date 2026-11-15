@@ -6,7 +6,8 @@ import { Inbox } from "../src/inbox.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { type ImageContent, RequestStore, type SessionRequest } from "../src/requests.ts";
 import * as path from "node:path";
-import { type Action, BACKOFF_MS, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, conversationView, landed, personRow, plainJobRow, plainRunId, stripImageNotes } from "../src/engine.ts";
+import { BACKOFF_MS } from "../src/backoff.ts";
+import { type Action, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, conversationView, landed, personRow, plainJobRow, plainRunId, stripImageNotes } from "../src/engine.ts";
 
 test("a row removed between the drain's read and its hand-over is not handed over: the stamp that found no row says so", async () => {
 	// The page's send-here takes a message out of the queue and sends it over rpc. A drain that had
@@ -446,10 +447,8 @@ test("a rule's dead letter files nothing when the check of that run decided its 
 });
 
 test("promotionTarget: the creating conversation while a window holds it, else the project's open window, else the closed creating one, else the inbox", () => {
-	// Owner decision 2026-11-02: 0.22.8's rule (presence.ts chooseRuleOwner) with the creating
-	// conversation first. Every branch, with the view as a window or the background process reads it.
-	const view = (o: { legacy?: string[]; open?: string[]; known?: string[]; windows?: Array<{ sessionId: string; pid: number }> } = {}) => ({
-		legacyOpen: (id: string) => (o.legacy ?? []).includes(id),
+	// Owner decision 2026-11-02: the project's open window, with the creating conversation first. Every branch, with the view as a window or the background process reads it.
+	const view = (o: { open?: string[]; known?: string[]; windows?: Array<{ sessionId: string; pid: number }> } = {}) => ({
 		open: (id: string) => (o.open ?? []).includes(id),
 		known: (id: string) => (o.known ?? []).includes(id),
 		openInProject: () => o.windows ?? [],
@@ -464,8 +463,6 @@ test("promotionTarget: the creating conversation while a window holds it, else t
 	assert.deepEqual(promotionTarget("A", view()), { to: "inbox", sessionId: "A" }, "unknown or gone, and no window: the inbox, marked for it");
 	assert.deepEqual(promotionTarget(undefined, view({ open: ["B"], windows: [b] })), { to: "row", sessionId: "B" }, "a rule a loop's run made: the project's window");
 	assert.deepEqual(promotionTarget(undefined, view()), { to: "inbox" }, "and with no window, the inbox");
-	assert.deepEqual(promotionTarget("A", view({ legacy: ["A"], open: ["B"], windows: [b] })), { to: "inbox", sessionId: "A" }, "a 0.22 window has the creating conversation: it never reads requests/, so the inbox, marked, as before");
-	assert.deepEqual(promotionTarget("A", view({ legacy: ["B"], known: ["A"], windows: [b] })), { to: "row", sessionId: "A" }, "a 0.22 window in the project is no target");
 });
 
 test("promotionView reads the leases: a live terminal that delivers is an open window, in the project when its cwd is the rule's or inside it", () => {
@@ -481,11 +478,11 @@ test("promotionView reads the leases: a live terminal that delivers is an open w
 	leases.acquire("D", { ...me(999_999, "tui"), procStart: "0", acquiredAt: "2000-01-01T00:00:00Z" }, { cwd: path.join(dir, "proj") });
 	leases.release("A", me(process.pid, "tui"));
 	leases.acquire("A", me(process.pid, "tui"), { sessionFile: path.join(dir, "a.jsonl"), cwd: path.join(dir, "proj", "sub") });
-	const view = promotionView(leases, path.join(dir, "proj"), () => false);
+	const view = promotionView(leases, path.join(dir, "proj"));
 	assert.deepEqual(view.openInProject(), [{ sessionId: "A", pid: process.pid }], "a subdirectory counts; a pi -p run, a window standing aside, another project and a dead pid do not");
 	assert.deepEqual([view.open("A"), view.open("P"), view.open("S"), view.open("D"), view.open("nope")], [true, false, false, false, false]);
 	assert.deepEqual([view.known("A"), view.known("P")], [true, false], "known: pi-loops has its file and the file is there");
-	assert.deepEqual(promotionView(leases, undefined, () => false).openInProject(), [], "a rule with no project reaches no window by project");
+	assert.deepEqual(promotionView(leases, undefined).openInProject(), [], "a rule with no project reaches no window by project");
 });
 
 /**

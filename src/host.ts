@@ -27,7 +27,7 @@ import { RequestStore } from "./requests.ts";
 import { awayFor, pruneSeen, readSeen, sinceCounts } from "./seen.ts";
 import { LeaseStore, holderAlive, openWindowPids, procStart } from "./lease.ts";
 import { sessionTitle, shortSessionId } from "./session-head.ts";
-import { writeFileAtomic } from "./lock.ts";
+import { convertStores } from "./convert-v2.ts";
 import { THINKING_LEVELS, thinkingLevelOrUndefined } from "./thinking.ts";
 import { rotateInPlace } from "./log.ts";
 import { createHostRuntime } from "./host-runtime.ts";
@@ -339,7 +339,6 @@ async function shutdown(code: number): Promise<void> {
 	if (code === 0) {
 		try {
 			removeHostService(dir, process.pid);
-			removeLegacyFence();
 		} catch (err: any) {
 			log(`could not remove the pi-loops record: ${err?.message ?? err}`);
 		}
@@ -429,6 +428,9 @@ if (readUiPrefs(dir).host === "stopped") {
 	process.exit(0);
 }
 log(`pi-loops ${PI_LOOPS_VERSION} started (pid ${process.pid}, dir ${dir})`);
+// What older versions left in the directory and nothing reads now (src/convert-v2.ts).
+const retired = convertStores(dir, log);
+if (retired.length) log(`removed ${retired.join(", ")}: files of an older version that nothing reads now`);
 // The status page's token, from before the page moved here: `web-token` is the one token now.
 try {
 	fs.unlinkSync(path.join(dir, "host-page-token"));
@@ -437,26 +439,7 @@ try {
 	if (err?.code !== "ENOENT") log(`host-page-token: ${err?.message ?? err}`);
 }
 
-/**
- * The fence that keeps a pi-loops 0.22 window from running loops beside this host during an
- * upgrade. Such a window elects a leader through `scheduler.json`, preempts only a record of kind
- * "host", and stands by while a fresh record with a live pid names someone else; so this writes one
- * every tick. Removed once 0.22 windows are gone (release 6 of the design).
- */
-const LEGACY_FENCE = path.join(dir, "scheduler.json");
-function writeLegacyFence(now: number): void {
-	writeFileAtomic(LEGACY_FENCE, `${JSON.stringify({ pid: process.pid, host: os.hostname(), instance: "service", kind: "service", startedAt, heartbeatAt: stamp(now) }, null, 2)}\n`);
-}
-function removeLegacyFence(): void {
-	try {
-		const rec = JSON.parse(fs.readFileSync(LEGACY_FENCE, "utf8"));
-		if (rec?.pid === process.pid) fs.rmSync(LEGACY_FENCE, { force: true });
-	} catch {
-		/* no fence, or not ours to remove */
-	}
-}
-
-/** Every tick: am I still the host the record names (a stale lock break can let two claim), and the fence. */
+/** Every tick: am I still the host the record names (a stale lock break can let two claim). */
 /**
  * Every ten minutes: forget conversations nothing refers to any more. A lease is written for every
  * conversation a window opens; one that nobody holds and that has no plain job, rule or queued request
@@ -492,11 +475,6 @@ function everyTick(now: number): void {
 		log("[host] auto = false and no pi window is open; leaving (the next window starts pi-loops again)");
 		leave(0);
 		return;
-	}
-	try {
-		writeLegacyFence(now);
-	} catch (err: any) {
-		log(`legacy fence: ${err?.message ?? err}`);
 	}
 	try {
 		sweepConversations(now);
@@ -611,8 +589,7 @@ function hostStatus(): HostStatus {
 	// would otherwise make the page a list of every closed chat, each reading "nobody".
 	const working = new Set([...jobs.map((j) => j.sessionId!), ...rules.map((r) => r.createdBy!.sessionId!), ...requests.sessions()]);
 	const leaseList = leases.list().filter((l) => working.has(l.sessionId) || (l.holder && holderAlive(l.holder)));
-	const legacy = host.scheduler.presenceList().flatMap((e) => (e.sessionId && !e.leases && e.kind !== "host" ? [{ sessionId: e.sessionId, pid: e.pid }] : []));
-	const ids = new Set([...leaseList.map((l) => l.sessionId), ...jobs.map((j) => j.sessionId!), ...rules.map((r) => r.createdBy!.sessionId!), ...legacy.map((l) => l.sessionId)]);
+	const ids = new Set([...leaseList.map((l) => l.sessionId), ...jobs.map((j) => j.sessionId!), ...rules.map((r) => r.createdBy!.sessionId!)]);
 	const queued = new Map<string, number>();
 	for (const id of ids) {
 		const n = requests.list(id).length;
@@ -633,7 +610,6 @@ function hostStatus(): HostStatus {
 			plainJobSessions: jobs.map((j) => j.sessionId!),
 			ruleSessions: rules.map((r) => r.createdBy!.sessionId!),
 			mailbox: queued,
-			legacy,
 			alive: (h) => holderAlive(h),
 			since: (id) => {
 				const cwd = cwdOf.get(id);

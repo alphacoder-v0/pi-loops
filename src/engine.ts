@@ -20,20 +20,15 @@ import { type LeaseHolder, type LeaseStore, type ProcessProbe, type SessionLease
 import { withinProject } from "./paths.ts";
 import { type ImageContent, type RequestMode, type RequestStore, type SessionRequest, imageRef } from "./requests.ts";
 import type { LockOptions } from "./lock.ts";
+import { backoffFor } from "./backoff.ts";
 import { stamp } from "./schedule.ts";
 import { type LoopJob, newId } from "./store.ts";
 import { type TriggerStore, checkDecidedFinding } from "./triggers.ts";
 
 /** Failures of one row before it is a dead letter. */
 export const DEAD_AFTER_ATTEMPTS = 3;
-/** The wait after the first, second and later failures. */
-export const BACKOFF_MS: readonly number[] = [60_000, 5 * 60_000, 30 * 60_000];
 /** How much of a dead row's text the finding carries. */
 export const DEAD_LETTER_CHARS = 400;
-
-export function backoffFor(attempts: number): number {
-	return BACKOFF_MS[Math.min(Math.max(attempts, 1), BACKOFF_MS.length) - 1];
-}
 
 /**
  * The mode a source gets (design §6.2): the producer writes it, the executor recomputes it. Attended
@@ -505,8 +500,6 @@ export type PromotionTarget = { to: "row"; sessionId: string } | { to: "inbox"; 
 
 /** What `promotionTarget` asks about the conversations a rule's result could go to; `promotionView` reads it off the leases. */
 export interface PromotionView {
-	/** A pi-loops 0.22 window has it open: that window never reads requests/. */
-	legacyOpen(sessionId: string): boolean;
 	/** A live window that delivers (src/lease.ts holderDelivers) holds it: the result lands in front of the person. */
 	open(sessionId: string): boolean;
 	/** pi-loops knows its file and the file is there: a row for it is appended by the background process. */
@@ -522,16 +515,12 @@ export interface PromotionView {
  * computes the same answer (0.22.8's cwd owner); else the creating conversation, closed, which the
  * background process appends to; else the inbox, marked for the creating conversation when there is
  * one. A rule with no creating conversation (imported, or made by a loop's run) starts at the
- * project's open window. A conversation a 0.22 window has open goes to the inbox, marked, as before.
+ * project's open window.
  */
 export function promotionTarget(forSession: string | undefined, view: PromotionView): PromotionTarget {
-	if (forSession !== undefined) {
-		if (view.legacyOpen(forSession)) return { to: "inbox", sessionId: forSession };
-		if (view.open(forSession)) return { to: "row", sessionId: forSession };
-	}
+	if (forSession !== undefined && view.open(forSession)) return { to: "row", sessionId: forSession };
 	const window = view
 		.openInProject()
-		.filter((w) => !view.legacyOpen(w.sessionId))
 		.sort((a, b) => a.pid - b.pid || a.sessionId.localeCompare(b.sessionId))[0];
 	if (window) return { to: "row", sessionId: window.sessionId };
 	if (forSession !== undefined && view.known(forSession)) return { to: "row", sessionId: forSession };
@@ -540,16 +529,14 @@ export function promotionTarget(forSession: string | undefined, view: PromotionV
 
 /**
  * The view `promotionTarget` decides on, read from the leases: a live `terminal` holder that delivers
- * is an open window; a lease whose `cwd` is `cwd` or inside it is in the rule's project (as 0.22.8's
- * `chooseCwdOwner` read presence). No `cwd`, no project: only the creating conversation can take it.
+ * is an open window; a lease whose `cwd` is `cwd` or inside it is in the rule's project. No `cwd`, no project: only the creating conversation can take it.
  */
-export function promotionView(leases: Pick<LeaseStore, "read" | "list">, cwd: string | undefined, legacyOpen: (sessionId: string) => boolean, probe: ProcessProbe = systemProbe): PromotionView {
+export function promotionView(leases: Pick<LeaseStore, "read" | "list">, cwd: string | undefined, probe: ProcessProbe = systemProbe): PromotionView {
 	const windowOf = (lease: SessionLease | undefined): LeaseHolder | undefined => {
 		const holder = lease?.holder;
 		return holder && holder.kind === "terminal" && holderAlive(holder, probe) && holderDelivers(holder) ? holder : undefined;
 	};
 	return {
-		legacyOpen,
 		open: (id) => windowOf(leases.read(id)) !== undefined,
 		known: (id) => {
 			const file = leases.read(id)?.sessionFile;

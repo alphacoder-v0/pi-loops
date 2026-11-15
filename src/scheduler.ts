@@ -6,29 +6,26 @@
  */
 import * as fs from "node:fs";
 import * as os from "node:os";
-import { PresenceRegistry, type PresenceEntry, type PresenceKind, type PresenceSelf } from "./presence.ts";
-import * as path from "node:path";
 import { Inbox } from "./inbox.ts";
-import { pidAlive, writeFileAtomic } from "./lock.ts";
+import { pidAlive } from "./lock.ts";
 import { composeCheckerPrompt, composeLoopPrompt, findingKind, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
-import { backoffWaitMs, computeDue, computeNext, formatLocal, formatLocalZoned, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
+import { computeDue, formatLocal, formatLocalZoned, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
+import { backoffFor, FAILING_AFTER, failurePause } from "./backoff.ts";
 import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, type RunRequester, newId } from "./store.ts";
 import { openWhere, ownerSession, runsHere, whereRuns, type OwnerView } from "./job-owner.ts";
 import { shortSessionId } from "./session-head.ts";
-import { DEAD_AFTER_ATTEMPTS, backoffFor, plainCollapseKey, plainJobRow, plainRunId, sessionFileHas } from "./engine.ts";
+import { DEAD_AFTER_ATTEMPTS, plainCollapseKey, plainJobRow, plainRunId, sessionFileHas } from "./engine.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 
 export const DEFAULT_TICK_MS = 30_000;
+/** Which process a scheduler is in: a pi window, or pi-loops in the background ("host"). */
+export type SchedulerKind = "interactive" | "host";
 /** Interrupted runs in a row (a process that died mid-run) after which a job is parked. */
 export const INTERRUPTIONS_BEFORE_PARKING = 3;
-/** Consecutive failures before a job is retried on a widening gap rather than every due tick. */
-export const FAILURE_BACKOFF_AFTER = 3;
-export const FAILURE_BACKOFF_BASE_MS = 5 * 60_000;
-export const FAILURE_BACKOFF_MAX_MS = 6 * 60 * 60_000;
 export const DEFAULT_RUN_TIMEOUT_MS = 15 * 60_000;
 export const MAX_CONCURRENT_RUNS = 3;
 /**
@@ -153,12 +150,10 @@ export interface SchedulerOptions {
 	hop?: number;
 	/** Live settings (re-read on every use so a config reload takes effect). */
 	getSettings?: () => SchedulerSettings;
-	/** A window: whether it should write next-runs.json this tick (no host is running to do it). */
-	writesNextRuns?: () => boolean;
 	/** Does pi still have this session? Plain jobs of deleted sessions are disabled (and `gc()` removes them). */
 	sessionExists?: (sessionId: string) => boolean;
-	/** "host" = the always-on process: it also writes next-runs.json and sweeps dead sessions. Default "interactive". */
-	kind?: PresenceKind;
+	/** "host" = the always-on process: it also sweeps dead sessions. Default "interactive". */
+	kind?: SchedulerKind;
 	/**
 	 * Which jobs this scheduler dispatches. The host passes "loops only", a window "the plain jobs of
 	 * the conversation it holds". Omitted (tests), it owns every loop and the plain jobs `view` says run here.
@@ -200,15 +195,11 @@ export class LoopScheduler {
 	private readonly now: () => number;
 	private readonly hop: number;
 	private readonly getSettings: () => SchedulerSettings;
-	private readonly writesNextRuns?: () => boolean;
 	/** Every sub-agent this process starts takes a slot from here, loop runs and trigger checks alike. */
 	readonly slots: SubagentSlots;
 	private readonly sessionExists?: (sessionId: string) => boolean;
-	readonly kind: PresenceKind;
+	readonly kind: SchedulerKind;
 	private lastDeadSessionScan = 0;
-	/** The last set of next runs written, so an unchanged tick writes nothing. */
-	private lastNextRuns: string | undefined;
-	private readonly nextRunsFile: string;
 	private timer: NodeJS.Timeout | undefined;
 	private ticking = false;
 	private startedAt = 0;
@@ -220,19 +211,12 @@ export class LoopScheduler {
 	readonly instance: string;
 	private readonly leases?: PlainJobLeases;
 	private readonly owns: (job: LoopJob, view: OwnerView) => boolean;
-	/** This process in the machine-wide presence registry (which pi is open where). */
-	readonly presence: PresenceRegistry;
-	readonly self: PresenceSelf;
 
 	constructor(opts: SchedulerOptions) {
 		this.dir = opts.dir;
 		this.store = new JobStore(opts.dir);
 		this.inbox = new Inbox(opts.dir);
 		this.requests = new RequestStore(opts.dir);
-		// Written by the host alone. A cron expression is matched against local time, so if two
-		// machines sharing a `$HOME` both ran, they would write different answers over one another —
-		// which is why that arrangement is unsupported rather than handled (docs/design.md §19).
-		this.nextRunsFile = path.join(opts.dir, "next-runs.json");
 		this.getSession = opts.getSession;
 		this.hooks = opts.hooks ?? {};
 		this.tickMs = opts.tickMs ?? DEFAULT_TICK_MS;
@@ -240,16 +224,12 @@ export class LoopScheduler {
 		this.now = opts.now ?? Date.now;
 		this.hop = opts.hop ?? 0;
 		this.getSettings = opts.getSettings ?? (() => ({ maxConcurrentRuns: MAX_CONCURRENT_RUNS, catchUp: true }));
-		this.writesNextRuns = opts.writesNextRuns;
 		this.slots = opts.slots ?? new SubagentSlots(() => this.getSettings().maxConcurrentRuns);
 		this.instance = opts.instance ?? newId("sched");
 		this.leases = opts.leases;
 		this.owns = opts.owns ?? ((job, view) => runsHere(job, view));
 		this.sessionExists = opts.sessionExists;
 		this.kind = opts.kind ?? "interactive";
-		const session = opts.getSession();
-		this.self = { pid: process.pid, host: os.hostname(), instance: this.instance, sessionId: session.sessionId, cwd: session.cwd, kind: this.kind, leases: true };
-		this.presence = new PresenceRegistry(opts.dir, this.self);
 	}
 
 	/** What this instance knows about who holds which session: the lists and dispatch ask it the same way. */
@@ -258,11 +238,6 @@ export class LoopScheduler {
 		const leases = this.leases;
 		if (!leases) return { sessionId, holdsOwn: !!sessionId };
 		return { sessionId, holdsOwn: !!sessionId && leases.heldEpoch(sessionId) !== undefined, holderOf: (id) => leases.holderOf(id), standsAside: leases.standsAside?.(), holderKind: leases.holderKind ? (id) => leases.holderKind!(id) : undefined, hostRuns: leases.hostRuns ? (id) => leases.hostRuns!(id) : undefined, hostPaused: leases.hostPaused?.() };
-	}
-
-	/** Live pi processes on every host (stale entries pruned). */
-	presenceList(now = this.now()): PresenceEntry[] {
-		return this.presence.list(now);
 	}
 
 	get runningCount(): number {
@@ -425,15 +400,6 @@ export class LoopScheduler {
 				r.ctrl.abort();
 				this.log(`cron ${r.label}: removed while it ran; stopped run ${runId}`);
 			}
-			// What the store cannot say and every reader wants: when each job runs next. It is a pure
-			// function of the job, but computing it needs the cron evaluator — which the browser
-			// front end does not have and should not grow a second copy of. The host writes the
-			// answers where that front end already reads pi-loops' own files, and only when one of
-			// them changes, which for a nightly job is once a day.
-			// The host writes it; with no host running a window does, or the browser front end of a person
-			// with only plain jobs (who never starts a host) showed no next run at all. Every writer
-			// computes the same function of the same store, so two windows writing it agree.
-			if (host || this.writesNextRuns?.()) this.writeNextRuns(jobs, now);
 			if (host && this.sessionExists && now - this.lastDeadSessionScan >= DEAD_SESSION_SCAN_MS) {
 				this.lastDeadSessionScan = now;
 				try {
@@ -498,43 +464,14 @@ export class LoopScheduler {
 	private async disableDeadSessionJobs(jobs: LoopJob[]): Promise<void> {
 		const exists = this.sessionExists;
 		if (!exists) return;
-		// Open somewhere (--no-session, --session-dir, another sessions root)? Then it is alive whatever the disk says.
-		const live = new Set(this.presence.list(this.now()).map((e) => e.sessionId).filter(Boolean));
-		const dead = jobs.filter((j) => j.enabled && !j.stateful && j.sessionId && !live.has(j.sessionId) && !exists(j.sessionId));
+		// A conversation a window holds counts as there, whatever the disk says: `sessionExists` asks its lease (src/host.ts).
+		const dead = jobs.filter((j) => j.enabled && !j.stateful && j.sessionId && !exists(j.sessionId));
 		for (const job of dead) {
 			await this.store.update(job.id, (j) => {
 				j.enabled = false;
 				j.lastError = `disabled: session ${shortSessionId(job.sessionId!)} ${DEAD_SESSION_MARKER}`;
 			});
 			this.log(`cron ${job.name ?? job.id}: disabled, its session ${shortSessionId(job.sessionId!)} no longer exists`, undefined, job);
-		}
-	}
-
-	/**
-	 * `next-runs.json`: job id → when it next runs, as the scheduler itself computes it.
-	 *
-	 * Derived, so it lives beside the store rather than in it — a next run is not a fact about the
-	 * job, it is an answer about the clock, and `jobs.json` is what several processes take a lock to
-	 * edit. Best effort throughout: a reader that finds it missing or stale shows no next run, which
-	 * is what it showed before this existed.
-	 */
-	private writeNextRuns(jobs: LoopJob[], now: number): void {
-		const next: Record<string, string> = {};
-		for (const job of jobs) {
-			if (!job.enabled || !isValidSchedule(job.schedule)) continue;
-			const at = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined }, now);
-			if (at !== undefined) next[job.id] = stamp(at);
-		}
-		const text = `${JSON.stringify({ at: stamp(now), next }, null, 1)}\n`;
-		// The timestamp moves every tick and the answers do not, so the comparison ignores it: this
-		// writes when a job fires or is edited, not 2880 times a day.
-		const fingerprint = JSON.stringify(next);
-		if (fingerprint === this.lastNextRuns) return;
-		this.lastNextRuns = fingerprint;
-		try {
-			writeFileAtomic(this.nextRunsFile, text);
-		} catch {
-			/* a derived file is a courtesy; never a reason to disturb the tick */
 		}
 	}
 
@@ -706,8 +643,8 @@ export class LoopScheduler {
 		// A failing job is retried with a widening gap instead of at every due tick: a loop whose
 		// sub-agent kills the process used to re-fire on the very next start, in a loop.
 		const failures = job.consecutiveFailures ?? 0;
-		if (failures >= FAILURE_BACKOFF_AFTER && job.lastCompletedAt) {
-			const wait = backoffWaitMs(failures, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS);
+		if (failures >= FAILING_AFTER && job.lastCompletedAt) {
+			const wait = failurePause(failures);
 			if (now - Date.parse(job.lastCompletedAt) < wait) return;
 		}
 		// The counter is shared with trigger checks and the /goal evaluator (src/slots.ts): the cap is
@@ -728,7 +665,7 @@ export class LoopScheduler {
 			return;
 		}
 		if (missedDue !== undefined) this.hooks.onCatchUp?.(job, missedDue);
-		// Never await a run inside a tick: leases, presence and trigger checks keep
+		// Never await a run inside a tick: leases and trigger checks keep
 		// going while sub-agents work, and several loops really do run at once.
 		if (!job.stateful) {
 			this.track(this.launchHeld(job, dueIso, now, note), slot);
@@ -835,17 +772,10 @@ export class LoopScheduler {
 			j.runCount++;
 		});
 		if (!claimed) {
-			// Another process fired this slot first (a pi-loops 0.22 window on the same conversation during
-			// an upgrade): the row this call wrote would run the slot a second time. Only that row goes.
+			// Another process fired this slot first: the row this call wrote would run the slot a second
+			// time. Only that row goes.
 			if (wrote) this.requests.remove(sessionId, [runId]);
 			return "lost";
-		}
-		// Its next run moved: written now, so the browser panel does not show a blank one until the
-		// next tick of whichever process writes it. Every writer computes the same answer.
-		try {
-			this.writeNextRuns(this.store.load(), now);
-		} catch {
-			/* a derived file is a courtesy (see writeNextRuns); the tick writes it too */
 		}
 		return collapsed ? "collapsed" : "fired";
 	}
@@ -896,7 +826,7 @@ export class LoopScheduler {
 				claimed = true;
 				// Written before the turn starts, as a loop's marker is: a host that dies mid-turn leaves
 				// it behind, and the next host finds an unfinished run instead of a slot spent in silence.
-				j.running = { runId, pid: process.pid, host: this.self.host, startedAt };
+				j.running = { runId, pid: process.pid, host: os.hostname(), startedAt };
 				if (!spendsSlot) return;
 				j.lastDueAt = dueIso;
 				j.lastFiredAt = startedAt;
@@ -1016,7 +946,7 @@ export class LoopScheduler {
 				return;
 			}
 			if (stopped) this.log(`cron ${job.name ?? job.id}: turn stopped; it is done`, "info");
-			if (updated && !result.ok && !stopped && (updated.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER) {
+			if (updated && !result.ok && !stopped && (updated.consecutiveFailures ?? 0) >= FAILING_AFTER) {
 				this.hooks.onSchedulerError?.(`${updated.name ?? updated.id} has failed ${updated.consecutiveFailures} times in a row; backing off (last: ${record.error ?? "unknown"})`, updated);
 			}
 			// A one-shot is retired once it ran, was stopped, or failed twice (the retry above was its second chance).
@@ -1106,7 +1036,7 @@ export class LoopScheduler {
 			// The slot was decided from a snapshot. If another process ran or skipped this job since,
 			// its stamps moved: that slot is spent, and running it again would run it twice.
 			if (j.lastDueAt !== priorDueAt || j.lastFiredAt !== priorFiredAt) return;
-			j.running = { runId, pid: process.pid, host: this.self.host, startedAt };
+			j.running = { runId, pid: process.pid, host: os.hostname(), startedAt };
 			if (dueIso) j.lastDueAt = dueIso;
 			j.lastFiredAt = startedAt;
 			j.lastError = undefined;
@@ -1315,7 +1245,7 @@ export class LoopScheduler {
 		} catch (err: any) {
 			this.log(`loop ${job.id}: could not write the store after the run (${err?.message ?? err})`, undefined, job);
 		}
-		if (updated && !result.ok && !byPerson && (updated.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER) {
+		if (updated && !result.ok && !byPerson && (updated.consecutiveFailures ?? 0) >= FAILING_AFTER) {
 			this.hooks.onSchedulerError?.(`${updated.name ?? updated.id} has failed ${updated.consecutiveFailures} times in a row; backing off (last: ${record.error ?? "unknown"})`, updated);
 		}
 		// Only now: while the run id is in `inflight`, `clearStaleRunning` treats the job as alive,

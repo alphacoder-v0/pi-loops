@@ -20,7 +20,7 @@ import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, 
 import { buildSessionProjection, migrateSessionEntries, parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName, shouldReadAgain } from "./lease.ts";
 import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom, machineWide } from "./activity.ts";
-import { formatSchedule, scheduleWords, stamp } from "./schedule.ts";
+import { formatSchedule, nextRunStamp, scheduleWords, stamp } from "./schedule.ts";
 import { type Look, lookLine, watchOf } from "./path-precheck.ts";
 import { failingJobs } from "./job-health.ts";
 import { loopSignal, type LoopSignal, SIGNAL_WINDOW_MS } from "./job-signal.ts";
@@ -320,12 +320,6 @@ function isUnder(child: string, ancestor: string) {
 	const realPath = realpathish(child);
 	const rel = path.relative(realRoot, realPath);
 	return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-}
-
-/** An ISO time, but only if it is still ahead of us. */
-function futureOnly(iso: any) {
-	const at = Date.parse(iso ?? "");
-	return Number.isFinite(at) && at > Date.now() ? iso : undefined;
 }
 
 /* ------------------------------------------------------------------ what a prompt needs first */
@@ -892,8 +886,7 @@ export type SessionHolderView =
 	| { kind: "terminal"; pid: number; mode?: string; since: string; pushServers: string[] }
 	| { kind: "page"; pid: number; since: string }
 	| { kind: "host"; busy?: string; since: string }
-	| { kind: "nobody" }
-	| { kind: "legacy-pi"; pid: number };
+	| { kind: "nobody" };
 
 export interface SessionRow {
 	sessionId: string;
@@ -919,7 +912,6 @@ export interface SessionRowsInput {
 	plainJobSessions: readonly string[];
 	ruleSessions: readonly string[];
 	mailbox: ReadonlyMap<string, number>;
-	legacy: ReadonlyArray<{ sessionId: string; pid: number }>;
 	alive: (holder: LeaseHolder) => boolean;
 	since: (sessionId: string) => SinceYouLooked;
 	/** A session file's title (src/session-head.ts sessionTitle). */
@@ -931,8 +923,7 @@ export interface SessionRowsInput {
 /** Combines ownership and automation counts so an idle conversation remains visible. */
 export function sessionRows(input: SessionRowsInput): SessionRow[] {
 	const leases = new Map(input.leases.map((lease) => [lease.sessionId, lease]));
-	const legacy = new Map(input.legacy.map((entry) => [entry.sessionId, entry.pid]));
-	const ids = new Set([...leases.keys(), ...input.plainJobSessions, ...input.ruleSessions, ...input.mailbox.keys(), ...legacy.keys()]);
+	const ids = new Set([...leases.keys(), ...input.plainJobSessions, ...input.ruleSessions, ...input.mailbox.keys()]);
 	const counts = (sessions: readonly string[]) => {
 		const out = new Map<string, number>();
 		for (const id of sessions) out.set(id, (out.get(id) ?? 0) + 1);
@@ -940,7 +931,7 @@ export function sessionRows(input: SessionRowsInput): SessionRow[] {
 	};
 	const jobs = counts(input.plainJobSessions);
 	const rules = counts(input.ruleSessions);
-	const rank = { terminal: 0, page: 1, host: 2, "legacy-pi": 3, nobody: 4 };
+	const rank = { terminal: 0, page: 1, host: 2, nobody: 3 };
 	return [...ids].map((sessionId): SessionRow => {
 		const lease = leases.get(sessionId);
 		const holder = lease?.holder;
@@ -950,8 +941,7 @@ export function sessionRows(input: SessionRowsInput): SessionRow[] {
 			else if (holder.kind === "terminal") view = { kind: "terminal", pid: holder.pid, ...(holder.mode ? { mode: holder.mode } : {}), since: holder.acquiredAt, pushServers: holder.pushServers };
 			// Named the way the page's waiting line names it: a job's id is 32 characters no person typed.
 			else view = { kind: "host", ...(holder.busy ? { busy: (holder.busy.jobId && input.jobName(holder.busy.jobId)) || holder.busy.runId.slice(0, 12) } : {}), since: holder.acquiredAt };
-		} else if (legacy.has(sessionId)) view = { kind: "legacy-pi", pid: legacy.get(sessionId)! };
-		else view = { kind: "nobody" };
+		} else view = { kind: "nobody" };
 		const title = lease?.sessionFile !== undefined ? input.title(lease.sessionFile) : undefined;
 		return {
 			sessionId,
@@ -998,7 +988,6 @@ function openIn(holder: SessionHolderView): string {
 		case "terminal": return "a terminal";
 		case "page": return "this page";
 		case "host": return `the background${holder.busy ? `, running ${holder.busy}` : ""}`;
-		case "legacy-pi": return "a pi-loops 0.22 window";
 		case "nobody": return "closed";
 	}
 }
@@ -1140,26 +1129,6 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const LOOPBACK = HOST_BIND === "127.0.0.1" || HOST_BIND === "::1" || HOST_BIND === "localhost";
 
 	/**
-	 * When each job runs next, as the scheduler worked it out.
-	 *
-	 * This used to be computed here, and understood only `every <interval>` — so a job on a cron
-	 * expression, which is the first example in the README, showed no next run at all. Writing a second
-	 * cron parser into this file was the wrong fix: the answer is a pure function of the job and the
-	 * clock, and the scheduler already has the evaluator. It writes the answers to
-	 * `next-runs.json` beside the store when one of them changes, and this reads them like every other
-	 * file pi-loops keeps.
-	 *
-	 * Missing file, older pi-loops, no host yet: no next run shown, which is what was shown before.
-	 */
-	function nextRuns() {
-		// The scheduler's one file. If two machines shared a `$HOME` they would both run every job and
-		// overwrite one another's answers here; that is unsupported rather than handled
-		// (docs/design.md §19).
-		const doc = readJson(path.join(LOOPS_DIR, "next-runs.json"), { next: {} });
-		return doc?.next && typeof doc.next === "object" ? doc.next : {};
-	}
-
-	/**
 	 * The run log and the inbox, read for the loop rows' signal once per change of either file: the
 	 * snapshot is rebuilt every 8 seconds per open page, and both files grow with every run.
 	 */
@@ -1244,7 +1213,6 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		 */
 		const inThisProject = (j: any) => sameProject(j.cwd, cwd);
 		const allJobs = jobsFile.jobs ?? [];
-		const nexts = nextRuns();
 		const now = Date.now();
 		const hostPid = liveHostPid(LOOPS_DIR);
 		const hostUp = hostPid !== undefined;
@@ -1288,12 +1256,9 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			// is the position in a numbered list — which this panel does not have, so telling someone to
 			// use one was telling them to go and find a terminal. A name or a full id resolves anywhere.
 			ref: j.name || j.id,
-			// Only for a job that is actually going to run: disabled, or belonging to another machine,
-			// and a next run would be a promise nothing intends to keep — which is the rule `/cron`
-			// follows. A time that has already passed is a stale answer rather than a next run (the job
-			// fired and no tick has rewritten the file yet), and saying nothing beats saying something
-			// visibly wrong.
-			next: j.enabled && runsSomewhere(owned(j), view) ? futureOnly(nexts[j.id]) : undefined,
+			// Only for a job that is actually going to run, which is the rule `/cron` follows. The time
+			// is computed from the job when the page asks for its state.
+			next: j.enabled && runsSomewhere(owned(j), view) ? nextRunStamp(j, now) : undefined,
 			// Where it runs when that is not here, in the terminal's words (src/job-owner.ts). A disabled
 			// one runs nowhere, and the card already says it is off.
 			asleep: j.enabled ? asleepNote(owned(j), view) : undefined,

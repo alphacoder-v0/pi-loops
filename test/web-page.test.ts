@@ -4895,8 +4895,8 @@ test("right after Apply the row's next run and the note say one time, in one for
 	const state: any = loopState({ next: stale, signal: { findings30d: 0, claimed30d: 0, dismissed30d: 0, quietStreak: 12 }, suggestion });
 	const dom = await startPage(state, { "/loops/tune": { ok: true, op: "set", line: "now every 1h", schedule: "every 1h", nextAt } });
 	try {
-		// The answer is in, and the store has the new schedule; next-runs.json still has the old time.
-		state.automation.jobs[0] = { ...state.automation.jobs[0], schedule: "every 1h", suggestion: undefined };
+		// The answer is in, and the state is refreshed with the new schedule and its computed next time.
+		state.automation.jobs[0] = { ...state.automation.jobs[0], schedule: "every 1h", next: nextAt, suggestion: undefined };
 		press(buttonIn(loopSlot(), "Run hourly instead"));
 		await settled();
 		const shown = soonWords(nextAt);
@@ -4911,32 +4911,26 @@ test("right after Apply the row's next run and the note say one time, in one for
 	}
 });
 
-test("an applied next run that has passed gives way to the store's, so a row never shows a next time earlier than now", { timeout: 20_000 }, async () => {
+test("a loop row's next run is the one in its state: a suggestion's answer does not stand in for it", { timeout: 20_000 }, async () => {
 	const stored = new Date(Date.now() + 5 * 60_000).toISOString();
 	const suggestion = { kind: "slower", key: "slower:cron-aaaaaaaa:every 15m", label: "Run hourly instead" };
 	const state: any = loopState({ next: stored, signal: { findings30d: 0, claimed30d: 0, dismissed30d: 0, quietStreak: 12 }, suggestion });
 	const answers: Record<string, unknown> = {};
 	const dom = await startPage(state, answers);
-	// Applied a moment before it is due: the minute's override outlives it.
-	const nextAt = new Date(Date.now() + 1000).toISOString();
+	// The answer names the new schedule's next time. The row waits for the state to say it.
+	const nextAt = new Date(Date.now() + 60 * 60_000).toISOString();
 	answers["/loops/tune"] = { ok: true, op: "set", line: "now every 1h", schedule: "every 1h", nextAt };
 	const shown = (iso: string) => "next " + soonWords(iso);
 	try {
 		state.automation.jobs[0] = { ...state.automation.jobs[0], schedule: "every 1h", suggestion: undefined };
 		press(buttonIn(loopSlot(), "Run hourly instead"));
 		await settled();
-		assert.ok((globalThis as any).document.getElementById("auto").innerHTML.includes(shown(nextAt)), "the applied time while it is ahead");
-		// A poll after the applied time has passed.
-		const realNow = Date.now;
-		Date.now = () => realNow() + 1200;
-		try {
-			await dom.poll();
-		} finally {
-			Date.now = realNow;
-		}
+		assert.ok((globalThis as any).document.getElementById("auto").innerHTML.includes(shown(stored)), "the row shows its state's next time");
+		// The next draw drops the note, and the row still follows the state.
+		await dom.poll();
 		const html = (globalThis as any).document.getElementById("auto").innerHTML;
-		assert.ok(!html.includes(shown(nextAt)), `a passed time is not a next run: ${html.slice(0, 400)}`);
-		assert.ok(html.includes(shown(stored)), "the store's answer instead");
+		assert.ok(!html.includes(shown(nextAt)), `the answer's time is not the row's: ${html.slice(0, 400)}`);
+		assert.ok(html.includes(shown(stored)), "the row still shows the state's answer");
 	} finally {
 		dom.dispose();
 	}

@@ -434,10 +434,10 @@ export function computeNext(input: DueInput, now: number): number | undefined {
 		case "cron":
 			return cronNextAfter(parseCron(schedule.expr), now);
 		case "every": {
+			// The first step after now, counted from the base. Worked out, not walked: a base far in
+			// the past (a hand-edited `createdAt`) is as cheap as one a minute ago.
 			const base = input.lastFiredAt ?? input.createdAt;
-			let t = base + schedule.ms;
-			while (t <= now) t += schedule.ms;
-			return t;
+			return base + schedule.ms * Math.max(1, Math.floor((now - base) / schedule.ms) + 1);
 		}
 		case "once":
 			return input.lastFiredAt === undefined && schedule.at > now ? schedule.at : undefined;
@@ -445,15 +445,23 @@ export function computeNext(input: DueInput, now: number): number | undefined {
 }
 
 /**
- * How long something that has failed `failures` times in a row waits before the next attempt:
- * nothing until `after` failures, then `baseMs` doubling with each further failure, capped at
- * `maxMs` (and at eight doublings, so the arithmetic cannot run away).
- *
- * One function for both pipelines because docs/triggers.md promises the same numbers: a loop run
- * that keeps failing and a trigger check that keeps failing are the same problem — it will not fix
- * itself by the next tick, and every attempt bills a sub-agent.
+ * The last time that has a stamp: a day before the last millisecond a `Date` can hold, because
+ * `stamp` moves a time by the local zone's offset before it writes it.
  */
-export function backoffWaitMs(failures: number, after: number, baseMs: number, maxMs: number): number {
-	if (failures < after) return 0;
-	return Math.min(maxMs, baseMs * 2 ** Math.min(failures - after, 8));
+const LAST_STAMP_MS = 8.64e15 - 86_400_000;
+
+/**
+ * The first time after `now` that a job's schedule names, as a stamp, or undefined: its schedule
+ * is unusable, an `every` job has no usable time to count from, the time is past the last one
+ * that has a stamp, or it is a one-shot that has fired or whose time has passed. It takes a job
+ * as `jobs.json` holds it and uses the scheduler's evaluator (`computeNext`), so a reader of that
+ * file needs no file in between. It does not look at `enabled`, and it does not say whether a run
+ * is due now: those are the caller's questions (`nextRunOf` in src/job-edit.ts answers the second).
+ */
+export function nextRunStamp(job: { schedule?: unknown; createdAt?: unknown; lastFiredAt?: unknown }, now: number): string | undefined {
+	if (!isValidSchedule(job.schedule)) return undefined;
+	const createdAt = typeof job.createdAt === "string" ? Date.parse(job.createdAt) : NaN;
+	const fired = typeof job.lastFiredAt === "string" ? Date.parse(job.lastFiredAt) : NaN;
+	const at = computeNext({ schedule: job.schedule, createdAt, lastFiredAt: Number.isFinite(fired) ? fired : undefined }, now);
+	return at === undefined || !Number.isFinite(at) || Math.abs(at) > LAST_STAMP_MS ? undefined : stamp(at);
 }

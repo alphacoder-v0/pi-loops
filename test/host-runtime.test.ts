@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import * as os from "node:os";
 import { loadConfig } from "../src/config.ts";
 import { createHostRuntime, type HostRuntime } from "../src/host-runtime.ts";
 import { LoopScheduler } from "../src/scheduler.ts";
@@ -399,7 +398,7 @@ test("a rule's promotion for a closed creating conversation is appended to it, a
 
 test("a rule's result for a closed creating conversation goes to the window open in its project, as in 0.22.8; with none, to the closed conversation", async () => {
 	// Monday: rule made in A, A closed. Tuesday: B open in the same repo, CI fails. 0.22.8 put the
-	// result in B's chat (presence.ts chooseCwdOwner); 0.23 appended it to A, where nobody was.
+	// result in B's chat; 0.23 appended it to A, where nobody was.
 	const dir = tmp("pi-loops-hostrt-");
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
 	try {
@@ -427,26 +426,6 @@ test("a rule's result for a closed creating conversation goes to the window open
 		process.env.FAKE_PI_REPLY = `matched ${again.id}: nobody is open`;
 		await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent", [again]);
 		assert.ok((SessionManager.open(file).getEntries() as any[]).some((e) => e.type === "custom_message" && /nobody is open/.test(String(e.content))), "appended to the closed creating conversation");
-	} finally {
-		delete process.env.FAKE_PI_REPLY;
-		await host.stop();
-	}
-});
-
-test("a rule's result for a conversation open in a 0.22 window goes to the inbox, marked for it", async () => {
-	// That window never reads requests/: a row would wait until it closed, unseen while the person is in it.
-	const dir = tmp("pi-loops-hostrt-");
-	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
-	try {
-		const { sessionId } = closedConversation(dir);
-		fs.mkdirSync(path.join(dir, "presence"), { recursive: true });
-		fs.writeFileSync(path.join(dir, "presence", `old-${process.pid}-w22.json`), JSON.stringify({ pid: process.pid, host: os.hostname(), instance: "w22", sessionId, cwd: dir, kind: "interactive", heartbeatAt: new Date().toISOString() }));
-		const rule = await host.triggers.store.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true, sessionId });
-		process.env.FAKE_PI_REPLY = `matched ${rule.id}: for the old window`;
-		await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent", [rule]);
-		const found = host.scheduler.inbox.listNew();
-		assert.deepEqual([found.length, found[0]?.session_id], [1, sessionId]);
-		assert.deepEqual(new RequestStore(dir).list(sessionId), [], "and no row waits for it");
 	} finally {
 		delete process.env.FAKE_PI_REPLY;
 		await host.stop();
@@ -509,6 +488,34 @@ test("a conversation left held for a turn that no longer runs is given back on t
 		await host.scheduler.tick();
 		assert.equal(new LeaseStore(dir).read(sessionId)?.holder, null, "given back");
 		assert.ok(logs.some((l) => /gave back session .* run-gone/.test(l)));
+	} finally {
+		await host.stop();
+	}
+});
+
+test("a closed conversation's plain job that keeps failing waits out its pause: after three failed turns in a row, no turn for one minute", async () => {
+	// The pause is for whatever pi-loops runs in the background, a loop or a held turn: a turn that
+	// failed three times is failing for a reason the next tick will not fix, and each one is billed.
+	const dir = tmp("pi-loops-hostrt-");
+	const { sessionId } = closedConversation(dir);
+	const turns: string[] = [];
+	const runner = async (req: any) => {
+		turns.push(req.kind);
+		return { ok: true, exitCode: 0, timedOut: false, text: "done", usage: { input: 0, output: 0, cost: 0, turns: 1 } } as any;
+	};
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined });
+	try {
+		const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+		await host.scheduler.store.add({ id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: ago(10 * 60_000), runCount: 3, skippedOverlap: 0, consecutiveFailures: 3, lastCompletedAt: ago(30_000) });
+		await host.scheduler.tick();
+		await host.scheduler.drain(5000);
+		assert.deepEqual(turns, [], "no turn 30 seconds after the third failure");
+		await host.scheduler.store.update("cron-held", (j) => {
+			j.lastCompletedAt = ago(61_000);
+		});
+		await host.scheduler.tick();
+		await host.scheduler.drain(5000);
+		assert.deepEqual(turns, ["held"], "a turn once one minute has passed");
 	} finally {
 		await host.stop();
 	}

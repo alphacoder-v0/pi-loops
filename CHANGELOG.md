@@ -5,6 +5,23 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Close every pi-loops 0.22 window before you upgrade.** This version no longer holds such a
+  window back, and a window no longer warns you that an older one has the same conversation open.
+  Windows of 0.23 and later are not affected. While a 0.22 window stays open:
+  - it runs loops beside pi-loops in the background, so a loop can run twice;
+  - it runs its conversation's plain jobs, and pi-loops in the background can run the same jobs
+    and write to the same conversation file, when a window of 0.23 or later opened that
+    conversation before;
+  - a rule's result for its conversation can be written to the conversation's file while the
+    window has it open, where it went to the inbox before;
+  - a 0.22 window started with `--no-session` or `--session-dir` has its plain jobs turned off
+    within ten minutes (`disabled: session … no longer exists`). `/cron enable <id>` holds only
+    after you close that window and open the conversation in a window of this version; before
+    that, the job is turned off again within ten minutes. A `--no-session` conversation cannot be
+    opened again: make its jobs again in a new conversation.
+
 ### Fixed
 
 - **A loop made without a name gets one, in the prompt's script.** A prompt with no Latin word
@@ -65,6 +82,20 @@ All notable changes to pi-loops are documented here. The format follows
   upgrade waited 180 s on every tick for a process that could not receive the request. A window
   with a newer version now stops such a process with SIGTERM, only when the socket file is not
   there and the process has finished starting, and does not count a crash (#224).
+
+### Changed
+
+- **A loop or a rule check that keeps failing waits 1 minute after the third failure, then 5
+  minutes, 30 minutes, 2 hours and 6 hours.** It waited 5 minutes after the third and doubled to
+  6 hours. A queued prompt, a loop and a rule check now take their waits from one table. A plain
+  job that pi-loops runs in a closed conversation waits the same way.
+- **The page works out each job's next run when it is asked.** `next-runs.json` is gone: nothing
+  writes it and nothing reads it. A loop's next run on the page is right at once after an edit or
+  a run; it could be one tick behind.
+- **The bridge for pi-loops 0.22 windows is removed** (see the upgrade note). pi-loops no longer
+  reads `presence/` or writes `scheduler.json`, and the Background view no longer has the holder
+  `a pi-loops 0.22 window`. When pi-loops in the background or a window starts, it removes
+  `next-runs.json`, `scheduler.json` and `presence/` from the loops directory: nothing reads them.
 
 ## [0.24.2] - 2026-11-11
 

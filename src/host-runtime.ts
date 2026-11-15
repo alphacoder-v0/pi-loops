@@ -18,7 +18,6 @@ import { DELIVERY_JOB_ID, type LeaseHolder, LeaseStore, closedConversation, live
 import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileMark, type QuietMark, bury, changesSomething, conversationHas, conversationView, decideDrain, drain, promotionTarget, promotionView, quietMark, ruleResultRow, sessionFileEntries, stillQuiet } from "./engine.ts";
 import { RequestStore } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
-import type { PresenceEntry } from "./presence.ts";
 import { DEFAULT_RUN_TIMEOUT_MS, type HeldSession, LoopScheduler, type PlainJobLeases, STOPPED_BY_PERSON, type SessionSnapshot } from "./scheduler.ts";
 import { stamp } from "./schedule.ts";
 import { SubagentSlots } from "./slots.ts";
@@ -45,7 +44,7 @@ export interface HostRuntimeDeps {
 	log: (message: string) => void;
 	/** Does pi still have this session? Plain jobs of deleted sessions are parked by the host's sweep. */
 	sessionExists?: (sessionId: string) => boolean;
-	/** Every tick, before the rules are checked (the legacy fence lives here). */
+	/** Every tick, before the rules are checked. */
 	onTick?: (now: number) => void;
 	/** Is this conversation open in the browser page? Then its pi writes the file, and this process never holds it. */
 	pageHolds?: (sessionId: string) => boolean;
@@ -103,13 +102,11 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	};
 	/** Per closed conversation, the quiet mark of its last "nothing to do" (src/engine.ts quietMark). */
 	const quiet = new Map<string, QuietMark>();
-	/** Open in a pi-loops 0.22 window, which fires its plain jobs without a lease: never the host's to hold. */
-	let legacyOpen = (_sessionId: string): boolean => false;
 	const heldLeases: PlainJobLeases = {
 		heldEpoch: (sessionId) => (leases.holds(sessionId, me()) ? leases.read(sessionId)?.epoch : undefined),
 		holderOf: (sessionId) => liveHolderPid(leases, sessionId),
 		acquireForWork: (sessionId, runId, jobId) => {
-			if (legacyOpen(sessionId) || deps.pageHolds?.(sessionId)) return undefined;
+			if (deps.pageHolds?.(sessionId)) return undefined;
 			const got = leases.acquireForHost(sessionId, me({ runId, jobId, since: stamp() }));
 			if (!("lease" in got) || !got.lease.sessionFile) return undefined;
 			return { sessionId, epoch: got.lease.epoch, sessionFile: got.lease.sessionFile, cwd: got.lease.cwd };
@@ -118,7 +115,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		releaseWork: (sessionId, epoch) => void leases.release(sessionId, me(), { epoch, fileMtimeMs: fileMtime(leases.read(sessionId)?.sessionFile) }),
 	};
 	/** A plain job the host may fire: a conversation pi-loops knows the file of, that nobody holds and the page does not have open. */
-	const canHold = (sessionId: string | undefined): boolean => !(sessionId !== undefined && deps.pageHolds?.(sessionId)) && closedConversation(leases, sessionId, legacyOpen);
+	const canHold = (sessionId: string | undefined): boolean => !(sessionId !== undefined && deps.pageHolds?.(sessionId)) && closedConversation(leases, sessionId);
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
 	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), enabled: (id) => scheduler.store.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: scheduler.inbox, audit: triggers.store });
@@ -342,8 +339,6 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		},
 	});
 
-	legacyOpen = (sessionId) => scheduler.presenceList().some((e: PresenceEntry) => e.sessionId === sessionId && !e.leases && e.kind !== "host");
-
 	const toInbox = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string) => {
 		// The check decided this result's finding already (TriggerRuntime's inbox); a push with no rule did not.
 		await promotionToInbox(scheduler.inbox, triggers.store, content, trigger, { cwd: trigger.cwd ?? "", sessionId: forSession });
@@ -357,7 +352,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	 * busy) keeps the row for a later tick. The inbox is for a result no conversation can take.
 	 */
 	const promote = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string): Promise<"queued" | "chat" | "inbox"> => {
-		const route = promotionTarget(forSession, promotionView(leases, trigger.cwd, legacyOpen));
+		const route = promotionTarget(forSession, promotionView(leases, trigger.cwd));
 		if (route.to === "inbox") return toInbox(content, trigger, route.sessionId);
 		requests.append(ruleResultRow(route.sessionId, content, trigger, { pid: process.pid, instance: "host", procStart: ownStart, version: PI_LOOPS_VERSION }));
 		if (!canHold(route.sessionId)) return "queued";
@@ -433,7 +428,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			return;
 		}
 		if (!canHold(sessionId)) {
-			if (liveHolderPid(leases, sessionId) !== undefined || legacyOpen(sessionId) || deps.pageHolds?.(sessionId)) return; // its holder drains it
+			if (liveHolderPid(leases, sessionId) !== undefined || deps.pageHolds?.(sessionId)) return; // its holder drains it
 			const file = leases.read(sessionId)?.sessionFile;
 			if (file && fs.existsSync(file)) return; // there, only busy or recently written: a later tick
 			const buried = await bury(sessionId, requests, sinks(), "its conversation is gone");

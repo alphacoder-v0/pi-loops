@@ -1252,15 +1252,6 @@ const stopping = new Map();
 const stopNote = new Map();
 /** A suggestion's answer, by loop id, until the next draw shows the loop as it is now. */
 const tuneNote = new Map();
-/** An applied suggestion's next run, by loop id, for the minute before next-runs.json says it too. */
-const appliedNext = new Map();
-/** The next run a loop row shows: the applied one while the store's answer has not caught up, and never one that has passed. */
-function nextOf(j) {
-  const a = appliedNext.get(j.id);
-  if (!a) return j.next;
-  if (Date.now() > a.until || !(Date.parse(a.nextAt) > Date.now()) || a.schedule !== str(j.schedule) || j.next === a.nextAt) { appliedNext.delete(j.id); return j.next; }
-  return a.nextAt;
-}
 /** How long a stop may take before the row says so instead of claiming it. */
 const STOP_SLOW_MS = 8000;
 // A click anywhere outside a loop row closes an open confirm, sending nothing. The row's own buttons
@@ -1315,9 +1306,6 @@ async function sendTune(j, choice) {
   const key = j.suggestion && j.suggestion.key;
   if (!key) return;
   const r = await inboxPost("/loops/tune", { jobId: j.id, key, choice });
-  // Until the scheduler rewrites next-runs.json (its next tick), the row's next run is the one the
-  // answer gave, so the row and the note say one time.
-  if (r.status === 200 && r.body.nextAt) appliedNext.set(j.id, { schedule: str(r.body.schedule), nextAt: str(r.body.nextAt), until: Date.now() + 60000 });
   tuneNote.set(j.id, r.status === 200 ? (choice === "keep" ? "Kept as it is." : str(r.body.line) + (r.body.nextAt ? " · next " + clock(r.body.nextAt) : r.body.due ? " · next run now" : "")) : r.status === 409 ? "The suggestion changed; here is the loop as it is now." : "Could not do that: " + str(r.body && r.body.error || "no answer"));
   refresh().catch(() => {});
 }
@@ -1380,7 +1368,7 @@ function drawLoopRow(slot, j) {
 
 /** A loop's running and next run, each only when there is one; nothing at all when neither is. The activity strip counts runs. */
 function runsLine(j) {
-  const said = [j.running && !j.run ? "running" : "", nextOf(j) ? "next " + safeText(clock(nextOf(j))) : ""].filter(Boolean).join(" · ");
+  const said = [j.running && !j.run ? "running" : "", j.next ? "next " + safeText(clock(j.next)) : ""].filter(Boolean).join(" · ");
   return said ? '<span class="m">' + said + "</span>" : "";
 }
 

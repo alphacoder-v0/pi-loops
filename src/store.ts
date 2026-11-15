@@ -7,7 +7,6 @@
  *   state/<job-id>.md    loop state — the "state spine", human-readable
  *   inbox.jsonl          the triage inbox (see inbox.ts)
  *   runs.jsonl           run log, bounded
- *   scheduler.json         the host's fence for pi-loops 0.22 windows, during an upgrade only
  *   leases/, requests/     which process holds a conversation, and what is queued for it (lease.ts, requests.ts)
  *   *.lock               mkdir locks
  */

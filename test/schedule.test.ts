@@ -1,8 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { backoffWaitMs, clampFuture, computeDue, computeNext, cronLatestBetween, cronMatches, cronNextAfter, localOffset, parseCron, parseDuration, parseSchedule, scheduleWords, stamp } from "../src/schedule.ts";
-import { FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS } from "../src/scheduler.ts";
-import { CHECK_FAILURE_BACKOFF_AFTER, CHECK_FAILURE_BACKOFF_BASE_MS, CHECK_FAILURE_BACKOFF_MAX_MS } from "../src/trigger-runtime.ts";
+import { clampFuture, computeDue, computeNext, cronLatestBetween, cronMatches, cronNextAfter, localOffset, nextRunStamp, parseCron, parseDuration, parseSchedule, scheduleWords, stamp } from "../src/schedule.ts";
 
 const local = (y: number, mo: number, d: number, h = 0, mi = 0, s = 0) => new Date(y, mo - 1, d, h, mi, s).getTime();
 
@@ -105,23 +103,6 @@ test("skipping by the day finds exactly what a minute-by-minute walk finds", () 
 	}
 });
 
-test("the loop backoff and the trigger-check backoff really are the same numbers", () => {
-	// docs/triggers.md promises "the scheduler's job backoff, same numbers", which was two copies of
-	// the formula with two sets of constants and nothing keeping them together.
-	for (let failures = 1; failures <= 10; failures++) {
-		assert.equal(
-			backoffWaitMs(failures, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS),
-			backoffWaitMs(failures, CHECK_FAILURE_BACKOFF_AFTER, CHECK_FAILURE_BACKOFF_BASE_MS, CHECK_FAILURE_BACKOFF_MAX_MS),
-			`failures=${failures}`,
-		);
-	}
-	// Nothing for the first three, then 5 minutes, 10, 20, … up to 6 hours — as the doc says.
-	assert.equal(backoffWaitMs(2, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS), 0);
-	assert.equal(backoffWaitMs(3, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS), 5 * 60_000);
-	assert.equal(backoffWaitMs(4, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS), 10 * 60_000);
-	assert.equal(backoffWaitMs(30, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS), 6 * 3_600_000);
-});
-
 test("computeDue collapses missed cron ticks into one", () => {
 	const schedule = parseSchedule("0 9 * * *");
 	const createdAt = local(2026, 9, 1, 8, 0);
@@ -151,6 +132,72 @@ test("computeDue for every/once", () => {
 	assert.equal(computeDue({ schedule: once, createdAt, lastDueAt: createdAt + 10 * 60_000 }, createdAt + 20 * 60_000), undefined);
 	assert.equal(computeDue({ schedule: once, createdAt }, createdAt + 20 * 60_000), createdAt + 10 * 60_000);
 	assert.equal(computeNext({ schedule: every, createdAt }, createdAt + 31 * 60_000), createdAt + 60 * 60_000);
+});
+
+test("nextRunStamp advances an every job only when its next time is reached", () => {
+	const t = local(2026, 11, 2, 8, 0);
+	const job = { schedule: { kind: "every", ms: 60_000 }, createdAt: stamp(t) };
+	assert.equal(nextRunStamp(job, t + 10_000), stamp(t + 60_000));
+	assert.equal(nextRunStamp(job, t + 60_000 - 1), stamp(t + 60_000));
+	assert.equal(nextRunStamp(job, t + 60_000), stamp(t + 120_000));
+});
+
+test("nextRunStamp bases an every job on its last fire", () => {
+	const t = local(2026, 11, 2, 8, 0);
+	assert.equal(nextRunStamp({ schedule: { kind: "every", ms: 60_000 }, createdAt: stamp(t), lastFiredAt: stamp(t + 90_000) }, t + 100_000), stamp(t + 150_000));
+});
+
+test("nextRunStamp finds the next cron time strictly after now", () => {
+	const createdAt = stamp(local(2026, 11, 1));
+	const job = { schedule: { kind: "cron", expr: "0 9 * * *" }, createdAt };
+	assert.equal(nextRunStamp(job, local(2026, 11, 2, 8, 0)), stamp(local(2026, 11, 2, 9, 0)));
+	assert.equal(nextRunStamp(job, local(2026, 11, 2, 9, 0)), stamp(local(2026, 11, 3, 9, 0)));
+});
+
+test("nextRunStamp ends a one-shot when it fires or its time passes", () => {
+	const t = local(2026, 11, 2, 8, 0);
+	const at = t + 3_600_000;
+	const job = { schedule: { kind: "once", at }, createdAt: stamp(t) };
+	assert.equal(nextRunStamp(job, t), stamp(at));
+	assert.equal(nextRunStamp(job, at), undefined);
+	assert.equal(nextRunStamp({ ...job, lastFiredAt: stamp(t) }, t), undefined);
+});
+
+test("nextRunStamp returns undefined for unusable jobs and ignores enabled", () => {
+	const now = local(2026, 11, 2, 8, 0);
+	for (const job of [
+		{},
+		{ schedule: { kind: "every", ms: 5 }, createdAt: stamp(now) },
+		{ schedule: { kind: "cron", expr: "not a cron" }, createdAt: stamp(now) },
+		{ schedule: { kind: "every", ms: 60_000 } },
+		{ schedule: { kind: "every", ms: 60_000 }, createdAt: 5 },
+	]) assert.doesNotThrow(() => assert.equal(nextRunStamp(job, now), undefined));
+	const enabled = { schedule: { kind: "every", ms: 60_000 }, createdAt: stamp(now), enabled: true };
+	assert.equal(nextRunStamp(enabled, now), nextRunStamp({ ...enabled, enabled: false }, now));
+});
+
+test("nextRunStamp gives no time, and does not throw, when the next time is past what a date can hold", () => {
+	// `every 100000000d` is a valid interval. Its next run has no stamp, and the page asks for every job's.
+	const now = local(2026, 11, 2, 8, 0);
+	assert.equal(nextRunStamp({ schedule: { kind: "every", ms: 8.64e18 }, createdAt: stamp(now) }, now), undefined);
+	assert.equal(nextRunStamp({ schedule: { kind: "once", at: 9e15 }, createdAt: stamp(now) }, now), undefined);
+	// `stamp` moves a time by the zone's offset first, so the last day of all has no stamp in some zones.
+	assert.equal(nextRunStamp({ schedule: { kind: "once", at: 8.64e15 }, createdAt: stamp(now) }, now), undefined);
+	assert.equal(nextRunStamp({ schedule: { kind: "once", at: 8.64e15 - 3_600_000 }, createdAt: stamp(now) }, now), undefined, "also in a zone far ahead of UTC");
+	const lastWithOne = 8.64e15 - 2 * 86_400_000;
+	assert.equal(nextRunStamp({ schedule: { kind: "once", at: lastWithOne }, createdAt: stamp(now) }, now), stamp(lastWithOne), "two days before the end still has one");
+});
+
+test("the next run of an every job is worked out, not walked: a start two thousand years back costs nothing and gives the same step", () => {
+	const now = local(2026, 11, 2, 8, 0);
+	const createdAt = new Date(now).setFullYear(1);
+	const began = Date.now();
+	const next = computeNext({ schedule: { kind: "every", ms: 60_000 }, createdAt }, now)!;
+	assert.ok(Date.now() - began < 100, "no walk through a thousand million minutes");
+	assert.ok(next > now && next - now <= 60_000, "the first step after now");
+	assert.equal((next - createdAt) % 60_000, 0, "and it is a whole number of steps from the start");
+	// A base that is ahead of now (a clock that was wrong) gives its first step, as before.
+	assert.equal(computeNext({ schedule: { kind: "every", ms: 60_000 }, createdAt: now + 5_000 }, now), now + 65_000);
 });
 
 test("schedule aliases: hourly/daily/weekly, english phrases, chinese", () => {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { LeaseBinding, LeaseStore, TURN_EVENTS, VIEWER_REREAD_GAP_MS, decideAcquire, markTurnEvent, shouldReadAgain, turnSinceOf, type TurnMarks, decideHostAcquire, holderAlive, openWindowPids, procStart, type LeaseHolder, type ProcessProbe, type SessionLease } from "../src/lease.ts";
+import { LeaseBinding, LeaseStore, TURN_EVENTS, closedConversation, VIEWER_REREAD_GAP_MS, decideAcquire, markTurnEvent, shouldReadAgain, turnSinceOf, type TurnMarks, decideHostAcquire, holderAlive, openWindowPids, procStart, type LeaseHolder, type ProcessProbe, type SessionLease } from "../src/lease.ts";
 
 const me: LeaseHolder = { kind: "terminal", pid: 10, instance: "a", procStart: "start", acquiredAt: "2026-01-01T00:00:00.000Z", pushServers: [] };
 const probe = (over: Partial<ProcessProbe> = {}): ProcessProbe => ({ alive: () => true, startTime: () => "start", bootedAt: () => Date.parse("2025-01-01T00:00:00Z"), ...over });
@@ -243,6 +243,34 @@ test("the open pi windows are the live terminal holders of leases, not presence 
 	write("01aa0000-0000-7000-8000-000000000003", { kind: "terminal", pid: 999_999 });
 	write("01aa0000-0000-7000-8000-000000000004", null);
 	assert.deepEqual([...openWindowPids(new LeaseStore(dir), probe)], [process.pid]);
+});
+
+test("a conversation is closed when nobody alive holds it and its file is there; a live holder, an unknown file or a missing file is not closed", () => {
+	// The one question every dispatch of the background process asks before it takes a conversation.
+	const dir = tmp("pi-loops-lease-");
+	fs.mkdirSync(path.join(dir, "leases"), { recursive: true });
+	const file = path.join(dir, "conversation.jsonl");
+	fs.writeFileSync(file, "");
+	const write = (sessionId: string, sessionFile: string | undefined, holder: Partial<LeaseHolder> | null) =>
+		fs.writeFileSync(path.join(dir, "leases", `${sessionId}.json`), JSON.stringify({ v: 1, sessionId, sessionFile, cwd: "/p", epoch: 1, holder: holder && { instance: "i", procStart: procStart(holder.pid!), pushServers: [], ...holder }, updatedAt: new Date().toISOString() }));
+	const probe: ProcessProbe = { alive: (pid) => pid !== 999_999, startTime: (pid) => procStart(pid), bootedAt: () => 0 };
+	const id = (n: number) => `01aa0000-0000-7000-8000-00000000000${n}`;
+	write(id(1), file, null);
+	write(id(2), file, { kind: "terminal", pid: 999_999 });
+	write(id(3), file, { kind: "terminal", pid: process.pid });
+	write(id(4), file, { kind: "host", pid: process.pid });
+	write(id(5), undefined, null);
+	write(id(6), path.join(dir, "gone.jsonl"), null);
+	const store = new LeaseStore(dir);
+	const closed = (sessionId: string | undefined) => closedConversation(store, sessionId, probe);
+	assert.equal(closed(id(1)), true, "nobody holds it and its file is there");
+	assert.equal(closed(id(2)), true, "its holder is dead");
+	assert.equal(closed(id(3)), false, "a live window holds it");
+	assert.equal(closed(id(4)), false, "the background process holds it for a turn");
+	assert.equal(closed(id(5)), false, "pi-loops does not know its file");
+	assert.equal(closed(id(6)), false, "its file is gone");
+	assert.equal(closed(id(7)), false, "it has no lease");
+	assert.equal(closed(undefined), false);
 });
 
 const pageHolder: LeaseHolder = { ...me, pid: 30, instance: "page", mode: "rpc", page: true };
