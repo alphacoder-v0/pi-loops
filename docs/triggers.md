@@ -158,7 +158,7 @@ shows this project's rows with decisions and transcript paths. The complete set 
 - the run — `running`, then `completed` / `failed` / `aborted`, or `no_rules`;
 - promotion — `promoted` (into this chat, or queued for the conversation), `appended` (pi-loops wrote
   a queued result into the closed conversation), `redirected` (to the inbox: no window is open in the rule's project, and the rule has no
-  conversation or its conversation's file is unknown or gone; or a pi-loops 0.22 window has it open), `skipped` (no matched rule has `promote_to_chat`).
+  conversation or its conversation's file is unknown or gone), `skipped` (no matched rule has `promote_to_chat`).
 
 Rows of type `request` record what became of a row in `requests/<session>.jsonl` that did not end
 in the conversation: `failed` (one delivery failed, pi refused the hand-over, or pi dropped it

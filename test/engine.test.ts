@@ -447,10 +447,8 @@ test("a rule's dead letter files nothing when the check of that run decided its 
 });
 
 test("promotionTarget: the creating conversation while a window holds it, else the project's open window, else the closed creating one, else the inbox", () => {
-	// Owner decision 2026-11-02: 0.22.8's rule (presence.ts chooseRuleOwner) with the creating
-	// conversation first. Every branch, with the view as a window or the background process reads it.
-	const view = (o: { legacy?: string[]; open?: string[]; known?: string[]; windows?: Array<{ sessionId: string; pid: number }> } = {}) => ({
-		legacyOpen: (id: string) => (o.legacy ?? []).includes(id),
+	// Owner decision 2026-11-02: the project's open window, with the creating conversation first. Every branch, with the view as a window or the background process reads it.
+	const view = (o: { open?: string[]; known?: string[]; windows?: Array<{ sessionId: string; pid: number }> } = {}) => ({
 		open: (id: string) => (o.open ?? []).includes(id),
 		known: (id: string) => (o.known ?? []).includes(id),
 		openInProject: () => o.windows ?? [],
@@ -465,8 +463,6 @@ test("promotionTarget: the creating conversation while a window holds it, else t
 	assert.deepEqual(promotionTarget("A", view()), { to: "inbox", sessionId: "A" }, "unknown or gone, and no window: the inbox, marked for it");
 	assert.deepEqual(promotionTarget(undefined, view({ open: ["B"], windows: [b] })), { to: "row", sessionId: "B" }, "a rule a loop's run made: the project's window");
 	assert.deepEqual(promotionTarget(undefined, view()), { to: "inbox" }, "and with no window, the inbox");
-	assert.deepEqual(promotionTarget("A", view({ legacy: ["A"], open: ["B"], windows: [b] })), { to: "inbox", sessionId: "A" }, "a 0.22 window has the creating conversation: it never reads requests/, so the inbox, marked, as before");
-	assert.deepEqual(promotionTarget("A", view({ legacy: ["B"], known: ["A"], windows: [b] })), { to: "row", sessionId: "A" }, "a 0.22 window in the project is no target");
 });
 
 test("promotionView reads the leases: a live terminal that delivers is an open window, in the project when its cwd is the rule's or inside it", () => {
@@ -482,11 +478,11 @@ test("promotionView reads the leases: a live terminal that delivers is an open w
 	leases.acquire("D", { ...me(999_999, "tui"), procStart: "0", acquiredAt: "2000-01-01T00:00:00Z" }, { cwd: path.join(dir, "proj") });
 	leases.release("A", me(process.pid, "tui"));
 	leases.acquire("A", me(process.pid, "tui"), { sessionFile: path.join(dir, "a.jsonl"), cwd: path.join(dir, "proj", "sub") });
-	const view = promotionView(leases, path.join(dir, "proj"), () => false);
+	const view = promotionView(leases, path.join(dir, "proj"));
 	assert.deepEqual(view.openInProject(), [{ sessionId: "A", pid: process.pid }], "a subdirectory counts; a pi -p run, a window standing aside, another project and a dead pid do not");
 	assert.deepEqual([view.open("A"), view.open("P"), view.open("S"), view.open("D"), view.open("nope")], [true, false, false, false, false]);
 	assert.deepEqual([view.known("A"), view.known("P")], [true, false], "known: pi-loops has its file and the file is there");
-	assert.deepEqual(promotionView(leases, undefined, () => false).openInProject(), [], "a rule with no project reaches no window by project");
+	assert.deepEqual(promotionView(leases, undefined).openInProject(), [], "a rule with no project reaches no window by project");
 });
 
 /**

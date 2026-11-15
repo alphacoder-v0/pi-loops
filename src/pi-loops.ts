@@ -22,9 +22,9 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "./args.ts";
 import { envFlag, loadConfig } from "./config.ts";
+import { convertStores } from "./convert-v2.ts";
 import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluationApplies, evaluatorPrompt, goalPursued, judgeCaughtUp, latestGoal, newGoal, parseDecision, pauseFor, resumeGoal, settledTurn, transcriptFromMessages } from "./goal.ts";
 import { sameProject } from "./paths.ts";
-import { olderPiOnSession } from "./presence.ts";
 import { isExactlyTrusted, projectNeedsTrust, sessionTrustCovers, windowTrusted } from "./trust.ts";
 import { HookRunner, type HookEventData, messageKind, messageSummary, resultSummary, runEndEvent, runStartEvent, truncateSummary } from "./hooks.ts";
 import { failingSummary, ruleFailureMark } from "./job-health.ts";
@@ -119,11 +119,9 @@ export default function piLoops(pi: ExtensionAPI) {
 	function markSeenIfShown(everywhere: boolean): void {
 		markProjectSeen(dir, everywhere ? ALL_PROJECTS : session.cwd, stamp());
 	}
-	/** Closed, and the host may take it (src/lease.ts closedConversation); a 0.22 window counts as open. */
-	/** A conversation a pi-loops 0.22 window has open: it has no lease, and never reads requests/. */
-	const legacyOpen = (id: string): boolean => scheduler.presenceList().some((e) => e.sessionId === id && !e.leases && e.kind !== "host");
+	/** Closed, and the host may take it (src/lease.ts closedConversation). */
 	function closedHere(sessionId: string | undefined): boolean {
-		return closedConversation(binding.store, sessionId, legacyOpen);
+		return closedConversation(binding.store, sessionId);
 	}
 	const requests = new RequestStore(dir);
 	/** The engine's executor here: the pi this extension runs in (src/window-executor.ts). */
@@ -331,7 +329,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				// target, by the holding window or the background process otherwise. A rule with no cwd of its
 				// own is this project's.
 				const here = binding.here();
-				const route = promotionTarget(forSession, promotionView(binding.store, trigger.cwd ?? session.cwd, legacyOpen));
+				const route = promotionTarget(forSession, promotionView(binding.store, trigger.cwd ?? session.cwd));
 				if (route.to === "inbox") {
 					// The check decided this result's finding already (TriggerRuntime's inbox); a push with no rule did not.
 					await promotionToInbox(scheduler.inbox, triggers.store, content, trigger, { cwd: trigger.cwd ?? session.cwd, sessionId: route.sessionId });
@@ -3303,9 +3301,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		startShown = [];
 		try {
 			bindSession(ctx);
-			// A 0.22.x pi on the same conversation has no lease and fires its plain jobs regardless.
-			const older = olderPiOnSession(scheduler.presenceList(), session.sessionId, scheduler.self);
-			if (older && ctx.hasUI) ctx.ui.notify("[cron] this conversation is also open in a window with an older pi-loops; both windows may run its plain jobs — close or restart that window", "warning");
+			// What older versions left in the directory and nothing reads now (src/convert-v2.ts).
+			convertStores(dir, (line) => log.info(line));
 			config = loadConfig(dir);
 			// The goal lives in the session, so `--resume` picks up where it left off.
 			goal = latestGoal(ctx.sessionManager.getEntries() as any);

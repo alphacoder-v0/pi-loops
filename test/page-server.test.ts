@@ -169,12 +169,12 @@ test("sessionRows unions ids, counts sources and orders holder groups", () => {
 			lease("dead", { kind: "terminal", pid: 4, instance: "d", acquiredAt: "d", pushServers: [] }),
 		],
 		plainJobSessions: ["z-term", "z-term", "orphan"], ruleSessions: ["a-host", "orphan", "orphan"], mailbox: new Map([["mail", 2], ["orphan", 1]]),
-		legacy: [{ sessionId: "legacy", pid: 9 }, { sessionId: "dead", pid: 8 }], alive: (h) => h.pid !== 4, since: () => zero, title: () => undefined, jobName: () => undefined,
+		alive: (h) => h.pid !== 4, since: () => zero, title: () => undefined, jobName: () => undefined,
 	});
-	assert.deepEqual(rows.map((r) => [r.sessionId, r.holder.kind]), [["z-term", "terminal"], ["a-host", "host"], ["dead", "legacy-pi"], ["legacy", "legacy-pi"], ["mail", "nobody"], ["orphan", "nobody"]]);
+	assert.deepEqual(rows.map((r) => [r.sessionId, r.holder.kind]), [["z-term", "terminal"], ["a-host", "host"], ["dead", "nobody"], ["mail", "nobody"], ["orphan", "nobody"]]);
 	assert.deepEqual(rows[0].holder, { kind: "terminal", pid: 2, mode: "rpc", since: "t", pushServers: ["mcp"] });
 	assert.deepEqual(rows[1].holder, { kind: "host", busy: "run", since: "h" }, "a job with no name: the run's short id");
-	assert.deepEqual([rows[5].plainJobs, rows[5].rules, rows[5].mailbox], [1, 2, 1]);
+	assert.deepEqual([rows[4].plainJobs, rows[4].rules, rows[4].mailbox], [1, 2, 1]);
 	assert.equal(rows[0].cwd, "/work");
 });
 
@@ -186,7 +186,7 @@ test("the Background view names a turn pi-loops holds by its job's name, else th
 			lease("named", { kind: "host", pid: 3, instance: "h", acquiredAt: "h", pushServers: [], busy: { runId, jobId: "a".repeat(32), since: "h" } }),
 			lease("unnamed", { kind: "host", pid: 3, instance: "h", acquiredAt: "h", pushServers: [], busy: { runId, jobId: "b".repeat(32), since: "h" } }),
 		],
-		plainJobSessions: [], ruleSessions: [], mailbox: new Map(), legacy: [], alive: () => true, since: () => zero, title: () => undefined,
+		plainJobSessions: [], ruleSessions: [], mailbox: new Map(), alive: () => true, since: () => zero, title: () => undefined,
 		jobName: (id) => (id === "a".repeat(32) ? "nightly <triage>" : undefined),
 	});
 	const page = renderHostPage({ ...status(), sessions: rows });
@@ -195,15 +195,15 @@ test("the Background view names a turn pi-loops holds by its job's name, else th
 	assert.equal(page.includes("a".repeat(32)) || page.includes("b".repeat(32)), false, "and no job id");
 });
 
-test("live lease beats legacy and dead lease without legacy becomes nobody", () => {
-	const rows = sessionRows({ leases: [lease("x", { kind: "host", pid: 2, instance: "h", acquiredAt: "at", pushServers: [] }), lease("y", { kind: "terminal", pid: 4, instance: "d", acquiredAt: "at", pushServers: [] })], plainJobSessions: [], ruleSessions: [], mailbox: new Map(), legacy: [{ sessionId: "x", pid: 8 }], alive: (h) => h.pid === 2, since: () => zero, title: () => undefined, jobName: () => undefined });
+test("a lease with a live holder is its holder's, and a lease whose holder is dead is nobody's", () => {
+	const rows = sessionRows({ leases: [lease("x", { kind: "host", pid: 2, instance: "h", acquiredAt: "at", pushServers: [] }), lease("y", { kind: "terminal", pid: 4, instance: "d", acquiredAt: "at", pushServers: [] })], plainJobSessions: [], ruleSessions: [], mailbox: new Map(), alive: (h) => h.pid === 2, since: () => zero, title: () => undefined, jobName: () => undefined });
 	assert.deepEqual(rows.map((r) => r.holder.kind), ["host", "nobody"]);
 });
 
 test("a terminal holder whose lease says page is the page's, listed after the terminals", () => {
 	const rows = sessionRows({
 		leases: [lease("p", { kind: "terminal", pid: 5, instance: "c", acquiredAt: "at", mode: "rpc", pushServers: [], page: true }), lease("t", { kind: "terminal", pid: 6, instance: "w", acquiredAt: "at", mode: "tui", pushServers: [] })],
-		plainJobSessions: [], ruleSessions: [], mailbox: new Map(), legacy: [], alive: () => true, since: () => zero, title: () => undefined, jobName: () => undefined,
+		plainJobSessions: [], ruleSessions: [], mailbox: new Map(), alive: () => true, since: () => zero, title: () => undefined, jobName: () => undefined,
 	});
 	assert.deepEqual(rows.map((r) => r.holder), [{ kind: "terminal", pid: 6, mode: "tui", since: "at", pushServers: [] }, { kind: "page", pid: 5, since: "at" }]);
 	assert.ok(renderHostPage({ ...status(), sessions: rows }).includes("<td>this page</td>"));
@@ -213,7 +213,7 @@ test("the Background view tells conversations apart by their title or first mess
 	const holder = { kind: "terminal" as const, pid: 6, instance: "w", acquiredAt: "at", mode: "tui" as const, pushServers: [] };
 	const rows = sessionRows({
 		leases: [lease("01a19f65-9e05", holder, { sessionFile: "/work/a.jsonl" }), lease("01a19f65-aaaa", holder, { sessionFile: "/work/b.jsonl" })],
-		plainJobSessions: ["01a19f65-cccc"], ruleSessions: [], mailbox: new Map(), legacy: [], alive: () => true, since: () => zero,
+		plainJobSessions: ["01a19f65-cccc"], ruleSessions: [], mailbox: new Map(), alive: () => true, since: () => zero,
 		title: (file) => (file === "/work/a.jsonl" ? "fix <b>the</b> bug" : undefined), jobName: () => undefined,
 	});
 	assert.deepEqual(rows.map((r) => [r.sessionId, r.title]), [["01a19f65-9e05", "fix <b>the</b> bug"], ["01a19f65-aaaa", undefined], ["01a19f65-cccc", undefined]]);
@@ -256,14 +256,14 @@ test("the Background view uses the page's words and the page's times: no pid, sp
 	const s = status();
 	s.snapshot = { ...snap(), pid: 4242, startedAt: "2026-11-09T11:27:55.479+00:00", nextDue: "2026-11-10T08:00:00.000+00:00", runs: [{ runId: "run-0123456789ab", label: "nightly", startedAt: "2026-11-09T11:30:00.000+00:00", promptPreview: "check the repo" }], recent: [{ ok: true, at: "2026-11-09T11:00:00.000+00:00", job: "nightly" }] } as any;
 	const terminal = { kind: "terminal" as const, pid: 6262, instance: "w", acquiredAt: "at", mode: "tui" as const, pushServers: [] };
-	s.sessions = sessionRows({ leases: [lease("01a1c010-83af", terminal)], plainJobSessions: ["01a1c010-83af"], ruleSessions: [], mailbox: new Map([["01a1c010-83af", 1]]), legacy: [], alive: () => true, since: () => zero, title: () => undefined, jobName: () => undefined });
+	s.sessions = sessionRows({ leases: [lease("01a1c010-83af", terminal)], plainJobSessions: ["01a1c010-83af"], ruleSessions: [], mailbox: new Map([["01a1c010-83af", 1]]), alive: () => true, since: () => zero, title: () => undefined, jobName: () => undefined });
 	const page = renderHostPage(s);
 	const words = page.replace(/<style>[\s\S]*?<\/style>/, "").replace(/<[^>]*>/g, " ");
 	for (const plumbing of [/\bpid\b/, /4242|6262/, /spawned/, /held by/, /mailbox/, /plain job/, /\bsession\b/i, /run-0123/]) assert.doesNotMatch(words, plumbing, String(plumbing));
 	assert.match(page, /<th>conversation<\/th><th>project<\/th><th>where<\/th><th>loops<\/th><th>rules<\/th><th>waiting<\/th>/);
 	assert.ok(page.includes("<td>a terminal</td>"), page);
 	for (const iso of ["2026-11-09T11:27:55.479+00:00", "2026-11-10T08:00:00.000+00:00", "2026-11-09T11:30:00.000+00:00", "2026-11-09T11:00:00.000+00:00"]) assert.ok(page.includes(`<time datetime="${iso}">`), `${iso} is a time the page's clock writes`);
-	const one = renderHostPage({ ...status(), snapshot: { ...snap(), recent: [{ ok: true, at: "now", job: "cron-15c11c9f364f92b42c49f6d15ea2bff6" }, { ok: true, at: "now", job: "pr-watch" }] } as any, sessions: sessionRows({ leases: [], plainJobSessions: [], ruleSessions: [], mailbox: new Map([["01a1c010-83af", 1]]), legacy: [], alive: () => true, since: () => ({ runs: 1, failed: 0, findings: 2, mine: 0 }), title: () => undefined, jobName: () => undefined }) });
+	const one = renderHostPage({ ...status(), snapshot: { ...snap(), recent: [{ ok: true, at: "now", job: "cron-15c11c9f364f92b42c49f6d15ea2bff6" }, { ok: true, at: "now", job: "pr-watch" }] } as any, sessions: sessionRows({ leases: [], plainJobSessions: [], ruleSessions: [], mailbox: new Map([["01a1c010-83af", 1]]), alive: () => true, since: () => ({ runs: 1, failed: 0, findings: 2, mine: 0 }), title: () => undefined, jobName: () => undefined }) });
 	assert.ok(one.includes("</time> cron-15c11c9f</li>") && one.includes("</time> pr-watch</li>"), "a loop by its label, as every page surface names it");
 	assert.ok(one.includes("<td>1 run, 2 findings</td>"), "one run, and no zero failures");
 });

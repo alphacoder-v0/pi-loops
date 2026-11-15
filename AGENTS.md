@@ -71,7 +71,7 @@ src/subagent-guard.ts       the synthetic extension that applies it inside every
 src/transcript.ts           a sub-agent's session file, folded into readable lines
 
 running with no pi open
-src/host.ts                 the always-on pi-loops process: claim, self-check, the 0.22 fence
+src/host.ts                 the always-on pi-loops process: claim, self-check
 src/host-entry.mjs          the process pi-loops runs as, loading TypeScript under node_modules
 src/host-control.ts         the service record and ensure/spawn/evict decisions
 src/host-control-channel.ts the control socket: snapshot, abort, stop, run and upgrade ops
@@ -84,7 +84,6 @@ src/browser-open.ts         which command opens a browser on each platform (WSL 
 src/page-children.ts        one `pi --mode rpc` per conversation open in the page: spawn, JSONL, idle stop and cap, orphans stopped
 src/held-read.ts            how big a conversation this process parses, and whether a conversation's file is readable here
 src/host-runtime.ts         what pi-loops runs (scheduler + triggers + per-request tools)
-src/presence.ts             what pi-loops 0.22 windows write; read only, during an upgrade
 src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid, or by a terminal from the page's pi (`page`) while no turn runs (`turnSince`)
 src/requests.ts             requests/<session>.jsonl: what is addressed to a conversation, kept until it is in it (the row, append, remove, status)
 src/engine.ts               decideDrain, the pure decision for a session's rows; drain, which applies it through an executor; attempts and dead letters
@@ -97,6 +96,7 @@ src/store.ts                jobs.json, state/, runs.jsonl, sessions/
 src/inbox.ts                inbox.jsonl
 src/archive.ts              .pisession export/import
 src/lock.ts                 the mkdir lock, atomic writes, is-that-pid-alive
+src/convert-v2.ts           what older versions left in the loops directory, removed at every start; the only module that names it
 src/paths.ts                realpathish: the deepest existing ancestor's realpath, so a path that is not there yet resolves as its parent does
 src/snapshot.ts             the pi_loops_snapshot fingerprint, and when a new entry is worth writing
 src/config.ts               config.toml and the environment overrides

@@ -6,7 +6,6 @@
  */
 import * as fs from "node:fs";
 import * as os from "node:os";
-import { PresenceRegistry, type PresenceEntry, type PresenceKind, type PresenceSelf } from "./presence.ts";
 import { Inbox } from "./inbox.ts";
 import { pidAlive } from "./lock.ts";
 import { composeCheckerPrompt, composeLoopPrompt, findingKind, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
@@ -23,6 +22,8 @@ import { RequestStore, type SessionRequest } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 
 export const DEFAULT_TICK_MS = 30_000;
+/** Which process a scheduler is in: a pi window, or pi-loops in the background ("host"). */
+export type SchedulerKind = "interactive" | "host";
 /** Interrupted runs in a row (a process that died mid-run) after which a job is parked. */
 export const INTERRUPTIONS_BEFORE_PARKING = 3;
 export const DEFAULT_RUN_TIMEOUT_MS = 15 * 60_000;
@@ -152,7 +153,7 @@ export interface SchedulerOptions {
 	/** Does pi still have this session? Plain jobs of deleted sessions are disabled (and `gc()` removes them). */
 	sessionExists?: (sessionId: string) => boolean;
 	/** "host" = the always-on process: it also sweeps dead sessions. Default "interactive". */
-	kind?: PresenceKind;
+	kind?: SchedulerKind;
 	/**
 	 * Which jobs this scheduler dispatches. The host passes "loops only", a window "the plain jobs of
 	 * the conversation it holds". Omitted (tests), it owns every loop and the plain jobs `view` says run here.
@@ -197,7 +198,7 @@ export class LoopScheduler {
 	/** Every sub-agent this process starts takes a slot from here, loop runs and trigger checks alike. */
 	readonly slots: SubagentSlots;
 	private readonly sessionExists?: (sessionId: string) => boolean;
-	readonly kind: PresenceKind;
+	readonly kind: SchedulerKind;
 	private lastDeadSessionScan = 0;
 	private timer: NodeJS.Timeout | undefined;
 	private ticking = false;
@@ -210,9 +211,6 @@ export class LoopScheduler {
 	readonly instance: string;
 	private readonly leases?: PlainJobLeases;
 	private readonly owns: (job: LoopJob, view: OwnerView) => boolean;
-	/** This process in the machine-wide presence registry (which pi is open where). */
-	readonly presence: PresenceRegistry;
-	readonly self: PresenceSelf;
 
 	constructor(opts: SchedulerOptions) {
 		this.dir = opts.dir;
@@ -232,9 +230,6 @@ export class LoopScheduler {
 		this.owns = opts.owns ?? ((job, view) => runsHere(job, view));
 		this.sessionExists = opts.sessionExists;
 		this.kind = opts.kind ?? "interactive";
-		const session = opts.getSession();
-		this.self = { pid: process.pid, host: os.hostname(), instance: this.instance, sessionId: session.sessionId, cwd: session.cwd, kind: this.kind, leases: true };
-		this.presence = new PresenceRegistry(opts.dir, this.self);
 	}
 
 	/** What this instance knows about who holds which session: the lists and dispatch ask it the same way. */
@@ -243,11 +238,6 @@ export class LoopScheduler {
 		const leases = this.leases;
 		if (!leases) return { sessionId, holdsOwn: !!sessionId };
 		return { sessionId, holdsOwn: !!sessionId && leases.heldEpoch(sessionId) !== undefined, holderOf: (id) => leases.holderOf(id), standsAside: leases.standsAside?.(), holderKind: leases.holderKind ? (id) => leases.holderKind!(id) : undefined, hostRuns: leases.hostRuns ? (id) => leases.hostRuns!(id) : undefined, hostPaused: leases.hostPaused?.() };
-	}
-
-	/** Live pi processes on every host (stale entries pruned). */
-	presenceList(now = this.now()): PresenceEntry[] {
-		return this.presence.list(now);
 	}
 
 	get runningCount(): number {
@@ -474,9 +464,8 @@ export class LoopScheduler {
 	private async disableDeadSessionJobs(jobs: LoopJob[]): Promise<void> {
 		const exists = this.sessionExists;
 		if (!exists) return;
-		// Open somewhere (--no-session, --session-dir, another sessions root)? Then it is alive whatever the disk says.
-		const live = new Set(this.presence.list(this.now()).map((e) => e.sessionId).filter(Boolean));
-		const dead = jobs.filter((j) => j.enabled && !j.stateful && j.sessionId && !live.has(j.sessionId) && !exists(j.sessionId));
+		// A conversation a window holds counts as there, whatever the disk says: `sessionExists` asks its lease (src/host.ts).
+		const dead = jobs.filter((j) => j.enabled && !j.stateful && j.sessionId && !exists(j.sessionId));
 		for (const job of dead) {
 			await this.store.update(job.id, (j) => {
 				j.enabled = false;
@@ -676,7 +665,7 @@ export class LoopScheduler {
 			return;
 		}
 		if (missedDue !== undefined) this.hooks.onCatchUp?.(job, missedDue);
-		// Never await a run inside a tick: leases, presence and trigger checks keep
+		// Never await a run inside a tick: leases and trigger checks keep
 		// going while sub-agents work, and several loops really do run at once.
 		if (!job.stateful) {
 			this.track(this.launchHeld(job, dueIso, now, note), slot);
@@ -783,8 +772,8 @@ export class LoopScheduler {
 			j.runCount++;
 		});
 		if (!claimed) {
-			// Another process fired this slot first (a pi-loops 0.22 window on the same conversation during
-			// an upgrade): the row this call wrote would run the slot a second time. Only that row goes.
+			// Another process fired this slot first: the row this call wrote would run the slot a second
+			// time. Only that row goes.
 			if (wrote) this.requests.remove(sessionId, [runId]);
 			return "lost";
 		}
@@ -837,7 +826,7 @@ export class LoopScheduler {
 				claimed = true;
 				// Written before the turn starts, as a loop's marker is: a host that dies mid-turn leaves
 				// it behind, and the next host finds an unfinished run instead of a slot spent in silence.
-				j.running = { runId, pid: process.pid, host: this.self.host, startedAt };
+				j.running = { runId, pid: process.pid, host: os.hostname(), startedAt };
 				if (!spendsSlot) return;
 				j.lastDueAt = dueIso;
 				j.lastFiredAt = startedAt;
@@ -1047,7 +1036,7 @@ export class LoopScheduler {
 			// The slot was decided from a snapshot. If another process ran or skipped this job since,
 			// its stamps moved: that slot is spent, and running it again would run it twice.
 			if (j.lastDueAt !== priorDueAt || j.lastFiredAt !== priorFiredAt) return;
-			j.running = { runId, pid: process.pid, host: this.self.host, startedAt };
+			j.running = { runId, pid: process.pid, host: os.hostname(), startedAt };
 			if (dueIso) j.lastDueAt = dueIso;
 			j.lastFiredAt = startedAt;
 			j.lastError = undefined;

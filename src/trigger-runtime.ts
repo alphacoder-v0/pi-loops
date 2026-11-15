@@ -306,10 +306,9 @@ export class TriggerRuntime {
 	 * Scheduler tick of the host, the one process that checks rules: one periodic check per project,
 	 * at most once per poll interval.
 	 *
-	 * The poll ledger is shared with pi-loops 0.22 windows during an upgrade. Those claim
-	 * `<host>:<cwd>` for a project's unowned rules and `<host>:<cwd>#<session>` for the rules of a
-	 * session they have open, so this claims the same keys: a project another process has just
-	 * checked is skipped, and so are the rules of a session an old window checked itself.
+	 * The poll ledger's keys are `<host>:<cwd>` for a project's unowned rules and
+	 * `<host>:<cwd>#<session>` for the rules of one session: a project another process has just
+	 * checked is skipped.
 	 */
 	async tick(now: number): Promise<void> {
 		// Before raising new work: the pushes this process refused while it was busy.

@@ -5,6 +5,12 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Close every pi-loops 0.22 window before you upgrade.** This version no longer holds such a
+  window back. A 0.22 window that is still open runs its loops beside pi-loops in the background,
+  so a loop can run twice, until you close the window. Windows of 0.23 and later are not affected.
+
 ### Fixed
 
 - **A loop made without a name gets one, in the prompt's script.** A prompt with no Latin word
@@ -74,6 +80,10 @@ All notable changes to pi-loops are documented here. The format follows
 - **The page works out each job's next run when it is asked.** `next-runs.json` is gone: nothing
   writes it and nothing reads it. A loop's next run on the page is right at once after an edit or
   a run; it could be one tick behind.
+- **What pi-loops 0.22 needed during an upgrade is gone.** pi-loops no longer reads `presence/` or
+  writes `scheduler.json`, and the Background view no longer has the holder `a pi-loops 0.22
+  window`. When pi-loops or a window starts, it removes `next-runs.json`, `scheduler.json` and
+  `presence/` from the loops directory: nothing reads them.
 
 ## [0.24.2] - 2026-11-11
 

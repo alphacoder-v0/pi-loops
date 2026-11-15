@@ -66,8 +66,10 @@ machine. Everything here follows from that, and each one has a price.
    waits for a window) costs it no read of the conversation on a tick where the conversation,
    `jobs.json` and the queue are as they were and no backoff has ended; it remembers the three at
    the last "nothing to do" and reads again when one moves. The inbox gets a result only when the conversation cannot
-   be written; shell-created rules go to the inbox. During an upgrade, `presence/` is read only to accommodate
-   pi-loops 0.22 windows; pi-loops writes `scheduler.json` for those old windows to read.
+   be written; shell-created rules go to the inbox. A pi-loops 0.22 window gets no special treatment:
+   nothing reads `presence/` and nothing writes `scheduler.json` for it. The cost: a 0.22 window that
+   is still open runs its loops beside pi-loops, and its conversation's plain jobs beside the
+   background process, until it is closed. Close every 0.22 window before an upgrade.
 
    The cost: loops pause while pi-loops cannot start, whereas they previously ran in an interactive pi.
    A loop no longer shares a window's live MCP connections; it connects its own from `mcp.toml`
@@ -133,10 +135,8 @@ machine. Everything here follows from that, and each one has a price.
     with a broken socket is reported, not killed, and a starting pi-loops process is never killed. A newer
     window replaces an older pi-loops process and starts its own at once; an older window never replaces a newer
     pi-loops process, nor starts an old one while the newer window that asked for the upgrade is open. Under bun
-    pi-loops runs on the `node` found on PATH; with none, loops pause and say why. During an
-    upgrade, pi-loops 0.22 windows stand by for loops; pi-loops writes `scheduler.json` for them to
-    read. Those windows still run their held conversation's plain jobs and must be restarted to pick
-    up the new behaviour. After a reboot nothing runs until a pi opens, or under a service manager configured by the user. The costs are decision 2's.
+    pi-loops runs on the `node` found on PATH; with none, loops pause and say why. A pi-loops
+    0.22 window that is still open is not held back (decision 2): close it before an upgrade. After a reboot nothing runs until a pi opens, or under a service manager configured by the user. The costs are decision 2's.
 
     The claim on a job is a read-modify-write of `jobs.json` under `jobs.lock`, a directory lock
     that is broken as stale after 10 seconds (`src/lock.ts`). It has no fencing token. A process

@@ -886,8 +886,7 @@ export type SessionHolderView =
 	| { kind: "terminal"; pid: number; mode?: string; since: string; pushServers: string[] }
 	| { kind: "page"; pid: number; since: string }
 	| { kind: "host"; busy?: string; since: string }
-	| { kind: "nobody" }
-	| { kind: "legacy-pi"; pid: number };
+	| { kind: "nobody" };
 
 export interface SessionRow {
 	sessionId: string;
@@ -913,7 +912,6 @@ export interface SessionRowsInput {
 	plainJobSessions: readonly string[];
 	ruleSessions: readonly string[];
 	mailbox: ReadonlyMap<string, number>;
-	legacy: ReadonlyArray<{ sessionId: string; pid: number }>;
 	alive: (holder: LeaseHolder) => boolean;
 	since: (sessionId: string) => SinceYouLooked;
 	/** A session file's title (src/session-head.ts sessionTitle). */
@@ -925,8 +923,7 @@ export interface SessionRowsInput {
 /** Combines ownership and automation counts so an idle conversation remains visible. */
 export function sessionRows(input: SessionRowsInput): SessionRow[] {
 	const leases = new Map(input.leases.map((lease) => [lease.sessionId, lease]));
-	const legacy = new Map(input.legacy.map((entry) => [entry.sessionId, entry.pid]));
-	const ids = new Set([...leases.keys(), ...input.plainJobSessions, ...input.ruleSessions, ...input.mailbox.keys(), ...legacy.keys()]);
+	const ids = new Set([...leases.keys(), ...input.plainJobSessions, ...input.ruleSessions, ...input.mailbox.keys()]);
 	const counts = (sessions: readonly string[]) => {
 		const out = new Map<string, number>();
 		for (const id of sessions) out.set(id, (out.get(id) ?? 0) + 1);
@@ -934,7 +931,7 @@ export function sessionRows(input: SessionRowsInput): SessionRow[] {
 	};
 	const jobs = counts(input.plainJobSessions);
 	const rules = counts(input.ruleSessions);
-	const rank = { terminal: 0, page: 1, host: 2, "legacy-pi": 3, nobody: 4 };
+	const rank = { terminal: 0, page: 1, host: 2, nobody: 3 };
 	return [...ids].map((sessionId): SessionRow => {
 		const lease = leases.get(sessionId);
 		const holder = lease?.holder;
@@ -944,8 +941,7 @@ export function sessionRows(input: SessionRowsInput): SessionRow[] {
 			else if (holder.kind === "terminal") view = { kind: "terminal", pid: holder.pid, ...(holder.mode ? { mode: holder.mode } : {}), since: holder.acquiredAt, pushServers: holder.pushServers };
 			// Named the way the page's waiting line names it: a job's id is 32 characters no person typed.
 			else view = { kind: "host", ...(holder.busy ? { busy: (holder.busy.jobId && input.jobName(holder.busy.jobId)) || holder.busy.runId.slice(0, 12) } : {}), since: holder.acquiredAt };
-		} else if (legacy.has(sessionId)) view = { kind: "legacy-pi", pid: legacy.get(sessionId)! };
-		else view = { kind: "nobody" };
+		} else view = { kind: "nobody" };
 		const title = lease?.sessionFile !== undefined ? input.title(lease.sessionFile) : undefined;
 		return {
 			sessionId,
@@ -992,7 +988,6 @@ function openIn(holder: SessionHolderView): string {
 		case "terminal": return "a terminal";
 		case "page": return "this page";
 		case "host": return `the background${holder.busy ? `, running ${holder.busy}` : ""}`;
-		case "legacy-pi": return "a pi-loops 0.22 window";
 		case "nobody": return "closed";
 	}
 }
