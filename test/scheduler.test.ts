@@ -1364,9 +1364,11 @@ test("a loop whose process stopped while a plain job's turn was going beside it 
 		assert.equal(after[plain.id].crowded, "run-turn", "the closing of the turn will find no marker: the job says what the marker did");
 		// The same loop, with the turn of another process beside it: alone in its own.
 		await sched.store.update(loop.id, (j) => void (j.running = { runId: "run-loop-2", pid: 999_999_998, startedAt: started }));
+		await sched.store.update(plain.id, (j) => void (j.crowded = undefined));
 		await sched.tick();
 		after = Object.fromEntries(sched.store.load().map((j) => [j.id, j]));
 		assert.deepEqual([after[loop.id].running, after[loop.id].interruptions], [undefined, 1]);
+		assert.equal(after[plain.id].crowded, undefined, "and a turn of another process is not marked");
 		// A turn that was closed before the sweep left an interrupted record of that process: beside, again.
 		await sched.store.update(loop.id, (j) => void (j.running = { runId: "run-loop-3", pid: 999_999_997, startedAt: started }));
 		sched.store.appendRun({ runId: "run-turn-3", jobId: plain.id, stateful: false, cwd: dir, pid: 999_999_997, startedAt: started, finishedAt: new Date().toISOString(), ok: false, error: "the process running it stopped", findings: 0, droppedFindings: 0, stateUpdated: false, interrupted: true });
