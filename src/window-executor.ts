@@ -358,7 +358,11 @@ export class WindowExecutor implements Executor {
 		this.current = undefined;
 		const ctx = this.ctx();
 		const terminal = ctx?.mode === "tui";
-		const out = settleSlots(this.slots, { aborted, terminal }, (id) => this.delivered(id));
+		// A row that left the file since the last look (an exit in the drain that ran since) owes no exit:
+		// what pi did with its prompt must not reach the same row queued again.
+		const queued = new Set(this.rows().map((row) => row.id));
+		const slots = this.slots.map((slot) => (slot.whose === "turn" && !slot.left && !queued.has(slot.mark.id) ? { ...slot, left: true as const } : slot));
+		const out = settleSlots(slots, { aborted, terminal }, (id) => this.delivered(id));
 		this.slots = out.slots;
 		for (const [id, why] of out.gone) this.gone.set(id, why);
 		if (out.editor.length && terminal && ctx?.hasUI) {

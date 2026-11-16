@@ -239,7 +239,7 @@ function open(world: World, conversation: Conversation, index: number): string {
 	return `${who(proc)} starts${conversation.holder === proc ? " and takes the lease" : ", without the lease"}`;
 }
 
-const PI_SAYS: Record<PiMove, string> = { start: "starts the turn it was handed", write: "writes the turn's message", settle: "settles", esc: "is stopped and settles", refuse: "refuses what it was handed, silently", type: "runs a message the person typed", enter: "runs what the person sent from the editor, where a stop had put it", typeBehind: "is sent a message by the person while its turn runs", otherSends: "is sent a message by another extension" };
+const PI_SAYS: Record<PiMove, string> = { start: "starts the turn it was handed", write: "writes the turn's message", settle: "settles", esc: "is stopped and settles", refuse: "refuses what it was handed, silently", type: "runs a message the person typed", enter: "runs what the person sent from the editor, where a stop had put it", typeBehind: "is sent a message by the person while its turn runs", otherSends: "is sent a message by another extension", otherRejected: "refuses a message another extension sent with no deliverAs while its turn runs", steer: "is steered by the person, who pressed Enter while its turn runs" };
 
 /** Make `step` happen in `world`, and say what happened in one line. */
 export async function apply(world: World, step: Step): Promise<string> {
@@ -375,6 +375,8 @@ async function killEveryProcessAndFinish(world: World, numbers: readonly number[
 const BROKEN_BY_REWRITING: readonly string[] = ["a row is delivered once per proof", "I8 attempts count failed hand-overs, a backoff is waited out, and three failures make a dead letter", "a stop and a cancel do what they name", AFTER_RESTART];
 
 export interface Run {
+	/** The page's "clear queue" steps drawn, and the cancels they wrote: a full run must reach the path. */
+	clears: { drawn: number; cancels: number };
 	/** One line per step, as it happened. */
 	lines: string[];
 	violation?: Violation & { step: number | "end" };
@@ -393,7 +395,7 @@ export async function run(plan: Plan, dir: string, time: Timers, enforce?: strin
 	const checker = createChecker(world, enforce);
 	const lines: string[] = [];
 	const known: Run["known"] = {};
-	const done = (violation?: Run["violation"]): Run => ({ lines, violation, known, crashes: world.crashes, coverage: checker.coverage });
+	const done = (violation?: Run["violation"]): Run => ({ lines, violation, known, crashes: world.crashes, coverage: checker.coverage, clears: { drawn: world.clears.drawn, cancels: world.clears.cancels } });
 	const check = (step: number | "end", end = false): Violation | undefined => {
 		const found = checker.check(end);
 		for (const { invariant, message } of found.known) known[invariant] ??= { step, message };

@@ -442,7 +442,7 @@ test("a message the person sends behind a running turn in the page is a follow-u
 	assert.match(written[1], /^typed behind #/, "what pi kept is written behind the starter");
 });
 
-test("in a terminal the person cannot queue a message behind a turn here: Enter during a run steers, which nobody measured", async (t) => {
+test("in a terminal the person cannot queue a message behind a turn: Enter during a run steers (g13)", async (t) => {
 	const s = scene(t, "tui");
 	await s.pi("type");
 	assert.ok(!piMoves(s.window).includes("typeBehind"));
@@ -524,6 +524,188 @@ test("the page's clear queue does not take a prompt that an idle pi is about to 
 	await s.clear();
 	assert.equal(s.window.pi.queue.length, 1, "that prompt is not in pi's queue of follow-ups");
 	assert.equal(s.copyOf(one).state, "held");
+});
+
+/** The window's `inputSeen`, counted: every input, and the person's (any source but `extension`), for the scenes that pin whose an input is. */
+function counted(window: object) {
+	const w = window as { inputSeen: (input: { source: string; text: string }, at: number) => void };
+	const counts = { person: 0, input: 0 };
+	const inputSeen = w.inputSeen.bind(w);
+	w.inputSeen = (input, at) => {
+		counts.input++;
+		if (input.source !== "extension") counts.person++;
+		inputSeen(input, at);
+	};
+	return counts;
+}
+
+// g9 (source rpc), P6 and g11 (source extension): whose an input is.
+test("the person's message behind a turn in the page is their submission, and another extension's is not, to a busy pi or an idle one", async (t) => {
+	const s = scene(t, "rpc");
+	await s.job("j1", 1);
+	await s.drains();
+	const counts = counted(s.window.window!);
+	// `messageStarted` restarts the grace too, so an input is counted as "at least one more".
+	let inputs = counts.input;
+	await s.pi("otherSends");
+	assert.equal(counts.person, 0, "another extension's message to an idle pi is no submission of the person");
+	assert.ok(counts.input > inputs, "and the window is told of its input");
+	inputs = counts.input;
+	await s.pi("typeBehind");
+	assert.equal(counts.person, 1, "the person's message behind a turn is their submission");
+	assert.ok(counts.input > inputs, "and the window is told of its input");
+	inputs = counts.input;
+	await s.pi("otherSends");
+	assert.equal(counts.person, 1, "another extension's message during a run is no submission of the person");
+	assert.ok(counts.input > inputs, "and the window is told of its input");
+});
+
+// g11, g14: another extension can send to an idle pi that holds a prompt of ours unstarted, and theirs goes first.
+test("another extension's message is a move the schedules can draw for an idle pi that holds a prompt of ours", async (t) => {
+	const s = scene(t, "rpc");
+	await s.job("j1", 1);
+	await s.drains();
+	assert.ok(piMoves(s.window).includes("otherSends"));
+	assert.ok(!piMoves(s.window).includes("otherRejected"), "with no run on, pi takes a message sent with no deliverAs");
+});
+
+// P10, g12: the page's "clear queue" is the page's: a terminal's pi has none.
+test("the page's clear queue reaches the page's pi only: a terminal's pi keeps its follow-ups", async (t) => {
+	const s = scene(t, "tui");
+	await s.job("j1", 1);
+	await s.drains();
+	await s.pi("type");
+	await s.rule(10);
+	await s.drains();
+	assert.equal(s.window.pi.queue.length, 2);
+	assert.equal(await s.clear(), -1, "no page's pi on the conversation");
+	assert.equal(s.window.pi.queue.length, 2);
+});
+
+// g13: Enter during a run in a terminal steers.
+test("a steer in a terminal is the person's submission, goes ahead of the follow-ups, and Esc puts it first into the editor as their words", async (t) => {
+	const s = scene(t, "tui");
+	const one = await s.job("j1", 1);
+	await s.drains();
+	await s.pi("type");
+	assert.ok(piMoves(s.window).includes("steer"));
+	const counts = counted(s.window.window!);
+	await s.pi("steer");
+	assert.deepEqual(counts, { person: 1, input: 1 });
+	const steered = s.window.pi.queue[0].text;
+	assert.match(steered, /^steered #/, "ahead of the prompt that was queued before it");
+	assert.equal(s.window.ctx!.hasPendingMessages(), true);
+	await s.pi("esc");
+	assert.equal(s.window.pi.editor.afterStop, `${steered}\n\n[Trigger ${one}] run j1, slot 1.`, "pi put the steer first, then our prompt");
+	assert.deepEqual(s.window.pi.editor.typed, [steered], "the person's words, which a cleanup must leave");
+	assert.equal(s.window.pi.editor.text, steered, "and the window's cleanup left them, and only them");
+});
+
+test("a steer that pi takes is written right after the current turn, before the follow-ups", async (t) => {
+	const s = scene(t, "tui");
+	await s.job("j1", 1);
+	await s.drains();
+	await s.pi("type");
+	await s.pi("steer");
+	const before = s.texts().length;
+	await s.pi("settle");
+	const written = s.texts().slice(before);
+	assert.match(written[0], /^steered #/);
+	assert.match(written[1], /run j1, slot 1\.$/);
+});
+
+// g16: two steers keep the order the person sent them, behind the steers and ahead of the follow-ups.
+test("two steers are written in the order the person sent them, before the follow-ups", async (t) => {
+	const s = scene(t, "tui");
+	await s.job("j1", 1);
+	await s.drains();
+	await s.pi("type");
+	await s.pi("steer");
+	await s.pi("steer");
+	const steers = s.window.pi.queue.slice(0, 2).map((item) => item.text);
+	const before = s.texts().length;
+	await s.pi("settle");
+	const written = s.texts().slice(before);
+	assert.deepEqual(written.slice(0, 2), steers);
+	assert.ok(steers[0] < steers[1], "the first steer is written first");
+	assert.match(written[2], /run j1, slot 1\.$/);
+});
+
+// g16: the follow-up a steer overtook was another extension's.
+test("a steer goes ahead of another extension's follow-up too", async (t) => {
+	const s = scene(t, "tui");
+	await s.pi("type");
+	await s.pi("otherSends");
+	await s.pi("steer");
+	const before = s.texts().length;
+	await s.pi("settle");
+	const written = s.texts().slice(before);
+	assert.match(written[0], /steered #/);
+	assert.match(written[1], /another extension says #/);
+});
+
+// g16: Enter during a run sends the editor's whole text as the steer, and empties the editor.
+test("a steer with text in the editor is that text, and the editor is empty; no prompt of ours is in it after the window's cleanup", async (t) => {
+	const s = scene(t, "tui");
+	const one = await s.job("j1", 1);
+	await s.drains();
+	await s.pi("type");
+	await s.pi("steer");
+	await s.pi("esc");
+	const words = s.window.pi.editor.text;
+	assert.match(words, /^steered #[0-9]+\.$/, "the person's steer is back in the editor; our prompt is out of it");
+	await s.drains(); // the window takes j1 for dropped and hands it over again
+	await s.pi("start");
+	assert.ok(s.window.pi.current, "pi is in the turn's first message");
+	assert.ok(piMoves(s.window).includes("steer"), "the person can press Enter while pi has not written the turn's message yet");
+	assert.ok(piMoves(s.window).includes("otherRejected"), "another extension's send with no deliverAs is refused in a terminal too");
+	const counts = counted(s.window.window!);
+	await s.pi("steer");
+	assert.deepEqual(counts, { person: 1, input: 1 }, "the person's input, once");
+	assert.deepEqual([s.window.pi.editor.text, s.window.pi.editor.put, s.window.pi.editor.typed], ["", [], []], "the editor is empty after Enter");
+	assert.equal(s.window.pi.queue[0].text, words, "the steer is what the editor held");
+	await s.pi("settle");
+	const sent = s.world.copies.filter((copy) => copy.rowId === one && copy.state === "written");
+	assert.equal(sent.length, 1, "j1 is written once: the steer did not carry it again");
+});
+
+test("a steer that carried the editor goes back into it at Esc: the person's words stay theirs", async (t) => {
+	const s = scene(t, "tui");
+	await s.job("j1", 1);
+	await s.drains();
+	await s.pi("type");
+	await s.pi("steer");
+	await s.pi("esc");
+	const typed = [...s.window.pi.editor.typed];
+	const words = s.window.pi.editor.text;
+	await s.pi("otherSends"); // a run starts with another extension's message
+	await s.pi("steer");
+	assert.equal(s.window.pi.editor.text, "");
+	await s.pi("esc");
+	assert.ok(s.window.pi.editor.text.includes(words), "the steer is back in the editor");
+	assert.deepEqual(s.window.pi.editor.typed, typed, "as the person's words");
+});
+
+test("the page's pi has no steer: the person's message during a run there is a follow-up (typeBehind)", async (t) => {
+	const s = scene(t, "rpc");
+	await s.pi("type");
+	assert.ok(!piMoves(s.window).includes("steer"));
+	assert.ok(piMoves(s.window).includes("typeBehind"));
+});
+
+// g11 (ours first, no deliverAs): pi refuses another extension's send during a run, after its input.
+test("another extension's message sent with no deliverAs during a run is an input and no message", async (t) => {
+	const s = scene(t, "rpc");
+	await s.pi("type");
+	assert.ok(piMoves(s.window).includes("otherRejected"));
+	const counts = counted(s.window.window!);
+	const before = s.texts().length;
+	const queued = s.window.pi.queue.length;
+	await s.pi("otherRejected");
+	assert.deepEqual(counts, { person: 0, input: 1 });
+	assert.equal(s.window.pi.queue.length, queued, "nothing is queued");
+	await s.pi("settle");
+	assert.equal(s.texts().length, before, "and nothing is written");
 });
 
 test("a process that dies takes what its pi kept with it", async (t) => {

@@ -129,6 +129,14 @@ test("claimOf gives the very same words to a refused slot before the run's start
 	assertTurnClaim(claimOf("yes", [starter, late]), "late");
 });
 
+test("claimOf gives a rewritten message with a prompt's [Trigger <id>] to that prompt, though another's input waits", () => {
+	const ours = turn("ours", "[Trigger run-a] run j1.", { is: "refused" }, { prefix: "[Trigger run-a] " });
+	const stale = other("another extension says 1.", "extension");
+	assertTurnClaim(claimOf("[rewritten] [Trigger run-a] run j1.", [stale, ours]), "ours");
+	const unprefixed = turn("plain", "address finding 1.", { is: "queued" });
+	assertOtherClaim(claimOf("[rewritten] address finding 1.", [stale, unprefixed]), stale);
+});
+
 test("claimOf gives the very same words to a prompt no stop named before one a stop named: a wrong guess must not abort a message that is owed", () => {
 	const stopped: TurnSlot = { ...turn("stopped", "the person says 3.", { is: "refused" }, { stop: true }), left: true };
 	const owed = turn("owed", "the person says 3.", { is: "opening" });

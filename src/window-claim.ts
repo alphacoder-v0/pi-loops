@@ -111,8 +111,9 @@ function longest<T>(msg: string, slots: readonly T[], textOf: (slot: T) => strin
  * 1. Exact text chooses the oldest other slot, otherwise a turn by `tieRank` (one no stop named
  *    first; then refused, opening, the oldest).
  * 2. A matching other slot with words around its text wins; the longest text wins, then the oldest.
- * 3. Any waiting other slot wins before approximate turn matches, but for a follow-up when the
- *    matching turn opened the run or was given to pi before it.
+ * 3. A matching turn whose `[Trigger <id>] ` is in the message wins. Otherwise any waiting other
+ *    slot wins before approximate turn matches, but for a follow-up when the matching turn opened
+ *    the run or was given to pi before it.
  * 4. A turn match wins; the longest text wins, then by `tieRank`.
  * 5. Otherwise the message belongs to nobody.
  *
@@ -140,6 +141,10 @@ export function claimOf(text: string, slots: readonly Slot[]): Claim {
 	// extension changes both texts, probe P4): a message they sent during a run is a follow-up, which pi
 	// writes after the run's first message and after what was queued before it. So it is not this
 	// message when the prompt of ours that the words point at opened the run, or was given to pi first.
+	// The words of a prompt of ours around the message, with its `[Trigger <id>] `: no one else's
+	// message carries that, so it is ours whatever else waits (a refused send of another extension
+	// leaves an input that never becomes a message: probe G11).
+	if (turnAround?.prefix !== undefined && msg.includes(turnAround.prefix)) return turnClaim(turnAround);
 	const before = (other: OtherSlot) => turnAround !== undefined && (turnAround.phase.is === "opening" || slots.indexOf(turnAround) < slots.indexOf(other));
 	const anyOther = candidates.find((slot): slot is OtherSlot => slot.whose === "other" && !(slot.followUp && before(slot)));
 	if (anyOther) return namedOther(anyOther);
