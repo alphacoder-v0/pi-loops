@@ -39,6 +39,22 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Fixed
 
+- **Two messages with the same words from the page are both answered.** A message was proved by
+  its words, so the second was taken for answered by the first. Every request now carries a mark
+  that pi-loops writes into the message pi stores for it, and only that mark proves it.
+- **A terminal that opens a conversation just after the page sent a message does not answer it a
+  second time.** The page's pi marks the conversation as in a turn before it sends; the terminal
+  waits as a viewer until that turn ends.
+- **After Stop in the page, a prompt that was queued behind the stopped turn runs once.** It ran a
+  second time when pi sent the one it had kept.
+- **A goal's continuation that pi was slow to take no longer makes a scheduled prompt vanish.**
+- **The page's "clear queue" and a cancel stop a prompt pi already has.** pi aborts it as it
+  starts, and it does not come back after the turn (#259).
+- **After Esc in a terminal, the editor holds only what you typed.** The prompts of pi-loops that
+  pi put into the editor are taken out of it, so pressing Enter does not send them again (#256).
+- **A scheduled turn stays capped when another extension rewrites its prompt.** A message that
+  pi-loops cannot place keeps the cap of the scheduled prompt pi holds; only your own words lift it.
+
 - **A scheduled prompt in a closed conversation is not answered twice after pi-loops stopped in
   the middle of it.** When pi-loops in the background stopped after it wrote a job's prompt into
   the conversation and before it recorded the run, the next start ran the same prompt again. The

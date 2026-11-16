@@ -143,7 +143,7 @@ export function pushRunRow(prompt: string, trigger: { traceId: string; idempoten
  * The id of a goal's continuation: `goal-` plus 32 hex of a hash of the goal's condition, the
  * iteration the continuation is and the stamp of the decision that asked for it. Derived, so the
  * same continuation written twice is one row; the stamp keeps a goal set again with the same
- * condition from finding its predecessor's `[Trigger goal-…]` in the conversation and never running.
+ * condition from taking its predecessor's continuation, and its mark, for its own.
  */
 export function goalRunId(goal: { condition: string; iterations: number; updatedAt: string }): string {
 	return `goal-${createHash("sha256").update(`${goal.condition}|${goal.iterations}|${goal.updatedAt}`).digest("hex").slice(0, 32)}`;

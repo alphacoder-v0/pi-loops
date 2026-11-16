@@ -90,7 +90,9 @@ src/background-executor.ts  what pi-loops in the background does to the queue of
 src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid, or by a terminal from the page's pi (`page`) while no turn runs (`turnSince`)
 src/requests.ts             requests/<lane>.jsonl: what is addressed to a lane (a conversation's is its session id), kept until it is in it (the row, claimed or not, append, remove, claim)
 src/engine.ts               decideDrain, the pure decision for a lane's rows: classify, take the lane, start; drain, which applies it through an executor; the exits, attempts and dead letters
-src/window-executor.ts      the engine's executor in a window: pi.sendMessage, and the hand-over set pi has not written yet
+src/window-executor.ts      the engine's executor in a window: pi.sendMessage, the list of what it gave pi, and the mark it writes into pi's entry
+src/window-claim.ts         the window's three decisions over that list: whose a message is, what a settle leaves, the editor without our prompts
+src/mark.ts                 the mark { lane, id } on the entry pi writes for a row: one writer, one reader
 src/register-pi.mjs         node --import hook resolving pi's packages outside pi (pi-loops, tests)
 src/pi-resolver.mjs         where that hook looks for them
 

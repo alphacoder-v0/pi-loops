@@ -386,17 +386,23 @@ machine. Everything here follows from that, and each one has a price.
     queue. The pi holding the session drains the row when it is idle, so a chat message runs in one
     order with what pi-loops addressed to the conversation, survives Esc and pi exiting, and the
     page lists the whole queue, each row with its source and a cancel (a `cancel` row), with what pi
-    itself still holds (a command typed while busy) after them, labelled "pi". Two things follow
-    from a row with no `[Trigger]` prefix. Its proof of delivery is a user message whose text starts
-    with the row's (pi appends a note when it resizes or converts an image; a row with no text of its
-    own is proved only by a message with none once those notes are stripped) written at or after
-    `handed_at`, the stamp the drain writes on the row under the lock just before each hand-over, at
-    the moment of the stamp; a turn pi holds and has not written keeps the lane, so one row is in
-    flight at a time, an earlier message with the same words proves nothing, and a row never handed
-    over is never done. Read from the file at every drain and never from an event. In the window, a
-    user message takes the cap of the handed-over row with the longest text that is a prefix of it
-    (a tie goes to the most recently handed over), so a short row's kept cap is not claimed by a
-    longer message. And its attended mode has to be believed: after the append the page sends
+    itself still holds (a command typed while busy) after them, labelled "pi". Every row has one
+    proof of delivery, whatever its source: the mark `{ lane, id }` that the window writes into the
+    entry pi persists for it (`src/mark.ts`; on the user message at `message_end`, in a custom
+    message's `details`). The window keeps one list of what it gave pi and decides, as each user
+    message starts, whose it is (`claimOf`, `src/window-claim.ts`): a prompt of ours by its very
+    words, then the person's or another extension's input by its words, then a prompt of ours whose
+    `[Trigger <id>]` is in the message, then any input that waits, then a prompt of ours whose words
+    are around the message (an extension may rewrite it). What the window is not sure of only takes
+    a mark away: the cost is a second delivery at most, never a row removed that pi did not write. A
+    prefix in the text is words, for the person and the model, and proves nothing: the person can
+    send it, and another extension can move it. A turn handed to an idle pi that no run has taken up
+    keeps the lane, so an idle pi gets one prompt of ours at a time. The proof is read from the
+    conversation at every drain and never from an event. A row of a version 2 line, queued by an
+    earlier version, is still proved by its prefix, or by its words after `handed_at`, in an entry
+    with no mark. In the window, a message takes the cap of the prompt it is; one the window cannot
+    place takes the cap of a prompt of ours pi holds unwritten, and only the person's words, by their
+    text, lift it. And its attended mode has to be believed: after the append the page sends
     `/pi-loops ring <id> <fingerprint>` over its pi's rpc stdin, a channel no model tool can write
     to; the extension records the row as produced by this window only when the row now in the file
     has that fingerprint (a hash of kind, source, wake, text, the images and the declared tools),
@@ -417,8 +423,7 @@ machine. Everything here follows from that, and each one has a price.
     the other input handlers and the credential check, is what the grace covers), is refused. A
     person row gets `last_error` and is never handed over again (its cap is kept, so a send pi runs
     late still runs under it); the page, which reads the file for `/state`, removes it, audits
-    `failed`, and puts the text back in the composer with the error. A pi-loops row, proved by its
-    prefix, counts an attempt and is offered again after the backoff, a dead letter at the third;
+    `failed`, and puts the text back in the composer with the error. A pi-loops row counts an attempt and is offered again after the backoff, a dead letter at the third;
     a slot due while it waits replaces it rather than collapsing onto it. After Stop (rpc
     `abort`), as after Esc in a terminal, what is queued runs once pi is idle: the owner decided
     (2026-11-02) that Esc and Stop end the current turn only, as in 0.22.8, and that the queue is
