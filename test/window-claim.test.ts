@@ -416,3 +416,28 @@ test("claimOf: the person's input with the very same words as a prompt of ours i
 	const alone = claimOf("run the tests.", [theirs]);
 	if (alone.by === "other") assert.equal(alone.byText, true, "with no prompt of ours in those words, by their text");
 });
+
+// From the Gates review of PR 261, round 6.
+test("claimOf: rule 2 by text: the person's words around the message, with no prompt of ours around it, are theirs by their text", () => {
+	const c = claimOf("[rw] hello there", [waitingInput("hello there", "person", "followUp")]);
+	assert.equal(c.by, "other");
+	assert.equal(c.by === "other" && c.byText, true);
+});
+
+test("claimOf: rule 2 beside an unprefixed prompt of ours: not by their text", () => {
+	const c = claimOf("[rw] please tidy the cache", [claimTurn("ours", "please tidy the cache", { is: "queued" }), waitingInput("the cache", "person", "followUp")]);
+	assert.equal(c.by, "other");
+	assert.equal(c.by === "other" && c.byText, false);
+});
+
+test("claimOf: rule 2 beside a refused prompt of ours: not by their text", () => {
+	const c = claimOf("[rw] [Trigger ours] run j1.", [claimTurn("ours", "[Trigger ours] run j1.", { is: "refused" }, "[Trigger ours] "), waitingInput("run j1.", "person", "followUp")]);
+	assert.equal(c.by, "other");
+	assert.equal(c.by === "other" && c.byText, false);
+});
+
+test("claimOf: rule 2 when their words are the longer: still not by their text", () => {
+	const c = claimOf("[rw] fix it: run j1.", [claimTurn("ours", "run j1.", { is: "queued" }), waitingInput("fix it: run j1.", "person", "followUp")]);
+	assert.equal(c.by, "other");
+	assert.equal(c.by === "other" && c.byText, false);
+});

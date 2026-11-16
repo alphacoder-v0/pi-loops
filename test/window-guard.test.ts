@@ -810,3 +810,49 @@ test("in the browser the question is a confirm, whose cancel comes first; in a t
 	const early = { confirm: (_t: string, _b: string, opts?: { timeout?: number }) => new Promise<boolean>((resolve) => setTimeout(() => resolve(false), (opts?.timeout ?? 0) - 5)), select: async () => GUARD_CHOICES.refuse };
 	assert.equal(await askRefusingFirst({ mode: "rpc", ui: early } as any, "Allow this?", "rm -rf /x", 200), "none", "a timer firing early is still nobody's answer");
 });
+
+// Gates review of PR 261, round 6: the cap rules of the round-5 fix no test pins.
+test("the cap in force joins the held caps: an unplaced message during a scheduled turn stays capped while pi holds a page prompt", async () => {
+	const w = window();
+	w.clockFired();
+	const p = pageRow("p1", "keep going");
+	w.queued.set(p.id, p);
+	assert.equal(ringProduced([...w.queued.values()], p.id, requestFingerprint(p), (r) => w.executor.produced(r)), true);
+	w.executor.turn(p, T0 + 1); // the page's prompt, attended, queued behind the scheduled turn
+	w.started("continue"); // another extension's message
+	assert.equal((w.executor.currentTurn() as { mode?: string }).mode, "unattended");
+	assert.equal(await w.blocked(rmrf), true);
+});
+
+test("a [Trigger <id>] of an attended row in the file does not lift the cap in force", async () => {
+	const w = window();
+	w.clockFired({ tools: ["read"] });
+	const claim = inboxClaimRow("look", "inb-1", to, T0);
+	w.queued.set(claim.id, claim);
+	w.executor.produced(claim); // this window wrote it: attended; not handed over yet
+	w.started(`[Trigger ${claim.id}] anything at all`);
+	assert.equal((w.executor.currentTurn() as { mode?: string }).mode, "unattended");
+	assert.equal(await w.blocked({ toolName: "write", input: {} }), true);
+});
+
+test("the person's words that end with an unprefixed prompt of ours lift no cap", async () => {
+	const w = window();
+	w.executor.agentStarted(T0);
+	w.started("the run's first message");
+	const claim = inboxClaimRow("look into the cache", "inb-1", to, T0); // not written here: unattended
+	w.queued.set(claim.id, claim);
+	w.executor.turn(claim, T0 + 1);
+	w.executor.inputSeen({ source: "interactive", text: "into the cache", streamingBehavior: "followUp" }, T0 + 2);
+	w.started(`[rw] ${claim.payload!.text}`);
+	assert.equal((w.executor.currentTurn() as { mode?: string }).mode, "unattended");
+	assert.equal(await w.blocked(rmrf), true);
+});
+
+test("the person's rewritten follow-up lifts a row's cap", async () => {
+	const w = window();
+	w.clockFired();
+	w.executor.inputSeen({ source: "rpc", text: "now clear it", streamingBehavior: "followUp" }, T0);
+	w.started("[rw] now clear it");
+	assert.deepEqual(w.executor.currentTurn(), { kind: "person" });
+	assert.equal(await w.call(rmrf), undefined);
+});
