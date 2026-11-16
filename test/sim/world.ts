@@ -32,8 +32,10 @@
  * - The person types into the window: a turn of their own, in words no row has. In the page they
  *   can also send a message straight to pi while a turn runs (`typeBehind`): a follow-up with no
  *   row, which the page's Stop keeps as it keeps ours (probe g9). In a terminal, Enter during a
- *   run steers (`steer`, probe g13): pi writes the message right after the current turn, before
- *   the follow-ups, and Esc puts it first into the editor, as the person's words.
+ *   run steers (`steer`, probe g13): pi writes the message right after the current turn, behind
+ *   the steers before it and before the follow-ups (g16), and Esc puts it first into the editor, as
+ *   the person's words. With text in the editor, the steer is that whole text and the editor is
+ *   empty (g16): a prompt of ours a stop put there goes out again, by the person.
  * - Another extension sends a user message of its own (`otherSends`): a follow-up during a run
  *   (P6), the first message of a run when pi is idle (g11, g14). The window is told of the input
  *   and not of a person's submission. Sent with no `deliverAs` during a run (`otherRejected`, g11),
@@ -133,6 +135,8 @@ interface Item {
 	copy?: Copy;
 	/** The person's own words (a steer): a stop in a terminal puts them into the editor as theirs. */
 	person?: true;
+	/** A steer sent with text in the editor: it is that whole text, and the editor it was (probe g16). */
+	editor?: Editor;
 }
 
 export interface Pi {
@@ -467,6 +471,13 @@ function write(world: World, proc: Process, item: Item): void {
 	}
 	proc.conversation.entries.push(item.custom ? { type: "custom_message", timestamp: stampOf(at), content: item.text } : { type: "message", timestamp: stampOf(at), message });
 	if (world.ticks) advance(world, 1);
+	// What the person sent from the editor: each hand-over whose paragraph is still in it is written now, by them.
+	for (const put of item.editor?.put ?? []) {
+		if (!put.copy || !item.editor!.text.includes(put.paragraph)) continue;
+		const copy: Copy = { ...put.copy, state: "written", writtenAt: at, fromTheEditor: true };
+		world.copies.push(copy);
+		world.facts.written.push(copy);
+	}
 	if (!item.copy) return;
 	if (!item.custom) proc.pi.turnOf = item.copy.rowId;
 	item.copy.abortedAtStart = proc.pi.aborts > aborts;
@@ -591,11 +602,16 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			pi.queue.push({ text: `typed behind #${++world.made}.`, custom: false });
 			break;
 		case "steer": {
-			// Enter during a run in a terminal: `input`, the person's submission, and a message ahead of the follow-ups.
+			// Enter during a run in a terminal: `input`, the person's submission, and a message behind
+			// the steers before it and ahead of the follow-ups (g16). With text in the editor, the steer
+			// is that whole text, and the editor is empty (g16; pi's interactive mode does the same).
 			window.inputSeen(at);
 			window.personInput();
-			const words = `steered #${++world.made}.`;
-			pi.queue.unshift({ text: words, custom: false, person: true });
+			const sent = pi.editor.text !== "" ? pi.editor : undefined;
+			if (sent) pi.editor = idlePi().editor;
+			const item: Item = { text: sent ? sent.text : `steered #${++world.made}.`, custom: false, person: true, ...(sent ? { editor: sent } : {}) };
+			const behindSteers = pi.queue.findIndex((queued) => !queued.person);
+			pi.queue.splice(behindSteers === -1 ? pi.queue.length : behindSteers, 0, item);
 			break;
 		}
 		case "otherRejected":
@@ -625,13 +641,7 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			pi.running = true;
 			pi.startedAt = at;
 			window.agentStarted(at);
-			write(world, proc, { text: sent.text, custom: false });
-			for (const item of sent.put) {
-				if (!item.copy || !sent.text.includes(item.paragraph)) continue;
-				const copy: Copy = { ...item.copy, state: "written", writtenAt: at, fromTheEditor: true };
-				world.copies.push(copy);
-				world.facts.written.push(copy);
-			}
+			write(world, proc, { text: sent.text, custom: false, editor: sent });
 			break;
 		}
 		case "settle":
@@ -654,8 +664,15 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			if (proc.mode === "tui") {
 				const put = waiting.filter((item) => !item.custom).map((item) => ({ paragraph: world.rewrites ? `${REWRITTEN}${item.text}` : item.text, copy: item.copy }));
 				for (const item of waiting) leave(item.copy, "dropped", at);
-				// A steer is the person's words: a cleanup of the editor leaves them where they are.
-				for (const item of waiting) if (item.person) pi.editor.typed.push(world.rewrites ? `${REWRITTEN}${item.text}` : item.text);
+				// A steer is the person's words: a cleanup of the editor leaves them where they are. One
+				// that carried the editor's text is that editor again: the person's words, and what a stop put there.
+				for (const item of waiting) {
+					if (!item.person) continue;
+					if (item.editor) {
+						pi.editor.typed.push(...item.editor.typed);
+						pi.editor.put.push(...item.editor.put);
+					} else pi.editor.typed.push(world.rewrites ? `${REWRITTEN}${item.text}` : item.text);
+				}
 				pi.editor.put.push(...put);
 				pi.editor.text = paragraphs(...put.map((item) => item.paragraph), pi.editor.text);
 			} else {

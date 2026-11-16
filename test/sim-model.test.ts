@@ -610,6 +610,61 @@ test("a steer that pi takes is written right after the current turn, before the 
 	assert.match(written[1], /run j1, slot 1\.$/);
 });
 
+// g16: two steers keep the order the person sent them, behind the steers and ahead of the follow-ups.
+test("two steers are written in the order the person sent them, before the follow-ups", async (t) => {
+	const s = scene(t, "tui");
+	await s.job("j1", 1);
+	await s.drains();
+	await s.pi("type");
+	await s.pi("steer");
+	await s.pi("steer");
+	const steers = s.window.pi.queue.slice(0, 2).map((item) => item.text);
+	const before = s.texts().length;
+	await s.pi("settle");
+	const written = s.texts().slice(before);
+	assert.deepEqual(written.slice(0, 2), steers);
+	assert.ok(steers[0] < steers[1], "the first steer is written first");
+	assert.match(written[2], /run j1, slot 1\.$/);
+});
+
+// g16: Enter during a run sends the editor's whole text as the steer, and empties the editor.
+test("a steer with text in the editor is that text: the editor is empty, and a prompt of ours in it is sent again, by the person", async (t) => {
+	const s = scene(t, "tui");
+	const one = await s.job("j1", 1);
+	await s.drains();
+	await s.pi("type");
+	await s.pi("esc");
+	assert.equal(s.window.pi.editor.text, `[Trigger ${one}] run j1, slot 1.`);
+	await s.drains(); // the window takes j1 for dropped and hands it over again
+	await s.pi("start");
+	assert.ok(s.window.pi.current, "pi is in the turn's first message");
+	assert.ok(piMoves(s.window).includes("steer"), "the person can press Enter while pi has not written the turn's message yet");
+	assert.ok(piMoves(s.window).includes("otherRejected"), "another extension's send with no deliverAs is refused in a terminal too");
+	await s.pi("steer");
+	assert.deepEqual(s.window.pi.editor, { text: "", put: [], typed: [] }, "the editor is empty after Enter");
+	assert.equal(s.window.pi.queue[0].text, `[Trigger ${one}] run j1, slot 1.`, "the steer is what the editor held");
+	await s.pi("settle");
+	const sent = s.world.copies.filter((copy) => copy.rowId === one && copy.state === "written");
+	assert.equal(sent.length, 2, "the turn's own message, and the steer that carried it again");
+	assert.equal(sent.filter((copy) => copy.fromTheEditor).length, 1, "the second is the person's, from the editor");
+});
+
+test("a steer that carried the editor goes back into it at Esc: the person's words stay theirs, and the prompts of ours stay known", async (t) => {
+	const s = scene(t, "tui");
+	const one = await s.job("j1", 1);
+	await s.drains();
+	await s.pi("type");
+	await s.pi("esc");
+	await s.pi("type"); // words of the person's own, behind the prompt in the editor
+	const typed = [...s.window.pi.editor.typed];
+	await s.pi("otherSends");
+	await s.pi("steer");
+	await s.pi("esc");
+	assert.ok(s.window.pi.editor.text.includes(`[Trigger ${one}] run j1, slot 1.`));
+	assert.deepEqual(s.window.pi.editor.typed, typed);
+	assert.equal(s.window.pi.editor.put.filter((put) => put.copy?.rowId === one).length, 1);
+});
+
 test("the page's pi has no steer: the person's message during a run there is a follow-up (typeBehind)", async (t) => {
 	const s = scene(t, "rpc");
 	await s.pi("type");
