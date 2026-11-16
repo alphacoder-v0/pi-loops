@@ -446,10 +446,14 @@ export class WindowExecutor implements Executor {
 			if (claim.slot.stop) this.ctx()?.abort();
 			return;
 		}
+		// A message that begins with the `[Trigger <id>]` of a row the file has is read as that row's at
+		// least as strictly as an older version read it (by that prefix): no one's words lift its cap.
+		const id = triggerIdOf(message);
+		const row = id === undefined ? undefined : this.rows().find((r) => r.id === id);
 		// The person's words, by their text: their turn, uncapped. While a row's cap is in force, only words
 		// they sent during a run (pi delivers them as a steer or a follow-up): what they sent to an idle pi
 		// would have begun a run of its own, and this one began with a prompt of ours.
-		if (claim.by === "other" && claim.byText && claim.slot.from === "person" && (this.current?.kind !== "row" || claim.slot.behind !== undefined)) {
+		if (claim.by === "other" && claim.byText && claim.slot.from === "person" && !row && (this.current?.kind !== "row" || claim.slot.behind !== undefined)) {
 			this.current = { kind: "person" };
 			this.currentClaimed = false;
 			return;
@@ -459,8 +463,6 @@ export class WindowExecutor implements Executor {
 		// late), or the message begins with the `[Trigger <id>]` of a row the file still has, it may be a
 		// prompt of ours, rewritten: the strictest cap (and no mark: the cost is a second delivery at most).
 		// With none of them, it is the person's, or nobody's, and uncapped.
-		const id = triggerIdOf(message);
-		const row = id === undefined ? undefined : this.rows().find((r) => r.id === id);
 		if (row && this.running) this.running = { ...this.running, requestId: row.id };
 		const held = this.slots.find((slot): slot is TurnSlot => slot.whose === "turn" && slot.phase.is !== "writing" && slot.phase.is !== "written");
 		// The `[Trigger <id>]` of a row the file has, and no other prompt of ours it could be: that row's

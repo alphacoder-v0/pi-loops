@@ -1115,3 +1115,16 @@ for (const left of [false, true]) {
 		assert.equal(await w.blocked(rmrf), true);
 	});
 }
+
+test("a scheduled prompt rewritten so that it ends with the person's refused words keeps a cap: its row's prefix at the start is read first (final-state check A, F5)", async () => {
+	const w = window();
+	const row = plainJobRow({ ...job(), prompt: "tidy the cache for $DAY" }, "run-1111222233334444", "cron:job-1", "", by, T0);
+	w.queued.set(row.id, row);
+	w.executor.turn(row, T0);
+	w.executor.inputSeen({ source: "interactive", text: "y" }, T0); // typed as our send began: pi refuses it
+	w.executor.agentStarted(T0 + 1);
+	w.started(`[Trigger ${row.id}] tidy the cache for Sunday`); // another extension changed the words ("tidy the cache" for "$DAY"); the prefix stays at the start
+	assert.equal(row.payload!.text, `[Trigger ${row.id}] tidy the cache for $DAY`);
+	assert.notDeepEqual(w.executor.currentTurn(), { kind: "person" });
+	assert.equal(await w.blocked(rmrf), true);
+});

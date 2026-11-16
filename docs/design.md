@@ -427,7 +427,9 @@ machine. Everything here follows from that, and each one has a price.
     the window, a message takes the cap of the prompt it is. The person's words lift a row's cap only
     when pi delivers them into the run, as its `input` event says (`streamingBehavior`, a steer or a
     follow-up), and not when a prompt of ours has the same words, nor, when the message is not their
-    very words, when the words of a prompt of ours begin or end it too. A message the window cannot place, while it may be a prompt of ours (a row's cap is
+    very words, when the words of a prompt of ours begin or end it too, nor when the message begins
+    with the `[Trigger <id>]` of a row the file has: what an older version read as that row by its
+    prefix is read at least as strictly (owner, 2026-11-16). A message the window cannot place, while it may be a prompt of ours (a row's cap is
     in force, pi holds a prompt of ours, or it begins with a row's `[Trigger <id>]` and another
     prompt is possible), runs under the strictest cap: unattended, no tool declared, so every tool
     but pi-loops' own read-only and self-gated ones is asked about (the owner chose this over meeting
