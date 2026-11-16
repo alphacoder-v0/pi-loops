@@ -116,7 +116,7 @@ function longest<T>(msg: string, slots: readonly T[], textOf: (slot: T) => strin
  *    ours, by `tieRank` (one no stop named first; then opening, one pi holds, a refused one, the oldest).
  * 2. Words around a waiting input of someone else: theirs; the longest text wins, then the oldest. When
  *    words of a prompt of ours are around the message too, not by their text (`byText` false).
- * 3. Words around a prompt of ours with its `[Trigger <id>] ` in the message: ours.
+ * 3. The words of a prompt of ours at the start or end of the message, with its `[Trigger <id>] ` in it: ours.
  * 4. Words around a prompt of ours with no prefix: ours only when no input of someone else waits.
  * 5. Otherwise the oldest waiting input of someone else (not by its text: `byText` false), and no mark.
  * 6. With none waiting, our words anywhere in the message make it ours (an extension may wrap a prompt

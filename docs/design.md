@@ -390,43 +390,41 @@ machine. Everything here follows from that, and each one has a price.
     proof of delivery, whatever its source: the mark `{ lane, id }` that the window writes into the
     entry pi persists for it (`src/mark.ts`; on the user message at `message_end`, in a custom
     message's `details`). The window keeps one list of what it gave pi and decides, as each user
-    message starts, whose it is (`claimOf`, `src/window-claim.ts`): the person's or another
-    extension's input with the very same words, then a prompt of ours with them, then an input of
-    someone else's whose words are around the message, then a prompt of ours whose words and
-    `[Trigger <id>]` are in it, then a prompt of ours whose words are around it when no input of
-    someone else waits (an extension may rewrite it), then any input that waits. What the window is not sure of only takes
-    a mark away: the cost is a second delivery at most, never a row removed that pi did not write.
-    The window reads no order of pi to decide whose a message is, only what the message shows: the
-    very same words as a prompt of ours, or our `[Trigger <id>]` in it, or our words around it or
-    anywhere in it (an extension may wrap a prompt on both sides) when no input of someone else waits.
-    Anything else gets no mark (the owner chose this, 2026-11-16, after
-    four rounds of review each found an order of pi the window had inferred wrongly): the cost is a
-    second delivery, only where another extension rewrites messages while someone else's message
-    waits, or replaces a prompt's words whole. An input during a run with no delivery is one pi refuses (G11), never a message. While a
-    row's cap is in force, the person's words lift it only when pi delivers them into the run, as its
-    `input` event says (`streamingBehavior`, a steer or a follow-up): what they sent to an idle pi
-    would have begun a run of its own. And their words lift nothing when a prompt of ours has the same
-    words, or when the message is not their very words and the words of a prompt of ours are around
-    it too. A message the window cannot place, while it may be a prompt of ours (a row's cap is in
-    force, pi holds a prompt of ours, or it begins with a row's `[Trigger <id>]` and another prompt
-    is possible), runs under the strictest cap: unattended, no tool declared. The owner chose this
-    over meeting the caps of the prompts it may be (2026-11-16), as the marks were chosen. A
-    prefix in the text is words, for the person and the model, and proves nothing (it only gives a lone row's cap to a message the window cannot place otherwise): the person can
-    send it, and another extension can move it. A turn handed to an idle pi that no run has taken up
-    keeps the lane, so an idle pi gets one prompt of ours at a time. The proof is read from the
-    conversation at every drain and never from an event. A row of a version 2 line, queued by an
-    earlier version, is still proved by its prefix, or by its words after `handed_at`, in an entry
-    with no mark. In the window, a message takes the cap of the prompt it is; one the window cannot
-    place runs under the strictest cap below, and only the person's words, by their text, lift it.
-    That cost reaches the person's own message from the page and a goal's continuation too, when an
-    extension rewrites it and someone else's message waits, or when an extension replaces its words
-    whole: its tool calls are asked about, as a scheduled turn's are. And its attended mode has to be believed: after the append the page sends
-    `/pi-loops ring <id> <fingerprint>` over its pi's rpc stdin, a channel no model tool can write
-    to; the extension records the row as produced by this window only when the row now in the file
-    has that fingerprint (a hash of kind, source, wake, text, the images and the declared tools),
-    then drains; a ring that arrives after the row was handed over upgrades its cap, started or not,
-    when that row's own message claimed it, and never the strictest cap of a message the window
-    could not place.
+    message starts, whose it is (`claimOf`, `src/window-claim.ts`), from what the message shows and
+    no order of pi (the owner chose this, 2026-11-16, after four rounds of review each found an order
+    of pi the window had inferred wrongly). In order: an input of someone else with the very same
+    words is theirs; a prompt of ours with them is ours; an input of someone else whose words begin
+    or end the message is theirs; a prompt of ours whose words begin or end it and whose
+    `[Trigger <id>]` is in it is ours; while any input of someone else waits, the message is theirs,
+    with no mark; when none waits, a prompt of ours whose words are anywhere in it is ours (an
+    extension may wrap a prompt on both sides); else it is nobody's. Every user message pi writes
+    comes after an `input` (probes P6, P9, g9), which is why none waiting makes it ours. An input
+    during a run with no delivery is one pi refuses (G11), never a message. What the window is not
+    sure of only takes a mark away: the cost is a second delivery at most, never a row removed that
+    pi did not write. It is paid wherever an extension changes the words of a prompt itself (one word
+    is enough), or rewrites messages while someone else's message waits; it reaches the person's
+    own message from the page and a goal's continuation too. A prefix in the text is words, for the
+    person and the model, and proves nothing: the person can send it, and another extension can move
+    it. It does decide two things for a message the window cannot otherwise place: the cap (below)
+    and which row's run a stop names. A turn handed to an idle pi that no run has taken up keeps the
+    lane, so an idle pi gets one prompt of ours at a time. The proof is read from the conversation
+    at every drain and never from an event. A row of a version 2 line, queued by an earlier version,
+    is still proved by its prefix, or by its words after `handed_at`, in an entry with no mark. In
+    the window, a message takes the cap of the prompt it is. The person's words lift a row's cap only
+    when pi delivers them into the run, as its `input` event says (`streamingBehavior`, a steer or a
+    follow-up), and not when a prompt of ours has the same words or our words begin or end the
+    message too. A message the window cannot place, while it may be a prompt of ours (a row's cap is
+    in force, pi holds a prompt of ours, or it begins with a row's `[Trigger <id>]` and another
+    prompt is possible), runs under the strictest cap: unattended, no tool declared, so every tool
+    but pi-loops' own read-only and self-gated ones is asked about (the owner chose this over meeting
+    the caps of the prompts it may be, 2026-11-16). One that begins with the `[Trigger <id>]` of a
+    lone row the file has takes that row's cap. And its attended mode has to be believed: after the
+    append the page sends `/pi-loops ring <id> <fingerprint>` over its pi's rpc stdin, a channel no
+    model tool can write to; the extension records the row as produced by this window only when the
+    row now in the file has that fingerprint (a hash of kind, source, wake, text, the images and the
+    declared tools), then drains; a ring that arrives after the row was handed over upgrades its
+    cap, started or not, when that row's own message claimed it, and never the strictest cap of a
+    message the window could not place.
     A person row is handed over only once rung for, or two seconds after it was written, so the bell
     normally wins the race with the file watcher, and the drain that waits schedules one for when the
     wait ends; one nobody rang for (a terminal answering a page's row, owner decision O2; a line
