@@ -394,8 +394,8 @@ machine. Everything here follows from that, and each one has a price.
     no order of pi (the owner chose this, 2026-11-16, after four rounds of review each found an order
     of pi the window had inferred wrongly). In order: an input of someone else with the very same
     words is theirs; a prompt of ours with them is ours; an input of someone else whose words begin
-    or end the message is theirs; a prompt of ours whose words begin or end it and whose
-    `[Trigger <id>]` is in it is ours; while any input of someone else waits, the message is theirs,
+    or end the message is theirs; the prompt of ours with the longest words that begin or end it is
+    ours when its `[Trigger <id>]` is in it; while any input of someone else waits, the message is theirs,
     with no mark; when none waits, a prompt of ours whose words are anywhere in it is ours (an
     extension may wrap a prompt on both sides); else it is nobody's. Every user message pi writes
     comes after an `input` (probes P6, P9, g9), which is why none waiting makes it ours. An input
@@ -412,8 +412,8 @@ machine. Everything here follows from that, and each one has a price.
     is still proved by its prefix, or by its words after `handed_at`, in an entry with no mark. In
     the window, a message takes the cap of the prompt it is. The person's words lift a row's cap only
     when pi delivers them into the run, as its `input` event says (`streamingBehavior`, a steer or a
-    follow-up), and not when a prompt of ours has the same words or our words begin or end the
-    message too. A message the window cannot place, while it may be a prompt of ours (a row's cap is
+    follow-up), and not when a prompt of ours has the same words, nor, when the message is not their
+    very words, when the words of a prompt of ours begin or end it too. A message the window cannot place, while it may be a prompt of ours (a row's cap is
     in force, pi holds a prompt of ours, or it begins with a row's `[Trigger <id>]` and another
     prompt is possible), runs under the strictest cap: unattended, no tool declared, so every tool
     but pi-loops' own read-only and self-gated ones is asked about (the owner chose this over meeting
