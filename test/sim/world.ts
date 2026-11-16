@@ -32,12 +32,14 @@
  * - The person types into the window: a turn of their own, in words no row has. In the page they
  *   can also send a message straight to pi while a turn runs (`typeBehind`): a follow-up with no
  *   row, which the page's Stop keeps as it keeps ours (probe g9). In a terminal, Enter during a
- *   run steers, which nobody measured: the move is the page's only.
- * - Another extension sends a user message of its own (`otherSends`, probe P6): a follow-up
- *   during a run, the first message of a run when pi is idle. The window is told of the input
- *   and not of a person's submission.
- * - The page clears the queue (`clearQueue`, probe P10): a cancel for every input row, then pi's
- *   queue is emptied, custom messages too, and no extension is told.
+ *   run steers (`steer`, probe g13): pi writes the message right after the current turn, before
+ *   the follow-ups, and Esc puts it first into the editor, as the person's words.
+ * - Another extension sends a user message of its own (`otherSends`): a follow-up during a run
+ *   (P6), the first message of a run when pi is idle (g11, g14). The window is told of the input
+ *   and not of a person's submission. Sent with no `deliverAs` during a run (`otherRejected`, g11),
+ *   pi refuses it after the input: the window is told of an input, and no message comes.
+ * - The page clears the queue (`clearQueue`; P10 after a stop, g12 during a run): a cancel for every
+ *   input row, then the page's pi's queue is emptied, custom messages too, and no extension is told.
  * - A hand-over can throw (no model, no credentials).
  *
  * What it does not do:
@@ -129,6 +131,8 @@ interface Item {
 	text: string;
 	custom: boolean;
 	copy?: Copy;
+	/** The person's own words (a steer): a stop in a terminal puts them into the editor as theirs. */
+	person?: true;
 }
 
 export interface Pi {
@@ -297,6 +301,8 @@ export interface World {
 	rewrites: boolean;
 	/** The hand-overs that pi let go of when the page cleared the queue: none of them may be written afterwards. */
 	cleared: Copy[];
+	/** How often the page cleared a queue, and the cancels it wrote for that. */
+	clears: { drawn: number; cancels: number };
 }
 
 /** A world of one conversation for each of `seconds`: its first process is a window, started; its second is of `kind`, started when `running`; `modes` are the two processes'. */
@@ -326,6 +332,7 @@ export function createWorld(dir: string, time: Timers, seconds: ReadonlyArray<{ 
 		ticks: opts.ticks === true,
 		rewrites: opts.rewrites === true,
 		cleared: [],
+		clears: { drawn: 0, cancels: 0 },
 	};
 	time.setTime(EPOCH);
 	for (const [index, second] of seconds.entries()) {
@@ -528,13 +535,13 @@ function backgroundProcess(world: World, base: Omit<Process, "executor">): Proce
 
 /* ------------------------------------------------------------ pi's moves */
 
-export type PiMove = "start" | "write" | "settle" | "esc" | "refuse" | "type" | "enter" | "typeBehind" | "otherSends";
+export type PiMove = "start" | "write" | "settle" | "esc" | "refuse" | "type" | "enter" | "typeBehind" | "otherSends" | "otherRejected" | "steer";
 
 /** What `process`'s pi can do next; a move listed twice is twice as likely. */
 export function piMoves(proc: Process): PiMove[] {
 	const pi = proc.pi;
-	// While a turn runs: the person can send a message behind it in the page, and another extension can send one anywhere.
-	const behind: PiMove[] = proc.mode === "rpc" ? ["typeBehind", "otherSends"] : ["otherSends"];
+	// While a turn runs: the person sends a message behind it in the page, or steers in a terminal; another extension sends one anywhere, or sends one pi refuses.
+	const behind: PiMove[] = proc.mode === "rpc" ? ["typeBehind", "otherSends", "otherRejected"] : ["steer", "otherSends", "otherRejected"];
 	if (pi.running) return pi.current ? ["write", "write", "settle", "esc", ...behind] : ["settle", "esc", ...behind];
 	// A terminal's editor that a stop filled: the person sends it, or adds words of their own first
 	// (`type`). What a stop left in the page's pi starts nothing: no `start` and no `refuse` for it.
@@ -582,6 +589,18 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			window.inputSeen(at);
 			window.personInput();
 			pi.queue.push({ text: `typed behind #${++world.made}.`, custom: false });
+			break;
+		case "steer": {
+			// Enter during a run in a terminal: `input`, the person's submission, and a message ahead of the follow-ups.
+			window.inputSeen(at);
+			window.personInput();
+			const words = `steered #${++world.made}.`;
+			pi.queue.unshift({ text: words, custom: false, person: true });
+			break;
+		}
+		case "otherRejected":
+			// Another extension's `sendUserMessage` with no `deliverAs` while a turn runs: `input`, then pi throws, and no message.
+			window.inputSeen(at);
 			break;
 		case "otherSends": {
 			// Another extension's `sendUserMessage`: `input` with the source `extension`, so no submission of the person is counted.
@@ -635,6 +654,8 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			if (proc.mode === "tui") {
 				const put = waiting.filter((item) => !item.custom).map((item) => ({ paragraph: world.rewrites ? `${REWRITTEN}${item.text}` : item.text, copy: item.copy }));
 				for (const item of waiting) leave(item.copy, "dropped", at);
+				// A steer is the person's words: a cleanup of the editor leaves them where they are.
+				for (const item of waiting) if (item.person) pi.editor.typed.push(world.rewrites ? `${REWRITTEN}${item.text}` : item.text);
 				pi.editor.put.push(...put);
 				pi.editor.text = paragraphs(...put.map((item) => item.paragraph), pi.editor.text);
 			} else {
@@ -661,6 +682,8 @@ export function clearQueue(world: World, conversation: Conversation, cancel: (ta
 	const page = live(conversation).find((proc) => proc.window && proc.mode === "rpc");
 	if (!page) return undefined;
 	const cancels = world.store.list(conversation.id).filter((row) => row.kind === "input").map((row) => cancel(row.id));
+	world.clears.drawn++;
+	world.clears.cancels += cancels.length;
 	const pi = page.pi;
 	for (const item of [...pi.kept.splice(0), ...(pi.running ? pi.queue.splice(0) : [])]) {
 		leave(item.copy, "dropped", world.clock);
