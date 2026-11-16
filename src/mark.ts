@@ -1,6 +1,7 @@
 /** Marks a request row on the pi entry that carries it. */
 import type { LaneId } from "./lane.ts";
 import type { Row } from "./requests.ts";
+import type { RowCap } from "./window-executor.ts";
 
 declare const made: unique symbol;
 
@@ -48,4 +49,25 @@ export function markOn(entry: unknown): MarkRead | undefined {
 	} catch {
 		return undefined; // pi's session entries can contain unexpected values
 	}
+}
+
+/** The custom type of a turn row's message. An append row's is `pi-loops:trigger`. */
+export const TURN_TYPE = "pi-loops:turn";
+
+/** The details of a turn row's custom message: the window writes them, pi persists them, and no model is sent them. */
+export interface TurnDetails {
+	piLoopsRow: MarkRead;
+	cap: RowCap;
+}
+
+/**
+ * Which row a message names as pi starts it; undefined unless it is a turn row's custom message. `id`
+ * is undefined when its mark does not read. Its details' cap is a record for readers: any extension
+ * can send a message of this type, so no cap is taken from it.
+ */
+export function turnOn(message: unknown): { id: string | undefined } | undefined {
+	if (!message || typeof message !== "object") return undefined;
+	const value = message as { role?: unknown; customType?: unknown; details?: unknown };
+	if (value.role !== "custom" || value.customType !== TURN_TYPE) return undefined;
+	return { id: markOn({ type: "custom_message", details: value.details })?.id };
 }

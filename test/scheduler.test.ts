@@ -15,7 +15,7 @@ import { failedRun, type RunnerResult } from "../src/runner.ts";
 import { stamp } from "../src/schedule.ts";
 import { RequestStore, type Row } from "../src/requests.ts";
 import { BACKOFF_MS } from "../src/backoff.ts";
-import { type EngineSinks, PERSON_SEND_GRACE_MS, drain, plainJobRow, plainRunId, typedByPerson } from "../src/engine.ts";
+import { type EngineSinks, drain, plainJobRow, plainRunId, typedByPerson } from "../src/engine.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
 import { TriggerStore } from "../src/triggers.ts";
 
@@ -25,22 +25,25 @@ const okTurn = (): RunnerResult => ({ ok: true, exitCode: 0, timedOut: false, te
 const rowsFor = (dir: string, sessionId: string) => new RequestStore(dir).list(sessionId);
 
 /**
- * A window on `sessionId`: the engine's executor over a fake pi whose `sendUserMessage` is counted,
- * and a conversation (`entries`) the test writes into when pi would have.
+ * A window on `sessionId`: the engine's executor over a fake pi whose turns are counted (`sent`: the
+ * words of each custom message that asks for a turn), and a conversation (`entries`) the test writes
+ * into when pi would have.
  */
 function fakeWindow(sched: LoopScheduler, sessionId: string) {
 	const sent: string[] = [];
 	const entries: unknown[] = [];
 	const ctx = { idle: true, mode: "tui", hasUI: false, isIdle: () => ctx.idle, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
-	const pi = { sendMessage: () => undefined, sendUserMessage: (text: string) => void sent.push(text) };
+	const turns: Array<{ customType: string; content: string; details: unknown }> = [];
+	const pi = { sendMessage: (m: any) => void (turns.push(m), sent.push(m.content)), sendUserMessage: () => assert.fail("a plain job's prompt is not a user message") };
 	const executor = new WindowExecutor(pi, { here: () => ({ sessionId, holds: true }), hold: () => true, letGo: () => undefined }, () => ctx, { pid: process.pid }, () => true, () => sched.requests.list(sessionId));
 	const sinks: EngineSinks = { jobs: { exists: (id) => sched.store.load().some((j) => j.id === id), enabled: () => true, goalActive: () => false }, inbox: sched.inbox, audit: new TriggerStore(sched.requests.dir) };
 	const drainNow = (now = Date.now()) => drain(sessionId, sched.requests, executor, now, sinks);
-	/** pi wrote the prompt: the user message is in the conversation. */
+	/** pi wrote the prompt: the custom message the window sent with `text` is in the conversation, its row's mark in its details. */
 	const landed = (text: string) => {
-		const message = { role: "user", content: text };
+		const message = { role: "custom", ...turns.findLast((turn) => turn.content === text)! };
 		executor.messageStarted(message);
-		entries.push({ type: "message", message: executor.messageEnded(message)?.message ?? message });
+		executor.messageEnded(message);
+		entries.push({ type: "custom_message", ...message });
 	};
 	return { sent, entries, ctx, executor, drainNow, landed };
 }
@@ -1413,27 +1416,30 @@ test("a slot collapsed onto a queued prompt is counted as an overlap and sets no
 	}
 });
 
-/* --------------------------------------------------------------- a window's plain job that pi did not take */
+/* --------------------------------------------------------------- a window's plain job whose turn pi did not write */
 
-/** A window on session "s" whose pi refuses every `sendUserMessage` while `refusing` is true, and writes the message otherwise. */
-function refusingWindow(sched: LoopScheduler, clock: () => number) {
+/**
+ * A window on session "s" whose pi loses every turn it is handed while `losing` is true (a run takes
+ * it up and settles with no entry that carries its mark, as when another extension replaces the
+ * message), and writes the turn otherwise. pi refuses no custom message in silence, so a loss is the
+ * one way a hand-over of a plain job's prompt fails without a throw.
+ */
+function losingWindow(sched: LoopScheduler, clock: () => number) {
 	const entries: unknown[] = [];
 	const sent: string[] = [];
-	const state = { refusing: true };
+	const state = { losing: true };
 	const ctx = { mode: "tui", hasUI: false, isIdle: () => true, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
-	// pi's sendUserMessage never throws to the caller: a refusal is an extension_error, a success runs
-	// the turn: pi's input, the run, and the user message, which the window gives the row's mark.
-	const writes = (text: string): void => {
+	const runs = (turn: { content: string }): void => {
 		const at = clock();
-		executor.inputSeen({ source: "extension", text }, at);
+		const message = { role: "custom", ...turn };
 		executor.agentStarted(at);
-		const message = { role: "user", content: text };
 		executor.messageStarted(message, at);
-		entries.push({ type: "message", message: executor.messageEnded(message, at)?.message ?? message });
+		executor.messageEnded(message, at);
+		if (!state.losing) entries.push({ type: "custom_message", ...message });
 		executor.agentEnded();
 		executor.settled();
 	};
-	const pi = { sendMessage: () => undefined, sendUserMessage: (text: string) => { sent.push(text); if (!state.refusing) writes(text); } };
+	const pi = { sendMessage: (turn: { content: string }) => { sent.push(turn.content); runs(turn); }, sendUserMessage: () => assert.fail("a plain job's prompt is not a user message") };
 	const executor: WindowExecutor = new WindowExecutor(pi as any, { here: () => ({ sessionId: "s", holds: true }), hold: () => true, letGo: () => undefined }, () => ctx, { pid: process.pid }, () => true, () => sched.requests.list("s"));
 	const sinks: EngineSinks = { jobs: { exists: (id) => sched.store.load().some((j) => j.id === id), enabled: (id) => sched.store.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: sched.inbox, audit: new TriggerStore(sched.requests.dir) };
 	const tick = async () => {
@@ -1443,11 +1449,11 @@ function refusingWindow(sched: LoopScheduler, clock: () => number) {
 	return { entries, sent, state, executor, tick };
 }
 
-test("a plain job's hand-over pi refused is offered again with a backoff, and three refusals are one dead letter, not a job stuck until the person's next turn", async () => {
+test("a plain job's turn that pi did not write is offered again with a backoff, and three such losses are one dead letter, not a job stuck until the person's next turn", async () => {
 	const dir = tmp("pi-loops-sched-");
 	let clock = Date.now();
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), now: () => clock, getSession: () => ({ sessionId: "s", cwd: dir }) });
-	const w = refusingWindow(sched, () => clock);
+	const w = losingWindow(sched, () => clock);
 	const at = async (ms: number) => {
 		clock += ms;
 		return w.tick();
@@ -1457,25 +1463,25 @@ test("a plain job's hand-over pi refused is offered again with a backoff, and th
 		let out = await at(60_000);
 		assert.equal(w.sent.length, 1, "the slot is handed over");
 		const id = out.delivered[0];
-		out = await at(PERSON_SEND_GRACE_MS + 30_000);
-		assert.deepEqual(out.failed, [id], "pi idle, no run: refused, with an attempt counted");
+		out = await at(1_000);
+		assert.deepEqual(out.failed, [id], "the run settled and no entry carries its mark: lost, with an attempt counted and no grace waited out");
 		let left = rowsFor(dir, "s")[0];
-		assert.deepEqual([left.attempts, left.last_error, left.not_before], [1, "pi did not start a turn for it", stamp(clock + BACKOFF_MS[0])]);
+		assert.deepEqual([left.attempts, left.last_error, left.not_before], [1, "pi dropped it before it was written", stamp(clock + BACKOFF_MS[0])]);
 		assert.equal(w.executor.view("s").inFlight.has(id), false, "and not in flight any more");
-		out = await at(30_000);
+		out = await at(BACKOFF_MS[0] - 1_000);
 		assert.deepEqual([out.delivered, w.sent.length], [[], 1], "backing off");
-		out = await at(30_000);
+		out = await at(1_000);
 		assert.deepEqual([out.delivered, w.sent.length], [[id], 2], "offered again once the backoff is over");
-		out = await at(PERSON_SEND_GRACE_MS + 30_000);
+		out = await at(1_000);
 		assert.deepEqual([out.failed, rowsFor(dir, "s")[0].attempts], [[id], 2]);
 		out = await at(BACKOFF_MS[1] + 1_000);
 		assert.deepEqual([out.delivered, w.sent.length], [[id], 3]);
-		out = await at(PERSON_SEND_GRACE_MS + 30_000);
-		assert.deepEqual([out.dead, rowsFor(dir, "s")], [[id], []], "the third refusal buries it");
+		out = await at(1_000);
+		assert.deepEqual([out.dead, rowsFor(dir, "s")], [[id], []], "the third loss buries it");
 		const dead = sched.inbox.listNew();
-		assert.deepEqual([dead.length, dead[0].source, dead[0].text], [1, `cron:${job.id}`, "could not be delivered (failed 3 times: pi did not start a turn for it): hourly check"]);
+		assert.deepEqual([dead.length, dead[0].source, dead[0].text], [1, `cron:${job.id}`, "could not be delivered (failed 3 times: pi dropped it before it was written): hourly check"]);
 		// pi works again; the next slot is a fresh row, not a skipped overlap.
-		w.state.refusing = false;
+		w.state.losing = false;
 		out = await at(3_600_000 - (clock - Date.parse(sched.store.load()[0].lastFiredAt!)) + 1_000);
 		assert.equal(out.delivered.length, 1, "the next slot runs");
 		assert.equal(w.entries.length, 1, "and lands");
@@ -1486,28 +1492,28 @@ test("a plain job's hand-over pi refused is offered again with a backoff, and th
 	}
 });
 
-test("the job's next slot is not collapsed onto a row pi refused: the refused row goes, and the slot's own row takes its place", async () => {
+test("the job's next slot is not collapsed onto a row whose turn pi did not write: that row goes, and the slot's own row takes its place", async () => {
 	const dir = tmp("pi-loops-sched-");
 	let clock = Date.now();
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), now: () => clock, getSession: () => ({ sessionId: "s", cwd: dir }) });
-	const w = refusingWindow(sched, () => clock);
+	const w = losingWindow(sched, () => clock);
 	try {
 		await sched.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(clock - 90_000).toISOString(), prompt: "every minute" }));
 		let out = await w.tick();
 		const first = out.delivered[0];
 		assert.ok(first, "the first slot is handed over");
-		clock += PERSON_SEND_GRACE_MS + 1_000;
+		clock += 11_000;
 		out = await w.tick();
-		assert.deepEqual([out.failed, rowsFor(dir, "s")[0].attempts], [[first], 1], "refused");
-		w.state.refusing = false;
-		clock += 60_000 - PERSON_SEND_GRACE_MS;
+		assert.deepEqual([out.failed, rowsFor(dir, "s")[0].attempts], [[first], 1], "lost");
+		w.state.losing = false;
+		clock += 50_000;
 		out = await w.tick();
 		const rows = rowsFor(dir, "s");
 		assert.notEqual(out.delivered[0], first, "the next slot's own row is handed over");
-		assert.deepEqual([rows.length, rows[0]?.attempts], [0, undefined], "and landed; the refused row is gone with the slot it stood for");
+		assert.deepEqual([rows.length, rows[0]?.attempts], [0, undefined], "and landed; the lost row is gone with the slot it stood for");
 		assert.equal(w.entries.length, 1);
 		const job = sched.store.load()[0];
-		assert.deepEqual([job.skippedOverlap, job.lastError, job.runCount], [0, undefined, 2], "no overlap counted against a refusal");
+		assert.deepEqual([job.skippedOverlap, job.lastError, job.runCount], [0, undefined, 2], "no overlap counted against a loss");
 	} finally {
 		await sched.stop();
 	}

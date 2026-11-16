@@ -7,7 +7,19 @@
  * - It is idle, or it runs one turn. A message handed to it while idle waits in its queue, and pi
  *   still says it is idle (the phase before a run: input handlers, the credential check), until the
  *   schedule has it start the turn, or refuse the message without a word, as `prompt()` does when it
- *   throws before any run.
+ *   throws before any run. Only a user message is refused so: a custom message that asks for a turn
+ *   always gets its run (probe S2 of the structural review). For one sent from a timer pi says it is
+ *   busy at once; for one sent from an `agent_settled` handler it says idle until the handler returns
+ *   (P17). The world keeps to the second, where only the window's own record holds the lane.
+ * - A turn row of ours reaches pi as a custom message (`pi-loops:turn`), with its row and its cap in
+ *   its details (P8, P12 to P17): no `input` event comes for it, no extension rewrites it, its
+ *   `message_start` carries the details, and `hasPendingMessages()` never counts it. The one row
+ *   that reaches pi as a user message is a person row the page's pi was rung for.
+ * - After each message that a turn row's custom message started, and again before the next message
+ *   or the settle, the world asks the window whose turn it is, as a `tool_call` in that turn would
+ *   (`Facts.toolCalls`). It asks the same after another extension's user message that pi writes
+ *   behind such a turn, with no message of the person between the two: that message must not carry
+ *   the scheduled turn on under the person's cap.
  * - A turn starts (`agent_start`), writes the message it began with (`message_start`, then the
  *   entry) and settles (`agent_end`, `agent_settled`). What it was handed meanwhile is written as
  *   follow-ups when it settles. What a stop does depends on the window's mode, which the seed
@@ -25,7 +37,8 @@
  *   when that message is a follow-up, pi writes it and stops there, with what waits behind it
  *   kept or put into the editor as after any stop. test/sim-model.test.ts holds these to the
  *   measurements, scene by scene.
- * - Pi emits `message_start` and `message_end` for a custom message as for a user message.
+ * - Pi emits `message_start` and `message_end` for a custom message as for a user message, with the
+ *   custom type and the details it was sent with.
  * - Before pi persists a message it asks the window (`message_end`), which may give another
  *   message of the same role: what a window writes into the entry is in the entry.
  * - A custom message with no turn asked for is written at once.
@@ -72,7 +85,7 @@ import { Inbox } from "../../src/inbox.ts";
 import { RequestStore, type Row } from "../../src/requests.ts";
 import { TriggerStore } from "../../src/triggers.ts";
 import type { LeaseBinding } from "../../src/lease.ts";
-import { markDetails, markFor, markOn } from "../../src/mark.ts";
+import { TURN_TYPE, markDetails, markFor, markOn } from "../../src/mark.ts";
 import { WindowExecutor } from "../../src/window-executor.ts";
 
 /** Where every schedule's clock starts. In the past: src/lock.ts compares the clock with a lock directory's real mtime, and a simulated now ahead of it would call every lock stale. */
@@ -103,12 +116,16 @@ type Entry = { type: "message"; timestamp: string; message: UserMessage } | { ty
  */
 export interface Copy {
 	rowId: string;
+	/** The row's source: what decides the mode of its turn. */
+	source: string;
 	sessionId: string;
 	/** The process whose pi was handed it. */
 	process: Process;
 	text: string;
 	wake: "turn" | "append";
-	/** The row carries no `[Trigger <id>]`: only a message with its words proves it. And whether it is a person's message. */
+	/** It went to pi as a custom message, with its row in its details. */
+	custom: boolean;
+	/** It went to pi as a user message (the person's own page message): only its words tell the window which message is its own. And whether it is a person's message. */
 	provedByText: boolean;
 	person: boolean;
 	handedAt: number;
@@ -128,9 +145,11 @@ export interface Copy {
 	abortedAtStart?: boolean;
 	/** The row whose mark pi's entry of this copy carries, when it carries one. */
 	markedAs?: string;
+	/** The row this copy was handed for left its queue while pi held the copy (a stop, a cancel or an exit took it out), though a row of the same id may be queued again. */
+	rowLeft?: boolean;
 	/**
-	 * Written with no mark while someone else's message waited in pi: the window could not tell which
-	 * was written, and took a mark away, as the design allows (a second delivery at most).
+	 * A person's own page message written with no mark: another extension changed its words, and the
+	 * window did not know it by them. The row goes back to the page, once.
 	 */
 	markLess?: true;
 	/** A stop in a terminal put this hand-over's text into the editor, and the person sent it: written by them, not by pi's queue. */
@@ -140,11 +159,15 @@ export interface Copy {
 interface Item {
 	text: string;
 	custom: boolean;
+	/** A custom message's type, as it was sent. */
+	customType?: string;
 	copy?: Copy;
 	/** The details a custom message was sent with: pi persists them in its entry (probe P8). */
 	details?: unknown;
 	/** The person's own words (a steer): a stop in a terminal puts them into the editor as theirs. */
 	person?: true;
+	/** Another extension's user message. */
+	extension?: true;
 	/** A steer sent with text in the editor: it is that whole text, and the editor it was (probe g16). */
 	editor?: Editor;
 }
@@ -160,6 +183,10 @@ export interface Pi {
 	/** When the running turn started, and the row whose message it last began. */
 	startedAt?: number;
 	turnOf?: string;
+	/** The hand-over whose custom message started the turn pi is in, until the next message starts or the run settles. */
+	turnBy?: Copy;
+	/** The hand-over whose custom message pi last wrote in this run, with no message of the person written since: its cap is to be in force still. */
+	capBy?: Copy;
 	/**
 	 * What a stop left in the page's pi: the follow-ups of the turn it ended, in order. Pi starts no
 	 * run for them. The next run starts with a message handed over or typed after the stop, and
@@ -207,6 +234,8 @@ export interface Process {
 	executor: Executor;
 	/** A window's lease says a row of ours is held (`LeaseBinding.hold`), until the window lets go. */
 	held?: boolean;
+	/** The rows this window was told it produced or was rung for (`WindowExecutor.produced`): the only ones whose attended source it believes. */
+	vouched: Set<string>;
 }
 
 export interface Conversation {
@@ -254,17 +283,34 @@ export interface HandOver {
 	producerRunsIt: boolean;
 	piRunning: boolean;
 	/**
-	 * Turns this pi held unwritten and the engine had not given up: all of them, and those only their
-	 * text proves that are still inside the grace (past it a tick may call one refused, in this very drain).
+	 * Turns this pi held unwritten and the engine had not given up: all of them, and those that went as
+	 * a user message and are still inside the grace (past it a tick may call one refused, in this very drain).
 	 */
 	turnsHeld: number;
 	textTurnsHeld: number;
-	/** Turns of ours this idle pi was handed and has not started, that are still owed (no stop or cancel named them) and still inside the grace. */
+	/**
+	 * Turns of ours this idle pi was handed and has not started, that are still owed: no stop or cancel
+	 * named them; a user message is inside the grace; a custom message's row is still in its queue (one
+	 * another process took out holds nothing, and pi takes two custom messages in the order they came, P13).
+	 */
 	pendingTurnsHeld: number;
 	/** Pi wrote this row already, from its queue. */
 	written: boolean;
 	/** The person sent this row's text already, from the editor where a stop in a terminal had put it. */
 	sentFromTheEditor: boolean;
+}
+
+/**
+ * A tool call in a turn that a turn row's custom message started, as the window would decide it:
+ * whose turn the window says it is at that instant, and whether the window was vouched for the row.
+ * `after`: the call is in the turn of another extension's message, written behind that row's.
+ */
+export interface ToolCall {
+	process: Process;
+	copy: Copy;
+	after?: "another extension's message";
+	decidedWith: ReturnType<WindowExecutor["currentTurn"]>;
+	vouched: boolean;
 }
 
 /** Two decisions on one finding at once: its status before, and how many of the two were told `ok`. */
@@ -278,6 +324,7 @@ export interface Facts {
 	removals: Removal[];
 	handOvers: HandOver[];
 	written: Copy[];
+	toolCalls: ToolCall[];
 	decided: Decided[];
 	/** The processes that held the conversation from the start of a drain to its end, and did not die in it. */
 	drained: Process[];
@@ -365,7 +412,7 @@ export function createWorld(dir: string, time: Timers, seconds: ReadonlyArray<{ 
 	return world;
 }
 
-export const noFacts = (): Facts => ({ removals: [], handOvers: [], written: [], decided: [], drained: [] });
+export const noFacts = (): Facts => ({ removals: [], handOvers: [], written: [], toolCalls: [], decided: [], drained: [] });
 
 export function advance(world: World, ms: number): void {
 	world.clock += ms;
@@ -378,8 +425,6 @@ export const live = (conversation: Conversation): Process[] => conversation.slot
 export const everyProcess = (world: World): Process[] => world.conversations.flatMap((c) => c.slots.flatMap((slot) => (slot.process ? [slot.process] : [])));
 const pidAlive = (world: World, pid: number): boolean => pid === PAGE_PID || everyProcess(world).some((p) => p.pid === pid && p.alive);
 
-/** The sources whose rows carry no `[Trigger <id>]`: only a message with the row's words proves one. */
-const provedByText = (source: string): boolean => source === "goal" || source === "person" || source.startsWith("inbox:");
 /**
  * How `row`'s delivery shows in what the simulated pi wrote: a message that counts for it
  * (`countsFor`: its own, or one with the very same words that carries its mark). The simulation
@@ -417,11 +462,11 @@ export const held = (proc: Process): Copy[] => [proc.pi.current, ...proc.pi.kept
 
 /**
  * The hand-overs of row `rowId` that failed, as the simulated pi saw them: one that threw, one pi
- * dropped or refused, and a turn that sat unstarted for `GRACE_MS`, which a tick may judge
- * refused. The engine's `attempts` may count these and nothing else.
+ * dropped or refused, and a user message that sat unstarted for `GRACE_MS`, which a tick may judge
+ * refused. No grace runs for a custom message. The engine's `attempts` may count these and nothing else.
  */
 export function failedHandOvers(world: World, rowId: string): number {
-	const failed = (copy: Copy) => copy.markLess || copy.state === "dropped" || copy.state === "refused" || (copy.wake === "turn" && (copy.leftQueueAt ?? world.clock) - copy.handedAt >= GRACE_MS);
+	const failed = (copy: Copy) => copy.markLess || copy.state === "dropped" || copy.state === "refused" || (copy.provedByText && (copy.leftQueueAt ?? world.clock) - copy.handedAt >= GRACE_MS);
 	return (world.threw.get(rowId) ?? 0) + world.copies.filter((copy) => copy.rowId === rowId && failed(copy)).length;
 }
 
@@ -430,7 +475,7 @@ export function failedHandOvers(world: World, rowId: string): number {
 /** A new process in slot `index` of `conversation`. It takes the lease when no live process has it, and a window takes it from the background process; otherwise it is a viewer. */
 export function start(world: World, conversation: Conversation, index: number): Process {
 	const slot = conversation.slots[index];
-	const base = { pid: world.nextPid++, mode: slot.mode, conversation, alive: true, pi: idlePi() };
+	const base = { pid: world.nextPid++, mode: slot.mode, conversation, alive: true, pi: idlePi(), vouched: new Set<string>() };
 	const proc = slot.kind === "window" ? windowProcess(world, { ...base, name: `w${index}`, kind: "window" }) : backgroundProcess(world, { ...base, name: "bg", kind: "background" });
 	slot.process = proc;
 	if (!conversation.holder?.alive || (conversation.holder.kind === "background" && proc.kind === "window")) conversation.holder = proc;
@@ -468,34 +513,45 @@ function leave(copy: Copy | undefined, state: Copy["state"], at: number): void {
 const stampOf = (at: number): string => new Date(at).toISOString(); // pi's own format: the `timestamp` it puts on a session entry is UTC
 
 /** The copy of the row being handed over, filed as pi (or the background process) receives it. */
-function copyFor(world: World, proc: Process, text: string): Copy | undefined {
+function copyFor(world: World, proc: Process, text: string, custom: boolean): Copy | undefined {
 	const sending = world.sending;
 	if (!sending) return undefined;
-	const copy: Copy = { rowId: sending.row.id, sessionId: proc.conversation.id, process: proc, text, wake: sending.wake, provedByText: provedByText(sending.row.source), person: sending.row.source === "person", handedAt: world.clock, state: "held" };
+	const copy: Copy = { rowId: sending.row.id, source: sending.row.source, sessionId: proc.conversation.id, process: proc, text, wake: sending.wake, custom, provedByText: !custom, person: sending.row.source === "person", handedAt: world.clock, state: "held" };
 	world.copies.push(copy);
 	return copy;
+}
+
+/** A `tool_call` now, in the turn a turn row's custom message started: what the window's guard would be told (`WindowExecutor.currentTurn`). */
+function toolCall(world: World, proc: Process): void {
+	const copy = proc.pi.turnBy;
+	if (copy && proc.window) world.facts.toolCalls.push({ process: proc, copy, decidedWith: proc.window.currentTurn(), vouched: proc.vouched.has(copy.rowId) });
 }
 
 /** `rest`: what still waits behind `item` when pi writes it out of a queue it took whole (a settle). */
 function write(world: World, proc: Process, item: Item, rest: readonly Item[] = []): void {
 	const at = world.clock;
 	const aborts = proc.pi.aborts;
+	// The last tool call of the turn before this message.
+	toolCall(world, proc);
 	// `message_start` first, then `message_end`, then the entry: pi's agent loop emits them back to
 	// back, and persists the message that `message_end` gave back, when it gave one.
 	// What pi writes of a user message is what the `input` handlers made of it.
 	const text = world.rewrites && !item.custom ? `${REWRITTEN}${item.text}` : item.text;
 	let message: UserMessage = { role: "user", content: [{ type: "text", text }] };
-	// Pi emits both events for a custom message too, with the role `custom`. What a handler gives
-	// back for one is not kept here: only a user message was measured.
+	// Pi emits both events for a custom message too, with the role `custom`, its type and the details
+	// it was sent with (P8, P13), and persists the details a `message_end` handler gives back (P18).
+	let details = item.details;
 	if (item.custom) {
-		proc.window?.messageStarted({ role: "custom", content: text }, at);
-		proc.window?.messageEnded({ role: "custom", content: text }, at);
+		const custom = { role: "custom", customType: item.customType, content: text, ...(details === undefined ? {} : { details }) };
+		proc.window?.messageStarted(custom, at);
+		const ended = proc.window?.messageEnded(custom, at) as { message: { role: string; details?: unknown } } | undefined;
+		if (ended?.message.role === "custom") details = ended.message.details;
 	} else {
 		proc.window?.messageStarted({ role: "user", content: text }, at);
 		const ended = proc.window?.messageEnded(message, at);
 		if (ended?.message.role === "user") message = ended.message;
 	}
-	proc.conversation.entries.push(item.custom ? { type: "custom_message", timestamp: stampOf(at), content: item.text, ...(item.details === undefined ? {} : { details: item.details }) } : { type: "message", timestamp: stampOf(at), message });
+	proc.conversation.entries.push(item.custom ? { type: "custom_message", timestamp: stampOf(at), content: item.text, ...(details === undefined ? {} : { details }) } : { type: "message", timestamp: stampOf(at), message });
 	if (world.ticks) advance(world, 1);
 	// What the person sent from the editor: each hand-over whose paragraph is still in it is written now, by them.
 	for (const put of item.editor?.put ?? []) {
@@ -504,40 +560,50 @@ function write(world: World, proc: Process, item: Item, rest: readonly Item[] = 
 		world.copies.push(copy);
 		world.facts.written.push(copy);
 	}
+	// The turn that follows is this message's: a turn row's custom message, or someone's user message.
+	// An `append` row's message changes nothing about whose turn it is. Another extension's message
+	// behind a turn row's leaves that row's cap in force; a message of the person may lift it.
+	if (item.customType === TURN_TYPE) proc.pi.turnBy = proc.pi.capBy = item.copy;
+	else if (!item.custom) {
+		proc.pi.turnBy = undefined;
+		if (!item.extension) proc.pi.capBy = undefined;
+		else if (proc.pi.capBy && proc.window) world.facts.toolCalls.push({ process: proc, copy: proc.pi.capBy, after: "another extension's message", decidedWith: proc.window.currentTurn(), vouched: proc.vouched.has(proc.pi.capBy.rowId) });
+	}
 	if (!item.copy) return;
 	const mark = markOn(proc.conversation.entries[proc.conversation.entries.length - 1]);
 	if (mark) item.copy.markedAs = mark.id;
-	// Only where the words were rewritten and carry no `[Trigger <id>]`: an unchanged message of ours is its
-	// prompt's very words, and a prefix in it is ours; both are always marked. A rewritten one with no
-	// prefix starts with the rewriter's words, so it is not known by its own at the start (decision 23).
-	else if (world.rewrites && !item.custom && !item.text.startsWith("[Trigger ")) item.copy.markLess = true;
-	if (!item.custom) proc.pi.turnOf = item.copy.rowId;
+	// Only a person's own page message where its words were rewritten: it starts with the rewriter's
+	// words, so the window does not know it by its own at the start. A custom message is never rewritten.
+	else if (world.rewrites && !item.custom) item.copy.markLess = true;
+	if (item.copy.wake === "turn") proc.pi.turnOf = item.copy.rowId;
 	item.copy.abortedAtStart = proc.pi.aborts > aborts;
 	leave(item.copy, "written", at);
 	item.copy.writtenAt = at;
 	world.facts.written.push(item.copy);
+	// The first tool call of the turn this message started.
+	if (item.customType === TURN_TYPE) toolCall(world, proc);
 }
 
 function windowProcess(world: World, base: Omit<Process, "executor">): Process {
 	const proc = base as Process;
 	const conversation = proc.conversation;
-	const receive = (text: string, custom: boolean, queued: boolean, details?: unknown): void => {
+	const receive = (text: string, custom: string | undefined, queued: boolean, details?: unknown): void => {
 		if (world.handOverThrows) throw new Error("no model selected");
-		const item: Item = { text, custom, copy: copyFor(world, proc, text), ...(details === undefined ? {} : { details }) };
+		const item: Item = { text, custom: custom !== undefined, ...(custom === undefined ? {} : { customType: custom }), copy: copyFor(world, proc, text, custom !== undefined), ...(details === undefined ? {} : { details }) };
 		// pi's `input` for a user message an extension sends: our handler first, inside the call, with
-		// the text as sent (probe P6; the other load order is not modelled).
-		if (!custom) proc.window?.inputSeen({ source: "extension", text, ...(queued ? { streamingBehavior: "followUp" as const } : {}) }, world.clock);
+		// the text as sent (probe P6; the other load order is not modelled). A custom message makes no `input`.
+		if (custom === undefined) proc.window?.inputSeen({ source: "extension", text, ...(queued ? { streamingBehavior: "followUp" as const } : {}) }, world.clock);
 		if (queued) proc.pi.queue.push(item);
 		else write(world, proc, item);
 	};
 	const pi = {
-		sendMessage: (message: { content: string; details?: unknown }, options?: { triggerTurn?: boolean }) => receive(message.content, true, options?.triggerTurn === true, message.details),
-		sendUserMessage: (content: string) => receive(content, false, true),
+		sendMessage: (message: { customType: string; content: string; details?: unknown }, options?: { triggerTurn?: boolean }) => receive(message.content, message.customType, options?.triggerTurn === true, message.details),
+		sendUserMessage: (content: string) => receive(content, undefined, true),
 	};
 	const ctx = {
 		isIdle: () => !proc.pi.running,
 		mode: proc.mode,
-		// True in a terminal and in the page's pi (measured). False would keep a cleanup of the editor that asks for a UI from ever running here.
+		// True in a terminal and in the page's pi (measured).
 		hasUI: true,
 		// The editor, as an extension reads and sets it: one text.
 		ui: { notify: () => undefined, getEditorText: () => proc.pi.editor.text, setEditorText: (text: string) => void (proc.pi.editor.text = text) },
@@ -561,6 +627,11 @@ function windowProcess(world: World, base: Omit<Process, "executor">): Process {
 		letGo: () => void (proc.held = false),
 	};
 	const window = new WindowExecutor(pi as unknown as Args[0], binding, () => ctx as unknown as ReturnType<Args[2]>, { pid: proc.pid }, (row) => row.created_by.left === undefined && pidAlive(world, row.created_by.pid), () => world.store.list(conversation.id), undefined, () => []);
+	const produced = window.produced.bind(window);
+	window.produced = (row) => {
+		proc.vouched.add(row.id);
+		produced(row);
+	};
 	proc.window = window;
 	proc.executor = window;
 	proc.ctx = ctx;
@@ -580,7 +651,7 @@ function backgroundProcess(world: World, base: Omit<Process, "executor">): Proce
 		proof: () => proofOf(conversation.id, () => conversation.entries, () => []),
 		view: () => ({ kind: "held", ceiling: CEILING.held, blocked: (row) => (row.wake === "turn" ? "turn rows wait for a window" : undefined), claimLive: () => false, idle: true, inFlight: new Set<string>(), connected: () => true, producerAlive: () => true, mine: () => false }),
 		// As src/background-executor.ts does: the mark in the custom entry's details.
-		append: (row) => write(world, proc, { text: row.payload?.text ?? "", custom: true, copy: copyFor(world, proc, row.payload?.text ?? ""), details: markDetails(markFor(row)) }),
+		append: (row) => write(world, proc, { text: row.payload?.text ?? "", custom: true, customType: "pi-loops:trigger", copy: copyFor(world, proc, row.payload?.text ?? "", true), details: markDetails(markFor(row)) }),
 		turn: () => {
 			throw new Error("this world's background starts no turn (test/sim/held.ts has that)");
 		},
@@ -604,7 +675,9 @@ export function piMoves(proc: Process): PiMove[] {
 	// A terminal's editor that a stop filled: the person sends it, or adds words of their own first
 	// (`type`). What a stop left in the page's pi starts nothing: no `start` and no `refuse` for it.
 	const enter: PiMove[] = pi.editor.text !== "" ? ["enter"] : [];
-	return pi.queue.length ? ["start", "start", "start", "refuse", "type", "type", "otherSends", ...enter] : ["type", ...enter];
+	// Only a user message is refused without a word: a custom message that asks for a turn gets its run.
+	const refuse: PiMove[] = pi.queue[0]?.custom === false ? ["refuse"] : [];
+	return pi.queue.length ? ["start", "start", "start", ...refuse, "type", "type", "otherSends", ...enter] : ["type", ...enter];
 }
 
 export function piMove(world: World, proc: Process, move: PiMove): void {
@@ -671,7 +744,7 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			break;
 		case "otherSends": {
 			// Another extension's `sendUserMessage`: `input` with the source `extension`, so no submission of the person is counted.
-			const item: Item = { text: `another extension says #${++world.made}.`, custom: false };
+			const item: Item = { text: `another extension says #${++world.made}.`, custom: false, extension: true };
 			window.inputSeen({ source: "extension", text: item.text, ...(pi.running ? { streamingBehavior: "followUp" as const } : {}) }, at);
 			if (pi.running) pi.queue.push(item);
 			else {
@@ -714,7 +787,7 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			if (proc.mode === "tui") {
 				const put = waiting.filter((item) => !item.custom).map((item) => ({ paragraph: world.rewrites ? `${REWRITTEN}${item.text}` : item.text, copy: item.copy }));
 				for (const item of waiting) leave(item.copy, "dropped", at);
-				// A steer is the person's words: a cleanup of the editor leaves them where they are. One
+				// A steer is the person's words: nothing may take them out of the editor. One
 				// that carried the editor's text is that editor again: the person's words, and what a stop put there.
 				for (const item of waiting) {
 					if (!item.person) continue;
@@ -730,7 +803,9 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 				for (const item of waiting) if (item.copy) item.copy.gaveUp ??= "stop";
 				pi.kept.push(...waiting);
 			}
-			Object.assign(pi, { running: false, aborts: 0, startedAt: undefined, turnOf: undefined });
+			// The last tool call of the run's last turn.
+			toolCall(world, proc);
+			Object.assign(pi, { running: false, aborts: 0, startedAt: undefined, turnOf: undefined, turnBy: undefined, capBy: undefined });
 			window.agentEnded();
 			window.settled(stopped);
 			break;
@@ -833,6 +908,8 @@ function watchedStore(world: World, fuse: Fuse, remover?: Process, removed: () =
 				for (const item of [pi.current, ...pi.queue]) if (item?.copy && item.copy.rowId === target && item.copy.wake === "turn" && !item.copy.gaveUp) item.copy.stopNamed = true;
 			}
 			world.facts.removals.push(removal);
+			// A copy pi still holds was handed for this row: a row of the same id queued later is another one.
+			for (const copy of world.copies) if (copy.sessionId === sessionId && copy.rowId === row.id && copy.state !== "written") copy.rowLeft = true;
 			// A row queued again with the same id after this (a loop's slot) is a new request, which the clear did not name.
 			for (const copy of world.cleared) if (copy.sessionId === sessionId && copy.rowId === row.id) world.clearedLeft.add(copy);
 		}
@@ -899,8 +976,9 @@ export async function drainAs(world: World, proc: Process, tick: boolean, fault:
 	const handOver = <T>(row: Row, wake: "turn" | "append", call: () => T): T => {
 		crash.write();
 		const turns = held(proc).filter((copy) => copy.wake === "turn" && !copy.gaveUp);
+		const stillQueued = new Set(world.store.list(conversation.id).map((queued) => queued.id));
 		const local = row.source === "goal" || row.source.startsWith("inbox:");
-		world.facts.handOvers.push({ drain: number, process: proc, row, wake, holds: conversation.holder === proc, queued: world.store.list(conversation.id).some((queued) => queued.id === row.id), producerRunsIt: local && row.created_by.left === undefined && pidAlive(world, row.created_by.pid), piRunning: proc.pi.running, turnsHeld: turns.length, textTurnsHeld: turns.filter((copy) => copy.provedByText && world.clock - copy.handedAt < GRACE_MS).length, pendingTurnsHeld: proc.pi.running ? 0 : proc.pi.queue.filter((item) => item.copy && item.copy.wake === "turn" && !item.copy.gaveUp && !item.copy.stopNamed && world.clock - item.copy.handedAt < GRACE_MS).length, written: world.copies.some((copy) => copy.sessionId === conversation.id && countsFor(world, copy) === row.id && answered(copy) && !copy.fromTheEditor && !copy.markLess), sentFromTheEditor: world.copies.some((copy) => copy.sessionId === conversation.id && copy.rowId === row.id && copy.state === "written" && copy.fromTheEditor === true) });
+		world.facts.handOvers.push({ drain: number, process: proc, row, wake, holds: conversation.holder === proc, queued: world.store.list(conversation.id).some((queued) => queued.id === row.id), producerRunsIt: local && row.created_by.left === undefined && pidAlive(world, row.created_by.pid), piRunning: proc.pi.running, turnsHeld: turns.length, textTurnsHeld: turns.filter((copy) => copy.provedByText && world.clock - copy.handedAt < GRACE_MS).length, pendingTurnsHeld: proc.pi.running ? 0 : proc.pi.queue.filter((item) => item.copy && item.copy.wake === "turn" && !item.copy.gaveUp && !item.copy.stopNamed && (item.custom ? stillQueued.has(item.copy.rowId) : world.clock - item.copy.handedAt < GRACE_MS)).length, written: world.copies.some((copy) => copy.sessionId === conversation.id && countsFor(world, copy) === row.id && answered(copy) && !copy.fromTheEditor && !copy.markLess), sentFromTheEditor: world.copies.some((copy) => copy.sessionId === conversation.id && copy.rowId === row.id && copy.state === "written" && copy.fromTheEditor === true) });
 		world.sending = { row, wake };
 		world.handOverThrows = fault.handOverThrows === true;
 		let sent: T;

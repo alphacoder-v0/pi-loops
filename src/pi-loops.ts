@@ -16,7 +16,7 @@
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { ProjectTrustStore, SessionManager, VERSION as PI_VERSION, copyToClipboard, getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
+import { ProjectTrustStore, SessionManager, VERSION as PI_VERSION, copyToClipboard, formatDimensionNote, getAgentDir, readStoredCredential, resizeImage } from "@earendil-works/pi-coding-agent";
 import { ARCHIVE_EXT, type ActivateMode, applyImport, automationOf, defaultExportPath, exportSession, importSession, offerToEnable, parseActivateMode } from "./archive.ts";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -138,6 +138,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		},
 		(row) => requests.images(row),
 		() => scheduler.store.allRuns(),
+		{ resizeImage, formatDimensionNote },
 	);
 	let requestWatch: fs.FSWatcher | undefined;
 	let storeWatch: fs.FSWatcher | undefined;
@@ -3428,8 +3429,9 @@ export default function piLoops(pi: ExtensionAPI) {
 		executor.agentStarted(Date.now());
 		await fireHook({ event: "agent_start" }, ctx);
 	});
-	// Observed only: whose the next user messages are (the window tells its own sends from the rest),
-	// and that pi is about to run something, so nothing handed over is judged refused for a while yet.
+	// Observed only: whose the next user messages are (the window tells the echo of a person row's
+	// send from the rest), and that pi is about to run something, so a person row handed over is not
+	// judged refused for a while yet. A turn row's custom message makes no input.
 	pi.on("input", async (e) => {
 		executor.inputSeen({ source: e.source, text: e.text, streamingBehavior: e.streamingBehavior }, Date.now());
 	});
@@ -3441,21 +3443,26 @@ export default function piLoops(pi: ExtensionAPI) {
 	});
 	pi.on("message_update", async (e, ctx) => fireHook({ event: "message_update", message_kind: messageKind(e.message), message_summary: messageSummary(e.message), assistant_event: (e.assistantMessageEvent as any)?.type }, ctx));
 	pi.on("message_end", async (e, ctx) => {
-		// pi appends the user message once this handler returns: a drain right after finds a person
-		// row's proof in the conversation, and the page's queue stops listing a message that is running.
-		// The mark of the row whose message this is, which pi persists with the message (src/mark.ts).
+		// pi appends the message once this handler returns: a drain right after finds a row's proof in
+		// the conversation, and the page's queue stops listing a message that is running. A turn row's
+		// custom message carries its mark; a person row's user message gets it here, and pi persists
+		// it with the message (src/mark.ts).
 		const marked = executor.messageEnded(e.message, Date.now());
-		if ((e.message as { role?: unknown } | undefined)?.role === "user" && executor.handedOver.size) setImmediate(() => void drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`)));
+		const role = (e.message as { role?: unknown } | undefined)?.role;
+		if ((role === "user" || role === "custom") && executor.handedOver.size) setImmediate(() => void drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`)));
 		await fireHook({ event: "message_end", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx);
 		return marked;
 	});
 	pi.on("tool_execution_start", async (e, ctx) => fireHook({ event: "tool_start", tool_call_id: e.toolCallId, tool_name: e.toolName, tool_args: e.args }, ctx));
 	pi.on("tool_execution_update", async (e, ctx) => fireHook({ event: "tool_update", tool_call_id: e.toolCallId, tool_name: e.toolName, tool_args: e.args, tool_result_summary: resultSummary(e.partialResult) }, ctx));
 	pi.on("tool_execution_end", async (e: any, ctx) => fireHook({ event: "tool_end", tool_call_id: e.toolCallId, tool_name: e.toolName, tool_is_error: !!e.isError, tool_result_summary: resultSummary(e.result) }, ctx));
+	// No turn row is handed to pi between these: one sent during a compaction runs beside it (src/window-executor.ts).
 	pi.on("session_before_compact", async () => {
+		executor.compaction(true);
 		markTurn("session_before_compact");
 	});
 	pi.on("session_compact", async (e, ctx) => {
+		executor.compaction(false);
 		markTurn("session_compact");
 		await fireHook({ event: "compaction", compaction_trigger: e.reason === "manual" ? "manual" : "auto", compaction_tokens_before: e.compactionEntry?.tokensBefore, compaction_summary: e.compactionEntry?.summary ? truncateSummary(e.compactionEntry.summary) : undefined }, ctx);
 	});
@@ -3463,6 +3470,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	// half of it: a session that cannot compact is a session about to fail on context length. It
 	// carries no summary and no token count — nothing was written — only the flag saying so.
 	pi.on("session_compact_failed", async (e, ctx) => {
+		executor.compaction(false);
 		markTurn("session_compact_failed");
 		await fireHook({ event: "compaction", compaction_trigger: e.reason === "manual" ? "manual" : "auto", compaction_failed: true }, ctx);
 	});

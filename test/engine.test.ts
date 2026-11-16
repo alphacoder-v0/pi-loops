@@ -76,7 +76,7 @@ test("a quiet mark holds while the files and the rows are as they were, and unti
 import { WindowExecutor, producerAlive, showsTriggeredTurnLine } from "../src/window-executor.ts";
 import { LeaseStore, procStart } from "../src/lease.ts";
 import { stamp } from "../src/schedule.ts";
-import { markFor, withMark } from "../src/mark.ts";
+import { TURN_TYPE, markFor, withMark } from "../src/mark.ts";
 
 const row = (id: string, over: Partial<UnclaimedRow> = {}): UnclaimedRow => ({ v: 3, id, lane: "s", kind: "input", source: "rule:local:dynamic", mode: "none", wake: "append", payload: { text: `[Trigger ${id}] hello`, cwd: "/" }, created_at: "2026-01-01T00:00:00Z", created_by: { pid: 1, instance: "w", version: "0" }, attempts: 0, ...over });
 
@@ -490,9 +490,11 @@ test("promotionView reads the leases: a live terminal that delivers is an open w
 });
 
 /**
- * A window over a fake pi: `sent` is what reached `sendUserMessage`, `appended` what reached
- * `sendMessage`, `entries` the conversation, `notices` the system lines. `self` is the process the
- * window is (pid 1 unless said), `holds` whether it has the lease, `alive` whether a row's producer is.
+ * A window over a fake pi: `sent` is every turn that reached pi (a custom message of `pi-loops:turn`
+ * through `sendMessage`, or the person's own page message through `sendUserMessage`), `appended`
+ * what else reached `sendMessage`, `entries` the conversation, `notices` the system lines. `self` is
+ * the process the window is (pid 1 unless said), `holds` whether it has the lease, `alive` whether a
+ * row's producer is.
  */
 /** `rows` is the request file as the extension wires it: what this window produced is remembered only while the row is there. */
 function fakeWindowPi(idle: boolean, opts: { holds?: boolean; self?: Producer; alive?: (row: Row) => boolean; mode?: string; rows?: () => Row[]; images?: (row: Row) => ImageContent[] } = {}) {
@@ -501,16 +503,21 @@ function fakeWindowPi(idle: boolean, opts: { holds?: boolean; self?: Producer; a
 	const notices: string[] = [];
 	const entries: unknown[] = [];
 	const ctx = { idle, aborts: 0, mode: opts.mode ?? "tui", hasUI: true, isIdle: () => ctx.idle, abort: () => void ctx.aborts++, sessionManager: { getEntries: () => entries }, editor: "", ui: { notify: (line: string) => void notices.push(line), getEditorText: () => ctx.editor, setEditorText: (text: string) => void (ctx.editor = text) } } as any;
-	const pi = { sendMessage: (m: { content: unknown }, options: unknown) => void appended.push({ content: m.content, options }), sendUserMessage: (text: string, options: unknown) => void sent.push({ text, options }) };
+	const turns: CustomTurn[] = [];
+	const pi = { sendMessage: (m: CustomTurn, options: unknown) => void (m.customType === TURN_TYPE ? (turns.push(m), sent.push({ text: m.content as string, options })) : appended.push({ content: m.content, options })), sendUserMessage: (text: string, options: unknown) => void sent.push({ text, options }) };
 	const handed: Row[] = [];
-	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: opts.holds ?? true }), hold: () => true, letGo: () => undefined }, () => ctx, opts.self ?? { pid: 1 }, opts.alive ?? (() => true), opts.rows ?? (() => handed), opts.images);
+	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: opts.holds ?? true }), hold: () => true, letGo: () => undefined }, () => ctx, opts.self ?? { pid: 1 }, opts.alive ?? (() => true), opts.rows ?? (() => handed), opts.images, () => [], SAME_SIZE);
 	const turn = executor.turn.bind(executor);
 	executor.turn = (row, now) => { handed.push(row); return turn(row, now); };
 	/**
-	 * Pi writes a user message at `at`, as a real pi does: `message_start`, then `message_end`, whose
-	 * answer (the message with a row's mark, when it is a prompt of ours) is what pi persists.
+	 * Pi writes a message with `text` at `at`, as a real pi does: `message_start`, then `message_end`,
+	 * then the entry. A turn the window sent as a custom message with these words is written as that
+	 * message, its details in the entry. Anything else is a user message, and what `message_end`
+	 * answers (the message with a row's mark, when it is the person's own page message) is what pi persists.
 	 */
 	const writes = (text: string, at = Date.now()): void => {
+		const held = turns.findIndex((turn) => turn.content === text);
+		if (held >= 0) return writesTurn(executor, entries, turns.splice(held, 1)[0], at);
 		const message = { role: "user", content: [{ type: "text", text }] };
 		executor.messageStarted(message, at);
 		entries.push({ type: "message", timestamp: new Date(at).toISOString(), message: executor.messageEnded(message, at)?.message ?? message });
@@ -520,7 +527,21 @@ function fakeWindowPi(idle: boolean, opts: { holds?: boolean; self?: Producer; a
 		executor.inputSeen({ source: "interactive", text }, at);
 		writes(text, at);
 	};
-	return { sent, appended, notices, entries, ctx, executor, writes, types };
+	/** Pi starts the custom turn the window sent with `text`, and does not write it yet. */
+	const starts = (text: string, at = Date.now()): void => executor.messageStarted({ role: "custom", ...turns.find((turn) => turn.content === text)! }, at);
+	return { sent, appended, notices, entries, ctx, executor, writes, types, turns, starts };
+}
+/** A resizer that finds every image within pi's limits. */
+const SAME_SIZE = { resizeImage: async (bytes: Uint8Array, mimeType: string) => ({ data: Buffer.from(bytes).toString("base64"), mimeType, originalWidth: 1, originalHeight: 1, width: 1, height: 1, wasResized: false }), formatDimensionNote: () => undefined };
+/** A turn row's custom message, as the window gives it to `pi.sendMessage`. */
+type CustomTurn = { customType: string; content: unknown; display: boolean; details: { piLoopsRow: { lane: string; id: string }; cap: { mode: string } } };
+/** What every custom turn is sent with. */
+const TURN_OPTIONS = { triggerTurn: true, deliverAs: "followUp" };
+/** Pi starts, ends and persists a custom turn the window sent. */
+function writesTurn(executor: WindowExecutor, entries: unknown[], turn: CustomTurn, at: number): void {
+	executor.messageStarted({ role: "custom", ...turn }, at);
+	const ended = executor.messageEnded({ role: "custom", ...turn }, at)?.message as CustomTurn | undefined;
+	entries.push({ type: "custom_message", timestamp: new Date(at).toISOString(), ...turn, details: ended?.details ?? turn.details });
 }
 const turnRow = (id: string) => row(id, { source: "cron:j", mode: "unattended", wake: "turn", collapse_key: "cron:j" });
 /** A user message pi wrote at `at`: what proves a text-proved row (a person's, a claim's) once it is at or after the hand-over stamp. */
@@ -538,7 +559,8 @@ test("nothing is handed to pi while a turn runs", async () => {
 	assert.deepEqual(store.list("s").map((r) => r.id), ["t1"]);
 	w.ctx.idle = true;
 	await drain("s", store, w.executor, T0, sinks);
-	assert.deepEqual(w.sent, [{ text: "[Trigger t1] hello", options: { deliverAs: "followUp" } }], "handed over once pi is idle");
+	assert.deepEqual(w.sent, [{ text: "[Trigger t1] hello", options: TURN_OPTIONS }], "handed over once pi is idle, as a custom message that asks for a turn");
+	assert.deepEqual(w.turns[0].details, { piLoopsRow: { lane: "s", id: "t1" }, cap: { kind: "row", id: "t1", mode: "unattended" } }, "its row and its cap in the details");
 	await drain("s", store, w.executor, T0, sinks);
 	assert.equal(w.sent.length, 1, "and not again while pi has it");
 	assert.deepEqual(store.list("s").map((r) => r.id), ["t1"], "in the file until pi writes it");
@@ -754,7 +776,7 @@ test("a claim, a recipe hand-off, /new-trigger and a goal continuation carry the
 	assert.equal(w.executor.view("s").inFlight.size, 0);
 });
 
-test("a prefixed hand-off's cap is claimed by its own prefix and words at message_start, so a short one never takes a longer one's turn", () => {
+test("a hand-off's turn runs under the cap its own message names at message_start, so a short one never takes a longer one's turn", () => {
 	const w = fakeWindowPi(true);
 	const short = inboxClaimRow("fix", "inb-1", to, T0);
 	const long = recipeRow("fix it and push --force", "daily", "tracker", to, T0);
@@ -762,16 +784,16 @@ test("a prefixed hand-off's cap is claimed by its own prefix and words at messag
 	w.executor.agentStarted(T0);
 	w.executor.turn(long);
 	w.executor.turn(short);
-	w.executor.messageStarted({ role: "user", content: long.payload!.text });
-	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: long.id, mode: "attended", tools: undefined, builtinTools: undefined }, '"fix" does not take the turn of "fix it and push --force"');
+	w.starts(long.payload!.text);
+	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: long.id, mode: "attended" }, '"fix" does not take the turn of "fix it and push --force"');
 	assert.equal(w.executor.view("s").running?.requestId, long.id);
-	w.executor.messageStarted({ role: "user", content: short.payload!.text });
-	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: short.id, mode: "attended", tools: undefined, builtinTools: undefined });
+	w.starts(short.payload!.text);
+	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: short.id, mode: "attended" });
 	const goal = goalRow("The current /goal is not satisfied yet.", { condition: "c", iterations: 1, updatedAt: "t" }, to, T0);
 	w.executor.produced(goal);
 	w.executor.turn(goal);
-	w.executor.messageStarted({ role: "user", content: goal.payload!.text });
-	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: goal.id, mode: "attended", tools: undefined, builtinTools: undefined }, "a goal continuation is known by its prefix and words too");
+	w.starts(goal.payload!.text);
+	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: goal.id, mode: "attended" }, "a goal continuation names its row too");
 });
 
 test("a goal row is stale once the goal is cleared", async () => {
@@ -977,7 +999,7 @@ test("a page's claim is born left: the holder runs it capped, attended once rung
 	await drain("s", store, holder.executor, Date.now(), sinks);
 	assert.deepEqual(holder.sent.map((x) => x.text), [`[Trigger ${claim.id}] investigate`], "the holder runs it");
 	holder.executor.agentStarted(Date.now());
-	holder.executor.messageStarted({ role: "user", content: "investigate" });
+	holder.starts(`[Trigger ${claim.id}] investigate`);
 	assert.equal(holder.executor.currentTurn()?.mode, "unattended", "nobody rang this holder for it: capped, the danger check asks");
 
 	const rung = world();
@@ -987,7 +1009,7 @@ test("a page's claim is born left: the holder runs it capped, attended once rung
 	assert.equal(ringProduced(rung.store.list("s"), again.id, requestFingerprint(again), (r) => child.executor.produced(r)), true);
 	await drain("s", rung.store, child.executor, Date.now(), rung.sinks);
 	child.executor.agentStarted(Date.now());
-	child.executor.messageStarted({ role: "user", content: again.payload!.text });
+	child.starts(again.payload!.text);
 	assert.equal(child.executor.currentTurn()?.mode, "attended", "rung by the page that asked: the person's own turn");
 });
 
@@ -1210,16 +1232,14 @@ test("a stop for a row pi has queued but not started aborts it when it starts", 
 	assert.deepEqual(store.list("s").map((r) => r.id), ["t1"], "the row stays while pi holds it; the stop is done");
 	assert.equal(audit.listAudit(1, (r) => r.type === "request" && r.traceId === stop.id)[0]?.state, "done");
 	w.executor.agentStarted(T0 + 2_000);
-	w.executor.messageStarted({ role: "user", content: "[Trigger other] not it" });
-	assert.equal(w.ctx.aborts, 0);
 	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" });
+	assert.equal(w.ctx.aborts, 0, "a user message with its words is not it");
+	w.writes("[Trigger t1] hello");
 	assert.equal(w.ctx.aborts, 1, "aborted as its turn starts");
-	const message = { role: "user", content: "[Trigger t1] hello" };
-	w.entries.push({ type: "message", message: w.executor.messageEnded(message)?.message ?? message });
 	w.executor.agentEnded();
 	await drain("s", store, w.executor, T0 + 4_000, sinks);
-	assert.deepEqual(store.list("s"), [], "pi wrote the prompt at message_end: the row is done, not offered again");
-	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" });
+	assert.deepEqual(store.list("s"), [], "pi wrote the turn's message, with its mark: the row is done, not offered again");
+	w.executor.messageStarted({ role: "custom", customType: TURN_TYPE, content: "[Trigger t1] hello", display: true, details: { piLoopsRow: { lane: "s", id: "t1" }, cap: { kind: "row", id: "t1", mode: "unattended" } } });
 	assert.equal(w.ctx.aborts, 1, "armed once");
 });
 
@@ -1278,13 +1298,20 @@ test("a plain job's dead letter says why it was not delivered, before the prompt
 });
 
 /** A window over a fake pi with the request file in a variable: `rows` is what the file holds now. */
-function windowOver(opts: { hold?: () => boolean; throws?: () => boolean } = {}) {
+function windowOver(opts: { hold?: () => boolean; throws?: () => boolean; mode?: "tui" | "rpc" } = {}) {
 	const state = { rows: [] as Row[], sent: [] as string[], appended: [] as unknown[], aborts: 0 };
-	const ctx = { mode: "tui", hasUI: false, isIdle: () => true, hasPendingMessages: () => false, abort: () => void state.aborts++, sessionManager: { getEntries: () => [] }, ui: { notify: () => undefined } } as any;
+	const ctx = { mode: opts.mode ?? "tui", hasUI: false, isIdle: () => true, hasPendingMessages: () => false, abort: () => void state.aborts++, sessionManager: { getEntries: () => [] }, ui: { notify: () => undefined } } as any;
 	const pi = { sendMessage: (message: unknown) => void state.appended.push(message), sendUserMessage: (text: string) => { if (opts.throws?.()) throw new Error("no model selected"); state.sent.push(text); } };
 	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: true }), hold: opts.hold ?? (() => true), letGo: () => undefined }, () => ctx, { pid: 1 }, () => true, () => state.rows);
 	const ends = (text: string) => executor.messageEnded({ role: "user", content: text });
-	return { state, executor, ends };
+	/** The page queued a message of the person and rang this window for it. */
+	const rung = (id: string, text: string): UnclaimedRow => {
+		const made = personRow(id, text, undefined, { sessionId: "s", cwd: "/p", createdBy: { pid: 4242, instance: "page", version: "0" } }, T0);
+		state.rows = [...state.rows, made];
+		executor.produced(made);
+		return made;
+	};
+	return { state, executor, ends, rung };
 }
 
 test("a proof reads the marks of its own lane only: a fork's entry with another lane's mark and this id proves nothing", () => {
@@ -1293,18 +1320,17 @@ test("a proof reads the marks of its own lane only: a fork's entry with another 
 	assert.equal(proofOf("s", () => [entry("s")], () => []).has("t1"), true);
 });
 
-test("the message of a prompt a cancel named after its row left is aborted and gets no mark: the same row queued again is not proved by it", () => {
-	const w = windowOver();
-	const t1 = turnRow("t1");
-	w.state.rows = [t1];
-	w.executor.turn(t1, T0);
-	w.executor.abortWhenStarted("t1");
+test("the person's own page message that a cancel named after its row left is aborted and gets no mark", () => {
+	const w = windowOver({ mode: "rpc" });
+	const p1 = w.rung("p1", "hello");
+	w.executor.turn(p1, T0);
+	w.executor.abortWhenStarted("p1");
 	w.state.rows = [];
 	w.executor.view("s");
 	w.executor.agentStarted(T0 + 1);
-	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" }, T0 + 2);
+	w.executor.messageStarted({ role: "user", content: "hello" }, T0 + 2);
 	assert.equal(w.state.aborts, 1, "aborted as it starts");
-	assert.equal(w.ends("[Trigger t1] hello"), undefined, "no mark");
+	assert.equal(w.ends("hello"), undefined, "no mark");
 });
 
 test("a settle after a drain took the row out owes it no exit: the same row queued again is not cancelled by what pi did with the old prompt", () => {
@@ -1320,31 +1346,29 @@ test("a settle after a drain took the row out owes it no exit: the same row queu
 	assert.equal(w.executor.view("s").gone?.get("t1"), undefined, "the same row, queued again, is not taken for stopped");
 });
 
-test("a refused prompt stays after its row left, and a late message with its text still carries its mark", () => {
-	const w = windowOver();
-	const t1 = turnRow("t1");
-	w.state.rows = [t1];
-	w.executor.turn(t1, T0);
-	w.executor.refused("t1");
-	w.state.rows = []; // a dead letter took it out
+test("a person's page message pi was judged to have refused stays after its row left, and a late message with its text still carries its mark", () => {
+	const w = windowOver({ mode: "rpc" });
+	const p1 = w.rung("p1", "hello");
+	w.executor.turn(p1, T0);
+	w.executor.refused("p1");
+	w.state.rows = []; // the page took it back
 	w.executor.view("s");
 	w.executor.agentStarted(T0 + 1);
-	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" }, T0 + 2);
-	assert.deepEqual((w.ends("[Trigger t1] hello")?.message as { piLoopsRow?: unknown } | undefined)?.piLoopsRow, { lane: "s", id: "t1" });
+	w.executor.messageStarted({ role: "user", content: "hello" }, T0 + 2);
+	assert.deepEqual((w.ends("hello")?.message as { piLoopsRow?: unknown } | undefined)?.piLoopsRow, { lane: "s", id: "p1" });
 });
 
-test("a hand-over pi throws at keeps the earlier one pi may still send late", () => {
+test("a hand-over of the person's page message that pi throws at keeps the earlier one pi may still send late", () => {
 	let throwing = false;
-	const w = windowOver({ throws: () => throwing });
-	const t1 = turnRow("t1");
-	w.state.rows = [t1];
-	w.executor.turn(t1, T0);
-	w.executor.refused("t1");
+	const w = windowOver({ throws: () => throwing, mode: "rpc" });
+	const p1 = w.rung("p1", "hello");
+	w.executor.turn(p1, T0);
+	w.executor.refused("p1");
 	throwing = true;
-	assert.throws(() => w.executor.turn(t1, T0 + 60_000));
+	assert.throws(() => w.executor.turn(p1, T0 + 60_000));
 	w.executor.agentStarted(T0 + 60_001);
-	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" }, T0 + 60_002);
-	assert.deepEqual((w.ends("[Trigger t1] hello")?.message as { piLoopsRow?: unknown } | undefined)?.piLoopsRow, { lane: "s", id: "t1" }, "the late send of the first is proved");
+	w.executor.messageStarted({ role: "user", content: "hello" }, T0 + 60_002);
+	assert.deepEqual((w.ends("hello")?.message as { piLoopsRow?: unknown } | undefined)?.piLoopsRow, { lane: "s", id: "p1" }, "the late send of the first is proved");
 });
 
 test("Enter during a run in a terminal is a steer, written before what waits: a rewritten message then may be the steer, and gets no mark", () => {
@@ -1386,30 +1410,31 @@ test("a steer waiting as pi writes a refused prompt of ours late takes the messa
 });
 
 test("an input pi refuses during a run (sent with no delivery) leaves nothing that could take a message", () => {
-	const w = fakeWindowPi(true);
-	const goal = row("g1", { source: "goal", mode: "attended", wake: "turn", payload: { text: "[Trigger g1] keep going", cwd: "/" } });
-	w.executor.turn(goal, T0);
+	const w = windowOver({ mode: "rpc" });
+	const p1 = w.rung("p1", "keep going");
+	w.executor.turn(p1, T0);
+	w.executor.inputSeen({ source: "extension", text: "keep going" }, T0); // the echo of our own send
 	w.executor.agentStarted(T0 + 1);
-	w.executor.inputSeen({ source: "extension", text: "another extension says hi" }, T0 + 2); // pi throws: already processing
-	w.executor.messageStarted({ role: "user", content: "[rewritten] [Trigger g1] keep going" }, T0 + 3);
-	assert.ok(w.executor.messageEnded({ role: "user", content: "[rewritten] [Trigger g1] keep going" }), "the goal's message is marked");
+	w.executor.inputSeen({ source: "extension", text: "keep going" }, T0 + 2); // another extension, in the very same words: pi throws, already processing
+	w.executor.messageStarted({ role: "user", content: "keep going" }, T0 + 3);
+	assert.ok(w.ends("keep going"), "the person's message is marked: no waiting input of someone else took it");
 });
 
-test("the page's message that a run of ours overtook is still the person's, and runs under that run's cap: the narrow race stays on the safe side", () => {
+test("the page's message that a run of ours overtook is still the person's: no mark of ours, and what follows it is their turn", () => {
 	const w = fakeWindowPi(true, { mode: "rpc" });
 	w.executor.inputSeen({ source: "rpc", text: "look" }, T0);
 	const t1 = turnRow("t1");
 	w.executor.turn(t1, T0 + 1);
 	w.executor.agentStarted(T0 + 2);
-	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" }, T0 + 3);
-	w.executor.messageEnded({ role: "user", content: "[Trigger t1] hello" });
+	w.writes("[Trigger t1] hello", T0 + 3);
+	assert.equal(w.executor.currentTurn()?.kind, "row", "our turn, under its cap");
 	w.executor.messageStarted({ role: "user", content: "[rewritten] look" }, T0 + 4);
 	assert.equal(w.executor.messageEnded({ role: "user", content: "[rewritten] look" }), undefined, "no mark of ours on the person's message");
-	assert.equal(w.executor.currentTurn()?.kind, "row", "and the cap of the run in force stays");
+	assert.deepEqual(w.executor.currentTurn(), { kind: "person" }, "a user message is the person's, whatever its words: no other extension's input was seen");
 });
 
 test("a follow-up of someone else that pi no longer holds (pi idle with nothing pending) takes no later message", () => {
-	const w = windowOver();
+	const w = windowOver({ mode: "rpc" });
 	w.executor.agentStarted(T0);
 	w.executor.inputSeen({ source: "extension", text: "another extension says hi", streamingBehavior: "followUp" }, T0 + 1);
 	w.executor.agentEnded(); // the page cleared pi's queue: nothing pending, and pi idle
@@ -1417,11 +1442,10 @@ test("a follow-up of someone else that pi no longer holds (pi idle with nothing 
 	w.executor.inputSeen({ source: "interactive", text: "typed" }, T0 + 2); // the person types into the idle pi
 	w.executor.agentStarted(T0 + 2);
 	w.executor.messageStarted({ role: "user", content: "typed" }, T0 + 2);
-	const goal = row("g1", { source: "goal", mode: "attended", wake: "turn", payload: { text: "[Trigger g1] keep going", cwd: "/" } });
-	w.state.rows = [goal];
-	w.executor.turn(goal, T0 + 3);
-	w.executor.messageStarted({ role: "user", content: "[rewritten] [Trigger g1] keep going" }, T0 + 4);
-	assert.ok(w.ends("[rewritten] [Trigger g1] keep going"), "the goal's message is marked");
+	const p1 = w.rung("p1", "another extension says hi"); // the person's page message, in the words the cleared follow-up had
+	w.executor.turn(p1, T0 + 3);
+	w.executor.messageStarted({ role: "user", content: "another extension says hi" }, T0 + 4);
+	assert.ok(w.ends("another extension says hi"), "the person's message is marked");
 });
 
 test("an append that cannot write the hold first sends nothing: lease-lost", () => {
@@ -1486,7 +1510,7 @@ test("a person row of version 2 is done once a user message with its text follow
 	// written as the row is handed over, and the message pi writes, with its mark and pi's note, removes it.
 	const { store, sinks, audit } = world();
 	store.append(row, [image]);
-	const w = fakeWindowPi(true, { rows: () => store.list("s"), images: (r) => store.images(r) });
+	const w = fakeWindowPi(true, { mode: "rpc", rows: () => store.list("s"), images: (r) => store.images(r) });
 	w.executor.produced(row);
 	await drain("s", store, w.executor, T0, sinks);
 	const stampedAt = Date.parse(store.list("s")[0]?.handed_at ?? "");
@@ -1566,7 +1590,7 @@ test("a person row goes to pi as the person's message, images with it, and a per
 	const row = personRow("p1", "look", [image], { sessionId: "s", cwd: "/p", createdBy: page }, T0);
 	store.append(row, [image]);
 	assert.deepEqual(queueOrder(store.list("s")).map((r) => r.id), ["p1", "t1"]);
-	const w = fakeWindowPi(true, { rows: () => store.list("s"), images: (r) => store.images(r) });
+	const w = fakeWindowPi(true, { mode: "rpc", rows: () => store.list("s"), images: (r) => store.images(r) });
 	w.executor.produced(row);
 	await drain("s", store, w.executor, T0, sinks);
 	assert.deepEqual(w.sent, [{ text: [{ type: "text", text: "look" }, image], options: { deliverAs: "followUp" } }], "the person's row first, as pi's own prompt takes it, the bytes read from beside the queue");
@@ -1590,12 +1614,13 @@ test("a person row goes to pi as the person's message, images with it, and a per
 	const w2 = fakeWindowPi(true, { rows: () => alone.store.list("s"), images: (r) => alone.store.images(r) });
 	const out = await drain("s", alone.store, w2.executor, T0 + PERSON_RING_WAIT_MS, alone.sinks);
 	assert.deepEqual([out.dead, w2.sent.length], [[], 1], "an image alone is a message, not a dead letter");
+	assert.deepEqual([w2.sent[0].text, w2.sent[0].options, w2.turns[0].details.cap.mode], [[{ type: "text", text: "" }, image], TURN_OPTIONS, "unattended"], "nobody rang for it: a custom message, capped, its image resized by the window before the send");
 	// The bytes swapped under the row: the hand-over fails with the reason on the row, and nothing is sent as the person's.
 	const swapped = world();
 	const sw = personRow("p3", "look", [image], { sessionId: "s", cwd: "/p", createdBy: page }, T0);
 	swapped.store.append(sw, [image]);
 	fs.writeFileSync(swapped.store.imageFile("s", "p3"), JSON.stringify([{ ...image, data: "BBBB" }]));
-	const w3 = fakeWindowPi(true, { rows: () => swapped.store.list("s"), images: (r) => swapped.store.images(r) });
+	const w3 = fakeWindowPi(true, { mode: "rpc", rows: () => swapped.store.list("s"), images: (r) => swapped.store.images(r) });
 	w3.executor.produced(sw);
 	const refused = await drain("s", swapped.store, w3.executor, T0, swapped.sinks);
 	assert.deepEqual([refused.failed, w3.sent.length], [["p3"], 0]);
@@ -1606,7 +1631,7 @@ test("a person row pi refused gets last_error once pi stayed idle past the grace
 	const { store, sinks, audit } = world();
 	const row = fromPage("p1", "hello", T0);
 	store.append(row);
-	const w = fakeWindowPi(true, { rows: () => store.list("s") });
+	const w = fakeWindowPi(true, { mode: "rpc", rows: () => store.list("s") });
 	w.executor.produced(row);
 	await drain("s", store, w.executor, T0, sinks);
 	assert.equal(w.sent.length, 1, "handed over");
@@ -1628,7 +1653,7 @@ test("a person row pi refused gets last_error once pi stayed idle past the grace
 	const slow = world();
 	const slowRow = fromPage("p2", "slow", T0);
 	slow.store.append(slowRow);
-	const w2 = fakeWindowPi(true, { rows: () => slow.store.list("s") });
+	const w2 = fakeWindowPi(true, { mode: "rpc", rows: () => slow.store.list("s") });
 	w2.executor.produced(slowRow);
 	await drain("s", slow.store, w2.executor, T0, slow.sinks);
 	w2.executor.agentStarted(T0 + 200);
@@ -1774,14 +1799,17 @@ test("a hand-over stamp is the moment of the stamp, not the moment the drain was
 const plainBy = { pid: 1, instance: "w", version: "0" };
 const plainJob = (over: { tools?: string[]; builtinTools?: string[] } = {}) => ({ id: "j1", sessionId: "s", prompt: "check CI", cwd: "/p", model: undefined, thinking: undefined, tools: undefined, builtinTools: undefined, ...over });
 /** A window whose executor reads the request file, as the extension's does, so what the file no longer holds is forgotten with it. */
-function windowOn(store: RequestStore, idle = true) {
+function windowOn(store: RequestStore, idle = true, mode: "tui" | "rpc" = "tui") {
 	const sent: Array<{ text: string; options: unknown }> = [];
 	const appended: Array<{ content: unknown; options: unknown }> = [];
 	const entries: unknown[] = [];
-	const ctx = { idle, mode: "tui", hasUI: false, isIdle: () => ctx.idle, abort: () => undefined, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
-	const pi = { sendMessage: (m: { content: unknown }, options: unknown) => void appended.push({ content: m.content, options }), sendUserMessage: (text: string, options: unknown) => void sent.push({ text, options }) };
+	const ctx = { idle, mode, hasUI: false, isIdle: () => ctx.idle, abort: () => undefined, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
+	const turns: CustomTurn[] = [];
+	const pi = { sendMessage: (m: CustomTurn, options: unknown) => void (m.customType === TURN_TYPE ? (turns.push(m), sent.push({ text: m.content as string, options })) : appended.push({ content: m.content, options })), sendUserMessage: (text: string, options: unknown) => void sent.push({ text, options }) };
 	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: true }), hold: () => true, letGo: () => undefined }, () => ctx, { pid: 1 }, () => true, () => store.list("s"));
-	return { sent, appended, entries, ctx, executor };
+	/** Pi writes the custom turn the window sent with `text`. */
+	const writes = (text: string, at = Date.now()): void => writesTurn(executor, entries, turns.splice(turns.findIndex((turn) => turn.content === text), 1)[0], at);
+	return { sent, appended, entries, ctx, executor, turns, writes };
 }
 
 test("a damaged jobs.json costs only the rows that name a job: the person's message and a rule's result still arrive", async () => {
@@ -1866,7 +1894,7 @@ test("the background process leaves a goal continuation a quitting window left f
 	assert.deepEqual(decideDrain("conversation", [left], proofOf("s", () => [], () => []), { exists: () => true, enabled: () => true, goalActive: () => false }, host, now).map((a) => a.do), ["wait"]);
 });
 
-test("a prompt an input extension rewrites runs once, under its row's cap, as 0.22 did", async () => {
+test("a prompt runs once, under its row's cap, beside an extension that rewrites every user message: no input handler sees it", async () => {
 	const { store, sinks, inbox } = world();
 	const id = plainRunId("j1", "2026-06-01T12:00:00Z");
 	store.append(plainJobRow(plainJob({ tools: ["read"] }), id, "cron:j1", "", plainBy, T0));
@@ -1878,38 +1906,45 @@ test("a prompt an input extension rewrites runs once, under its row's cap, as 0.
 		const out = await drain("s", store, w.executor, at, sinks);
 		if (!out.delivered.length) continue;
 		turns++;
-		// pi runs the turn; another extension's `input` handler prepends a note, so the stored user
-		// message no longer starts with the prefix and the row can never be proved by the file.
-		const text = `Respond briefly. ${w.sent.at(-1)!.text}`;
+		// pi runs the turn. Another extension's `input` handler prepends a note to every user message;
+		// the turn is a custom message, which pi gives to no `input` handler: it is written as it was sent.
 		w.executor.agentStarted(at + 1);
-		w.executor.messageStarted({ role: "user", content: text }, at + 2);
+		w.writes(w.sent.at(-1)!.text, at + 2);
 		caps.push(w.executor.currentTurn());
-		const message = { role: "user", content: text };
-		w.entries.push({ type: "message", message: w.executor.messageEnded(message, at + 3)?.message ?? message });
 		w.executor.agentEnded();
 		w.executor.settled();
 	}
 	assert.equal(turns, 1, "it ran, and its mark is in the entry: offered again it would run a second time, with whatever side effects it has");
-	assert.deepEqual(caps, [{ kind: "row", id, mode: "unattended", tools: ["read"], builtinTools: undefined }], "under the row's cap, prefix or not");
+	assert.deepEqual(caps, [{ kind: "row", id, mode: "unattended", tools: ["read"] }], "under the row's cap, read from the message");
 	assert.deepEqual(store.list("s"), [], "the row is gone");
 	assert.equal(inbox.listNew().length, 0, "and a run that happened is not a dead letter");
 });
 
-test("a hand-over is judged refused only after the grace has passed since pi's last input, not since the hand-over", async () => {
+test("the person's page message is judged refused only after the grace has passed since pi's last input, not since the hand-over; a turn row's custom message is never judged so", async () => {
 	const { store, sinks } = world();
-	const id = plainRunId("j1", "2026-06-01T12:00:00Z");
-	store.append(plainJobRow(plainJob(), id, "cron:j1", "", plainBy, T0));
-	const w = windowOn(store);
+	const id = "11111111-2222-3333-4444-555555555555";
+	const person = personRow(id, "look", undefined, { sessionId: "s", cwd: "/p", createdBy: { pid: process.pid, instance: "page", version: "0" } }, T0);
+	store.append(person);
+	const w = windowOn(store, true, "rpc");
+	w.executor.produced(person);
 	assert.deepEqual((await drain("s", store, w.executor, T0, sinks)).delivered, [id]);
-	w.executor.inputSeen({ source: "extension", text: "[Trigger p1] look" }, T0 + 8_000); // pi emitted `input` for our prompt: it is in its pre-run phase
+	w.executor.inputSeen({ source: "extension", text: "look" }, T0 + 8_000); // pi emitted `input` for our prompt: it is in its pre-run phase
 	let out = await drain("s", store, w.executor, T0 + 8_000 + PERSON_SEND_GRACE_MS - 1, sinks, { tick: true });
 	assert.deepEqual([out.failed, out.waiting], [[], [id]], "past the grace since the hand-over, not since the input");
 	out = await drain("s", store, w.executor, T0 + 8_000 + PERSON_SEND_GRACE_MS, sinks, { tick: true });
 	assert.deepEqual(out.failed, [id]);
 	const left = store.list("s")[0];
-	assert.deepEqual([left.attempts, left.last_error, left.not_before], [1, "pi did not start a turn for it", stamp(T0 + 8_000 + PERSON_SEND_GRACE_MS + BACKOFF_MS[0])], "a pi-loops row backs off and is offered again");
+	assert.deepEqual([left.attempts, left.last_error], [1, "pi did not start a turn for it"], "it keeps its error for the page to take back");
 	assert.equal(w.executor.view("s").inFlight.has(id), false);
 	assert.equal(PERSON_SEND_GRACE_MS, 10_000, "pi's pre-run phase after its input event (other input handlers, the credential check) is what is left to cover");
+	// The clock's prompt goes as a custom message: pi starts its run or says why not, so no tick judges it.
+	const clock = world();
+	const run = plainRunId("j1", "2026-06-01T12:00:00Z");
+	clock.store.append(plainJobRow(plainJob(), run, "cron:j1", "", plainBy, T0));
+	const c = windowOn(clock.store);
+	assert.deepEqual((await drain("s", clock.store, c.executor, T0, clock.sinks)).delivered, [run]);
+	out = await drain("s", clock.store, c.executor, T0 + 3_600_000, clock.sinks, { tick: true });
+	assert.deepEqual([out.failed, out.waiting, clock.store.list("s")[0].attempts], [[], [run], 0]);
 });
 
 test("what this window produced is forgotten with the row: an id that left the file is not believed if it comes back", () => {
@@ -2535,7 +2570,7 @@ test("[R5] two turns that were going when their process stopped are each counted
 	}
 });
 
-test("a prompt pi holds behind a run keeps its row's cap when its row leaves the file, and gets no mark (final-state check A, F6)", () => {
+test("a turn pi holds behind a run keeps its row's cap when its row leaves the file: the cap is in its message (final-state check A, F6)", () => {
 	const job = { id: "job-1", sessionId: "s", prompt: "tidy the cache", cwd: "/p", model: undefined, thinking: undefined, tools: undefined, builtinTools: undefined };
 	const row = plainJobRow(job, "run-1111222233334444", "cron:job-1", "", { pid: 1, instance: "w", version: "0" }, T0);
 	let rows: Row[] = [row];
@@ -2545,11 +2580,11 @@ test("a prompt pi holds behind a run keeps its row's cap when its row leaves the
 	w.executor.turn(row, T0 + 1); // pi is busy: queued behind the person's run
 	rows = []; // the row left the file (a /goal clear, say)
 	w.executor.view("s");
-	w.executor.messageStarted({ role: "user", content: "tidy the cache" }, T0 + 2); // its words, changed: no prefix to read
-	assert.equal(w.executor.currentTurn()?.mode, "unattended", "pi still held a prompt of ours: not the person's cap");
+	w.starts(row.payload!.text, T0 + 2);
+	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: row.id, mode: "unattended" }, "the row's own cap, not the person's");
 });
 
-test("an older version's row its words proved while pi held its prompt keeps its cap for that prompt, with no mark (final-state check A, F6)", () => {
+test("an older version's row its words proved while pi held its turn keeps its cap for that turn (final-state check A, F6)", () => {
 	const made = newTriggerRow("continue", { sessionId: "s", cwd: "/p", createdBy: { pid: 99, instance: "w", version: "0" } }, T0);
 	const row = { ...made, line: 2, payload: { ...made.payload!, text: "continue" } } as unknown as Row; // 0.24.2 queued it with no prefix
 	let rows: Row[] = [row];
@@ -2560,7 +2595,6 @@ test("an older version's row its words proved while pi held its prompt keeps its
 	rows = [{ ...row, handed_at: stamp(T0 + 1) } as Row];
 	w.entries.push(userEntry("continue the migration plan", T0 + 2)); // the person's words prove it by the older proof
 	w.executor.view("s");
-	w.executor.messageStarted({ role: "user", content: "continue" }, T0 + 3);
-	assert.equal(w.executor.currentTurn()?.mode, "unattended", "the row's own cap, not the person's");
-	assert.equal(w.executor.messageEnded({ role: "user", content: "continue" }), undefined, "no mark");
+	w.starts("continue", T0 + 3);
+	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: row.id, mode: "unattended" }, "the row's own cap, not the person's");
 });

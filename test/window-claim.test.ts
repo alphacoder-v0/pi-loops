@@ -3,20 +3,15 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { markFor } from "../src/mark.ts";
-import type { OtherSlot, Phase, Slot, TurnSlot } from "../src/window-claim.ts";
-import { claimOf, cleanEditor, settleSlots } from "../src/window-claim.ts";
+import type { PersonSlot, Phase, Slot, TurnSlot } from "../src/window-claim.ts";
+import { claimOf, settleSlots } from "../src/window-claim.ts";
 
-function turn(id: string, text: string, phase: Phase, opts: { prefix?: string; stop?: true; echoed?: boolean } = {}): TurnSlot {
-	return {
-		whose: "turn",
-		mark: markFor({ lane: "s1", id }),
-		text,
-		...(opts.prefix === undefined ? {} : { prefix: opts.prefix }),
-		cap: { kind: "row", id, mode: "attended" },
-		phase,
-		...(opts.stop ? { stop: true as const } : {}),
-		echoed: opts.echoed ?? false,
-	};
+function person(id: string, text: string, phase: Phase, opts: { stop?: true; left?: true } = {}): PersonSlot {
+	return { whose: "person", mark: markFor({ lane: "s1", id }), text, phase, ...(opts.stop ? { stop: true as const } : {}), ...(opts.left ? { left: true as const } : {}), echoed: false };
+}
+
+function turn(id: string, at: TurnSlot["at"], opts: { stop?: true; left?: true } = {}): TurnSlot {
+	return { whose: "turn", mark: markFor({ lane: "s1", id }), at, ...opts };
 }
 
 function other(text: string, from: "person" | "extension" = "person"): Slot {
@@ -27,16 +22,16 @@ function append(id: string): Slot {
 	return { whose: "append", mark: markFor({ lane: "s1", id }) };
 }
 
-function writingTurn(id: string, text: string): TurnSlot {
-	const pending = turn(id, text, { is: "pending", since: 0 });
+function writingPerson(id: string, text: string): PersonSlot {
+	const pending = person(id, text, { is: "pending", since: 0 });
 	const claim = claimOf(text, [pending]);
-	if (claim.by !== "turn") throw new Error("pending turn did not claim its exact text");
-	return turn(id, text, { is: "writing", claim });
+	if (claim.by !== "person") throw new Error("a pending person slot did not claim its exact text");
+	return person(id, text, { is: "writing", claim });
 }
 
-function assertTurnClaim(result: ReturnType<typeof claimOf>, id: string, message?: string): void {
-	assert.equal(result.by, "turn", message);
-	if (result.by === "turn") assert.equal(result.slot.mark.id, id, message);
+function assertPersonClaim(result: ReturnType<typeof claimOf>, id: string, message?: string): void {
+	assert.equal(result.by, "person", message);
+	if (result.by === "person") assert.equal(result.slot.mark.id, id, message);
 }
 
 function assertOtherClaim(result: ReturnType<typeof claimOf>, expected: Slot, message?: string): void {
@@ -44,312 +39,132 @@ function assertOtherClaim(result: ReturnType<typeof claimOf>, expected: Slot, me
 	if (result.by === "other") assert.equal(result.slot, expected, message);
 }
 
-test("claimOf assigns ordered trigger prompts to their own rows", () => {
-	const a = turn("a", "[Trigger a] one", { is: "queued" });
-	const b = turn("b", "[Trigger b] two", { is: "queued" });
-	assertTurnClaim(claimOf(a.text, [a, b]), "a");
-	assertTurnClaim(claimOf(b.text, [a, b]), "b");
+test("claimOf gives the very same words to the person row whose prompt they are, the oldest of two", () => {
+	const a = person("a", "do it", { is: "queued" });
+	const b = person("b", "do it", { is: "opening" });
+	const c = person("c", "something else", { is: "queued" });
+	assertPersonClaim(claimOf("do it", [a, b, c]), "a");
+	assertPersonClaim(claimOf("something else", [a, b, c]), "c");
 });
 
-test("claimOf chooses the oldest exact turn with duplicate text", () => {
-	const a = turn("a", "yes", { is: "queued" });
-	const b = turn("b", "yes", { is: "queued" });
-	assertTurnClaim(claimOf("yes", [a, b]), "a");
-});
-
-test("claimOf prefers an opening exact turn over an older queued turn", () => {
-	const queued = turn("queued", "yes", { is: "queued" });
-	const opening = turn("opening", "yes", { is: "opening" });
-	assertTurnClaim(claimOf("yes", [queued, opening]), "opening");
-});
-
-test("claimOf gives exact text to the person's other slot", () => {
-	const person = other("yes");
-	const row = turn("row", "yes", { is: "queued" });
-	assertOtherClaim(claimOf("yes", [person, row]), person);
+test("claimOf gives the very same words to a waiting input of someone else before a person row's prompt", () => {
+	const ours = person("a", "same", { is: "queued" });
+	const theirs = other("same");
+	assertOtherClaim(claimOf("same", [ours, theirs]), theirs);
 });
 
 test("claimOf strips pi's trailing image note", () => {
-	// A refused slot claims by the very text only: the note must go for the text to be the same.
-	const row = turn("row", "describe this", { is: "refused" });
-	assertTurnClaim(claimOf("describe this [Image omitted: unsupported format]", [row]), "row");
+	const ours = person("a", "look", { is: "pending", since: 1 });
+	assertPersonClaim(claimOf("look\n\n[Image: original 2400x16, displayed at 2000x13. Multiply coordinates by 1.20 to map to original image.]", [ours]), "a");
 });
 
-test("claimOf matches a rewritten prompt of ours by its prefix, and one with no prefix only by its words at the start", () => {
-	const prefixed = turn("row", "[Trigger row] Run the tests", { is: "queued" }, { prefix: "[Trigger row] " });
-	assertTurnClaim(claimOf("[rewritten] [Trigger row] Run the tests", [prefixed]), "row");
-	const bare = turn("row", "Run the tests", { is: "queued" });
-	assertTurnClaim(claimOf("Run the tests [ctx]", [bare]), "row");
-	assert.equal(claimOf("[rewritten] Run the tests", [bare]).by, "nobody", "words before the person's message: no less than the older proof, so no mark");
-});
-
-test("claimOf chooses the longest matching turn text", () => {
-	const short = turn("short", "fix", { is: "queued" });
-	const long = turn("long", "fix it and push", { is: "queued" });
-	assertTurnClaim(claimOf("fix it and push [ctx]", [short, long]), "long");
-});
-
-test("claimOf gives an exact turn match priority over a waiting other slot", () => {
-	const waiting = other("/review the engine");
-	const row = turn("row", "Run the tests and report what fails. the engine", { is: "queued" });
-	assertTurnClaim(claimOf(row.text, [waiting, row]), "row");
-});
-
-test("claimOf gives a waiting other slot priority over approximate turn text", () => {
-	const waiting = other("/review");
-	const row = turn("row", "Run the", { is: "queued" });
-	assertOtherClaim(claimOf("Run the tests.", [waiting, row]), waiting);
-});
-
-test("claimOf matches an other slot with words around its text", () => {
-	const extension = other("ok", "extension");
-	assertOtherClaim(claimOf("ok, now run it", [extension]), extension);
-});
-
-test("claimOf gives words around to the other slot whose text they are, not to the oldest other slot", () => {
-	const older = other("/review", "person");
-	const extension = other("now run it", "extension");
-	assertOtherClaim(claimOf("ok, now run it", [older, extension]), extension);
-});
-
-test("claimOf gives a rewritten message with no prefix to the prompt of ours only when no input of someone else waits", () => {
-	const ours = turn("ours", "the person says 1.", { is: "opening" });
-	assertTurnClaim(claimOf("the person says 1. [ctx]", [ours]), "ours");
-	for (const behind of [undefined, "followUp", "steer"] as const) {
-		const waiting: OtherSlot = { ...other("another extension says 2.", "extension"), ...(behind ? { behind } : {}) };
-		assertOtherClaim(claimOf("the person says 1. [ctx]", [ours, waiting]), waiting, `${behind ?? "idle"}: no mark`);
-	}
-});
-
-test("claimOf reads no order of pi: with someone else's input waiting, words around a prompt of ours are ours only with its prefix", () => {
-	const prefixed = turn("ours", "[Trigger ours] run j1.", { is: "queued" }, { prefix: "[Trigger ours] " });
-	const plain = turn("plain", "address finding 1.", { is: "queued" });
-	for (const order of ["before", "after"] as const) {
-		const theirs: OtherSlot = { ...other("another extension says 2.", "extension"), behind: "followUp" };
-		const slots = (ours: TurnSlot) => (order === "before" ? [ours, theirs] : [theirs, ours]);
-		assertTurnClaim(claimOf("[rewritten] [Trigger ours] run j1.", slots(prefixed)), "ours", `prefix, ${order}`);
-		assertOtherClaim(claimOf("[rewritten] address finding 1.", slots(plain)), theirs, `no prefix, ${order}: no mark`);
-	}
-});
-
-test("claimOf gives the very same words to the run's starter before a refused slot: pi may have dropped the refused one, and either message answers one of the two", () => {
-	const late = turn("late", "yes", { is: "refused" });
-	const starter = turn("starter", "yes", { is: "opening" });
-	assertTurnClaim(claimOf("yes", [late, starter]), "starter");
-	const queued = turn("queued", "yes", { is: "queued" });
-	assertTurnClaim(claimOf("yes", [late, queued]), "queued");
-});
-
-test("claimOf gives a rewritten message with a prompt's [Trigger <id>] to that prompt, though another's input waits", () => {
-	const ours = turn("ours", "[Trigger run-a] run j1.", { is: "refused" }, { prefix: "[Trigger run-a] " });
-	const stale = other("another extension says 1.", "extension");
-	assertTurnClaim(claimOf("[rewritten] [Trigger run-a] run j1.", [stale, ours]), "ours");
-	const unprefixed = turn("plain", "address finding 1.", { is: "queued" });
-	assertOtherClaim(claimOf("[rewritten] address finding 1.", [stale, unprefixed]), stale);
-});
-
-test("claimOf gives the very same words to a prompt no stop named before one a stop named: a wrong guess must not abort a message that is owed", () => {
-	const stopped: TurnSlot = { ...turn("stopped", "the person says 3.", { is: "refused" }, { stop: true }), left: true };
-	const owed = turn("owed", "the person says 3.", { is: "opening" });
-	assertTurnClaim(claimOf("the person says 3.", [stopped, owed]), "owed");
-	assertTurnClaim(claimOf("the person says 3. [ctx]", [stopped, owed]), "owed");
-	assertTurnClaim(claimOf("the person says 3.", [stopped]), "stopped");
-	const stoppedOpening: TurnSlot = turn("stopped-opening", "the person says 3.", { is: "opening" }, { stop: true });
-	const queuedOwed = turn("queued-owed", "the person says 3.", { is: "queued" });
-	assertTurnClaim(claimOf("the person says 3.", [stoppedOpening, queuedOwed]), "queued-owed", "a stop named the run's starter: the owed one claims");
-});
-
-test("settleSlots puts no slot whose row left the file into gone: the same row may be queued again", () => {
-	const left: TurnSlot = { ...turn("same", "run j1.", { is: "written" }, { stop: true }), left: true };
-	const opening: TurnSlot = { ...turn("same", "run j1.", { is: "opening" }, { stop: true }), left: true };
-	for (const how of [{ aborted: false, terminal: false }, { aborted: true, terminal: true }, { aborted: true, terminal: false }]) {
-		assert.equal(settleSlots([left], how, () => false).gone.size, 0);
-		assert.equal(settleSlots([opening], how, () => false).gone.size, 0);
-	}
-});
-
-test("claimOf gives a refused prompt a late send in its words, rewritten or not, and a prompt pi holds before it with the same words", () => {
-	const row = turn("row", "report status", { is: "refused" });
-	assertTurnClaim(claimOf("report status", [row]), "row");
-	assertTurnClaim(claimOf("report status [ctx]", [row]), "row");
-	const queued = turn("queued", "report status", { is: "opening" });
-	assertTurnClaim(claimOf("report status [ctx]", [queued, row]), "queued", "pi may have dropped the refused one");
-	assert.equal(claimOf("report status, please", [row, other("report")]).by, "other");
-});
-
-test("claimOf never claims writing, written or append slots", () => {
-	const writing = writingTurn("writing", "same");
-	const written = turn("written", "same", { is: "written" });
-	const app = append("append");
-	assert.equal(claimOf("same", [writing, written, app]).by, "nobody");
-});
-
-test("claimOf returns nobody when no slot explains the message", () => {
-	assert.deepEqual(claimOf("unmatched", []), { by: "nobody" });
-});
-
-test("claimOf gives an empty image-only message to an empty other slot", () => {
+test("claimOf gives an image-only message to the slot with no words", () => {
 	const image = other("");
 	assertOtherClaim(claimOf("[Image omitted: unsupported format]", [image]), image);
+	assertPersonClaim(claimOf("[Image omitted: unsupported format]", [person("a", "", { is: "queued" })]), "a");
 });
 
-type Column = "no stop" | "terminal stop" | "non-terminal stop";
+test("claimOf knows a person row's message by its words at the start, and by nothing else", () => {
+	const ours = person("a", "the person says 9.", { is: "queued" });
+	assertPersonClaim(claimOf("the person says 9. And a handler added this.", [ours]), "a");
+	assert.equal(claimOf("[rewritten] the person says 9.", [ours]).by, "nobody", "its words at the end prove nothing");
+	assert.equal(claimOf("before the person says 9. after", [ours]).by, "nobody", "nor in the middle");
+});
+
+test("claimOf gives words at the start to the slot with the longest words; between two as long, to someone else's", () => {
+	const short = person("short", "run", { is: "queued" });
+	const long = person("long", "run the tests", { is: "queued" });
+	assertPersonClaim(claimOf("run the tests now", [short, long]), "long");
+	const theirs = other("run the tests and more");
+	assertOtherClaim(claimOf("run the tests and more, please", [short, long, theirs]), theirs);
+	const tie = other("run the tests");
+	assertOtherClaim(claimOf("run the tests now", [long, tie]), tie);
+});
+
+test("claimOf gives someone else's waiting input nothing it does not start: a message no words place is nobody's, and no slot is taken for want of a better", () => {
+	const theirs = other("another extension says this");
+	const ours = person("a", "mine", { is: "queued" });
+	assert.equal(claimOf("a third thing", [theirs, ours]).by, "nobody");
+});
+
+test("claimOf asks only person slots pi may still write and waiting inputs: never a writing or written one, a turn row's slot or an append", () => {
+	const slots: Slot[] = [writingPerson("writing", "words"), person("written", "words", { is: "written" }), turn("turn", "held"), append("append")];
+	assert.equal(claimOf("words", slots).by, "nobody");
+	assertPersonClaim(claimOf("words", [...slots, person("refused", "words", { is: "refused" })]), "refused", "a refused prompt pi may still send late is asked");
+});
+
+type Column = "no stop" | "terminal stop" | "page stop";
 interface SettleCase {
 	name: string;
 	slot: Slot;
 	landed?: boolean;
-	expect: (column: Column) => { kept: boolean; reason?: string; editor?: boolean };
+	expect: (column: Column) => { kept: boolean; reason?: string };
 }
+const unwritten = (column: Column) => (column === "no stop" ? { kept: false, reason: "lost" } : column === "terminal stop" ? { kept: false, reason: "dropped" } : { kept: true });
 const settleCases: SettleCase[] = [
-	{
-		name: "landed turn or append",
-		slot: turn("landed", "prompt", { is: "queued" }),
-		landed: true,
-		expect: () => ({ kept: false }),
-	},
-	{
-		name: "pending turn",
-		slot: turn("pending", "prompt", { is: "pending", since: 1 }),
-		expect: () => ({ kept: true }),
-	},
-	{
-		name: "opening or queued turn",
-		slot: turn("waiting", "prompt", { is: "queued" }, { prefix: "[Trigger waiting] " }),
-		expect: (column) => column === "no stop" ? { kept: false, reason: "lost" } : column === "terminal stop" ? { kept: false, reason: "dropped", editor: true } : { kept: true },
-	},
-	{
-		name: "written turn",
-		slot: turn("written", "prompt", { is: "written" }),
-		expect: () => ({ kept: false, reason: "lost" }),
-	},
-	{
-		name: "refused turn",
-		slot: turn("refused", "prompt", { is: "refused" }),
-		expect: (column) => (column === "terminal stop" ? { kept: false, editor: true } : column === "no stop" ? { kept: false } : { kept: true }),
-	},
-	{
-		name: "append",
-		slot: append("append"),
-		expect: (column) => column === "no stop" ? { kept: false, reason: "lost" } : column === "terminal stop" ? { kept: false, reason: "dropped" } : { kept: true },
-	},
-	{
-		name: "other slot",
-		slot: other("person text"),
-		expect: (column) => column === "non-terminal stop" ? { kept: true } : { kept: false },
-	},
+	{ name: "a person slot whose mark landed", slot: person("landed", "prompt", { is: "queued" }), landed: true, expect: () => ({ kept: false }) },
+	{ name: "a pending person slot", slot: person("pending", "prompt", { is: "pending", since: 1 }), expect: () => ({ kept: true }) },
+	{ name: "an opening or queued person slot", slot: person("waiting", "prompt", { is: "queued" }), expect: unwritten },
+	{ name: "a written person slot", slot: person("written", "prompt", { is: "written" }), expect: () => ({ kept: false, reason: "lost" }) },
+	{ name: "a refused person slot", slot: person("refused", "prompt", { is: "refused" }), expect: (column) => ({ kept: column === "page stop" }) },
+	{ name: "a turn slot whose mark landed", slot: turn("landed", "started"), landed: true, expect: () => ({ kept: false }) },
+	{ name: "an unstarted turn slot", slot: turn("unstarted", "unstarted"), expect: () => ({ kept: true }) },
+	{ name: "a turn slot pi holds", slot: turn("held", "held"), expect: unwritten },
+	{ name: "a turn slot whose message started and whose mark is not there", slot: turn("started", "started"), expect: () => ({ kept: false, reason: "lost" }) },
+	{ name: "a turn slot pi holds whose row left the file", slot: turn("left", "held", { left: true }), expect: (column) => ({ kept: column === "page stop" }) },
+	{ name: "an append", slot: append("append"), expect: unwritten },
+	{ name: "an other slot", slot: other("person text"), expect: (column) => ({ kept: column === "page stop" }) },
 ];
 const columns: Array<{ name: Column; how: { aborted: boolean; terminal: boolean } }> = [
 	{ name: "no stop", how: { aborted: false, terminal: false } },
 	{ name: "terminal stop", how: { aborted: true, terminal: true } },
-	{ name: "non-terminal stop", how: { aborted: true, terminal: false } },
+	{ name: "page stop", how: { aborted: true, terminal: false } },
 ];
 for (const row of settleCases) {
 	for (const column of columns) {
 		test(`settleSlots ${row.name}: ${column.name}`, () => {
-			let asked = 0;
-			const slots = row.landed ? [row.slot, append("landed-append")] : [row.slot];
-			const result = settleSlots(slots, column.how, (id) => { asked++; return row.landed === true || id === "landed-append"; });
+			const result = settleSlots([row.slot], column.how, () => row.landed === true);
 			const expected = row.expect(column.name);
-			assert.equal(result.slots.length, expected.kept ? slots.length : 0);
+			assert.equal(result.slots.length, expected.kept ? 1 : 0);
 			assert.deepEqual([...result.gone], expected.reason ? [[row.slot.whose === "other" ? "" : row.slot.mark.id, expected.reason]] : []);
-			assert.equal(result.editor.length === 1, expected.editor ?? false);
-			assert.equal(asked, row.slot.whose === "other" ? 0 : slots.length);
 		});
 	}
 }
 
-test("settleSlots reads writing turns as queued in every column", () => {
+test("settleSlots reads a writing person slot as queued in every column", () => {
 	for (const column of columns) {
-		const slot = writingTurn("writing", "prompt");
-		const result = settleSlots([slot], column.how, () => false);
-		assert.equal(result.slots.length === 1, column.name === "non-terminal stop");
-		if (result.slots[0]?.whose === "turn") assert.deepEqual(result.slots[0].phase, { is: "queued" });
+		const result = settleSlots([writingPerson("writing", "prompt")], column.how, () => false);
+		assert.equal(result.slots.length === 1, column.name === "page stop");
+		if (result.slots[0]?.whose === "person") assert.deepEqual(result.slots[0].phase, { is: "queued" });
 	}
 });
 
-test("settleSlots turns stopped prompts into stopped gone reasons", () => {
+test("settleSlots gives a slot a stop named the reason stopped when it goes unwritten", () => {
 	for (const column of columns.slice(0, 2)) {
-		const slot = turn("stop-row", "prompt", { is: "queued" }, { stop: true });
-		const result = settleSlots([slot], column.how, () => false);
-		assert.equal(result.gone.get("stop-row"), "stopped");
+		for (const slot of [person("row", "prompt", { is: "queued" }, { stop: true }), turn("row", "held", { stop: true }), { ...append("row"), stop: true as const }]) assert.equal(settleSlots([slot], column.how, () => false).gone.get("row"), "stopped");
 	}
-	const written = turn("stop-written", "prompt", { is: "written" }, { stop: true });
-	assert.equal(settleSlots([written], columns[0].how, () => false).gone.get("stop-written"), "stopped");
+	assert.equal(settleSlots([person("row", "prompt", { is: "written" }, { stop: true })], columns[0].how, () => false).gone.get("row"), "stopped");
+	assert.equal(settleSlots([turn("row", "started", { stop: true })], columns[2].how, () => false).gone.get("row"), "stopped", "a turn aborted as it started, with no mark in the conversation");
 });
 
-test("settleSlots returns dropped editor prompts in list order with their prefixes", () => {
-	const first = turn("first", "first prompt", { is: "queued" }, { prefix: "[Trigger first] " });
-	const second = turn("second", "second prompt", { is: "opening" }, { prefix: "[Trigger second] " });
-	const result = settleSlots([first, second], { aborted: true, terminal: true }, () => false);
-	assert.deepEqual(result.editor, [
-		{ text: "first prompt", prefix: "[Trigger first] " },
-		{ text: "second prompt", prefix: "[Trigger second] " },
-	]);
+test("settleSlots puts no slot whose row left the file into gone: the same row may be queued again", () => {
+	for (const column of columns) {
+		for (const slot of [person("row", "prompt", { is: "queued" }, { stop: true, left: true }), turn("row", "held", { stop: true, left: true }), turn("row", "started", { left: true })]) assert.deepEqual([...settleSlots([slot], column.how, () => false).gone], []);
+	}
+});
+
+test("settleSlots keeps a turn slot whose row left the file while another hand-over's mark is in the conversation: the page's pi may still write its own message", () => {
+	const left = turn("row", "held", { stop: true, left: true });
+	assert.deepEqual(settleSlots([left], { aborted: true, terminal: false }, () => true).slots, [left]);
+	assert.deepEqual(settleSlots([turn("row", "started", { left: true })], { aborted: true, terminal: false }, () => true).slots, [], "its own message, once started and written, is the end of it");
 });
 
 test("settleSlots does not change the input slots or their objects", () => {
-	const input: Slot[] = [
-		writingTurn("writing", "one"),
-		turn("queued", "two", { is: "queued" }),
-		append("append"),
-		other("person"),
-	];
+	const input: Slot[] = [writingPerson("writing", "one"), person("queued", "two", { is: "queued" }), turn("turn", "held"), append("append"), other("person")];
 	const before = structuredClone(input);
 	settleSlots(input, { aborted: true, terminal: false }, () => false);
 	assert.deepEqual(input, before);
 });
-
-test("cleanEditor removes ordered prompts from paragraphs", () => {
-	const editor = "[Trigger run-aaa] queued one\n\nqueued two\n\nwords the person typed";
-	assert.equal(cleanEditor(editor, [
-		{ text: "[Trigger run-aaa] queued one", prefix: "[Trigger run-aaa] " },
-		{ text: "queued two" },
-	]), "words the person typed");
-});
-
-test("cleanEditor removes rewritten prompts", () => {
-	const editor = "[rewritten] [Trigger run-aaa] queued one\n\n[rewritten] queued two\n\nwords the person typed";
-	assert.equal(cleanEditor(editor, [
-		{ text: "[Trigger run-aaa] queued one", prefix: "[Trigger run-aaa] " },
-		{ text: "queued two" },
-	]), "words the person typed");
-});
-
-test("cleanEditor removes a prefixed prompt with appended handler words", () => {
-	assert.equal(cleanEditor("[Trigger run-aaa] queued one (sent by bot)\n\nmine", [
-		{ text: "[Trigger run-aaa] queued one", prefix: "[Trigger run-aaa] " },
-	]), "mine");
-});
-
-test("cleanEditor returns the same string when a prompt is absent", () => {
-	const editor = "[Trigger run-aaa] queued one (sent by bot)\n\nmine";
-	assert.equal(cleanEditor(editor, [{ text: "[Trigger other] missing", prefix: "[Trigger other] " }]) === editor, true);
-});
-
-test("cleanEditor removes a two-paragraph prompt", () => {
-	assert.equal(cleanEditor("line one\n\nline two\n\nmine", [{ text: "line one\n\nline two" }]), "mine");
-});
-
-test("cleanEditor takes the first ending match for an unprefixed prompt", () => {
-	assert.equal(cleanEditor("queued two\n\nI said queued two", [{ text: "queued two" }]), "I said queued two");
-});
-
-test("cleanEditor removes separate blocks for repeated prompts", () => {
-	assert.equal(cleanEditor("go\n\ngo\n\nmine", [{ text: "go" }, { text: "go" }]), "mine");
-});
-
-test("cleanEditor preserves the string for no prompts and empty unprefixed prompts", () => {
-	const editor = "mine\n\nkeep this";
-	assert.equal(cleanEditor(editor, []), editor);
-	assert.equal(cleanEditor(editor, [{ text: "" }]) === editor, true);
-});
-
-test("cleanEditor removes only the prompt named by this stop", () => {
-	assert.equal(cleanEditor("[Trigger run-ccc] third\n\n[Trigger run-aaa] queued one\n\nmine", [
-		{ text: "[Trigger run-ccc] third", prefix: "[Trigger run-ccc] " },
-	]), "[Trigger run-aaa] queued one\n\nmine");
-});
-
 
 test("pi-loops.ts hands the window pi's own delivery of an input: the rule of whose a message is reads it", () => {
 	// pi-loops.ts has no harness: its source is the thing pinned (as test/lease.test.ts does).
@@ -357,89 +172,14 @@ test("pi-loops.ts hands the window pi's own delivery of an input: the rule of wh
 	assert.match(source, /executor\.inputSeen\(\{ source: e\.source, text: e\.text, streamingBehavior: e\.streamingBehavior \}, Date\.now\(\)\)/);
 });
 
-// From the Gates review of PR 261, round 5: rules of claimOf no other test pinned.
-const claimTurn = (id: string, text: string, phase: Phase, prefix?: string): TurnSlot => ({ whose: "turn", mark: markFor({ lane: "s1", id }), text, ...(prefix === undefined ? {} : { prefix }), cap: { kind: "row", id, mode: "attended" }, phase, echoed: false });
-const waitingInput = (text: string, from: "person" | "extension" = "person", behind?: "steer" | "followUp"): OtherSlot => ({ whose: "other", from, text, ...(behind ? { behind } : {}) });
-
-test("claimOf: the person's message that quotes our prompt in its middle is theirs, not ours (a prefix proves nothing)", () => {
-	const ours = claimTurn("ours", "[Trigger ours] run j1.", { is: "queued" }, "[Trigger ours] ");
-	const theirs = waitingInput("look: [Trigger ours] run j1. what is this?", "person", "followUp");
-	const c = claimOf("look: [Trigger ours] run j1. what is this?", [ours, theirs]);
-	assert.equal(c.by === "other" && c.slot, theirs);
+test("pi-loops.ts tells the window when pi compacts and when the compaction ends, done or not", () => {
+	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
+	assert.match(source, /pi\.on\("session_before_compact", async \(\) => \{\n\t\texecutor\.compaction\(true\);/);
+	assert.match(source, /pi\.on\("session_compact", async \(e, ctx\) => \{\n\t\texecutor\.compaction\(false\);/);
+	assert.match(source, /pi\.on\("session_compact_failed", async \(e, ctx\) => \{\n\t\texecutor\.compaction\(false\);/);
 });
 
-test("claimOf: someone else's words around the message come before our prefix, and then not by their text", () => {
-	const ours = claimTurn("ours", "[Trigger ours] run j1.", { is: "queued" }, "[Trigger ours] ");
-	const theirs = waitingInput("run j1.", "person", "followUp");
-	const c = claimOf("[rewritten] [Trigger ours] run j1.", [ours, theirs]);
-	assert.equal(c.by, "other");
-	if (c.by === "other") assert.equal(c.byText, false);
+test("pi-loops.ts drains after a custom message ends as after a user message: a turn row's proof is in the conversation once the handler returns", () => {
+	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
+	assert.match(source, /if \(\(role === "user" \|\| role === "custom"\) && executor\.handedOver\.size\) setImmediate\(/);
 });
-
-test("claimOf: a waiting input takes a message no words place, not by its text", () => {
-	const c = claimOf("something nobody said", [waitingInput("hello there", "person", "followUp")]);
-	assert.equal(c.by, "other");
-	if (c.by === "other") assert.equal(c.byText, false);
-});
-
-test("claimOf: the oldest waiting input takes a message of ours with no prefix, and the oldest of two inputs with the very same words", () => {
-	const ours = claimTurn("ours", "address finding 1.", { is: "queued" });
-	const first = waitingInput("a", "person", "followUp");
-	const second = waitingInput("b", "extension", "followUp");
-	const c = claimOf("[rewritten] address finding 1.", [ours, first, second]);
-	assert.equal(c.by === "other" && c.slot, first);
-	const same1 = waitingInput("same", "person", "followUp");
-	const same2 = waitingInput("same", "extension", "followUp");
-	const d = claimOf("same", [same1, same2]);
-	assert.equal(d.by === "other" && d.slot, same1);
-});
-
-test("claimOf: the person's input with the very same words as a prompt of ours is theirs, but not by their text: no cap is lifted on words we sent too", () => {
-	const ours = claimTurn("ours", "run the tests.", { is: "queued" });
-	const theirs = waitingInput("run the tests.", "person", "steer");
-	const c = claimOf("run the tests.", [ours, theirs]);
-	assert.equal(c.by === "other" && c.slot, theirs);
-	if (c.by === "other") assert.equal(c.byText, false);
-	const alone = claimOf("run the tests.", [theirs]);
-	if (alone.by === "other") assert.equal(alone.byText, true, "with no prompt of ours in those words, by their text");
-});
-
-// From the Gates review of PR 261, round 6.
-test("claimOf: rule 2 by text: the person's words around the message, with no prompt of ours around it, are theirs by their text", () => {
-	const c = claimOf("[rw] hello there", [waitingInput("hello there", "person", "followUp")]);
-	assert.equal(c.by, "other");
-	assert.equal(c.by === "other" && c.byText, true);
-});
-
-test("claimOf: rule 2 beside an unprefixed prompt of ours: not by their text", () => {
-	const c = claimOf("[rw] please tidy the cache", [claimTurn("ours", "please tidy the cache", { is: "queued" }), waitingInput("the cache", "person", "followUp")]);
-	assert.equal(c.by, "other");
-	assert.equal(c.by === "other" && c.byText, false);
-});
-
-test("claimOf: rule 2 beside a refused prompt of ours: not by their text", () => {
-	const c = claimOf("[rw] [Trigger ours] run j1.", [claimTurn("ours", "[Trigger ours] run j1.", { is: "refused" }, "[Trigger ours] "), waitingInput("run j1.", "person", "followUp")]);
-	assert.equal(c.by, "other");
-	assert.equal(c.by === "other" && c.byText, false);
-});
-
-test("claimOf: rule 2 when their words are the longer: still not by their text", () => {
-	const c = claimOf("[rw] fix it: run j1.", [claimTurn("ours", "run j1.", { is: "queued" }), waitingInput("fix it: run j1.", "person", "followUp")]);
-	assert.equal(c.by, "other");
-	assert.equal(c.by === "other" && c.byText, false);
-});
-
-// From the Gates review of PR 261, round 7: the very same words beside a prompt of ours in every phase.
-for (const [name, slot] of [
-	["refused", claimTurn("ours", "run the tests.", { is: "refused" })],
-	["pending", claimTurn("ours", "run the tests.", { is: "pending", since: 0 } as Phase)],
-	["opening", claimTurn("ours", "run the tests.", { is: "opening" } as Phase)],
-	["stopped", { ...claimTurn("ours", "run the tests.", { is: "queued" }), stop: true as const }],
-] as const) {
-	test(`claimOf: the person's very same words beside a ${name} prompt of ours: not by their text`, () => {
-		const theirs = waitingInput("run the tests.", "person", "followUp");
-		const c = claimOf("run the tests.", [slot as TurnSlot, theirs]);
-		assert.equal(c.by === "other" && c.slot, theirs);
-		assert.equal(c.by === "other" && c.byText, false);
-	});
-}

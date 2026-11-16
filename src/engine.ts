@@ -102,9 +102,10 @@ export interface RowAddress {
 /**
  * The sources whose text must start with `[Trigger <id>] `, the proof of delivery an older version
  * reads by that prefix: the clock's prompt, `/cron run`, a rule's result, a push. A claim, a recipe
- * hand-off, `/new-trigger` and a goal's continuation carry it too since 0.24.3 (`prefixed`), so the
- * window knows its prompt when another extension wraps it; one queued by an earlier version does not,
- * and is proved as a person row is. Only the person's own message goes in their words alone.
+ * hand-off, `/new-trigger` and a goal's continuation carry it too since 0.24.3 (`prefixed`), as
+ * words for the person and the model: this version knows no message by its prefix, since a window
+ * hands every such row as a custom message that names it (src/window-executor.ts). Only the
+ * person's own message goes in their words alone.
  */
 export function carriesPrefix(source: Row["source"]): boolean {
 	return source.startsWith("cron:") || source.startsWith("cron-run:") || source.startsWith("rule:") || source.startsWith("push:");
@@ -776,20 +777,27 @@ export interface ExecutorView {
 	/** Handed to pi and not yet in the conversation: the derived claims. */
 	inFlight: ReadonlySet<string>;
 	/**
-	 * When each turn row in `inFlight` was handed to pi, for the ones pi has started no run since
-	 * (`agent_start` clears them; an `input` or `message_start` seen meanwhile restarts the count).
-	 * One still here while pi is idle `PERSON_SEND_GRACE_MS` later was refused: pi's `prompt()` throws
-	 * before any run starts (compaction in progress, no model, no credentials), and an extension hears
-	 * nothing of it.
+	 * When each person row in `inFlight` that went to an idle pi as a user message was handed over,
+	 * for the ones pi has started no run since (`agent_start` clears them; an `input` or
+	 * `message_start` seen meanwhile restarts the count). One still here while pi is idle
+	 * `PERSON_SEND_GRACE_MS` later was refused: pi's `prompt()` throws before any run starts
+	 * (compaction in progress, no model, no credentials), and an extension hears nothing of it.
 	 */
 	inFlightSince?: ReadonlyMap<string, number>;
+	/**
+	 * The turn rows in `inFlight` that went to an idle pi as a custom message and that no run has
+	 * taken up. Each has the lane, as one in `inFlightSince` has, and no grace applies to it: pi
+	 * starts a run for a custom message at once, or when its `agent_settled` handlers return, and
+	 * refuses none in silence (probes S2, P17).
+	 */
+	unstarted?: ReadonlySet<string>;
 	/**
 	 * Rows pi was handed and no longer has, unwritten, with the reason (src/window-claim.ts
 	 * `settleSlots`): a stop named it and it went (`stopped`: exit cancelled, never offered again); a
 	 * stop in a terminal took it out of pi's queue (`dropped`); or a run ended with no stop and no entry
-	 * carries its mark (`lost`: pi wrote it in words the window could not take for the row's, another
-	 * handler took the mark off, or pi refused it during a run). A failure is counted for the last two:
-	 * without the count, a prompt an extension rewrites on every turn would run for ever.
+	 * carries its mark (`lost`: pi dropped it with no word, another handler took the mark off, or pi
+	 * wrote a person's message in words the window could not take for the row's). A failure is counted
+	 * for the last two: without the count, a prompt that is lost on every turn would run for ever.
 	 */
 	gone?: ReadonlyMap<string, Gone>;
 	/**
@@ -994,7 +1002,7 @@ export function formatWait(ms: number): string {
  * this drain (`own`, the row's actions, holds an exit or a fail). An idle pi gets one prompt of ours at a time.
  */
 function holdsLane(row: Row, view: ExecutorView, own: readonly Action[]): boolean {
-	return row.wake === "turn" && view.inFlightSince?.has(row.id) === true && !own.some((a) => a.do === "exit" || a.do === "fail");
+	return row.wake === "turn" && (view.inFlightSince?.has(row.id) === true || view.unstarted?.has(row.id) === true) && !own.some((a) => a.do === "exit" || a.do === "fail");
 }
 
 /**
@@ -1035,9 +1043,9 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 			} else if (row.kind === "cancel" && view.inFlight.has(target.id) && view.running?.requestId !== target.id && queued.has(target.id) && !cancelled.has(target.id)) {
 				// pi holds the row and has not begun it: behind a running turn, or kept after a stop. The
 				// page's "clear queue" writes this cancel and then empties pi, which tells no extension
-				// (issue 259). The row leaves now, and the window aborts a prompt if pi writes it after all.
-				// A custom message has no start to abort: one pi still holds (the page's ✕ on that row, which
-				// leaves pi as it is) lands as it would have landed before this cancel.
+				// (issue 259). The row leaves now, and the window aborts a turn if pi writes it after all.
+				// An `append` row's message starts no turn of its own to abort: one pi still holds (the
+				// page's ✕ on that row, which leaves pi as it is) lands as it would have landed before this cancel.
 				cancelled.add(target.id);
 				actions.push({ do: "abortWhenStarted", stop: row, target: target.id });
 				actions.push({ do: "exit", row: queued.get(target.id)!, exit: "cancelled" });
@@ -1123,8 +1131,9 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 			actions.push({ do: "exit", row, exit: "dead", why: "an input row without text" });
 			return done();
 		}
-		// The prefix is the proof of delivery: a row of such a source without it would be written again on
-		// every drain, with nothing to tell that it landed.
+		// The prefix is the proof of delivery an older version and a held turn read (`olderProved`,
+		// `Proof.heldRunWrote`): a row of such a source without it would be written again by either,
+		// with nothing to tell that it landed.
 		if (carriesPrefix(row.source) && !row.payload?.text.startsWith(`[Trigger ${row.id}] `)) {
 			actions.push({ do: "exit", row, exit: "dead", why: "an input row without its [Trigger <id>] prefix" });
 			return done();
@@ -1246,8 +1255,8 @@ export interface Executor {
 	view(lane: LaneId): ExecutorView;
 	/** What a row of the lane is proved by: the session it writes into, and the run records. */
 	proof(lane: LaneId): Proof;
-	/** Hand a turn row to pi; `now` is when, for `ExecutorView.inFlightSince`. A row with a claim cannot be handed over. */
-	turn(row: UnclaimedRow, now: number): TurnSent;
+	/** Hand a turn row to pi; `now` is when, for `ExecutorView.inFlightSince`. A row with a claim cannot be handed over. A promise when the hand-over has work to wait for first (a window resizes a row's images). */
+	turn(row: UnclaimedRow, now: number): TurnSent | Promise<TurnSent>;
 	append(row: UnclaimedRow, wakeAgent: boolean): TurnSent;
 	/** Stop the turn running now. */
 	abort(): void;
@@ -1501,7 +1510,9 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 					// read it (cancelled, or taken back by the page and sent over rpc), and a turn now would
 					// answer it a second time.
 					if (action.do === "turn" && !carriesPrefix(row.source) && !store.update(sessionId, row.id, { handed_at: stamp(moment()) })) break;
-					const sent = action.do === "append" ? executor.append(row, action.wakeAgent) : executor.turn(row, now);
+					const handed = action.do === "append" ? executor.append(row, action.wakeAgent) : executor.turn(row, now);
+					// Awaited only when there is something to wait for: a hand-over that is done at once leaves no gap for pi's events.
+					const sent = typeof handed === "string" ? handed : await handed;
 					// The hold found another holder: nothing was sent, and nothing more of this drain is ours.
 					if (sent === "lease-lost") break apply;
 				} catch (err: any) {
