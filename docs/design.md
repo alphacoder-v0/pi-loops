@@ -416,8 +416,10 @@ machine. Everything here follows from that, and each one has a price.
     conversation at every drain and never from an event. A row of a version 2 line, queued by an
     earlier version, is still proved by its prefix, or by its words after `handed_at`, in an entry
     with no mark. In the window, a message takes the cap of the prompt it is; one the window cannot
-    place takes the cap of a prompt of ours pi holds unwritten, and only the person's words, by their
-    text, lift it. And its attended mode has to be believed: after the append the page sends
+    place runs under the strictest cap below, and only the person's words, by their text, lift it.
+    That cost reaches the person's own message from the page and a goal's continuation too, when an
+    extension rewrites it and someone else's message waits, or when an extension replaces its words
+    whole: its tool calls are asked about, as a scheduled turn's are. And its attended mode has to be believed: after the append the page sends
     `/pi-loops ring <id> <fingerprint>` over its pi's rpc stdin, a channel no model tool can write
     to; the extension records the row as produced by this window only when the row now in the file
     has that fingerprint (a hash of kind, source, wake, text, the images and the declared tools),

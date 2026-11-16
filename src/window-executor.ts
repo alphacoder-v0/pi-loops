@@ -422,9 +422,9 @@ export class WindowExecutor implements Executor {
 	 * (`claimOf`). A prompt of ours: its turn runs under the row's cap, and a row a stop named is
 	 * aborted here; pi still writes the message at `message_end` (its agent loop emits the two back to
 	 * back), with the mark, so the row is done and not offered again. The person's words, by their
-	 * text and delivered into the run when a row's cap is in force, run uncapped. Anything else runs
-	 * under the narrowest of the cap in force, the caps of the prompts of ours pi holds, and the cap
-	 * of a row the file still has whose `[Trigger <id>] ` begins the message (which proves nothing).
+	 * text and delivered into the run when a row's cap is in force, run uncapped. Anything else, while
+	 * it may be a prompt of ours, runs under the strictest cap (`strictest`); a lone row the file still
+	 * has whose `[Trigger <id>] ` begins it (which proves nothing) gives that row's own cap.
 	 */
 	messageStarted(message: unknown, now = Date.now()): void {
 		const text = userTextOf(message);
@@ -456,7 +456,7 @@ export class WindowExecutor implements Executor {
 		// late), or the message begins with the `[Trigger <id>]` of a row the file still has, it may be a
 		// prompt of ours, rewritten: the strictest cap (and no mark: the cost is a second delivery at most).
 		// With none of them, it is the person's, or nobody's, and uncapped.
-		const id = claim.by === "nobody" ? triggerIdOf(message) : undefined;
+		const id = triggerIdOf(message);
 		const row = id === undefined ? undefined : this.rows().find((r) => r.id === id);
 		if (row && this.running) this.running = { ...this.running, requestId: row.id };
 		const held = this.slots.find((slot): slot is TurnSlot => slot.whose === "turn" && slot.phase.is !== "writing" && slot.phase.is !== "written");

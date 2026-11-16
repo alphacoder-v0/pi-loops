@@ -532,6 +532,17 @@ test("the strictest cap stays when a prompt pi held leaves the list mid-run, and
 	assert.equal((await w.call(rmrf))?.block, true);
 });
 
+test("a message that begins with a row's [Trigger <id>] and goes to a waiting input for want of a better keeps that row's cap", async () => {
+	const w = window();
+	const row = plainJobRow(job({ tools: ["read"] }), "run-1111222233334444", "cron:job-1", "", by, T0);
+	w.queued.set(row.id, row); // handed by a window before a reload: this one holds no slot for it
+	w.executor.agentStarted(T0);
+	w.executor.inputSeen({ source: "rpc", text: "and the logs", streamingBehavior: "followUp" }, T0 + 1);
+	w.started(`${row.payload!.text} (rewritten)`);
+	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, ["read"], "its own cap");
+	assert.equal((await w.call({ toolName: "write", input: {} }))?.block, true);
+});
+
 test("a message the window cannot place takes the cap of a refused prompt pi may still send late", async () => {
 	const w = window();
 	const row = plainJobRow(job({ tools: ["read"] }), "run-1111222233334444", "cron:job-1", "", by, T0);
@@ -906,7 +917,7 @@ test("a second unplaced message after a run's own message: the strictest cap, an
 	w.started("keep going"); // p1's own message: its cap in force
 	const j = jobRowRead("run-aaaabbbbccccdddd");
 	w.queued.set(j.id, j); // in the file, not handed over here
-	w.started(`[Trigger ${j.id}] tidy the cache, rewritten`); // unplaced: meet of p1 and j
+	w.started(`[Trigger ${j.id}] tidy the cache, rewritten`); // unplaced: the strictest cap
 	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, [], "the strictest cap: no tool declared");
 	w.started("<ctx>another extension's message</ctx>"); // unplaced again
 	ring(w, p1);
@@ -961,7 +972,7 @@ test("a turn's own message after the strictest cap: a late ring of another row d
 	w.queued.set(p1.id, p1);
 	w.executor.turn(p1, T0);
 	w.executor.agentStarted(T0 + 1);
-	w.started("<ctx>rewritten</ctx>"); // meet of p1 alone
+	w.started("<ctx>rewritten</ctx>"); // unplaced: the strictest cap
 	const k = jobRowRead("run-5555666677778888");
 	w.queued.set(k.id, k);
 	w.executor.turn(k, T0 + 2);
@@ -980,7 +991,7 @@ test("the person's follow-up after the strictest cap: a late ring does not cap t
 	w.queued.set(j.id, j);
 	w.executor.turn(j, T0 + 1);
 	w.executor.agentStarted(T0 + 2);
-	w.started("<ctx>rewritten</ctx>"); // meet of p1 and j
+	w.started("<ctx>rewritten</ctx>"); // unplaced: the strictest cap
 	w.executor.inputSeen({ source: "interactive", text: "now go on", streamingBehavior: "followUp" }, T0 + 3);
 	w.started("now go on");
 	assert.deepEqual(w.executor.currentTurn(), { kind: "person" });
