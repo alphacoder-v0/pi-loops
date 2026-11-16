@@ -403,7 +403,9 @@ machine. Everything here follows from that, and each one has a price.
     waits. An input during a run with no delivery is one pi refuses (G11), never a message. While a
     row's cap is in force, the person's words lift it only when pi delivers them into the run, as its
     `input` event says (`streamingBehavior`, a steer or a follow-up): what they sent to an idle pi
-    would have begun a run of its own. A
+    would have begun a run of its own. And their words lift nothing when words of a prompt of ours are
+    around the message too. A message the window cannot place runs under the narrowest of the cap in
+    force and the caps of the prompts of ours pi holds. A
     prefix in the text is words, for the person and the model, and decides nothing by itself: the person can
     send it, and another extension can move it. A turn handed to an idle pi that no run has taken up
     keeps the lane, so an idle pi gets one prompt of ours at a time. The proof is read from the

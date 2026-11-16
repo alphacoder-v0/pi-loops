@@ -114,7 +114,8 @@ function longest<T>(msg: string, slots: readonly T[], textOf: (slot: T) => strin
  * Whose a user message is, from what the message itself shows, never from an order of pi:
  * 1. The very same words as a waiting input of someone else: theirs (the oldest). As a prompt of ours:
  *    ours, by `tieRank` (one no stop named first; then opening, one pi holds, a refused one, the oldest).
- * 2. Words around a waiting input of someone else: theirs; the longest text wins, then the oldest.
+ * 2. Words around a waiting input of someone else: theirs; the longest text wins, then the oldest. When
+ *    words of a prompt of ours are around the message too, not by their text (`byText` false).
  * 3. Words around a prompt of ours with its `[Trigger <id>] ` in the message: ours.
  * 4. Words around a prompt of ours with no prefix: ours only when no input of someone else waits;
  *    otherwise the oldest such input's (not by its text: `byText` false), and no mark.
@@ -132,14 +133,16 @@ export function claimOf(text: string, slots: readonly Slot[]): Claim {
 	const exactTurns = exact.filter((slot): slot is TurnSlot => slot.whose === "turn");
 	if (exactTurns.length) return turnClaim(exactTurns.reduce((best, slot) => (tieRank(slot) < tieRank(best) ? slot : best)));
 
-	const otherAround = longest(msg, candidates.filter((slot): slot is OtherSlot => slot.whose === "other"), (slot) => slot.text, () => 0);
-	if (otherAround) return namedOther(otherAround);
 	const turnAround = longest(
 		msg,
 		candidates.filter((slot): slot is TurnSlot => slot.whose === "turn"),
 		(slot) => slot.text,
 		tieRank,
 	);
+	// Words around someone else's input: theirs, but not by their text when our words are around it too
+	// (the person's words can end with a prompt of ours): no mark, and no cap lifted.
+	const otherAround = longest(msg, candidates.filter((slot): slot is OtherSlot => slot.whose === "other"), (slot) => slot.text, () => 0);
+	if (otherAround) return namedOther(otherAround, turnAround === undefined);
 	// The words of a prompt of ours around the message, with its `[Trigger <id>] `: no one else's
 	// message carries that, so it is ours whatever else waits.
 	if (turnAround?.prefix !== undefined && msg.includes(turnAround.prefix)) return turnClaim(turnAround);

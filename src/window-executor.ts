@@ -36,12 +36,7 @@ export function unattendedTurn(current: CurrentTurn | undefined): current is Cur
 
 /** The `[Trigger <id>] ` id a message starts with, when it does. */
 export function triggerIdOf(message: unknown): string | undefined {
-	const value = message as { role?: unknown; content?: unknown } | undefined;
-	if (!value || value.role !== "user") return undefined;
-	const content = value.content;
-	const text = typeof content === "string" ? content : Array.isArray(content) ? (content.find((part) => part?.type === "text") as { text?: string } | undefined)?.text : undefined;
-	const match = text?.match(/^\[Trigger ([^\]]+)\] /);
-	return match?.[1];
+	return userTextOf(message)?.match(/^\[Trigger ([^\]]+)\] /)?.[1];
 }
 
 /**
@@ -439,20 +434,20 @@ export class WindowExecutor implements Executor {
 			this.current = { kind: "person" };
 			return;
 		}
-		if (this.current?.kind === "row") return;
+		// A message the window cannot place, or one it gave a waiting input for want of a better: it may
+		// be a prompt of ours, rewritten, that pi holds unwritten (a refused one too: pi may send it late),
+		// or a row's prompt the file still has, by its `[Trigger <id>]`. So the narrowest of those caps and
+		// of the one in force (with no mark: the cost is a second delivery at most). With none of them, it
+		// is the person's, or nobody's, and uncapped.
+		const caps: Array<CurrentTurn & { kind: "row" }> = this.current?.kind === "row" ? [this.current] : [];
 		const id = claim.by === "nobody" ? triggerIdOf(message) : undefined;
 		const row = id === undefined ? undefined : this.rows().find((r) => r.id === id);
 		if (row) {
 			if (this.running) this.running = { ...this.running, requestId: row.id };
-			this.current = this.capOf(row);
-			return;
+			caps.push(this.capOf(row));
 		}
-		// A message the window cannot place, or one it gave a waiting input for want of a better: while
-		// pi holds a prompt of ours unwritten (a refused one too: pi may send it late) it may be that
-		// prompt, rewritten, so the narrowest of their caps (with no mark: the cost is a second delivery
-		// at most). Otherwise it is the person's, or nobody's, and uncapped.
 		const held = this.slots.filter((slot): slot is TurnSlot => slot.whose === "turn" && slot.phase.is !== "writing" && slot.phase.is !== "written");
-		this.current = narrowestCap(held.map((slot) => slot.cap)) ?? { kind: "person" };
+		this.current = narrowestCap([...caps, ...held.map((slot) => slot.cap)]) ?? { kind: "person" };
 	}
 
 	/**

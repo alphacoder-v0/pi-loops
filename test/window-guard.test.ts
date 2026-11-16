@@ -450,6 +450,37 @@ test("a message the window cannot place takes the narrowest cap when the narrow 
 	assert.equal((await w.call({ toolName: "bash", input: { command: "ls" } }))?.block, true, "bash is not among what every held prompt allows");
 });
 
+test("a message the window cannot place during a run under an attended cap takes the narrower cap of a prompt pi holds", async () => {
+	const w = window();
+	const mine = pageRow("p1", "keep going");
+	w.queued.set(mine.id, mine);
+	assert.equal(ringProduced([...w.queued.values()], mine.id, requestFingerprint(mine), (r) => w.executor.produced(r)), true);
+	w.executor.turn(mine, T0);
+	w.executor.agentStarted(T0 + 1);
+	w.started("keep going"); // the attended row's run
+	const row = plainJobRow(job({ tools: ["read"] }), "run-1111222233334444", "cron:job-1", "", by, T0);
+	w.queued.set(row.id, row);
+	w.executor.turn(row, T0 + 2); // queued behind it
+	w.executor.inputSeen({ source: "extension", text: "another extension says hi", streamingBehavior: "followUp" }, T0 + 3);
+	w.started(`<ctx>${row.payload!.text}</ctx>`);
+	assert.equal((w.executor.currentTurn() as { mode?: string }).mode, "unattended");
+	assert.equal((await w.call(rmrf))?.block, true);
+});
+
+test("the person's words that end with a prompt of ours do not lift its cap when the message carries that prompt too", async () => {
+	const w = window();
+	const row = plainJobRow(job(), "run-1111222233334444", "cron:job-1", "", by, T0);
+	w.queued.set(row.id, row);
+	w.executor.agentStarted(T0);
+	w.started("the run's first message");
+	w.executor.turn(row, T0 + 1); // queued behind the run
+	const tail = row.payload!.text.replace(/^\[Trigger [^\]]+\] /, "");
+	w.executor.inputSeen({ source: "rpc", text: tail, streamingBehavior: "followUp" }, T0 + 2);
+	w.started(`[rewritten] ${row.payload!.text}`);
+	assert.equal(w.executor.currentTurn()?.kind, "row", "the cap stays");
+	assert.equal((await w.call(rmrf))?.block, true);
+});
+
 test("a message the window cannot place takes the cap of a refused prompt pi may still send late", async () => {
 	const w = window();
 	const row = plainJobRow(job({ tools: ["read"] }), "run-1111222233334444", "cron:job-1", "", by, T0);
