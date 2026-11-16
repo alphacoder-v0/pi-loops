@@ -1044,7 +1044,9 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 
 	const unclaimed = (row: UnclaimedRow): Sorted => {
 		const actions: Action[] = [];
-		const done = (): Sorted => ({ actions, holding: false });
+		// A turn handed to an idle pi that no run has taken up holds the lane whatever else this row
+		// waits for (its job disabled, a backoff): pi has the prompt already. Not one that leaves now.
+		const done = (): Sorted => ({ actions, holding: row.wake === "turn" && view.inFlightSince?.has(row.id) === true && !actions.some((a) => a.do === "exit" || a.do === "fail") });
 		if (landed(row, proof)) {
 			actions.push({ do: "exit", row, exit: "delivered" });
 			return done();
@@ -1055,6 +1057,11 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 			return done();
 		}
 		const wait = (why: string, until?: number) => actions.push({ do: "wait", row, why, ...(until === undefined ? {} : { until }) });
+		// A row that leaves while pi holds its prompt and has not begun it (its job removed, its goal
+		// cleared): the window aborts the prompt if pi writes it after all, as for a cancel.
+		const leaveHeld = (): void => {
+			if (view.inFlight.has(row.id) && view.running?.requestId !== row.id) actions.push({ do: "abortWhenStarted", stop: row, target: row.id });
+		};
 		// Judged on a tick only: the drain that handed the row over, and the one `agent_settled` runs
 		// (pi defers a prompt sent while it emits that event until after the handler), both come
 		// before pi has had its chance. A bell from outside pi's event cycle (the page's ring) counts.
@@ -1124,6 +1131,7 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 				return done();
 			}
 			if (!job.exists) {
+				leaveHeld();
 				actions.push({ do: "exit", row, exit: "job-removed" });
 				return done();
 			}
@@ -1140,6 +1148,7 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 		}
 		// Judged by the executor that runs the row: the goal is that process's state.
 		if (row.source === "goal" && !jobs.goalActive(row.lane)) {
+			leaveHeld();
 			actions.push({ do: "exit", row, exit: "stale" });
 			return done();
 		}
@@ -1161,7 +1170,7 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 			// prompt of ours at a time, from every source. Once a run takes it, or pi keeps it after a
 			// stop, the lane is free: the next turn row starts the run that writes it behind.
 			wait("handed to pi, not yet in the conversation");
-			return { actions, holding: row.wake === "turn" && view.inFlightSince?.has(row.id) === true };
+			return done();
 		}
 		// A person's message is sent only for the page that wrote it (design §5); every other row
 		// outlives its producer, and a local one is the holder's to run once the producer is gone.
@@ -1185,8 +1194,11 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 	// The lane is taken from all the rows, before any of them is started.
 	const taken = sorted.some((s) => s.holding);
 	let busy = !view.idle;
+	// What pi is to abort as it starts goes first: a prompt handed over in this drain must not go to
+	// pi while the window still counts a prompt pi will abort as one it is owed.
+	for (const { actions: own } of sorted) actions.push(...own.filter((a) => a.do === "abortWhenStarted"));
 	for (const { actions: own, holding, ready } of sorted) {
-		actions.push(...own);
+		actions.push(...own.filter((a) => a.do !== "abortWhenStarted"));
 		if (holding) busy = true;
 		if (!ready) continue;
 		if (ready.wake !== "turn") {

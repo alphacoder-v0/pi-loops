@@ -69,7 +69,7 @@ import { Inbox } from "../../src/inbox.ts";
 import { RequestStore, type Row } from "../../src/requests.ts";
 import { TriggerStore } from "../../src/triggers.ts";
 import type { LeaseBinding } from "../../src/lease.ts";
-import { markDetails, markFor } from "../../src/mark.ts";
+import { markDetails, markFor, markOn } from "../../src/mark.ts";
 import { WindowExecutor } from "../../src/window-executor.ts";
 
 /** Where every schedule's clock starts. In the past: src/lock.ts compares the clock with a lock directory's real mtime, and a simulated now ahead of it would call every lock stale. */
@@ -123,6 +123,8 @@ export interface Copy {
 	stopNamed?: boolean;
 	/** `ctx.abort()` was called as pi began this message. */
 	abortedAtStart?: boolean;
+	/** The row whose mark pi's entry of this copy carries, when it carries one. */
+	markedAs?: string;
 	/** A stop in a terminal put this hand-over's text into the editor, and the person sent it: written by them, not by pi's queue. */
 	fromTheEditor?: boolean;
 }
@@ -247,6 +249,8 @@ export interface HandOver {
 	 */
 	turnsHeld: number;
 	textTurnsHeld: number;
+	/** Turns of ours this idle pi was handed and has not started, that are still owed (no stop or cancel named them) and still inside the grace. */
+	pendingTurnsHeld: number;
 	/** Pi wrote this row already, from its queue. */
 	written: boolean;
 	/** The person sent this row's text already, from the editor where a stop in a terminal had put it. */
@@ -305,6 +309,8 @@ export interface World {
 	rewrites: boolean;
 	/** The hand-overs that pi let go of when the page cleared the queue: none of them may be written afterwards. */
 	cleared: Copy[];
+	/** Of `cleared`, the ones whose row has left its queue since. */
+	clearedLeft: Set<Copy>;
 }
 
 /** A world of one conversation for each of `seconds`: its first process is a window, started; its second is of `kind`, started when `running`; `modes` are the two processes'. */
@@ -334,6 +340,7 @@ export function createWorld(dir: string, time: Timers, seconds: ReadonlyArray<{ 
 		ticks: opts.ticks === true,
 		rewrites: opts.rewrites === true,
 		cleared: [],
+		clearedLeft: new Set(),
 	};
 	time.setTime(EPOCH);
 	for (const [index, second] of seconds.entries()) {
@@ -371,9 +378,36 @@ const provedByText = (source: string): boolean => source === "goal" || source ==
  */
 export function deliveredBy(world: World, row: Row): Removal["delivered"] {
 	const written = world.copies.filter((copy) => copy.sessionId === row.lane && copy.state === "written");
-	if (written.some((copy) => copy.rowId === row.id)) return "its own message";
-	const stamp = provedByText(row.source) && row.handed_at !== undefined ? Date.parse(row.handed_at) : Number.NaN;
-	return written.some((copy) => copy.text === row.payload?.text && copy.writtenAt! >= stamp) ? "another row's message" : undefined;
+	if (written.some((copy) => countsFor(world, copy) === row.id)) return "its own message";
+	// The engine proves a row by its mark only. A mark can name the other of two rows with the very same
+	// words (a swap the rule allows: nobody can tell the two messages apart); that is the one other way.
+	return written.some((copy) => copy.text === row.payload?.text && copy.rowId !== row.id && (row.line === 2 || markedFor(world, row.lane, row.id))) ? "another row's message" : undefined;
+}
+
+/**
+ * The row a message pi wrote counts for. Its own, unless its entry carries the mark of another row
+ * with the very same words: nobody can tell two such messages apart, and the window may give either
+ * one the mark (src/window-claim.ts `claimOf`). A mark of a row with other words counts for nothing
+ * here; the check "a mark names its own row's message" says so.
+ */
+export function countsFor(world: World, copy: Copy): string {
+	if (copy.markedAs === undefined || copy.markedAs === copy.rowId) return copy.rowId;
+	return world.copies.some((other) => other.rowId === copy.markedAs && other.sessionId === copy.sessionId && other.text === copy.text) ? copy.markedAs : copy.rowId;
+}
+
+/**
+ * A message pi wrote that answers its row: not one the window aborted as pi began it (no answer came;
+ * the window does that for a stop or a cancel, and the same row queued again later is a new request).
+ */
+export const answered = (copy: Copy): boolean => copy.state === "written" && !copy.abortedAtStart;
+
+/** Whether an entry of the conversation carries the mark of row `id`. */
+function markedFor(world: World, lane: string, id: string): boolean {
+	const conversation = world.conversations.find((c) => c.id === lane);
+	return !!conversation?.entries.some((entry) => {
+		const mark = markOn(entry);
+		return mark?.lane === lane && mark.id === id;
+	});
 }
 export const findingsFor = (world: World, rowId: string): number => world.inbox.list().filter((entry) => entry.run_id === rowId).length;
 /** The states the audit's `request` lines give row `rowId`, newest first, without `failed` and `dead`: those two are not exits a line alone proves. */
@@ -468,6 +502,8 @@ function write(world: World, proc: Process, item: Item): void {
 	proc.conversation.entries.push(item.custom ? { type: "custom_message", timestamp: stampOf(at), content: item.text, ...(item.details === undefined ? {} : { details: item.details }) } : { type: "message", timestamp: stampOf(at), message });
 	if (world.ticks) advance(world, 1);
 	if (!item.copy) return;
+	const mark = markOn(proc.conversation.entries[proc.conversation.entries.length - 1]);
+	if (mark) item.copy.markedAs = mark.id;
 	if (!item.custom) proc.pi.turnOf = item.copy.rowId;
 	item.copy.abortedAtStart = proc.pi.aborts > aborts;
 	leave(item.copy, "written", at);
@@ -769,6 +805,8 @@ function watchedStore(world: World, fuse: Fuse, remover?: Process, removed: () =
 				for (const item of [pi.current, ...pi.queue]) if (item?.copy && item.copy.rowId === target && item.copy.wake === "turn" && !item.copy.gaveUp) item.copy.stopNamed = true;
 			}
 			world.facts.removals.push(removal);
+			// A row queued again with the same id after this (a loop's slot) is a new request, which the clear did not name.
+			for (const copy of world.cleared) if (copy.sessionId === sessionId && copy.rowId === row.id) world.clearedLeft.add(copy);
 		}
 		real.remove(sessionId, gone);
 		removed();
@@ -834,7 +872,7 @@ export async function drainAs(world: World, proc: Process, tick: boolean, fault:
 		crash.write();
 		const turns = held(proc).filter((copy) => copy.wake === "turn" && !copy.gaveUp);
 		const local = row.source === "goal" || row.source.startsWith("inbox:");
-		world.facts.handOvers.push({ drain: number, process: proc, row, wake, holds: conversation.holder === proc, queued: world.store.list(conversation.id).some((queued) => queued.id === row.id), producerRunsIt: local && row.created_by.left === undefined && pidAlive(world, row.created_by.pid), piRunning: proc.pi.running, turnsHeld: turns.length, textTurnsHeld: turns.filter((copy) => copy.provedByText && world.clock - copy.handedAt < GRACE_MS).length, written: world.copies.some((copy) => copy.sessionId === conversation.id && copy.rowId === row.id && copy.state === "written" && !copy.fromTheEditor), sentFromTheEditor: world.copies.some((copy) => copy.sessionId === conversation.id && copy.rowId === row.id && copy.state === "written" && copy.fromTheEditor === true) });
+		world.facts.handOvers.push({ drain: number, process: proc, row, wake, holds: conversation.holder === proc, queued: world.store.list(conversation.id).some((queued) => queued.id === row.id), producerRunsIt: local && row.created_by.left === undefined && pidAlive(world, row.created_by.pid), piRunning: proc.pi.running, turnsHeld: turns.length, textTurnsHeld: turns.filter((copy) => copy.provedByText && world.clock - copy.handedAt < GRACE_MS).length, pendingTurnsHeld: proc.pi.running ? 0 : proc.pi.queue.filter((item) => item.copy && item.copy.wake === "turn" && !item.copy.gaveUp && !item.copy.stopNamed && world.clock - item.copy.handedAt < GRACE_MS).length, written: world.copies.some((copy) => copy.sessionId === conversation.id && countsFor(world, copy) === row.id && answered(copy) && !copy.fromTheEditor), sentFromTheEditor: world.copies.some((copy) => copy.sessionId === conversation.id && copy.rowId === row.id && copy.state === "written" && copy.fromTheEditor === true) });
 		world.sending = { row, wake };
 		world.handOverThrows = fault.handOverThrows === true;
 		let sent: T;

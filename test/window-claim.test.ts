@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { markFor } from "../src/mark.ts";
-import type { Phase, Slot, TurnSlot } from "../src/window-claim.ts";
+import type { OtherSlot, Phase, Slot, TurnSlot } from "../src/window-claim.ts";
 import { claimOf, cleanEditor, settleSlots } from "../src/window-claim.ts";
 
 function turn(id: string, text: string, phase: Phase, opts: { prefix?: string; stop?: true; echoed?: boolean } = {}): TurnSlot {
@@ -107,10 +107,52 @@ test("claimOf gives words around to the other slot whose text they are, not to t
 	assertOtherClaim(claimOf("ok, now run it", [older, extension]), extension);
 });
 
-test("claimOf matches refused turns only by exact text", () => {
+test("claimOf gives a run's first message to the opening prompt of ours, not to another extension's follow-up, beside a rewriter", () => {
+	const ours = turn("ours", "the person says 1.", { is: "opening" });
+	const theirs: OtherSlot = { ...other("another extension says 2.", "extension"), followUp: true };
+	assertTurnClaim(claimOf("[rewritten] the person says 1.", [ours, theirs]), "ours");
+	const before: OtherSlot = other("another extension says 2.", "extension");
+	assertOtherClaim(claimOf("[rewritten] the person says 1.", [ours, before]), before);
+});
+
+test("claimOf gives a message to a prompt of ours that pi was given before another extension's follow-up", () => {
+	const ours = turn("ours", "[Trigger ours] run j1.", { is: "queued" });
+	const later: OtherSlot = { ...other("another extension says 2.", "extension"), followUp: true };
+	assertTurnClaim(claimOf("[rewritten] [Trigger ours] run j1.", [ours, later]), "ours");
+	const earlier: OtherSlot = { ...other("another extension says 2.", "extension"), followUp: true };
+	assertOtherClaim(claimOf("[rewritten] [Trigger ours] run j1.", [earlier, ours]), earlier);
+});
+
+test("claimOf gives the very same words to a refused slot before the run's starter: pi starts what it held first", () => {
+	const late = turn("late", "yes", { is: "refused" });
+	const starter = turn("starter", "yes", { is: "opening" });
+	assertTurnClaim(claimOf("yes", [starter, late]), "late");
+});
+
+test("claimOf gives the very same words to a prompt no stop named before one a stop named: a wrong guess must not abort a message that is owed", () => {
+	const stopped: TurnSlot = { ...turn("stopped", "the person says 3.", { is: "refused" }, { stop: true }), left: true };
+	const owed = turn("owed", "the person says 3.", { is: "opening" });
+	assertTurnClaim(claimOf("the person says 3.", [stopped, owed]), "owed");
+	assertTurnClaim(claimOf("[rewritten] the person says 3.", [stopped, owed]), "owed");
+	assertTurnClaim(claimOf("the person says 3.", [stopped]), "stopped");
+});
+
+test("settleSlots puts no slot whose row left the file into gone: the same row may be queued again", () => {
+	const left: TurnSlot = { ...turn("same", "run j1.", { is: "written" }, { stop: true }), left: true };
+	const opening: TurnSlot = { ...turn("same", "run j1.", { is: "opening" }, { stop: true }), left: true };
+	for (const how of [{ aborted: false, terminal: false }, { aborted: true, terminal: true }, { aborted: true, terminal: false }]) {
+		assert.equal(settleSlots([left], how, () => false).gone.size, 0);
+		assert.equal(settleSlots([opening], how, () => false).gone.size, 0);
+	}
+});
+
+test("claimOf gives a refused prompt a late send in its words, rewritten or not, before a later prompt with the same words", () => {
 	const row = turn("row", "report status", { is: "refused" });
 	assertTurnClaim(claimOf("report status", [row]), "row");
-	assert.equal(claimOf("please report status", [row]).by, "nobody");
+	assertTurnClaim(claimOf("[rewritten] report status", [row]), "row");
+	const queued = turn("queued", "report status", { is: "opening" });
+	assertTurnClaim(claimOf("[rewritten] report status", [queued, row]), "row");
+	assert.equal(claimOf("report status, please", [row, other("report")]).by, "other");
 });
 
 test("claimOf never claims writing, written or append slots", () => {
@@ -161,7 +203,7 @@ const settleCases: SettleCase[] = [
 	{
 		name: "refused turn",
 		slot: turn("refused", "prompt", { is: "refused" }),
-		expect: () => ({ kept: true }),
+		expect: (column) => (column === "terminal stop" ? { kept: false, editor: true } : column === "no stop" ? { kept: false } : { kept: true }),
 	},
 	{
 		name: "append",

@@ -7,7 +7,7 @@
  * these checks see.
  */
 import type { Row } from "../../src/requests.ts";
-import { type Conversation, type Copy, type Removal, type World, everyProcess, failedHandOvers, held, label, who } from "./world.ts";
+import { type Conversation, type Copy, type Removal, type World, answered, countsFor, everyProcess, failedHandOvers, held, label, who } from "./world.ts";
 
 /** Failures of one row before it is a dead letter (docs/design.md), stated apart from the engine's constant on purpose. */
 const DEAD_AT = 3;
@@ -201,14 +201,20 @@ function oneTurnFromTheHolder(world: World, _memory: Memory, _queues: Queues, co
 }
 
 /**
- * I3, for the rows only their text proves (a person's message, a claim, a goal's continuation).
- * The engine says such a turn, handed over and not yet written, has the lane (src/engine.ts
- * `landed`: "one lane hands over one such row at a time"), because a second message with the same
- * words would be proved by the first one's. This holds it to that, for a turn still inside the
- * grace after its hand-over: past it a tick may call the hand-over refused, which ends the claim.
+ * The mark of a row is on its own row's message, or on one with the very same words, and on nothing
+ * else: a mark on another row's message would remove the wrong row.
  */
-function noTurnBesideATextProvedTurn(world: World): string[] {
-	return world.facts.handOvers.filter((h) => h.wake === "turn" && h.textTurnsHeld > 0).map((h) => `${who(h.process)} handed the turn ${label(world, h.row.id)} to a pi that still held an unwritten turn only its text will prove`);
+function markOnItsOwnMessage(world: World): string[] {
+	return world.copies.filter((copy) => copy.state === "written" && copy.markedAs !== undefined && countsFor(world, copy) !== copy.markedAs).map((copy) => `pi wrote ${label(world, copy.rowId)} into ${copy.sessionId}, and its entry carries the mark of ${label(world, copy.markedAs!)}, which has other words`);
+}
+
+/**
+ * I3: an idle pi gets one prompt of ours at a time, from every source (src/engine.ts: a turn handed
+ * to an idle pi that no run has taken up has the lane). Not counted: a prompt a stop or a cancel
+ * named (pi will abort it as it starts), and one past the grace (a tick may call it refused).
+ */
+function noTurnBesideAnUnstartedTurn(world: World): string[] {
+	return world.facts.handOvers.filter((h) => h.wake === "turn" && h.pendingTurnsHeld > 0).map((h) => `${who(h.process)} handed the turn ${label(world, h.row.id)} to an idle pi that still held a prompt of ours it had not started`);
 }
 
 /**
@@ -281,9 +287,12 @@ function stopsAndCancelsWork(world: World, memory: Memory): string[] {
 		const runs = "id" in target ? pi.turnOf === target.id : pi.startedAt !== undefined && pi.startedAt < Date.parse(target.started_before);
 		if (runs) out.push(`${label(world, row.id)} named the turn pi was running, and pi was not asked to abort it`);
 	}
+	// Two hand-overs of one row with the same words (the row queued again after a cancel took it out)
+	// cannot be told apart: the stop holds when the other one, still held or written since, is the one aborted.
+	const swapped = (copy: Copy): boolean => world.copies.some((other) => other !== copy && other.sessionId === copy.sessionId && other.text === copy.text && !other.stopNamed && (other.state === "held" || other.abortedAtStart));
 	for (const copy of world.facts.written) {
 		// What the person sent from the editor is their own message: that a stopped prompt can be in it is the editor's defect (`stoppedRanFromTheEditor`).
-		if (copy.stopNamed && copy.wake === "turn" && !copy.fromTheEditor && !copy.provedByText && copy.gaveUp !== "stop" && !copy.abortedAtStart) out.push(`pi began the turn ${label(world, copy.rowId)}, which a stop had named while pi held it unstarted, and was not asked to abort it`);
+		if (copy.stopNamed && copy.wake === "turn" && !copy.fromTheEditor && !copy.provedByText && copy.gaveUp !== "stop" && !copy.abortedAtStart && !swapped(copy)) out.push(`pi began the turn ${label(world, copy.rowId)}, which a stop had named while pi held it unstarted, and was not asked to abort it`);
 	}
 	for (const copy of world.copies) {
 		if (!copy.stopNamed || copy.state !== "dropped" || copy.gaveUp || memory.released.has(copy) || !world.facts.drained.includes(copy.process)) continue;
@@ -335,7 +344,7 @@ function clearedDoesNotComeBack(world: World): string[] {
 		if (named?.queued && !named.inFlight) out.push(`${label(world, row.id)} left the queue, and ${label(world, target.id)}, which the page cleared out of pi's queue with it, is still queued`);
 	}
 	for (const h of world.facts.handOvers) {
-		if (clearedOutOfPi(world, h.process.conversation.id, h.row.id)) out.push(`${label(world, h.row.id)} was handed over again after the page had cleared it out of pi's queue`);
+		if (world.cleared.some((copy) => copy.sessionId === h.process.conversation.id && copy.rowId === h.row.id && !world.clearedLeft.has(copy))) out.push(`${label(world, h.row.id)} was handed over again after the page had cleared it out of pi's queue`);
 	}
 	return out;
 }
@@ -382,9 +391,10 @@ const excuseOf = (copy: Copy): Excuse | undefined => (copy.fromTheEditor ? "edit
 /** The rows pi wrote in this step that are now written more often than once plus their excused late sends. */
 function writtenTooOften(world: World, excused: readonly Excuse[], coverage?: Coverage): string[] {
 	const out: string[] = [];
-	const rows = new Map(world.facts.written.map((copy) => [keyOf(copy.sessionId, copy.rowId), copy]));
+	// A message counts for the row whose mark it carries, when that row has the very same words (`countsFor`).
+	const rows = new Map(world.facts.written.map((copy) => [keyOf(copy.sessionId, countsFor(world, copy)), { sessionId: copy.sessionId, rowId: countsFor(world, copy) }]));
 	for (const [key, { sessionId, rowId }] of rows) {
-		const written = world.copies.filter((copy) => keyOf(copy.sessionId, copy.rowId) === key && copy.state === "written");
+		const written = world.copies.filter((copy) => answered(copy) && keyOf(copy.sessionId, countsFor(world, copy)) === key);
 		const late = written.filter((copy) => excused.includes(excuseOf(copy)!));
 		if (written.length > 1 + late.length) out.push(`pi wrote ${label(world, rowId)} into ${sessionId} ${written.length} times (${written.map((copy) => `${who(copy.process)}${copy.fromTheEditor ? ", sent by the person from the editor" : copy.gaveUp ? `, given up: ${copy.gaveUp}` : ""}`).join("; ")})`);
 		else if (coverage && written.length === 2 && late.some((copy) => ACCEPTED.includes(excuseOf(copy)!))) coverage.offeredAgainTwice[late[0].provedByText ? "byText" : "prefixed"]++;
@@ -441,23 +451,15 @@ const handedOverAfterTheEditor = (world: World): string[] => world.facts.handOve
 /** The one check of a world in which another extension rewrites every user message: every other check holds there too. */
 export const REWRITTEN_HOLDS = "a row is proved by its own message also when another extension rewrote the text";
 
-export const KNOWN: Readonly<Record<string, { defect: string; seed: number }>> = {
-	"I3 no turn beside an unwritten turn only its text proves": { seed: 1200, defect: "a turn pi holds unwritten, of a row only its text proves, is taken for delivered by an earlier message with the same words (#250): the row leaves, the lane is free again, and the next turn is handed to a pi that still holds the first. A window that takes the lease while pi holds a turn unstarted breaks it another way (#248, seed 618). The order of the rows no longer matters: the lane is taken before any row is started (#245, closed)" },
-	"I2 a person's message is answered even when another has the same words": { seed: 164, defect: "landed takes a row only its text proves for delivered by another row's message with the same words, written at or after its hand-over stamp: when its own hand-over came to nothing (it threw and left last_error, or its window died), the row is removed as done, not given back to the page, and the person, who said the same words twice, is answered once. Needs no more of pi than a failed hand-over or a crash (#250)" },
-	"I2 a row is done only by its proof": { seed: 48, defect: "a message without a prefix that no handed-over row claims (a text-proved row's late send, once that row has left the queue) is taken for the oldest prefixed turn pi was handed and has not started: that row is removed as done while pi still holds it unwritten. Narrow: pi's phase before a run has to outlast the ten-second grace (#247)" },
-	"a row is delivered once when the lease moves while pi holds its turn unstarted": { seed: 9048, defect: "a window takes the lease while the holder's pi holds a turn it was handed and has not started (the lease says a turn runs only from agent_start): the new holder hands the row over again, and both pis write it; for a person's message that is one prompt answered twice. Narrow: the lease has to be taken during pi's phase before a run (#248)" },
-	"a row is delivered once after a stop in the page's pi": { seed: 18, defect: "in rpc mode (the page's pi) a stop is AgentSession.abort(), which keeps what pi queued behind the aborted turn; the window takes it for dropped, hands the row over again, and pi writes both. A terminal's abort clears the queue, as Esc does (#249)" },
-	"a row is delivered once when the person sends what a stop put into the editor": { seed: 453, defect: "in a terminal a stop (Esc, or ctx.abort()) clears pi's queue and puts the queued user messages into the editor, a prompt of ours with its [Trigger <id>] prefix among them; the window takes the rows for dropped and hands them over again, and when the person presses Enter the editor's text is one more message with the same prompt in it. Measured on pi 1.2.0 (.docs/redesign-0243/signatures/M3b-probes.md, P3). An extension can read and set the editor's text, so a window can take its own prompts out of it. Narrow: the engine hands a turn only to an idle pi, so a run has to begin between its look and the hand-over for a prompt of ours to be queued behind a turn (#256)" },
-	"a row the page cleared out of pi's queue does not come back": { seed: 332, defect: "the page's \"clear queue\" writes a cancel for every input row and then empties pi with rpc clear_queue, which removes the follow-ups behind a running turn, custom ones too, and tells an extension nothing (probes, P10). A cancel that names a row in flight does nothing and leaves as stale, since pi is about to run the row; so when the turn ends the window takes the row for dropped and hands it over again. After a Stop the same click works: the window has taken what pi kept for dropped already (#259)" },
-	[REWRITTEN_HOLDS]: { seed: 7, defect: "pi lets another extension's input handler rewrite a message (probes, P4). A prefix of ours is then not at the start of the message, and a row's words are not its first: the proof by prefix and the proof by words both miss the row's own message. The window guesses (the `ran` exit), or the row is handed over again. Inside one run the order of the messages is still the order of the hand-overs. It is not across a stop in the page's pi: what pi kept is written behind the message that starts the next run, which was handed over later. So a window cannot tell its message by counting (#257)" },
-};
+export const KNOWN: Readonly<Record<string, { defect: string; seed: number }>> = {};
 
 export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
 	["I2 a row leaves its queue only by a named exit", namedExit],
 	["I2 a row is done only by its proof", doneOnlyByProof],
 	["I2 a person's message is answered even when another has the same words", answeredThoughAnotherSaidTheSame],
 	["I3 one turn at a time, handed over by the holder", oneTurnFromTheHolder],
-	["I3 no turn beside an unwritten turn only its text proves", noTurnBesideATextProvedTurn],
+	["I3 no turn beside a turn an idle pi holds unstarted", noTurnBesideAnUnstartedTurn],
+	["a mark is on its own row's message", markOnItsOwnMessage],
 	["I6 what pi holds unwritten is still owed on disk", heldIsStillOwed],
 	["I7 a finding is decided once", decidedOnce],
 	["a stop and a cancel do what they name", stopsAndCancelsWork],

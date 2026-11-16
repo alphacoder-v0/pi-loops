@@ -189,7 +189,8 @@ export class WindowExecutor implements Executor {
 		const next: Slot[] = [];
 		for (const slot of this.slots) {
 			if (slot.whose === "other") {
-				next.push(slot);
+				// A message someone sent during a run that pi no longer holds (the page cleared the queue).
+				if (!(empty && slot.followUp)) next.push(slot);
 				continue;
 			}
 			// What pi wrote is in the conversation, whoever wrote it.
@@ -203,8 +204,12 @@ export class WindowExecutor implements Executor {
 				}
 				if (!queued.has(slot.mark.id)) {
 					// The row left the file. A prompt a cancel or a stop named stays, to be aborted if pi
-					// writes it after all; anything else has nothing left to start.
-					if (slot.stop && slot.phase.is !== "written" && slot.phase.is !== "writing") next.push({ ...slot, phase: { is: "refused" } });
+					// writes it after all; anything else has nothing left to start. One that opened the run
+					// stays `opening`: its message is the run's first, before any follow-up.
+					if (slot.stop && slot.phase.is !== "written" && slot.phase.is !== "writing") next.push({ ...slot, left: true, ...(slot.phase.is === "opening" ? {} : { phase: { is: "refused" } as const }) });
+					// A refused one stays too: pi may still write it, and its mark then proves the row
+					// if the same row is queued again (a loop's slot after a dead letter).
+					else if (slot.phase.is === "refused") next.push({ ...slot, left: true });
 					continue;
 				}
 			} else if (!queued.has(slot.mark.id)) continue;
@@ -296,12 +301,15 @@ export class WindowExecutor implements Executor {
 		if (!this.binding.hold(stamp(now))) return "lease-lost";
 		const idle = this.ctx()?.isIdle() ?? true;
 		const slot: TurnSlot = { whose: "turn", mark: markFor(row), text, ...(carriesPrefix(row.source) ? { prefix: `[Trigger ${row.id}] ` } : {}), cap: this.capOf(row), phase: idle ? { is: "pending", since: now } : { is: "queued" }, echoed: false };
-		this.slots = [...this.slots.filter((s) => s.whose === "other" || s.mark.id !== row.id), slot];
+		// An earlier hand-over of the row (a `refused` one pi may still send late) stays if pi throws at
+		// this one. One whose row left the file (the same row queued again since) stays beside it.
+		const earlier = this.slots.find((s) => s.whose === "turn" && s.mark.id === row.id && !s.left);
+		this.slots = [...this.slots.filter((s) => s !== earlier), slot];
 		this.sending = true;
 		try {
 			this.pi.sendUserMessage(images?.length ? [{ type: "text", text }, ...images] : text, { deliverAs: "followUp" });
 		} catch (err) {
-			this.slots = this.slots.filter((s) => s !== slot);
+			this.slots = [...this.slots.filter((s) => s !== slot), ...(earlier ? [earlier] : [])];
 			this.letGoWhenFree();
 			throw err;
 		} finally {
@@ -323,7 +331,7 @@ export class WindowExecutor implements Executor {
 
 	/** A stop named row `id` while pi holds it, or a cancel took it out: its turn is aborted as its message starts, and it is `stopped` when it goes unwritten. */
 	abortWhenStarted(id: string): void {
-		this.slots = this.slots.map((slot) => (slot.whose === "turn" && slot.mark.id === id ? { ...slot, stop: true } : slot));
+		this.slots = this.slots.map((slot) => (slot.whose !== "other" && slot.mark.id === id ? { ...slot, stop: true } : slot));
 	}
 
 	/**
@@ -385,7 +393,7 @@ export class WindowExecutor implements Executor {
 				return;
 			}
 		}
-		this.slots.push({ whose: "other", from: input.source === "extension" ? "extension" : "person", text: input.text });
+		this.slots.push({ whose: "other", from: input.source === "extension" ? "extension" : "person", text: input.text, ...(this.running ? { followUp: true as const } : {}) });
 	}
 
 	/**
@@ -436,9 +444,12 @@ export class WindowExecutor implements Executor {
 		if (message.role !== "user") return undefined;
 		const writing = this.slots.find((slot): slot is TurnSlot => slot.whose === "turn" && slot.phase.is === "writing");
 		if (!writing || writing.phase.is !== "writing") return undefined;
-		const mark = writing.phase.claim.slot.mark;
+		const claimed = writing.phase.claim.slot;
 		this.slots = this.slots.map((slot) => (slot === writing ? { ...writing, phase: { is: "written" } } : slot));
-		return { message: withMark(message, mark) };
+		// A turn a stop or a cancel named whose row has left already: its message, aborted as it
+		// starts, answers no row, and a mark would prove the same row queued again.
+		if (claimed.stop && claimed.left) return undefined;
+		return { message: withMark(message, claimed.mark) };
 	}
 
 	/** At `agent_end`: no run is on. The cap in force outlives the run (`settled`). */
