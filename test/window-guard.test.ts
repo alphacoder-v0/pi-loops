@@ -462,6 +462,22 @@ test("a message the window cannot place takes the cap of a refused prompt pi may
 	assert.equal((await w.call(rmrf))?.block, true);
 });
 
+test("the person's words lift a row's cap when pi delivers them into the run as a follow-up (the page's), and lift nothing when no row's cap is in force", async () => {
+	const w = window();
+	w.clockFired();
+	w.executor.inputSeen({ source: "rpc", text: "now clear it", streamingBehavior: "followUp" }, T0);
+	w.started("now clear it");
+	assert.deepEqual(w.executor.currentTurn(), { kind: "person" }, "a follow-up from the page lifts it");
+	const idle = window();
+	const row = plainJobRow(job(), "run-1111222233334444", "cron:job-1", "", by, T0);
+	idle.queued.set(row.id, row);
+	idle.executor.turn(row, T0); // a prompt of ours handed to the idle pi as well
+	idle.executor.inputSeen({ source: "rpc", text: "hello" }, T0); // to an idle pi: no delivery
+	idle.executor.agentStarted(T0);
+	idle.started("hello");
+	assert.deepEqual(idle.executor.currentTurn(), { kind: "person" }, "with no row's cap in force, the person's own words begin their run, uncapped");
+});
+
 test("a person's submission that never became a message does not uncap a rewritten scheduled message", async () => {
 	const w = window();
 	w.executor.inputSeen({ source: "interactive", text: "/foo" }, T0); // another extension's handler took it
