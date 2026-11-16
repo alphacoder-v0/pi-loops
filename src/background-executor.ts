@@ -13,6 +13,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileMark, type Proof, type QuietMark, DEAD_AFTER_ATTEMPTS, bury, changesSomething, claimAlive, closeRun, conversationHas, decideDrain, drain, jobQueued, plainRunId, proofOf, quietMark, sessionFileEntries, stillQuiet } from "./engine.ts";
 import { type ConversationId, parseLane } from "./lane.ts";
 import { DELIVERY_JOB_ID, type LeaseHolder, type LeaseStore, closedConversation, liveHolderPid } from "./lease.ts";
+import { markDetails, markFor } from "./mark.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import type { ClaimedRow, RequestStore, Row, UnclaimedRow } from "./requests.ts";
 import { type RunList, STOPPED_BY_PERSON } from "./run-list.ts";
@@ -137,14 +138,14 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 	 * conversation with pi's session manager but an append under the lease: an open can write, and
 	 * a closing runs with or without the lease. The entries are kept while the file stands as it was.
 	 */
-	function fileProof(sessionFile: string): Proof {
+	function fileProof(lane: string, sessionFile: string): Proof {
 		let read: { mark: string; entries: unknown[] } | undefined;
 		const entries = (): unknown[] => {
 			const mark = JSON.stringify(fileMark(sessionFile) ?? null);
 			if (read?.mark !== mark) read = { mark, entries: sessionFileEntries(sessionFile) };
 			return read.entries;
 		};
-		return proofOf(entries, () => deps.jobs.allRuns());
+		return proofOf(lane, entries, () => deps.jobs.allRuns());
 	}
 
 	/**
@@ -184,14 +185,15 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 	function executorFor(held: Held, job: LoopJob | undefined): Executor & { started(): Promise<void> | undefined } {
 		let sm: SessionManager | undefined;
 		let started: Promise<void> | undefined;
-		const proof = fileProof(held.sessionFile);
+		const proof = fileProof(held.sessionId, held.sessionFile);
 		return {
 			holds: (sessionId) => leases.holds(sessionId, deps.holder(), held.epoch),
 			proof: () => proof,
 			view: () => viewOf(held.sessionId, job),
 			append: (row) => {
 				sm ??= SessionManager.open(held.sessionFile);
-				sm.appendCustomMessageEntry("pi-loops:trigger", row.payload?.text ?? "", true);
+				// The mark rides in the entry's details: the one proof of an append row, read by `landed` (src/mark.ts).
+				sm.appendCustomMessageEntry("pi-loops:trigger", row.payload?.text ?? "", true, markDetails(markFor(row)));
 				deps.appended(row, held);
 			},
 			// The engine calls it only for a row `blocked` let through, so `job` is there and is the row's.
@@ -295,7 +297,7 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 		try {
 			// The closing asks for no lease and opens no conversation: after a window took it back, the
 			// claim is still cleared, and the window is not held by it.
-			const closed = await closeRun(requests, deps.sinks(), row, fileProof(held.sessionFile), Date.now(), record);
+			const closed = await closeRun(requests, deps.sinks(), row, fileProof(held.sessionId, held.sessionFile), Date.now(), record);
 			const fate = closed.settlement.row;
 			if (handedBack) log(`cron ${name}: ${preempted ? `a window opened session ${shortSessionId(held.sessionId)} during its turn; that window runs it` : `turn stopped (${record.error}); ${fate.do === "leave" ? "a fresh prompt is queued for it" : "its slot is owed"}`}`);
 			if (stopped) log(`cron ${name}: turn stopped; it is done`, "info");
@@ -381,7 +383,7 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 		const self = deps.holder();
 		if (lease?.sessionFile) {
 			for (const row of rows) {
-				if (row.run && row.run.pid === self.pid && row.run.procStart === self.procStart && runs.get(row.run.id) === undefined) await closeRun(requests, deps.sinks(), row, fileProof(lease.sessionFile), Date.now());
+				if (row.run && row.run.pid === self.pid && row.run.procStart === self.procStart && runs.get(row.run.id) === undefined) await closeRun(requests, deps.sinks(), row, fileProof(sessionId, lease.sessionFile), Date.now());
 			}
 		}
 		if (!canHold(sessionId)) {
@@ -401,7 +403,7 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 		const queued = requests.list(sessionId);
 		if (stillQuiet(quiet.get(sessionId), files, queued, now)) return;
 		quiet.delete(sessionId);
-		if (!changesSomething(decideDrain("conversation", queued, fileProof(file), deps.sinks().jobs, viewOf(sessionId, undefined), now))) {
+		if (!changesSomething(decideDrain("conversation", queued, fileProof(sessionId, file), deps.sinks().jobs, viewOf(sessionId, undefined), now))) {
 			quiet.set(sessionId, quietMark(files, queued, now));
 			return;
 		}

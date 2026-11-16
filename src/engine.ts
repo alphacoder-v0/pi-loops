@@ -6,9 +6,9 @@
  * local row (what the person typed, a goal's continuation) is run by the window that produced it,
  * lease or not, for as long as that window is on the conversation.
  *
- * Delivery is at least once; the proof already in the conversation (`[Trigger <id>] ` for the clock's
- * and a server's rows, the row's own text after its hand-over stamp for everything else: `landed`) is
- * what makes a second delivery a no-op, and a row leaves the file only once that proof is in the file. A row that fails
+ * Delivery is at least once; the proof already in the conversation (the row's lane and id, which the
+ * window that handed it over writes into the entry pi writes for it: `landed`, src/mark.ts) is what
+ * makes a second delivery a no-op, and a row leaves the file only once that proof is in the file. A row that fails
  * waits out a backoff and blocks nothing behind it; at three failures it is a dead letter: an inbox
  * finding first, then an audit line, then the removal, so a crash in between loses no row.
  */
@@ -21,6 +21,8 @@ import { type LeaseHolder, type LeaseStore, type ProcessProbe, type SessionLease
 import { withinProject } from "./paths.ts";
 import { type ImageContent, type RequestMode, type RequestStore, type Row, imageRef, type UnclaimedRow, type ClaimedRow } from "./requests.ts";
 import type { LockOptions } from "./lock.ts";
+import { markOn } from "./mark.ts";
+import type { Gone } from "./window-claim.ts";
 import { backoffFor } from "./backoff.ts";
 import { stamp } from "./schedule.ts";
 import { INTERRUPTED, type RunEnd, type Settlement, runEnd, settle } from "./settle.ts";
@@ -559,10 +561,16 @@ export function promotionView(leases: Pick<LeaseStore, "read" | "list">, cwd: st
 
 /** What a row's proof of delivery is read from: the conversation, as `landed` asks it. */
 export interface Proof {
-	/** Whether `[Trigger <id>] ` is in the session the row writes into (`conversationHas`). False when that session has no file. */
+	/** Whether an entry of the session the row writes into carries the mark of this lane and this id (src/mark.ts). False when that session has no file. */
 	has(id: string): boolean;
-	/** How many user messages whose text is `text`'s (`personTextMatches`) it holds, written at or after `since` (`conversationPersonEntries`). */
-	personEntries(text: string, since: string): number;
+	/** The proof of a version before marks, for a row of a version 2 line only (`OlderRow`): its prefix, or its words after its hand-over stamp, in an entry with no mark. */
+	older(row: OlderRow): boolean;
+	/**
+	 * Whether the held turn that claimed `row` wrote its prompt: `[Trigger <id>] ` at the start of a
+	 * user message. The held turn writes its prompt with no extension of ours loaded, so it carries no
+	 * mark; the milestone that gives a loop its lane gives that prompt its mark and deletes this.
+	 */
+	heldRunWrote(row: ClaimedRow): boolean;
 	/**
 	 * The end of the run that claimed `row`, as its run record states it: the newest record whose
 	 * `runId` is `row.run.id` and whose `startedAt` is at or after `row.run.started_at`. Undefined
@@ -575,17 +583,43 @@ export interface Proof {
 }
 
 /**
- * Whether `row`'s delivery is in the conversation (design §2.2). A row of a `carriesPrefix` source
- * carries its proof in its text: `[Trigger <id>] `. Every other row's proof is a user message whose
- * text starts with the row's (pi appends a note to the text when it resizes or converts an image),
- * written at or after `handed_at`, the stamp the holder puts on the row just before each hand-over.
- * One lane hands over one such row at a time, so an earlier message with the same words, or another
- * row's, is older than the stamp and proves nothing; a row never handed over has no stamp and is
- * never done.
+ * Whether `row`'s delivery is in the conversation: an entry carries its mark. One rule for every
+ * row, whoever produced it and whatever its words. Two fenced rules beside it, each reached only by
+ * the row's type: a claimed row's held turn (its prefix: `Proof.heldRunWrote`), and a row of a version
+ * 2 line, which an older version may have delivered unmarked (`Proof.older`). No words prove a row
+ * of this version.
  */
 export function landed(row: Row, proof: Proof): boolean {
-	if (carriesPrefix(row.source)) return proof.has(row.id);
-	return row.handed_at !== undefined && proof.personEntries(row.payload?.text ?? "", row.handed_at) > 0;
+	if (proof.has(row.id)) return true;
+	if (row.run) return proof.heldRunWrote(row);
+	const old = olderRow(row);
+	return old !== undefined && proof.older(old);
+}
+
+declare const older: unique symbol;
+
+/**
+ * A row read from a version 2 line: one that an older version wrote (src/requests.ts sets `line`).
+ * Only such a row can have been delivered by a version that writes no mark: 0.24.2 reads and writes
+ * version 2 lines only. Only `olderRow` makes one.
+ */
+export type OlderRow = UnclaimedRow & { readonly line: 2; readonly [older]: true };
+
+/** `row` as a row of a version 2 line, or undefined for any other row. */
+export function olderRow(row: Row): OlderRow | undefined {
+	return row.run === undefined && row.line === 2 ? (row as OlderRow) : undefined;
+}
+
+/**
+ * The proof an older version gives `row`, over the entries that carry no mark: a message this
+ * version wrote has a mark that names its own row, so it never proves an older one by its words. A
+ * row of a `carriesPrefix` source: a message that starts with `[Trigger <id>] `. Any other row: a
+ * user message whose text starts with the row's, written at or after its hand-over stamp.
+ */
+function olderProved(row: OlderRow, entries: readonly unknown[]): boolean {
+	const unmarked = entries.filter((entry) => markOn(entry) === undefined);
+	if (carriesPrefix(row.source)) return conversationHas(unmarked, row.id);
+	return row.handed_at !== undefined && conversationPersonEntries(unmarked, row.payload?.text ?? "", row.handed_at) > 0;
 }
 
 /**
@@ -605,8 +639,9 @@ const TRAILING_IMAGE_NOTES = new RegExp(String.raw`(?:\s*(?:${IMAGE_NOTE}))+\s*$
 /**
  * Whether a user message's text is a person row's: it starts with the row's text (pi appends its
  * image notes after it), or, for a row with no text, it has none of its own once those notes go.
+ * The older version's proof only (`olderProved`).
  */
-export function personTextMatches(messageText: string, rowText: string): boolean {
+function personTextMatches(messageText: string, rowText: string): boolean {
 	return rowText === "" ? stripImageNotes(messageText) === "" : messageText.startsWith(rowText);
 }
 
@@ -617,8 +652,8 @@ const textOf = (content: unknown): string | undefined => {
 	return first && typeof (first as { text?: unknown }).text === "string" ? (first as { text: string }).text : undefined;
 };
 
-/** The user messages among `entries` whose text starts with `text`, written at or after `since` (pi's `timestamp` on the entry). */
-export function conversationPersonEntries(entries: readonly unknown[], text: string, since: string): number {
+/** The user messages among `entries` whose text starts with `text`, written at or after `since` (pi's `timestamp` on the entry). The older version's proof only. */
+function conversationPersonEntries(entries: readonly unknown[], text: string, since: string): number {
 	const floor = Date.parse(since);
 	return entries.filter((entry) => {
 		if (!entry || typeof entry !== "object") return false;
@@ -635,15 +670,21 @@ export function claimAlive(row: ClaimedRow, probe: ProcessProbe = systemProbe): 
 }
 
 /**
- * The one builder of a `Proof`: `conversationHas` and `conversationPersonEntries` over the entries
- * of the session the rows write into, and `ran` over the run records. Who builds a proof says where
- * its records come from; a window writes no run record for a turn it runs, and passes `() => []`.
+ * The one builder of a `Proof`, for the rows of `lane`: the marks of that lane among the entries of
+ * the session the rows write into (a fork copies entries with their marks, so a mark names its
+ * lane), the two fenced rules, and `ran` over the run records. Who builds a proof says where its
+ * records come from; a window writes no run record for a turn it runs, and passes `() => []`.
  * `runs` is read only when a row with a claim is asked about.
  */
-export function proofOf(entries: () => readonly unknown[], runs: () => readonly RunRecord[]): Proof {
+export function proofOf(lane: LaneId, entries: () => readonly unknown[], runs: () => readonly RunRecord[]): Proof {
 	return {
-		has: (id) => conversationHas(entries(), id),
-		personEntries: (text, since) => conversationPersonEntries(entries(), text, since),
+		has: (id) =>
+			entries().some((entry) => {
+				const mark = markOn(entry);
+				return mark !== undefined && mark.lane === lane && mark.id === id;
+			}),
+		older: (row) => olderProved(row, entries()),
+		heldRunWrote: (row) => conversationHas(entries(), row.id),
 		ran: (row) => {
 			if (!row.run) return undefined;
 			const id = row.run.id;
@@ -723,10 +764,6 @@ export interface ExecutorView {
 	running?: { requestId?: string; startedAt: string };
 	/** Handed to pi and not yet in the conversation: the derived claims. */
 	inFlight: ReadonlySet<string>;
-	/** Rows a stop named that pi then dropped unstarted (Esc): removed as cancelled, never offered again. */
-	stopped?: ReadonlySet<string>;
-	/** Rows whose turn ran under a message that lost their prefix: done, though the file cannot prove it. */
-	ran?: ReadonlySet<string>;
 	/**
 	 * When each turn row in `inFlight` was handed to pi, for the ones pi has started no run since
 	 * (`agent_start` clears them; an `input` or `message_start` seen meanwhile restarts the count).
@@ -736,11 +773,14 @@ export interface ExecutorView {
 	 */
 	inFlightSince?: ReadonlyMap<string, number>;
 	/**
-	 * Rows pi was handed and had dropped unwritten when it settled (Esc clears its queues; an `input`
-	 * handler that rewrote the prefix away). Offered again, with an attempt counted: without the
-	 * count, a prompt an extension rewrites on every turn would run for ever.
+	 * Rows pi was handed and no longer has, unwritten, with the reason (src/window-claim.ts
+	 * `settleSlots`): a stop named it and it went (`stopped`: exit cancelled, never offered again); a
+	 * stop in a terminal took it out of pi's queue (`dropped`); or a run ended with no stop and no entry
+	 * carries its mark (`lost`: pi wrote it in words the window could not take for the row's, another
+	 * handler took the mark off, or pi refused it during a run). A failure is counted for the last two:
+	 * without the count, a prompt an extension rewrites on every turn would run for ever.
 	 */
-	dropped?: ReadonlySet<string>;
+	gone?: ReadonlyMap<string, Gone>;
 	/**
 	 * Whether this executor was rung for the row (`/pi-loops ring <id> <fingerprint>`) and the row
 	 * still says what the ring said: its attended mode is believed. A fresh person row nobody rang for
@@ -972,6 +1012,16 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 				// pi holds it (the idle-check race): removing the row would not keep pi from running it.
 				actions.push({ do: "abortWhenStarted", stop: row, target: target.id });
 				done = true;
+			} else if (row.kind === "cancel" && view.inFlight.has(target.id) && view.running?.requestId !== target.id && queued.has(target.id) && !cancelled.has(target.id)) {
+				// pi holds the row and has not begun it: behind a running turn, or kept after a stop. The
+				// page's "clear queue" writes this cancel and then empties pi, which tells no extension
+				// (issue 259). The row leaves now, and the window aborts a prompt if pi writes it after all.
+				// A custom message has no start to abort: one pi still holds (the page's ✕ on that row, which
+				// leaves pi as it is) lands as it would have landed before this cancel.
+				cancelled.add(target.id);
+				actions.push({ do: "abortWhenStarted", stop: row, target: target.id });
+				actions.push({ do: "exit", row: queued.get(target.id)!, exit: "cancelled" });
+				done = true;
 			} else if (queued.has(target.id) && !view.inFlight.has(target.id) && !cancelled.has(target.id)) {
 				cancelled.add(target.id);
 				actions.push({ do: "exit", row: queued.get(target.id)!, exit: "cancelled" });
@@ -999,12 +1049,9 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 			actions.push({ do: "exit", row, exit: "delivered" });
 			return done();
 		}
-		if (view.stopped?.has(row.id)) {
+		const gone = view.gone?.get(row.id);
+		if (gone === "stopped") {
 			actions.push({ do: "exit", row, exit: "cancelled" });
-			return done();
-		}
-		if (view.ran?.has(row.id)) {
-			actions.push({ do: "exit", row, exit: "delivered" });
 			return done();
 		}
 		const wait = (why: string, until?: number) => actions.push({ do: "wait", row, why, ...(until === undefined ? {} : { until }) });
@@ -1025,14 +1072,19 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 				return done();
 			}
 		} else if (refused) {
-			// A pi-loops row is proved by its prefix, or by its hand-over stamp and text, so offering it again is safe; one refusal must not
+			// A pi-loops row is proved by its mark, so offering it again is safe; one refusal must not
 			// hold the slot for ever, nor the job's later slots, which collapse onto a queued row.
 			actions.push({ do: "fail", row, why: "pi did not start a turn for it", retry: "backoff" });
 			return done();
 		}
-		// A person row pi dropped is offered again uncounted: a Stop put it back, and the next idle
-		// drain hands it over, as the message they queued would have gone.
-		if (row.source !== "person" && view.dropped?.has(row.id)) {
+		// What pi no longer has (`ExecutorView.gone`). A person row a stop took out is offered again
+		// uncounted, as the message they queued would have gone; one lost after a run that wrote no
+		// mark for it goes back to the page, once. Every other row counts an attempt.
+		if (gone === "lost") {
+			actions.push({ do: "fail", row, why: "pi dropped it before it was written", retry: row.source === "person" ? "never" : "backoff" });
+			return done();
+		}
+		if (row.source !== "person" && gone === "dropped") {
 			actions.push({ do: "fail", row, why: "pi dropped it before it was written", retry: "now" });
 			// The attempt that buries it: nothing below may hand it over as well.
 			if (row.attempts + 1 >= DEAD_AFTER_ATTEMPTS) return done();
@@ -1105,11 +1157,11 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 			return done();
 		}
 		if (view.inFlight.has(row.id)) {
-			// A turn pi holds and has not written, of a row proved by its text, has the lane: handed over too, a second row
-			// with the same words would be proved by the first one's message. A prefixed row is proved by
-			// its own prefix, and one pi silently dropped must not stall the rows behind it.
+			// A turn handed to an idle pi that no run has taken up yet has the lane: an idle pi gets one
+			// prompt of ours at a time, from every source. Once a run takes it, or pi keeps it after a
+			// stop, the lane is free: the next turn row starts the run that writes it behind.
 			wait("handed to pi, not yet in the conversation");
-			return { actions, holding: row.wake === "turn" && !carriesPrefix(row.source) };
+			return { actions, holding: row.wake === "turn" && view.inFlightSince?.has(row.id) === true };
 		}
 		// A person's message is sent only for the page that wrote it (design §5); every other row
 		// outlives its producer, and a local one is the holder's to run once the producer is gone.
@@ -1151,6 +1203,13 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 	return actions;
 }
 
+/**
+ * What a hand-over came to. `lease-lost`: the window could not write the hold on its lease (another
+ * process holds the conversation now), and sent nothing. The drain stops there and counts no attempt
+ * and no delivery, as it does when `holds()` turns false between two rows.
+ */
+export type TurnSent = "sent" | "lease-lost";
+
 export interface Executor {
 	/** Read from disk each call: the conversation can be taken while a drain runs. A non-holder still drains the local rows it produced (`ExecutorView.mine`). */
 	holds(lane: LaneId): boolean;
@@ -1158,8 +1217,8 @@ export interface Executor {
 	/** What a row of the lane is proved by: the session it writes into, and the run records. */
 	proof(lane: LaneId): Proof;
 	/** Hand a turn row to pi; `now` is when, for `ExecutorView.inFlightSince`. A row with a claim cannot be handed over. */
-	turn(row: UnclaimedRow, now: number): void;
-	append(row: UnclaimedRow, wakeAgent: boolean): void;
+	turn(row: UnclaimedRow, now: number): TurnSent | void;
+	append(row: UnclaimedRow, wakeAgent: boolean): TurnSent | void;
 	/** Stop the turn running now. */
 	abort(): void;
 	/** Stop the turn of row `id`, handed to pi and not started yet, as it starts. */
@@ -1365,7 +1424,7 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 		leaveRow(store, sinks, row, exit);
 		out.removed.push(row.id);
 	};
-	for (const action of actions) {
+	apply: for (const action of actions) {
 		// Before each one, not once: the conversation can be taken while this drains.
 		if (!may("row" in action ? action.row : undefined)) break;
 		switch (action.do) {
@@ -1413,8 +1472,9 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 					// read it (cancelled, or taken back by the page and sent over rpc), and a turn now would
 					// answer it a second time.
 					if (action.do === "turn" && !carriesPrefix(row.source) && !store.update(sessionId, row.id, { handed_at: stamp(moment()) })) break;
-					if (action.do === "append") executor.append(row, action.wakeAgent);
-					else executor.turn(row, now);
+					const sent = action.do === "append" ? executor.append(row, action.wakeAgent) : executor.turn(row, now);
+					// The hold found another holder: nothing was sent, and nothing more of this drain is ours.
+					if (sent === "lease-lost") break apply;
 				} catch (err: any) {
 					// One attempt, not two: the row is read again, and a row that has a claim now is not
 					// failed here. Its closing counts the attempt, once.

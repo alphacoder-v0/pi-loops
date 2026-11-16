@@ -3428,25 +3428,26 @@ export default function piLoops(pi: ExtensionAPI) {
 		executor.agentStarted(Date.now());
 		await fireHook({ event: "agent_start" }, ctx);
 	});
-	// Observed only: the person typing is what makes the next user message theirs (the cap). Our own
-	// hand-overs arrive here too, as `source: "extension"`; either says pi is about to run something,
-	// so nothing handed over is judged refused for a while yet.
+	// Observed only: whose the next user messages are (the window tells its own sends from the rest),
+	// and that pi is about to run something, so nothing handed over is judged refused for a while yet.
 	pi.on("input", async (e) => {
-		executor.inputSeen(Date.now());
-		if (e.source !== "extension") executor.personInput();
+		executor.inputSeen({ source: e.source, text: e.text }, Date.now());
 	});
 	pi.on("turn_start", async (_e, ctx) => fireHook({ event: "turn_start" }, ctx));
 	pi.on("turn_end", async (e, ctx) => fireHook({ event: "turn_end", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx));
 	pi.on("message_start", async (e, ctx) => {
-		executor.messageStarted(e.message);
+		executor.messageStarted(e.message, Date.now());
 		await fireHook({ event: "message_start", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx);
 	});
 	pi.on("message_update", async (e, ctx) => fireHook({ event: "message_update", message_kind: messageKind(e.message), message_summary: messageSummary(e.message), assistant_event: (e.assistantMessageEvent as any)?.type }, ctx));
 	pi.on("message_end", async (e, ctx) => {
 		// pi appends the user message once this handler returns: a drain right after finds a person
 		// row's proof in the conversation, and the page's queue stops listing a message that is running.
+		// The mark of the row whose message this is, which pi persists with the message (src/mark.ts).
+		const marked = executor.messageEnded(e.message, Date.now());
 		if ((e.message as { role?: unknown } | undefined)?.role === "user" && executor.handedOver.size) setImmediate(() => void drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`)));
 		await fireHook({ event: "message_end", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx);
+		return marked;
 	});
 	pi.on("tool_execution_start", async (e, ctx) => fireHook({ event: "tool_start", tool_call_id: e.toolCallId, tool_name: e.toolName, tool_args: e.args }, ctx));
 	pi.on("tool_execution_update", async (e, ctx) => fireHook({ event: "tool_update", tool_call_id: e.toolCallId, tool_name: e.toolName, tool_args: e.args, tool_result_summary: resultSummary(e.partialResult) }, ctx));
@@ -3494,10 +3495,10 @@ export default function piLoops(pi: ExtensionAPI) {
 	});
 	// The goal is evaluated at the end of a turn; pi's hook for that is `agent_settled` — the point where
 	// no automatic retry, compaction or queued continuation will run, so a decision here is final.
-	pi.on("agent_settled", async (_event, ctx) => {
+	pi.on("agent_settled", async (event, ctx) => {
 		markTurn("agent_settled");
-		// pi is idle now: what it dropped is offered again by the drain below.
-		executor.settled();
+		// pi is idle now: what it no longer has is offered again by the drain below, unless a stop named it.
+		executor.settled(event.aborted);
 		// The tracker description `/recipe add` was waiting for: written during this turn, so the
 		// wizard picks up where it stopped — in the same project, with the same words.
 		if (pendingRecipeAdd && sameProject(pendingRecipeAdd.project, session.cwd) && fs.existsSync(path.join(pendingRecipeAdd.project, TRACKER_FILE))) {

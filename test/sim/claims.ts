@@ -139,7 +139,7 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 	};
 	const executorOf = (me: Proc): Executor => ({
 		holds: () => me.alive,
-		proof: () => proofOf(() => [], () => records),
+		proof: (lane) => proofOf(lane, () => [], () => records),
 		view: () => ({ kind: "held", ceiling: CEILING.held, blocked: () => undefined, claimLive: (row) => me.alive && me.running?.id === row.run.id, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false }),
 		turn: (row) => {
 			if ((row as { run?: unknown }).run !== undefined) fail(`${row.id} was handed over with a claim on it`);

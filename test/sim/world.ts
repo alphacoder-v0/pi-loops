@@ -68,6 +68,8 @@ import { CEILING, type DrainResult, type EngineSinks, type Executor, bury, proof
 import { Inbox } from "../../src/inbox.ts";
 import { RequestStore, type Row } from "../../src/requests.ts";
 import { TriggerStore } from "../../src/triggers.ts";
+import type { LeaseBinding } from "../../src/lease.ts";
+import { markDetails, markFor } from "../../src/mark.ts";
 import { WindowExecutor } from "../../src/window-executor.ts";
 
 /** Where every schedule's clock starts. In the past: src/lock.ts compares the clock with a lock directory's real mtime, and a simulated now ahead of it would call every lock stale. */
@@ -89,7 +91,7 @@ export interface Timers {
 
 /** A user message, as pi hands it to `message_end` and persists what comes back: a window may have put fields of its own on it. */
 type UserMessage = { role: "user"; content: Array<{ type: "text"; text: string }> } & Record<string, unknown>;
-type Entry = { type: "message"; timestamp: string; message: UserMessage } | { type: "custom_message"; timestamp: string; content: string };
+type Entry = { type: "message"; timestamp: string; message: UserMessage } | { type: "custom_message"; timestamp: string; content: string; details?: unknown };
 
 /**
  * One hand-over, as the simulated pi knows it: which row, to which process, and what became of it.
@@ -129,6 +131,8 @@ interface Item {
 	text: string;
 	custom: boolean;
 	copy?: Copy;
+	/** The details a custom message was sent with: pi persists them in its entry (probe P8). */
+	details?: unknown;
 }
 
 export interface Pi {
@@ -164,6 +168,8 @@ export interface Editor {
 	put: Array<{ paragraph: string; copy?: Copy }>;
 	/** The paragraphs the person typed and has not sent. */
 	typed: string[];
+	/** The text as the last stop left it, before any extension's `agent_settled` handler: what pi did, for the scenes of the model. */
+	afterStop?: string;
 }
 
 const idlePi = (): Pi => ({ running: false, queue: [], aborts: 0, kept: [], editor: { text: "", put: [], typed: [] } });
@@ -185,6 +191,8 @@ export interface Process {
 	/** What a window's extension sees of its pi: the part of the fake context that a scene asks directly. */
 	ctx?: { hasPendingMessages(): boolean; ui: { getEditorText(): string; setEditorText(text: string): void } };
 	executor: Executor;
+	/** A window's lease says a row of ours is held (`LeaseBinding.hold`), until the window lets go. */
+	held?: boolean;
 }
 
 export interface Conversation {
@@ -413,7 +421,7 @@ export function leaseMayMove(conversation: Conversation, to: Process): boolean {
 	if (!to.alive || from === to) return false;
 	if (!from?.alive) return true;
 	if (from.kind === "background") return to.kind === "window";
-	return to.kind === "window" && from.mode === "rpc" && to.mode === "tui" && !from.pi.running;
+	return to.kind === "window" && from.mode === "rpc" && to.mode === "tui" && !from.pi.running && !from.held;
 }
 
 /** The lease goes to `to`. What the old holder's pi still holds is nobody's to wait for now: the new holder cannot see it. */
@@ -449,16 +457,15 @@ function write(world: World, proc: Process, item: Item): void {
 	let message: UserMessage = { role: "user", content: [{ type: "text", text }] };
 	// Pi emits both events for a custom message too, with the role `custom`. What a handler gives
 	// back for one is not kept here: only a user message was measured.
-	const ending = proc.window as unknown as { messageEnded?: (message: unknown, at: number) => UserMessage | undefined } | undefined;
 	if (item.custom) {
 		proc.window?.messageStarted({ role: "custom", content: text }, at);
-		ending?.messageEnded?.({ role: "custom", content: text }, at);
+		proc.window?.messageEnded({ role: "custom", content: text }, at);
 	} else {
 		proc.window?.messageStarted({ role: "user", content: text }, at);
-		const ended = ending?.messageEnded?.(message, at);
-		if (ended?.role === "user") message = ended;
+		const ended = proc.window?.messageEnded(message, at);
+		if (ended?.message.role === "user") message = ended.message;
 	}
-	proc.conversation.entries.push(item.custom ? { type: "custom_message", timestamp: stampOf(at), content: item.text } : { type: "message", timestamp: stampOf(at), message });
+	proc.conversation.entries.push(item.custom ? { type: "custom_message", timestamp: stampOf(at), content: item.text, ...(item.details === undefined ? {} : { details: item.details }) } : { type: "message", timestamp: stampOf(at), message });
 	if (world.ticks) advance(world, 1);
 	if (!item.copy) return;
 	if (!item.custom) proc.pi.turnOf = item.copy.rowId;
@@ -471,14 +478,17 @@ function write(world: World, proc: Process, item: Item): void {
 function windowProcess(world: World, base: Omit<Process, "executor">): Process {
 	const proc = base as Process;
 	const conversation = proc.conversation;
-	const receive = (text: string, custom: boolean, queued: boolean): void => {
+	const receive = (text: string, custom: boolean, queued: boolean, details?: unknown): void => {
 		if (world.handOverThrows) throw new Error("no model selected");
-		const item: Item = { text, custom, copy: copyFor(world, proc, text) };
+		const item: Item = { text, custom, copy: copyFor(world, proc, text), ...(details === undefined ? {} : { details }) };
+		// pi's `input` for a user message an extension sends: our handler first, inside the call, with
+		// the text as sent (probe P6; the other load order is not modelled).
+		if (!custom) proc.window?.inputSeen({ source: "extension", text }, world.clock);
 		if (queued) proc.pi.queue.push(item);
 		else write(world, proc, item);
 	};
 	const pi = {
-		sendMessage: (message: { content: string }, options?: { triggerTurn?: boolean }) => receive(message.content, true, options?.triggerTurn === true),
+		sendMessage: (message: { content: string; details?: unknown }, options?: { triggerTurn?: boolean }) => receive(message.content, true, options?.triggerTurn === true, message.details),
 		sendUserMessage: (content: string) => receive(content, false, true),
 	};
 	const ctx = {
@@ -496,7 +506,18 @@ function windowProcess(world: World, base: Omit<Process, "executor">): Process {
 		abort: () => void (proc.pi.aborts += proc.pi.running ? 1 : 0),
 	};
 	type Args = ConstructorParameters<typeof WindowExecutor>;
-	const window = new WindowExecutor(pi as unknown as Args[0], { here: () => ({ sessionId: conversation.id, holds: conversation.holder === proc }) }, () => ctx as unknown as ReturnType<Args[2]>, { pid: proc.pid }, (row) => row.created_by.left === undefined && pidAlive(world, row.created_by.pid), () => world.store.list(conversation.id), undefined, () => []);
+	// The lease's hold, as a field: the holder's is on its lease, and a viewer's is a receipt with no
+	// write. A window that lost the lease mid-drain gets a receipt here too: the lease's own tests hold
+	// that case (test/lease.test.ts), and the engine asks `holds` before every row.
+	const binding = {
+		here: () => ({ sessionId: conversation.id, holds: conversation.holder === proc }),
+		hold: () => {
+			if (conversation.holder === proc) proc.held = true;
+			return {} as ReturnType<LeaseBinding["hold"]>;
+		},
+		letGo: () => void (proc.held = false),
+	};
+	const window = new WindowExecutor(pi as unknown as Args[0], binding, () => ctx as unknown as ReturnType<Args[2]>, { pid: proc.pid }, (row) => row.created_by.left === undefined && pidAlive(world, row.created_by.pid), () => world.store.list(conversation.id), undefined, () => []);
 	proc.window = window;
 	proc.executor = window;
 	proc.ctx = ctx;
@@ -513,9 +534,10 @@ function backgroundProcess(world: World, base: Omit<Process, "executor">): Proce
 	const conversation = proc.conversation;
 	proc.executor = {
 		holds: () => proc.alive && conversation.holder === proc,
-		proof: () => proofOf(() => conversation.entries, () => []),
+		proof: () => proofOf(conversation.id, () => conversation.entries, () => []),
 		view: () => ({ kind: "held", ceiling: CEILING.held, blocked: (row) => (row.wake === "turn" ? "turn rows wait for a window" : undefined), claimLive: () => false, idle: true, inFlight: new Set<string>(), connected: () => true, producerAlive: () => true, mine: () => false }),
-		append: (row) => write(world, proc, { text: row.payload?.text ?? "", custom: true, copy: copyFor(world, proc, row.payload?.text ?? "") }),
+		// As src/background-executor.ts does: the mark in the custom entry's details.
+		append: (row) => write(world, proc, { text: row.payload?.text ?? "", custom: true, copy: copyFor(world, proc, row.payload?.text ?? ""), details: markDetails(markFor(row)) }),
 		turn: () => {
 			throw new Error("this world's background starts no turn (test/sim/held.ts has that)");
 		},
@@ -570,23 +592,27 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 				break;
 			}
 			// The person's own message: `input`, then a run that starts with it.
-			window.inputSeen(at);
-			window.personInput();
-			pi.running = true;
-			pi.startedAt = at;
-			window.agentStarted(at);
-			write(world, proc, { text: `typed #${++world.made}.`, custom: false });
+			{
+				const words = `typed #${++world.made}.`;
+				window.inputSeen({ source: proc.mode === "tui" ? "interactive" : "rpc", text: words }, at);
+				pi.running = true;
+				pi.startedAt = at;
+				window.agentStarted(at);
+				write(world, proc, { text: words, custom: false });
+			}
 			break;
 		case "typeBehind":
 			// The person's message while a turn runs, sent to pi and not through a row: `input`, and a follow-up of no row.
-			window.inputSeen(at);
-			window.personInput();
-			pi.queue.push({ text: `typed behind #${++world.made}.`, custom: false });
+			{
+				const words = `typed behind #${++world.made}.`;
+				window.inputSeen({ source: "rpc", text: words }, at);
+				pi.queue.push({ text: words, custom: false });
+			}
 			break;
 		case "otherSends": {
 			// Another extension's `sendUserMessage`: `input` with the source `extension`, so no submission of the person is counted.
 			const item: Item = { text: `another extension says #${++world.made}.`, custom: false };
-			window.inputSeen(at);
+			window.inputSeen({ source: "extension", text: item.text }, at);
 			if (pi.running) pi.queue.push(item);
 			else {
 				pi.running = true;
@@ -601,8 +627,7 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			// Each hand-over whose paragraph is still in the text is written now, by them.
 			const sent = pi.editor;
 			pi.editor = idlePi().editor;
-			window.inputSeen(at);
-			window.personInput();
+			window.inputSeen({ source: "interactive", text: sent.text }, at);
 			pi.running = true;
 			pi.startedAt = at;
 			window.agentStarted(at);
@@ -637,13 +662,14 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 				for (const item of waiting) leave(item.copy, "dropped", at);
 				pi.editor.put.push(...put);
 				pi.editor.text = paragraphs(...put.map((item) => item.paragraph), pi.editor.text);
+				pi.editor.afterStop = pi.editor.text;
 			} else {
 				for (const item of waiting) if (item.copy) item.copy.gaveUp ??= "stop";
 				pi.kept.push(...waiting);
 			}
 			Object.assign(pi, { running: false, aborts: 0, startedAt: undefined, turnOf: undefined });
 			window.agentEnded();
-			window.settled();
+			window.settled(stopped);
 			break;
 		}
 	}
@@ -667,6 +693,20 @@ export function clearQueue(world: World, conversation: Conversation, cancel: (ta
 		if (item.copy) world.cleared.push(item.copy);
 	}
 	return cancels;
+}
+
+/**
+ * A turn row handed to `proc`'s pi outside the engine. The engine hands an idle pi one prompt of ours
+ * at a time; a version before marks, or a race of two drains, could hand a second. The scenes of the
+ * model use this to put two prompts behind one run.
+ */
+export function handOverOutside(world: World, proc: Process, row: Row): void {
+	world.sending = { row, wake: "turn" };
+	try {
+		proc.window!.turn(row as Parameters<WindowExecutor["turn"]>[0], world.clock);
+	} finally {
+		world.sending = undefined;
+	}
 }
 
 /* ------------------------------------------------------------ the engine, with its writes watched */
@@ -718,7 +758,7 @@ function watchedStore(world: World, fuse: Fuse, remover?: Process, removed: () =
 		const rows = real.list(sessionId);
 		for (const row of rows) {
 			if (!gone.includes(row.id)) continue;
-			const removal: Removal = { row, delivered: row.kind === "input" ? deliveredBy(world, row) : undefined, findings: findingsFor(world, row.id), dead: deadLines(world, row.id), audited: auditedExits(world, row.id), failures: failedHandOvers(world, row.id), buried: conversation.deleted, heldByRemover: !!remover && held(remover).some((copy) => copy.rowId === row.id && !copy.gaveUp) };
+			const removal: Removal = { row, delivered: row.kind === "input" ? deliveredBy(world, row) : undefined, findings: findingsFor(world, row.id), dead: deadLines(world, row.id), audited: auditedExits(world, row.id), failures: failedHandOvers(world, row.id), buried: conversation.deleted, heldByRemover: !!remover && held(remover).some((copy) => copy.rowId === row.id && !copy.gaveUp && !copy.stopNamed) };
 			if (row.kind === "input" && !removal.delivered) removal.ranUnproved = remover?.window?.view(sessionId).ran?.has(row.id) ?? false;
 			const target = row.kind !== "input" && row.target && "id" in row.target ? row.target.id : undefined;
 			// A pi was handed the named row and has neither written nor lost it; one that refused it in silence counts until a tick judges the refusal: its window cannot know before.
@@ -790,15 +830,16 @@ export async function drainAs(world: World, proc: Process, tick: boolean, fault:
 			if (other.pi.current) piMove(world, other, "write");
 		}
 	};
-	const handOver = (row: Row, wake: "turn" | "append", call: () => void): void => {
+	const handOver = <T>(row: Row, wake: "turn" | "append", call: () => T): T => {
 		crash.write();
 		const turns = held(proc).filter((copy) => copy.wake === "turn" && !copy.gaveUp);
 		const local = row.source === "goal" || row.source.startsWith("inbox:");
 		world.facts.handOvers.push({ drain: number, process: proc, row, wake, holds: conversation.holder === proc, queued: world.store.list(conversation.id).some((queued) => queued.id === row.id), producerRunsIt: local && row.created_by.left === undefined && pidAlive(world, row.created_by.pid), piRunning: proc.pi.running, turnsHeld: turns.length, textTurnsHeld: turns.filter((copy) => copy.provedByText && world.clock - copy.handedAt < GRACE_MS).length, written: world.copies.some((copy) => copy.sessionId === conversation.id && copy.rowId === row.id && copy.state === "written" && !copy.fromTheEditor), sentFromTheEditor: world.copies.some((copy) => copy.sessionId === conversation.id && copy.rowId === row.id && copy.state === "written" && copy.fromTheEditor === true) });
 		world.sending = { row, wake };
 		world.handOverThrows = fault.handOverThrows === true;
+		let sent: T;
 		try {
-			call();
+			sent = call();
 		} catch (err) {
 			world.threw.set(row.id, (world.threw.get(row.id) ?? 0) + 1);
 			throw err;
@@ -807,6 +848,7 @@ export async function drainAs(world: World, proc: Process, tick: boolean, fault:
 			world.handOverThrows = false;
 		}
 		rowSettled();
+		return sent;
 	};
 	const executor: Executor = {
 		holds: (sessionId) => {
@@ -818,7 +860,12 @@ export async function drainAs(world: World, proc: Process, tick: boolean, fault:
 		turn: (row, at) => handOver(row, "turn", () => inner.turn(row, at)),
 		append: (row, wakeAgent) => handOver(row, "append", () => inner.append(row, wakeAgent)),
 		abort: () => inner.abort(),
-		abortWhenStarted: (id) => inner.abortWhenStarted(id),
+		abortWhenStarted: (id) => {
+			// A stop or a cancel named a row this pi holds and has not begun: a turn is to be aborted as it
+			// starts; a custom message has no start to abort, and the cancel takes the row out all the same.
+			for (const item of [proc.pi.current, ...proc.pi.kept, ...proc.pi.queue]) if (item?.copy && item.copy.rowId === id && !item.copy.gaveUp) item.copy.stopNamed = true;
+			inner.abortWhenStarted(id);
+		},
 		refused: (id) => {
 			// The engine stops waiting for this hand-over; if pi still has it, pi may yet send it late.
 			for (const copy of held(proc)) if (copy.rowId === id) copy.gaveUp ??= "refused";

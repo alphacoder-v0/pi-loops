@@ -283,7 +283,7 @@ function stopsAndCancelsWork(world: World, memory: Memory): string[] {
 	}
 	for (const copy of world.facts.written) {
 		// What the person sent from the editor is their own message: that a stopped prompt can be in it is the editor's defect (`stoppedRanFromTheEditor`).
-		if (copy.stopNamed && !copy.fromTheEditor && !copy.provedByText && copy.gaveUp !== "stop" && !copy.abortedAtStart) out.push(`pi began the turn ${label(world, copy.rowId)}, which a stop had named while pi held it unstarted, and was not asked to abort it`);
+		if (copy.stopNamed && copy.wake === "turn" && !copy.fromTheEditor && !copy.provedByText && copy.gaveUp !== "stop" && !copy.abortedAtStart) out.push(`pi began the turn ${label(world, copy.rowId)}, which a stop had named while pi held it unstarted, and was not asked to abort it`);
 	}
 	for (const copy of world.copies) {
 		if (!copy.stopNamed || copy.state !== "dropped" || copy.gaveUp || memory.released.has(copy) || !world.facts.drained.includes(copy.process)) continue;
