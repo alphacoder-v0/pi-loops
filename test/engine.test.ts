@@ -1373,6 +1373,38 @@ test("a message's delivery is what pi's input event says, not its source: a stee
 	assert.ok(at("followUp", "interactive"), "a terminal's follow-up (Alt+Enter) comes after the goal: the message is the goal's, marked");
 });
 
+test("a steer is never the first message of the run it came during: a rewritten first message is the prompt of ours pi took late", () => {
+	const w = fakeWindowPi(true, { mode: "rpc" });
+	const claim = row("c1", { source: "inbox:i", mode: "attended", wake: "turn", payload: { text: "address finding 1.", cwd: "/" } });
+	w.executor.turn(claim, T0);
+	w.executor.refused("c1"); // the grace passed; pi sends it late
+	w.executor.agentStarted(T0 + 1);
+	w.executor.inputSeen({ source: "rpc", text: "and the logs", streamingBehavior: "steer" }, T0 + 2);
+	w.executor.messageStarted({ role: "user", content: "[rewritten] address finding 1." }, T0 + 3);
+	assert.ok(w.executor.messageEnded({ role: "user", content: "[rewritten] address finding 1." }), "marked for the claim");
+});
+
+test("an input pi refuses during a run (sent with no delivery) leaves nothing that could take a message", () => {
+	const w = fakeWindowPi(true);
+	const goal = row("g1", { source: "goal", mode: "attended", wake: "turn", payload: { text: "keep going", cwd: "/" } });
+	w.executor.turn(goal, T0);
+	w.executor.agentStarted(T0 + 1);
+	w.executor.inputSeen({ source: "extension", text: "another extension says hi" }, T0 + 2); // pi throws: already processing
+	w.executor.messageStarted({ role: "user", content: "[rewritten] keep going" }, T0 + 3);
+	assert.ok(w.executor.messageEnded({ role: "user", content: "[rewritten] keep going" }), "the goal's message is marked");
+});
+
+test("the page's message sent to an idle pi is not dropped when a run of ours starts first: pi decided its delivery before the handlers ran", () => {
+	const w = fakeWindowPi(true, { mode: "rpc" });
+	w.executor.inputSeen({ source: "rpc", text: "look" }, T0);
+	const t1 = turnRow("t1");
+	w.executor.turn(t1, T0 + 1);
+	w.executor.agentStarted(T0 + 2);
+	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" }, T0 + 3);
+	w.executor.messageStarted({ role: "user", content: "[rewritten] look" }, T0 + 4);
+	assert.deepEqual(w.executor.currentTurn(), { kind: "person" }, "the person's words, by their text");
+});
+
 test("a window that cannot write the hold first sends nothing: lease-lost, and the row stays as it was", () => {
 	const w = windowOver({ hold: () => false });
 	const t1 = turnRow("t1");
