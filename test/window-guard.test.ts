@@ -891,3 +891,146 @@ test("the person's rewritten follow-up lifts a row's cap", async () => {
 	assert.deepEqual(w.executor.currentTurn(), { kind: "person" });
 	assert.equal(await w.call(rmrf), undefined);
 });
+
+// From the Gates review of PR 261, round 7: the parts of a met cap, where they are cleared, and the ring that replaces one.
+const jobRowRead = (runId: string) => plainJobRow(job({ tools: ["read"] }), runId, "cron:job-1", "", by, T0);
+const ring = (w: ReturnType<typeof window>, r: Row) => assert.equal(ringProduced([...w.queued.values()], r.id, requestFingerprint(r), (x) => w.executor.produced(x)), true, "the page rings late");
+const mode = (w: ReturnType<typeof window>) => (w.executor.currentTurn() as { mode?: string } | undefined)?.mode;
+
+test("nested meet: a second unplaced message keeps the parts of the met cap in force; a late ring replaces only its own row's part", async () => {
+	const w = window();
+	const p1 = pageRow("p1", "keep going");
+	w.queued.set(p1.id, p1);
+	w.executor.turn(p1, T0); // not rung yet: unattended
+	w.executor.agentStarted(T0 + 1);
+	w.started("keep going"); // p1's own message: its cap in force
+	const j = jobRowRead("run-aaaabbbbccccdddd");
+	w.queued.set(j.id, j); // in the file, not handed over here
+	w.started(`[Trigger ${j.id}] tidy the cache, rewritten`); // unplaced: meet of p1 and j
+	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, ["read"]);
+	w.started("<ctx>another extension's message</ctx>"); // unplaced again
+	ring(w, p1);
+	assert.equal(mode(w), "unattended", "j's part is not p1's: it stays");
+	assert.equal(await w.blocked(rmrf), true);
+});
+
+test("control: the same without the second unplaced message stays capped", async () => {
+	const w = window();
+	const p1 = pageRow("p1", "keep going");
+	w.queued.set(p1.id, p1);
+	w.executor.turn(p1, T0);
+	w.executor.agentStarted(T0 + 1);
+	w.started("keep going");
+	const j = jobRowRead("run-aaaabbbbccccdddd");
+	w.queued.set(j.id, j);
+	w.started(`[Trigger ${j.id}] tidy the cache, rewritten`);
+	ring(w, p1);
+	assert.equal(mode(w), "unattended");
+	assert.equal(await w.blocked(rmrf), true);
+});
+
+test("the cap in force is a part: a late ring of a held prompt does not lift it", async () => {
+	const w = window();
+	w.clockFired({ tools: ["read"] });
+	const p1 = pageRow("p1", "keep going");
+	w.queued.set(p1.id, p1);
+	w.executor.turn(p1, T0 + 1); // unrung
+	w.started("<ctx>neither prompt's words</ctx>");
+	ring(w, p1);
+	assert.equal(mode(w), "unattended");
+	assert.equal(await w.blocked(rmrf), true);
+});
+
+test("a [Trigger <id>] row's cap is a part: a late ring of a held prompt does not lift it", async () => {
+	const w = window();
+	const j = jobRowRead("run-aaaabbbbccccdddd");
+	w.queued.set(j.id, j);
+	const p1 = pageRow("p1", "keep going");
+	w.queued.set(p1.id, p1);
+	w.executor.turn(p1, T0); // unrung
+	w.executor.agentStarted(T0 + 1);
+	w.started(`[Trigger ${j.id}] tidy the cache, rewritten`);
+	ring(w, p1);
+	assert.equal(mode(w), "unattended");
+	assert.equal(await w.blocked(rmrf), true);
+});
+
+test("a turn's own message after a meet: a late ring of an old part does not touch its cap", async () => {
+	const w = window();
+	const p1 = pageRow("p1", "keep going");
+	w.queued.set(p1.id, p1);
+	w.executor.turn(p1, T0);
+	w.executor.agentStarted(T0 + 1);
+	w.started("<ctx>rewritten</ctx>"); // meet of p1 alone
+	const k = jobRowRead("run-5555666677778888");
+	w.queued.set(k.id, k);
+	w.executor.turn(k, T0 + 2);
+	w.started(k.payload!.text); // k's own message: k's cap
+	ring(w, p1);
+	assert.equal(mode(w), "unattended");
+	assert.equal(await w.blocked(rmrf), true);
+});
+
+test("the person's follow-up after a meet: a late ring does not cap their turn", async () => {
+	const w = window();
+	const p1 = pageRow("p1", "keep going");
+	w.queued.set(p1.id, p1);
+	w.executor.turn(p1, T0);
+	const j = jobRowRead("run-aaaabbbbccccdddd");
+	w.queued.set(j.id, j);
+	w.executor.turn(j, T0 + 1);
+	w.executor.agentStarted(T0 + 2);
+	w.started("<ctx>rewritten</ctx>"); // meet of p1 and j
+	w.executor.inputSeen({ source: "interactive", text: "now go on", streamingBehavior: "followUp" }, T0 + 3);
+	w.started("now go on");
+	assert.deepEqual(w.executor.currentTurn(), { kind: "person" });
+	ring(w, p1);
+	assert.equal(await w.call(rmrf), undefined);
+});
+
+test("a settled meet leaves nothing: a ring after it and the person's next own turn run uncapped", async () => {
+	const w = window();
+	const p1 = pageRow("p1", "keep going");
+	w.queued.set(p1.id, p1);
+	w.executor.turn(p1, T0);
+	const j = jobRowRead("run-aaaabbbbccccdddd");
+	w.queued.set(j.id, j);
+	w.executor.turn(j, T0 + 1);
+	w.executor.agentStarted(T0 + 2);
+	w.started("<ctx>rewritten</ctx>");
+	w.executor.agentEnded();
+	w.executor.settled();
+	ring(w, p1);
+	assert.equal(w.executor.currentTurn(), undefined);
+	w.typed("my own words now");
+	assert.equal(await w.call(rmrf), undefined);
+});
+
+test("a met cap of one part: its late ring upgrades it", async () => {
+	const w = window();
+	const p1 = pageRow("p1", "keep going");
+	w.queued.set(p1.id, p1);
+	w.executor.turn(p1, T0);
+	w.executor.agentStarted(T0 + 1);
+	w.started("<ctx>rewritten</ctx>");
+	assert.equal(mode(w), "unattended");
+	ring(w, p1);
+	assert.equal(mode(w), "attended");
+	assert.equal(await w.call(rmrf), undefined);
+});
+
+test("two late rings of the two parts: both replaced, attended", async () => {
+	const w = window();
+	const p1 = pageRow("p1", "keep going");
+	const p2 = pageRow("p2", "and the other");
+	w.queued.set(p1.id, p1);
+	w.queued.set(p2.id, p2);
+	w.executor.turn(p1, T0);
+	w.executor.turn(p2, T0 + 1);
+	w.executor.agentStarted(T0 + 2);
+	w.started("<ctx>rewritten</ctx>");
+	ring(w, p1);
+	assert.equal(mode(w), "unattended", "p2 is still a part");
+	ring(w, p2);
+	assert.equal(mode(w), "attended");
+});

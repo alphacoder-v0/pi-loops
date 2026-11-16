@@ -441,3 +441,18 @@ test("claimOf: rule 2 when their words are the longer: still not by their text",
 	assert.equal(c.by, "other");
 	assert.equal(c.by === "other" && c.byText, false);
 });
+
+// From the Gates review of PR 261, round 7: the very same words beside a prompt of ours in every phase.
+for (const [name, slot] of [
+	["refused", claimTurn("ours", "run the tests.", { is: "refused" })],
+	["pending", claimTurn("ours", "run the tests.", { is: "pending", since: 0 } as Phase)],
+	["opening", claimTurn("ours", "run the tests.", { is: "opening" } as Phase)],
+	["stopped", { ...claimTurn("ours", "run the tests.", { is: "queued" }), stop: true as const }],
+] as const) {
+	test(`claimOf: the person's very same words beside a ${name} prompt of ours: not by their text`, () => {
+		const theirs = waitingInput("run the tests.", "person", "followUp");
+		const c = claimOf("run the tests.", [slot as TurnSlot, theirs]);
+		assert.equal(c.by === "other" && c.slot, theirs);
+		assert.equal(c.by === "other" && c.byText, false);
+	});
+}
