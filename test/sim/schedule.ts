@@ -10,7 +10,7 @@ import type { Row } from "../../src/requests.ts";
 import { stamp } from "../../src/schedule.ts";
 import { type Violation, KNOWN, REWRITTEN_HOLDS, createChecker, type Coverage } from "./invariants.ts";
 import { pick, prng, weighted } from "./prng.ts";
-import { type Conversation, type Fault, PAGE_PID, type Mode, type PiMove, type Process, type Timers, type World, advance, atOnce, buryAs, createWorld, drainAs, everyProcess, held, kill, label, leaseMayMove, live, moveLease, noFacts, piMove, piMoves, start, who } from "./world.ts";
+import { type Conversation, type Fault, PAGE_PID, type Mode, type PiMove, type Process, type Timers, type World, advance, atOnce, buryAs, clearQueue, createWorld, drainAs, everyProcess, held, kill, label, leaseMayMove, live, moveLease, noFacts, piMove, piMoves, start, who } from "./world.ts";
 
 type Kind = "produce" | "drain" | "pi" | "clock" | "process" | "lease" | "setting" | "inbox" | "delete";
 
@@ -150,6 +150,18 @@ function produce(world: World, conversation: Conversation, b: number, c: number)
 			return `stop#${n} is queued for ${to}, naming ${"id" in target ? label(world, target.id) : "the turn running now"}`;
 		}
 		default: {
+			// One cancel in eight is the page's "clear queue", where the page's pi is on the conversation: every input row, and pi's own queue.
+			if (b % 12 === 11 && c % 4 === 0) {
+				let k = 0;
+				const cancels = clearQueue(world, conversation, (target) => {
+					const id = `cancel-${n}.${++k}`;
+					world.labels.set(id, `cancel#${n}.${k}`);
+					world.targeted.add(target);
+					world.store.append({ ...cancelRow(to, { id: target }, "person", PAGE, at), id });
+					return id;
+				});
+				if (cancels) return `the page clears the queue of ${to}: ${cancels.length} cancels, and pi lets go of what it had queued`;
+			}
 			const id = `cancel-${n}`;
 			world.labels.set(id, `cancel#${n}`);
 			const inputs = queued();
@@ -227,7 +239,7 @@ function open(world: World, conversation: Conversation, index: number): string {
 	return `${who(proc)} starts${conversation.holder === proc ? " and takes the lease" : ", without the lease"}`;
 }
 
-const PI_SAYS: Record<PiMove, string> = { start: "starts the turn it was handed", write: "writes the turn's message", settle: "settles", esc: "is stopped and settles", refuse: "refuses what it was handed, silently", type: "runs a message the person typed", enter: "runs what the person sent from the editor, where a stop had put it" };
+const PI_SAYS: Record<PiMove, string> = { start: "starts the turn it was handed", write: "writes the turn's message", settle: "settles", esc: "is stopped and settles", refuse: "refuses what it was handed, silently", type: "runs a message the person typed", enter: "runs what the person sent from the editor, where a stop had put it", typeBehind: "is sent a message by the person while its turn runs", otherSends: "is sent a message by another extension", otherRejected: "refuses a message another extension sent with no deliverAs while its turn runs", steer: "is steered by the person, who pressed Enter while its turn runs" };
 
 /** Make `step` happen in `world`, and say what happened in one line. */
 export async function apply(world: World, step: Step): Promise<string> {
@@ -363,6 +375,8 @@ async function killEveryProcessAndFinish(world: World, numbers: readonly number[
 const BROKEN_BY_REWRITING: readonly string[] = ["a row is delivered once per proof", "I8 attempts count failed hand-overs, a backoff is waited out, and three failures make a dead letter", "a stop and a cancel do what they name", AFTER_RESTART];
 
 export interface Run {
+	/** The page's "clear queue" steps drawn, and the cancels they wrote: a full run must reach the path. */
+	clears: { drawn: number; cancels: number };
 	/** One line per step, as it happened. */
 	lines: string[];
 	violation?: Violation & { step: number | "end" };
@@ -381,7 +395,7 @@ export async function run(plan: Plan, dir: string, time: Timers, enforce?: strin
 	const checker = createChecker(world, enforce);
 	const lines: string[] = [];
 	const known: Run["known"] = {};
-	const done = (violation?: Run["violation"]): Run => ({ lines, violation, known, crashes: world.crashes, coverage: checker.coverage });
+	const done = (violation?: Run["violation"]): Run => ({ lines, violation, known, crashes: world.crashes, coverage: checker.coverage, clears: { drawn: world.clears.drawn, cancels: world.clears.cancels } });
 	const check = (step: number | "end", end = false): Violation | undefined => {
 		const found = checker.check(end);
 		for (const { invariant, message } of found.known) known[invariant] ??= { step, message };

@@ -121,7 +121,8 @@ function notItsExit(world: World, gone: Removal, exit: string): string | undefin
 		case "done":
 			return input ? "an input is done only by its proof in the conversation" : undefined;
 		case "cancelled":
-			if (gone.heldByRemover) return "the pi of the process that removed it holds its turn and will run it";
+			// A window that took another message for this row's (`ranUnproved`) no longer knows that pi holds it: `doneOnlyByProof` names that.
+			if (gone.heldByRemover && !gone.ranUnproved) return "the pi of the process that removed it holds its turn and will run it";
 			return input && world.targeted.has(row.id) ? undefined : "no stop and no cancel named it";
 		case "job-removed":
 			return row.source.startsWith("cron:") && !world.jobs.get(row.source.slice("cron:".length))?.exists ? undefined : "its job is there";
@@ -158,11 +159,17 @@ function answeredThoughAnotherSaidTheSame(world: World, memory: Memory, _queues:
 /**
  * I2, for the one exit no file proves: the window removes a row as done because a turn began with
  * a message that carried no prefix, which it takes for the row's own prompt, rewritten by another
- * extension. Nothing rewrites a prompt in the simulation, so every such exit is a row removed that
- * pi had not written.
+ * extension. In a world where nothing rewrites a prompt, every such exit is a row removed that pi
+ * had not written: the message was a late send of another row, the person's own message that pi
+ * kept, or another extension's.
  */
 function doneOnlyByProof(world: World): string[] {
-	return world.facts.removals.filter((gone) => gone.exit === "ran").map((gone) => `${label(world, gone.row.id)} left the queue of ${gone.row.lane} as done on the window's word that its turn ran, and pi had not written it`);
+	const out = world.facts.removals.filter((gone) => gone.exit === "ran").map((gone) => `${label(world, gone.row.id)} left the queue of ${gone.row.lane} as done on the window's word that its turn ran, and pi had not written it`);
+	// The same mistake, seen by a cancel: the window says the row's turn ran, so the cancel takes the row out as if pi did not hold it.
+	for (const gone of world.facts.removals) {
+		if (gone.exit === "cancelled" && gone.heldByRemover && gone.ranUnproved) out.push(`${label(world, gone.row.id)} left the queue of ${gone.row.lane} as cancelled while pi holds its turn: the window took another message for its own and stopped holding it`);
+	}
+	return out;
 }
 
 /**
@@ -268,13 +275,15 @@ function stopsAndCancelsWork(world: World, memory: Memory): string[] {
 	for (const { row, named, removerPi: pi } of world.facts.removals) {
 		const target = row.target;
 		if (row.kind === "input" || !target) continue;
-		if (named?.queued && !named.inFlight && "id" in target) out.push(`${label(world, row.id)} left the queue, and ${label(world, target.id)}, which it named, is still queued with no pi holding its turn`);
+		// A row the page cleared out of pi's queue has a check of its own (`clearedDoesNotComeBack`).
+		if (named?.queued && !named.inFlight && "id" in target && !clearedOutOfPi(world, row.lane, target.id)) out.push(`${label(world, row.id)} left the queue, and ${label(world, target.id)}, which it named, is still queued with no pi holding its turn`);
 		if (row.kind !== "stop" || !pi?.running || pi.aborted) continue;
 		const runs = "id" in target ? pi.turnOf === target.id : pi.startedAt !== undefined && pi.startedAt < Date.parse(target.started_before);
 		if (runs) out.push(`${label(world, row.id)} named the turn pi was running, and pi was not asked to abort it`);
 	}
 	for (const copy of world.facts.written) {
-		if (copy.stopNamed && !copy.provedByText && copy.gaveUp !== "stop" && !copy.abortedAtStart) out.push(`pi began the turn ${label(world, copy.rowId)}, which a stop had named while pi held it unstarted, and was not asked to abort it`);
+		// What the person sent from the editor is their own message: that a stopped prompt can be in it is the editor's defect (`stoppedRanFromTheEditor`).
+		if (copy.stopNamed && !copy.fromTheEditor && !copy.provedByText && copy.gaveUp !== "stop" && !copy.abortedAtStart) out.push(`pi began the turn ${label(world, copy.rowId)}, which a stop had named while pi held it unstarted, and was not asked to abort it`);
 	}
 	for (const copy of world.copies) {
 		if (!copy.stopNamed || copy.state !== "dropped" || copy.gaveUp || memory.released.has(copy) || !world.facts.drained.includes(copy.process)) continue;
@@ -306,6 +315,27 @@ function attemptsCountFailures(world: World, _memory: Memory, queues: Queues): s
 	for (const gone of world.facts.removals) {
 		if (gone.exit !== "dead" || gone.buried || world.malformed.has(gone.row.id) || gone.failures >= DEAD_AT) continue;
 		out.push(`${label(world, gone.row.id)} became a dead letter after ${gone.failures} failed hand-overs: a row is dead at ${DEAD_AT}`);
+	}
+	return out;
+}
+
+/** Whether the page cleared row `id` of `sessionId` out of pi's queue (`clearQueue`). */
+const clearedOutOfPi = (world: World, sessionId: string, id: string): boolean => world.cleared.some((copy) => copy.sessionId === sessionId && copy.rowId === id);
+
+/**
+ * The page's "clear queue" reaches what pi had queued. Its cancel names the row, and pi lets go of
+ * the prompt at the same moment. So when that cancel leaves the queue, the row is not left queued,
+ * and the row is not handed over again: the person cleared it.
+ */
+function clearedDoesNotComeBack(world: World): string[] {
+	const out: string[] = [];
+	for (const { row, named } of world.facts.removals) {
+		const target = row.target;
+		if (row.kind !== "cancel" || !target || !("id" in target) || !clearedOutOfPi(world, row.lane, target.id)) continue;
+		if (named?.queued && !named.inFlight) out.push(`${label(world, row.id)} left the queue, and ${label(world, target.id)}, which the page cleared out of pi's queue with it, is still queued`);
+	}
+	for (const h of world.facts.handOvers) {
+		if (clearedOutOfPi(world, h.process.conversation.id, h.row.id)) out.push(`${label(world, h.row.id)} was handed over again after the page had cleared it out of pi's queue`);
 	}
 	return out;
 }
@@ -396,6 +426,9 @@ const KNOWN_SECOND_DELIVERIES: Readonly<Record<string, Excuse>> = {
 	"a row is delivered once when the person sends what a stop put into the editor": "editor",
 };
 
+/** A third face of the editor's defect: a prompt that a stop named, dropped into the editor by Esc, runs when the person sends the editor. */
+const stoppedRanFromTheEditor = (world: World): string[] => world.facts.written.filter((copy) => copy.fromTheEditor && copy.stopNamed).map((copy) => `${label(world, copy.rowId)}, which a stop had named, ran when the person sent the editor's text`);
+
 /** The other half of the editor's defect: a row handed over again after the person sent its text from the editor. */
 const handedOverAfterTheEditor = (world: World): string[] => world.facts.handOvers.filter((h) => h.sentFromTheEditor && !h.written).map((h) => `${label(world, h.row.id)} was handed over after the person had sent it from the editor`);
 
@@ -409,12 +442,13 @@ const handedOverAfterTheEditor = (world: World): string[] => world.facts.handOve
 export const REWRITTEN_HOLDS = "a row is proved by its own message also when another extension rewrote the text";
 
 export const KNOWN: Readonly<Record<string, { defect: string; seed: number }>> = {
-	"I3 no turn beside an unwritten turn only its text proves": { seed: 341, defect: "a turn pi holds unwritten, of a row only its text proves, is taken for delivered by an earlier message with the same words (#250): the row leaves, the lane is free again, and the next turn is handed to a pi that still holds the first. A window that takes the lease while pi holds a turn unstarted breaks it another way (#248, seed 618). The order of the rows no longer matters: the lane is taken before any row is started (#245, closed)" },
-	"I2 a person's message is answered even when another has the same words": { seed: 86, defect: "landed takes a row only its text proves for delivered by another row's message with the same words, written at or after its hand-over stamp: when its own hand-over came to nothing (it threw and left last_error, or its window died), the row is removed as done, not given back to the page, and the person, who said the same words twice, is answered once. Needs no more of pi than a failed hand-over or a crash (#250)" },
-	"I2 a row is done only by its proof": { seed: 3346, defect: "a message without a prefix that no handed-over row claims (a text-proved row's late send, once that row has left the queue) is taken for the oldest prefixed turn pi was handed and has not started: that row is removed as done while pi still holds it unwritten. Narrow: pi's phase before a run has to outlast the ten-second grace (#247)" },
-	"a row is delivered once when the lease moves while pi holds its turn unstarted": { seed: 618, defect: "a window takes the lease while the holder's pi holds a turn it was handed and has not started (the lease says a turn runs only from agent_start): the new holder hands the row over again, and both pis write it; for a person's message that is one prompt answered twice. Narrow: the lease has to be taken during pi's phase before a run (#248)" },
-	"a row is delivered once after a stop in the page's pi": { seed: 18, defect: "in rpc mode (the page's pi) a stop is AgentSession.abort(), which keeps what pi queued behind the aborted turn; the window takes it for dropped, hands the row over again, and pi writes both. A terminal's abort clears the queue, as Esc does (#249)" },
-	"a row is delivered once when the person sends what a stop put into the editor": { seed: 59, defect: "in a terminal a stop (Esc, or ctx.abort()) clears pi's queue and puts the queued user messages into the editor, a prompt of ours with its [Trigger <id>] prefix among them; the window takes the rows for dropped and hands them over again, and when the person presses Enter the editor's text is one more message with the same prompt in it. Measured on pi 1.2.0 (.docs/redesign-0243/signatures/M3b-probes.md, P3). An extension can read and set the editor's text, so a window can take its own prompts out of it. Narrow: the engine hands a turn only to an idle pi, so a run has to begin between its look and the hand-over for a prompt of ours to be queued behind a turn (#256)" },
+	"I3 no turn beside an unwritten turn only its text proves": { seed: 576, defect: "a turn pi holds unwritten, of a row only its text proves, is taken for delivered by an earlier message with the same words (#250): the row leaves, the lane is free again, and the next turn is handed to a pi that still holds the first. A window that takes the lease while pi holds a turn unstarted breaks it another way (#248, seed 618). The order of the rows no longer matters: the lane is taken before any row is started (#245, closed)" },
+	"I2 a person's message is answered even when another has the same words": { seed: 61, defect: "landed takes a row only its text proves for delivered by another row's message with the same words, written at or after its hand-over stamp: when its own hand-over came to nothing (it threw and left last_error, or its window died), the row is removed as done, not given back to the page, and the person, who said the same words twice, is answered once. Needs no more of pi than a failed hand-over or a crash (#250)" },
+	"I2 a row is done only by its proof": { seed: 8, defect: "a user message that no handed-over row claims is taken for the oldest prefixed turn pi was handed and has not started, and that row is removed as done while pi still holds it unwritten. The message can be another extension's, the person's message that the page's Stop kept, or a text-proved row's late send; no grace has to pass (shortest schedule of seed 8's kind: a job handed to an idle pi, another extension's message, a drain). Two more faces of the same mistake are filed here: a cancel then takes out a row pi still holds, and a prompt a stop named runs from the editor (#247)" },
+	"a row is delivered once when the lease moves while pi holds its turn unstarted": { seed: 1868, defect: "a window takes the lease while the holder's pi holds a turn it was handed and has not started (the lease says a turn runs only from agent_start): the new holder hands the row over again, and both pis write it; for a person's message that is one prompt answered twice. Narrow: the lease has to be taken during pi's phase before a run (#248)" },
+	"a row is delivered once after a stop in the page's pi": { seed: 259, defect: "in rpc mode (the page's pi) a stop is AgentSession.abort(), which keeps what pi queued behind the aborted turn; the window takes it for dropped, hands the row over again, and pi writes both. A terminal's abort clears the queue, as Esc does (#249)" },
+	"a row is delivered once when the person sends what a stop put into the editor": { seed: 110, defect: "in a terminal a stop (Esc, or ctx.abort()) clears pi's queue and puts the queued user messages into the editor, a prompt of ours with its [Trigger <id>] prefix among them; the window takes the rows for dropped and hands them over again, and when the person presses Enter the editor's text is one more message with the same prompt in it, also as a steer during the next run, which sends the editor's whole text (g16). Measured on pi 1.2.0 (.docs/redesign-0243/signatures/M3b-probes.md, P3). An extension can read and set the editor's text, so a window can take its own prompts out of it. Narrow: the engine hands a turn only to an idle pi, so a run has to begin between its look and the hand-over for a prompt of ours to be queued behind a turn (#256)" },
+	"a row the page cleared out of pi's queue does not come back": { seed: 332, defect: "the page's \"clear queue\" writes a cancel for every input row and then empties pi with rpc clear_queue, which removes the follow-ups behind a running turn, custom ones too, and tells an extension nothing (probes, P10). A cancel that names a row in flight does nothing and leaves as stale, since pi is about to run the row; so when the turn ends the window takes the row for dropped and hands it over again. Measured with a real pi-loops in a real pi: a rule's result cleared during a run comes back after the run, as a custom message with no turn. After a Stop the window hands what pi kept over again at its next drain, so the click helps only if it comes first (#259)" },
 	[REWRITTEN_HOLDS]: { seed: 7, defect: "pi lets another extension's input handler rewrite a message (probes, P4). A prefix of ours is then not at the start of the message, and a row's words are not its first: the proof by prefix and the proof by words both miss the row's own message. The window guesses (the `ran` exit), or the row is handed over again. Inside one run the order of the messages is still the order of the hand-overs. It is not across a stop in the page's pi: what pi kept is written behind the message that starts the next run, which was handed over later. So a window cannot tell its message by counting (#257)" },
 };
 
@@ -429,9 +463,10 @@ export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
 	["a stop and a cancel do what they name", stopsAndCancelsWork],
 	["what the person typed stays in the editor until they send it", typedStaysInTheEditor],
 	["a prompt of ours is written by one pi at most three times", writesAreBounded],
+	["a row the page cleared out of pi's queue does not come back", clearedDoesNotComeBack],
 	["I8 attempts count failed hand-overs, a backoff is waited out, and three failures make a dead letter", attemptsCountFailures],
 	["a row is delivered once per proof", deliveredOnce],
-	...Object.entries(KNOWN_SECOND_DELIVERIES).map(([name, excuse]): [string, Invariant] => [name, (world) => [...writtenTooOften(world, [...ACCEPTED, ...Object.values(KNOWN_SECOND_DELIVERIES).filter((other) => other !== excuse)]), ...(excuse === "editor" ? handedOverAfterTheEditor(world) : [])]]),
+	...Object.entries(KNOWN_SECOND_DELIVERIES).map(([name, excuse]): [string, Invariant] => [name, (world) => [...writtenTooOften(world, [...ACCEPTED, ...Object.values(KNOWN_SECOND_DELIVERIES).filter((other) => other !== excuse)]), ...(excuse === "editor" ? [...handedOverAfterTheEditor(world), ...stoppedRanFromTheEditor(world)] : [])]]),
 ];
 
 /**

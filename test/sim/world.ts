@@ -29,7 +29,19 @@
  * - Before pi persists a message it asks the window (`message_end`), which may give another
  *   message of the same role: what a window writes into the entry is in the entry.
  * - A custom message with no turn asked for is written at once.
- * - The person types into the window: a turn of their own, in words no row has.
+ * - The person types into the window: a turn of their own, in words no row has. In the page they
+ *   can also send a message straight to pi while a turn runs (`typeBehind`): a follow-up with no
+ *   row, which the page's Stop keeps as it keeps ours (probe g9). In a terminal, Enter during a
+ *   run steers (`steer`, probe g13): pi writes the message right after the current turn, behind
+ *   the steers before it and before the follow-ups (g16), and Esc puts it first into the editor, as
+ *   the person's words. With text in the editor, the steer is that whole text and the editor is
+ *   empty (g16): a prompt of ours a stop put there goes out again, by the person.
+ * - Another extension sends a user message of its own (`otherSends`): a follow-up during a run
+ *   (P6), the first message of a run when pi is idle (g11, g14). The window is told of the input
+ *   and not of a person's submission. Sent with no `deliverAs` during a run (`otherRejected`, g11),
+ *   pi refuses it after the input: the window is told of an input, and no message comes.
+ * - The page clears the queue (`clearQueue`; P10 after a stop, g12 during a run): a cancel for every
+ *   input row, then the page's pi's queue is emptied, custom messages too, and no extension is told.
  * - A hand-over can throw (no model, no credentials).
  *
  * What it does not do:
@@ -121,6 +133,10 @@ interface Item {
 	text: string;
 	custom: boolean;
 	copy?: Copy;
+	/** The person's own words (a steer): a stop in a terminal puts them into the editor as theirs. */
+	person?: true;
+	/** A steer sent with text in the editor: it is that whole text, and the editor it was (probe g16). */
+	editor?: Editor;
 }
 
 export interface Pi {
@@ -287,6 +303,10 @@ export interface World {
 	ticks: boolean;
 	/** Another extension's `input` handler puts words before the text of every user message: a prefix of ours is then not at the start, and a row's words are not the message's first. */
 	rewrites: boolean;
+	/** The hand-overs that pi let go of when the page cleared the queue: none of them may be written afterwards. */
+	cleared: Copy[];
+	/** How often the page cleared a queue, and the cancels it wrote for that. */
+	clears: { drawn: number; cancels: number };
 }
 
 /** A world of one conversation for each of `seconds`: its first process is a window, started; its second is of `kind`, started when `running`; `modes` are the two processes'. */
@@ -315,6 +335,8 @@ export function createWorld(dir: string, time: Timers, seconds: ReadonlyArray<{ 
 		handOverThrows: false,
 		ticks: opts.ticks === true,
 		rewrites: opts.rewrites === true,
+		cleared: [],
+		clears: { drawn: 0, cancels: 0 },
 	};
 	time.setTime(EPOCH);
 	for (const [index, second] of seconds.entries()) {
@@ -449,6 +471,13 @@ function write(world: World, proc: Process, item: Item): void {
 	}
 	proc.conversation.entries.push(item.custom ? { type: "custom_message", timestamp: stampOf(at), content: item.text } : { type: "message", timestamp: stampOf(at), message });
 	if (world.ticks) advance(world, 1);
+	// What the person sent from the editor: each hand-over whose paragraph is still in it is written now, by them.
+	for (const put of item.editor?.put ?? []) {
+		if (!put.copy || !item.editor!.text.includes(put.paragraph)) continue;
+		const copy: Copy = { ...put.copy, state: "written", writtenAt: at, fromTheEditor: true };
+		world.copies.push(copy);
+		world.facts.written.push(copy);
+	}
 	if (!item.copy) return;
 	if (!item.custom) proc.pi.turnOf = item.copy.rowId;
 	item.copy.abortedAtStart = proc.pi.aborts > aborts;
@@ -473,7 +502,8 @@ function windowProcess(world: World, base: Omit<Process, "executor">): Process {
 	const ctx = {
 		isIdle: () => !proc.pi.running,
 		mode: proc.mode,
-		hasUI: false,
+		// True in a terminal and in the page's pi (measured). False would keep a cleanup of the editor that asks for a UI from ever running here.
+		hasUI: true,
 		// The editor, as an extension reads and sets it: one text.
 		ui: { notify: () => undefined, getEditorText: () => proc.pi.editor.text, setEditorText: (text: string) => void (proc.pi.editor.text = text) },
 		// The user messages pi holds behind a turn: follow-ups while one runs, and what a stop left in
@@ -516,16 +546,18 @@ function backgroundProcess(world: World, base: Omit<Process, "executor">): Proce
 
 /* ------------------------------------------------------------ pi's moves */
 
-export type PiMove = "start" | "write" | "settle" | "esc" | "refuse" | "type" | "enter";
+export type PiMove = "start" | "write" | "settle" | "esc" | "refuse" | "type" | "enter" | "typeBehind" | "otherSends" | "otherRejected" | "steer";
 
 /** What `process`'s pi can do next; a move listed twice is twice as likely. */
 export function piMoves(proc: Process): PiMove[] {
 	const pi = proc.pi;
-	if (pi.running) return pi.current ? ["write", "write", "settle", "esc"] : ["settle", "esc"];
+	// While a turn runs: the person sends a message behind it in the page, or steers in a terminal; another extension sends one anywhere, or sends one pi refuses.
+	const behind: PiMove[] = proc.mode === "rpc" ? ["typeBehind", "otherSends", "otherRejected"] : ["steer", "otherSends", "otherRejected"];
+	if (pi.running) return pi.current ? ["write", "write", "settle", "esc", ...behind] : ["settle", "esc", ...behind];
 	// A terminal's editor that a stop filled: the person sends it, or adds words of their own first
 	// (`type`). What a stop left in the page's pi starts nothing: no `start` and no `refuse` for it.
 	const enter: PiMove[] = pi.editor.text !== "" ? ["enter"] : [];
-	return pi.queue.length ? ["start", "start", "start", "refuse", "type", "type", ...enter] : ["type", ...enter];
+	return pi.queue.length ? ["start", "start", "start", "refuse", "type", "type", "otherSends", ...enter] : ["type", ...enter];
 }
 
 export function piMove(world: World, proc: Process, move: PiMove): void {
@@ -563,6 +595,42 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			window.agentStarted(at);
 			write(world, proc, { text: `typed #${++world.made}.`, custom: false });
 			break;
+		case "typeBehind":
+			// The person's message while a turn runs, sent to pi and not through a row: `input`, and a follow-up of no row.
+			window.inputSeen(at);
+			window.personInput();
+			pi.queue.push({ text: `typed behind #${++world.made}.`, custom: false });
+			break;
+		case "steer": {
+			// Enter during a run in a terminal: `input`, the person's submission, and a message behind
+			// the steers before it and ahead of the follow-ups (g16). With text in the editor, the steer
+			// is that whole text, and the editor is empty (g16; pi's interactive mode does the same).
+			window.inputSeen(at);
+			window.personInput();
+			const sent = pi.editor.text !== "" ? pi.editor : undefined;
+			if (sent) pi.editor = idlePi().editor;
+			const item: Item = { text: sent ? sent.text : `steered #${++world.made}.`, custom: false, person: true, ...(sent ? { editor: sent } : {}) };
+			const behindSteers = pi.queue.findIndex((queued) => !queued.person);
+			pi.queue.splice(behindSteers === -1 ? pi.queue.length : behindSteers, 0, item);
+			break;
+		}
+		case "otherRejected":
+			// Another extension's `sendUserMessage` with no `deliverAs` while a turn runs: `input`, then pi throws, and no message.
+			window.inputSeen(at);
+			break;
+		case "otherSends": {
+			// Another extension's `sendUserMessage`: `input` with the source `extension`, so no submission of the person is counted.
+			const item: Item = { text: `another extension says #${++world.made}.`, custom: false };
+			window.inputSeen(at);
+			if (pi.running) pi.queue.push(item);
+			else {
+				pi.running = true;
+				pi.startedAt = at;
+				window.agentStarted(at);
+				write(world, proc, item);
+			}
+			break;
+		}
 		case "enter": {
 			// The person sends the editor: one message, all of its text, and a run that starts with it.
 			// Each hand-over whose paragraph is still in the text is written now, by them.
@@ -573,13 +641,7 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			pi.running = true;
 			pi.startedAt = at;
 			window.agentStarted(at);
-			write(world, proc, { text: sent.text, custom: false });
-			for (const item of sent.put) {
-				if (!item.copy || !sent.text.includes(item.paragraph)) continue;
-				const copy: Copy = { ...item.copy, state: "written", writtenAt: at, fromTheEditor: true };
-				world.copies.push(copy);
-				world.facts.written.push(copy);
-			}
+			write(world, proc, { text: sent.text, custom: false, editor: sent });
 			break;
 		}
 		case "settle":
@@ -602,6 +664,15 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			if (proc.mode === "tui") {
 				const put = waiting.filter((item) => !item.custom).map((item) => ({ paragraph: world.rewrites ? `${REWRITTEN}${item.text}` : item.text, copy: item.copy }));
 				for (const item of waiting) leave(item.copy, "dropped", at);
+				// A steer is the person's words: a cleanup of the editor leaves them where they are. One
+				// that carried the editor's text is that editor again: the person's words, and what a stop put there.
+				for (const item of waiting) {
+					if (!item.person) continue;
+					if (item.editor) {
+						pi.editor.typed.push(...item.editor.typed);
+						pi.editor.put.push(...item.editor.put);
+					} else pi.editor.typed.push(world.rewrites ? `${REWRITTEN}${item.text}` : item.text);
+				}
 				pi.editor.put.push(...put);
 				pi.editor.text = paragraphs(...put.map((item) => item.paragraph), pi.editor.text);
 			} else {
@@ -614,6 +685,28 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			break;
 		}
 	}
+}
+
+/**
+ * The page's "clear queue" for `conversation`: a cancel from the person for every input row in the
+ * queue file, then rpc `clear_queue` to the page's pi. Pi lets go of what it kept after a stop and,
+ * while a turn runs, of the follow-ups behind it, custom messages too; the prompt it runs and a
+ * prompt an idle pi has not started are not in that queue. No extension is told: the window learns
+ * of it from the cancels and from what pi does not write. Returns the ids of the cancels, and
+ * undefined when no page's pi is on the conversation.
+ */
+export function clearQueue(world: World, conversation: Conversation, cancel: (target: string) => string): string[] | undefined {
+	const page = live(conversation).find((proc) => proc.window && proc.mode === "rpc");
+	if (!page) return undefined;
+	const cancels = world.store.list(conversation.id).filter((row) => row.kind === "input").map((row) => cancel(row.id));
+	world.clears.drawn++;
+	world.clears.cancels += cancels.length;
+	const pi = page.pi;
+	for (const item of [...pi.kept.splice(0), ...(pi.running ? pi.queue.splice(0) : [])]) {
+		leave(item.copy, "dropped", world.clock);
+		if (item.copy) world.cleared.push(item.copy);
+	}
+	return cancels;
 }
 
 /* ------------------------------------------------------------ the engine, with its writes watched */
