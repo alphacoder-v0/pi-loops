@@ -37,7 +37,42 @@ All notable changes to pi-loops are documented here. The format follows
     that, the job is turned off again within ten minutes. A `--no-session` conversation cannot be
     opened again: make its jobs again in a new conversation.
 
+### Changed
+
+- **pi-loops hands its prompts to pi as its own messages, not as yours.** A scheduled prompt, a
+  rule's or a push's turn, a claim, a recipe hand-off, `/new-trigger` and a goal's continuation go
+  to pi as a message of type `pi-loops:turn`, which the model reads as before. Another extension
+  that changes or wraps your messages does not see them. A terminal draws them as it draws your
+  messages, the page labels them `pi-loops`, and each starts with `[Trigger <id>]`: a scheduled prompt's
+  did before, and a claim's, a recipe hand-off's, `/new-trigger`'s and a goal continuation's do now. What
+  you type, in a terminal or in the page, goes in your words alone. Hooks report
+  `message_kind: "pi-loops:turn"` for them, where they reported `user`. Undo in the page goes back
+  to your own last message, past the prompts of pi-loops after it. In the page and in the
+  `pi-loops` list, a conversation that a claim starts is titled by the claim's words.
+
 ### Fixed
+
+- **Two messages with the same words from the page are both answered.** A message was proved by
+  its words, so the second was taken for answered by the first. Every request now carries a mark
+  that pi-loops writes into the message pi stores for it, and only that mark proves it.
+- **A terminal that opens a conversation just after the page sent a message does not answer it a
+  second time.** The page's pi marks the conversation as in a turn before it sends; the terminal
+  waits as a viewer until that turn ends.
+- **After Stop in the page, a prompt that was queued behind the stopped turn runs once.** It ran a
+  second time when pi sent the one it had kept.
+- **A goal's continuation that pi was slow to take no longer makes a scheduled prompt vanish.**
+- **The page's "clear queue" and a cancel stop a prompt pi already has.** pi aborts it as it
+  starts, and it does not come back after the turn (#259).
+- **After Esc in a terminal, the editor holds only what you typed.** pi drops a prompt of
+  pi-loops that waits behind the turn, and pi-loops offers it again; nothing of pi-loops goes into
+  the editor (#256).
+- **A scheduled turn stays capped beside another extension that rewrites messages.** Its prompt
+  is not rewritten, and it runs under its row's cap; a message of that extension that pi writes
+  behind the turn keeps the cap. Your own message lifts it, unless that extension sent a message
+  during the turn: the cap then stays until the turn ends. When an extension changes the start of your page message, the page gives the
+  message back to you in the input box as failed, even if pi answered it.
+- **A row written by hand into a conversation's queue as a rule's turn runs capped.** It ran with
+  no cap; it now runs as unattended, and the window asks before a dangerous command.
 
 - **A scheduled prompt in a closed conversation is not answered twice after pi-loops stopped in
   the middle of it.** When pi-loops in the background stopped after it wrote a job's prompt into

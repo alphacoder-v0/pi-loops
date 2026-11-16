@@ -1083,6 +1083,13 @@ function renderMessage(message, fromStream) {
     for (const c of parts) if (c && c.type === "image" && c.data) el.append(imageOf(c));
     // The answer to a watch question, as it lands: the card it asked with becomes its receipt.
     if ((message.toolName === "cron_create" || message.toolName === "new_trigger") && fromStream) watchResult(message);
+  } else if (message.role === "custom" && message.customType === "pi-loops:turn") {
+    if (message.display === false) return;
+    const text = typeof message.content === "string" ? message.content : (message.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+    const body = row("user", "pi-loops", text);
+    for (const c of Array.isArray(message.content) ? message.content : []) {
+      if (c?.type === "image" && c.data) body.parentElement.append(imageOf(c));
+    }
   } else if (message.role === "custom") {
     // A promotion pi-loops pushed into the chat ("[Trigger ...] ..."), or another extension message.
     // display:false means the model sees it and the person is not meant to.

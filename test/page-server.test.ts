@@ -1292,7 +1292,7 @@ test("a claim from the page queues the born-left inbox: row for the terminal tha
 		assert.equal(rows.length, 1);
 		assert.deepEqual([rows[0].source, rows[0].collapse_key, rows[0].mode, rows[0].created_by.instance, rows[0].created_by.pid], [`inbox:inb-${hex(1)}`, `inbox:inb-${hex(1)}`, "attended", "page", process.pid]);
 		assert.ok(rows[0].created_by.left, "born left: the holder runs it");
-		assert.match(rows[0].payload.text, /^ship it · waits: you · if not: it waits\n\n\(from loop issue-triage in proj; investigate and address it\)\nThis finding is a checkpoint/, "the finding first, so a conversation the claim starts is titled by it");
+		assert.match(rows[0].payload.text, /^\[Trigger claim-[0-9a-f]{32}\] ship it · waits: you · if not: it waits\n\n\(from loop issue-triage in proj; investigate and address it\)\nThis finding is a checkpoint/, "the finding first, so a conversation the claim starts is titled by it");
 		const stored = inboxNow(page.loops).find((e) => e.id === `inb-${hex(1)}`);
 		assert.deepEqual([stored.status, stored.claimed_by], ["claimed", "held-1"], "claimed by the conversation it runs in, as /inbox claim marks it");
 		const audit = audits(page.loops).filter((a) => a.state === "claimed");

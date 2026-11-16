@@ -11,9 +11,11 @@
 import { redact } from "./redact.ts";
 import { plural } from "./plural.ts";
 import { stamp } from "./schedule.ts";
+import { TURN_TYPE } from "./mark.ts";
 
 export interface ShareMessage {
 	role?: string;
+	customType?: string;
 	content?: unknown;
 	toolName?: string;
 	isError?: boolean;
@@ -51,12 +53,15 @@ function contentText(content: unknown): string {
 }
 
 /**
- * The messages a share carries: pi's own message entries of the context, and nothing an extension
- * wrote beside them. A run card (`pi-loops:view`), a promoted rule result (`custom_message`) and the
- * trigger audit (`custom`) are pi-loops' records of the conversation, not the conversation.
+ * The messages a share carries: pi's own message entries and pi-loops turns, in entry order. Other
+ * extension entries are records of the conversation, not the conversation.
  */
-export function shareableMessages(entries: ReadonlyArray<{ type?: string; message?: ShareMessage }>): ShareMessage[] {
-	return entries.flatMap((e) => (e.type === "message" && e.message ? [e.message] : []));
+export function shareableMessages(entries: ReadonlyArray<{ type?: string; customType?: string; content?: unknown; message?: ShareMessage }>): ShareMessage[] {
+	return entries.flatMap((e) => {
+		if (e.type === "message" && e.message) return [e.message];
+		if (e.type === "custom_message" && e.customType === TURN_TYPE) return [{ role: "custom", customType: e.customType, content: e.content }];
+		return [];
+	});
 }
 
 /**
@@ -92,6 +97,8 @@ export function renderShare(messages: ShareMessage[], meta: { model?: string; se
 		} else if (role === "toolResult") {
 			toolResults++;
 			body.push(`## ${shown}. Tool result \`${m.toolName ?? ""}\`${m.isError ? " (error)" : ""}`, "", "```", contentText(m.content), "```", "");
+		} else if (role === "custom" && m.customType === TURN_TYPE) {
+			body.push(`## ${shown}. pi-loops`, "", contentText(m.content) || "`(no displayable content)`", "");
 		} else if (role === "custom") {
 			body.push(`## ${shown}. ${role}`, "", contentText(m.content) || "`(no displayable content)`", "");
 		} else {

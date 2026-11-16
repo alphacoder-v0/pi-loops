@@ -60,6 +60,21 @@ test("the header says the same number of messages as the confirmation the user a
 	assert.match(shareSummary(odd, { public: false }).join("\n"), /1 message,/);
 });
 
+test("a share includes pi-loops turns in entry order and skips other custom messages", () => {
+	const messages = shareableMessages([
+		{ type: "message", message: { role: "user", content: "before" } },
+		{ type: "custom_message", customType: "other", content: "skip custom" },
+		{ type: "custom_message", customType: "pi-loops:turn", content: [{ type: "text", text: "[Trigger row-1] do work" }] },
+		{ type: "message", message: { role: "assistant", content: "after" } },
+	] as any);
+	assert.deepEqual(messages.map((message) => message.role), ["user", "custom", "assistant"]);
+	const r = renderShare(messages);
+	assert.ok(r.markdown.indexOf("before") < r.markdown.indexOf("## 1. pi-loops"));
+	assert.ok(r.markdown.indexOf("## 1. pi-loops") < r.markdown.indexOf("after"));
+	assert.match(r.markdown, /\[Trigger row-1\] do work/);
+	assert.doesNotMatch(r.markdown, /skip custom/);
+});
+
 test("a share carries the conversation's messages and none of what pi-loops wrote beside them", () => {
 	const entries = [
 		{ type: "message", message: { role: "user", content: "what changed?" } },

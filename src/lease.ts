@@ -79,8 +79,13 @@ export function shouldReadAgain(i: {
  */
 export const DELIVERY_JOB_ID = "promotion";
 
-/** What keeps a page holder mid-turn: a run, or a compaction, which can come with no run at all (`/compact`). */
-export type TurnReason = "run" | "compaction";
+/**
+ * What keeps a page holder mid-turn: a run, a compaction, which can come with no run at all
+ * (`/compact`), or a row of ours that its pi was handed and has not written (`held`). A hand-over is
+ * a turn for the lease from the moment it is made, before pi says anything about it: a terminal
+ * that took the conversation then would hand the same row over a second time (issue 248).
+ */
+export type TurnReason = "run" | "compaction" | "held";
 export type TurnMarks = Partial<Record<TurnReason, string>>;
 
 /**
@@ -95,12 +100,27 @@ export const TURN_EVENTS = {
 	session_compact_failed: { reason: "compaction", busy: false },
 } as const satisfies Record<string, { reason: TurnReason; busy: boolean }>;
 
-/** The marks after pi's `event` at `now`. A reason already set keeps its first stamp; any other event changes nothing. */
+/** The marks with `reason` set to `since`, or taken out when `since` is undefined. A reason already set keeps its first stamp. */
+export function markTurn(marks: TurnMarks, reason: TurnReason, since: string | undefined): TurnMarks {
+	const { [reason]: was, ...rest } = marks;
+	return since === undefined ? rest : { ...rest, [reason]: was ?? since };
+}
+
+/** The marks after pi's `event` at `now`. Any event that is not in `TURN_EVENTS` changes nothing. */
 export function markTurnEvent(marks: TurnMarks, event: string, now: string): TurnMarks {
 	const e = (TURN_EVENTS as Record<string, { reason: TurnReason; busy: boolean }>)[event];
-	if (!e) return marks;
-	const { [e.reason]: was, ...rest } = marks;
-	return e.busy ? { ...rest, [e.reason]: was ?? now } : rest;
+	return e ? markTurn(marks, e.reason, e.busy ? now : undefined) : marks;
+}
+
+declare const onLease: unique symbol;
+
+/**
+ * The receipt of a hold: the lease on disk says a turn is on, or this window holds no lease that
+ * could say so. Only `LeaseBinding.hold` makes one. A window sends nothing to pi without one, so no
+ * prompt reaches pi before the fact is on disk.
+ */
+export interface HoldWritten {
+	readonly [onLease]: true;
 }
 
 /** The earliest stamp of any reason: what `LeaseHolder.turnSince` says, undefined when none holds. */
@@ -423,8 +443,8 @@ export class LeaseBinding {
 	private info: { sessionFile?: string; cwd?: string } = {};
 	private epoch: number | undefined;
 	private pushServers: string[] = [];
-	/** The current turn's start, kept so a lease taken mid-turn says so too. */
-	private turnSince: string | undefined;
+	/** Why a turn is on, each with its start. Kept here, so a lease taken mid-turn says so too. */
+	private marks: TurnMarks = {};
 	/** The pid of the live holder while this instance is a viewer. */
 	viewerOf: number | undefined;
 	/**
@@ -472,10 +492,41 @@ export class LeaseBinding {
 		if (this.store.setPushServers(this.sessionId, this.self(), this.epoch, next)) this.pushServers = next;
 	}
 
-	/** Say on the lease that a turn runs since `since`, or that none does (`LeaseHolder.turnSince`). Only a holder writes it; the epoch does not move. */
-	setTurn(since: string | undefined): void {
-		this.turnSince = since;
-		if (this.sessionId && this.epoch !== undefined) this.store.setTurn(this.sessionId, this.self(), this.epoch, since);
+	/**
+	 * Set one reason of a turn from `since`, or take it out (`undefined`), and write the lease's
+	 * `turnSince` when it starts or stops being set or its stamp moves. Only a holder whose holder
+	 * record says `turns` (the page's pi and a terminal) writes it, and only at its own epoch; the
+	 * epoch does not move. Returns false only when this window held the lease and the write found
+	 * another holder. A write that throws (the disk) throws here.
+	 */
+	mark(reason: TurnReason, since: string | undefined): boolean {
+		const was = turnSinceOf(this.marks);
+		this.marks = markTurn(this.marks, reason, since);
+		const now = turnSinceOf(this.marks);
+		if (now === was || !this.sessionId || this.epoch === undefined || !this.self().turns) return true;
+		return this.store.setTurn(this.sessionId, this.self(), this.epoch, now);
+	}
+
+	/**
+	 * The lease says a row of ours is held, as of `since`, and the receipt says so.
+	 * - This window holds the lease: the receipt once the lease on disk says a turn is on.
+	 * - The lease went to another holder: undefined, and the caller sends nothing. The row stays in
+	 *   the queue for the new holder.
+	 * - This window never held the lease (a viewer that runs a row it produced itself), or its holder
+	 *   record writes no turns: the receipt, with no write. Nobody takes a lease from a viewer.
+	 */
+	hold(since: string): HoldWritten | undefined {
+		const receipt = {} as HoldWritten;
+		if (!this.sessionId || this.epoch === undefined) return receipt;
+		this.mark("held", since);
+		// Read back, not taken from the write: `mark` writes nothing when a turn was on already, and the
+		// lease must still be this window's. A window that stands aside delivers nothing: no receipt.
+		return this.heldEpoch(this.sessionId) !== undefined ? receipt : undefined;
+	}
+
+	/** No row of ours is held any more. Safe to call when none was. */
+	letGo(): void {
+		this.mark("held", undefined);
 	}
 
 	release(): void {
@@ -529,7 +580,7 @@ export class LeaseBinding {
 	}
 
 	private take(): AcquireOutcome {
-		const outcome = this.store.acquire(this.sessionId!, { ...this.me(), pushServers: this.pushServers, ...(this.turnSince !== undefined ? { turnSince: this.turnSince } : {}) }, this.info);
+		const outcome = this.store.acquire(this.sessionId!, { ...this.me(), pushServers: this.pushServers, ...(turnSinceOf(this.marks) !== undefined ? { turnSince: turnSinceOf(this.marks) } : {}) }, this.info);
 		this.epoch = outcome.outcome === "viewer" ? undefined : outcome.lease.epoch;
 		this.viewerOf = outcome.outcome === "viewer" ? outcome.holderPid : undefined;
 		if (outcome.outcome !== "viewer") this.pushServers = outcome.lease.holder?.pushServers ?? [];

@@ -8,7 +8,7 @@ do for you.
 | the job | what does it |
 |---|---|
 | a clock | `setInterval` started in `session_start`, cleared in `session_shutdown` |
-| a scheduled job that lands in your chat | a row in `requests/<session>.jsonl`, handed to `pi.sendUserMessage` by the window holding the session once the agent is idle, `[Trigger <id>] ` prefix |
+| a scheduled job that lands in your chat | a row in `requests/<session>.jsonl`, handed to pi as a `pi-loops:turn` custom message by the window holding the session once the agent is idle, `[Trigger <id>] ` prefix |
 | a scheduled job that must not touch your chat | an in-process `AgentSession` from pi's SDK (`src/sdk-runner.ts`): fresh context, own transcript, and the tools, MCP clients, extensions and model of the process that runs it (pi-loops, for loops and checks) |
 | state that outlives a session | `jobs.json`, `triggers.json`, `state/<id>.md` under `~/.pi/agent/loops` |
 | a record of who changed what | `pi.appendEntry` for cron control operations; `triggers-audit.jsonl` for trigger runs |
@@ -386,21 +386,55 @@ machine. Everything here follows from that, and each one has a price.
     queue. The pi holding the session drains the row when it is idle, so a chat message runs in one
     order with what pi-loops addressed to the conversation, survives Esc and pi exiting, and the
     page lists the whole queue, each row with its source and a cancel (a `cancel` row), with what pi
-    itself still holds (a command typed while busy) after them, labelled "pi". Two things follow
-    from a row with no `[Trigger]` prefix. Its proof of delivery is a user message whose text starts
-    with the row's (pi appends a note when it resizes or converts an image; a row with no text of its
-    own is proved only by a message with none once those notes are stripped) written at or after
-    `handed_at`, the stamp the drain writes on the row under the lock just before each hand-over, at
-    the moment of the stamp; a turn pi holds and has not written keeps the lane, so one row is in
-    flight at a time, an earlier message with the same words proves nothing, and a row never handed
-    over is never done. Read from the file at every drain and never from an event. In the window, a
-    user message takes the cap of the handed-over row with the longest text that is a prefix of it
-    (a tie goes to the most recently handed over), so a short row's kept cap is not claimed by a
-    longer message. And its attended mode has to be believed: after the append the page sends
-    `/pi-loops ring <id> <fingerprint>` over its pi's rpc stdin, a channel no model tool can write
-    to; the extension records the row as produced by this window only when the row now in the file
-    has that fingerprint (a hash of kind, source, wake, text, the images and the declared tools),
-    then drains; a ring that arrives after the row was handed over upgrades its cap, started or not.
+    itself still holds (a command typed while busy) after them, labelled "pi". Every row has one
+    proof of delivery, whatever its source: the mark `{ lane, id }` in the entry pi persists for it
+    (`src/mark.ts`). A turn row that pi-loops writes (a plain job's, a rule's or a push's turn, a
+    claim, a recipe hand-off, `/new-trigger`, a goal's continuation) goes to pi as a custom message
+    of type `pi-loops:turn` (`pi.sendMessage` with `triggerTurn`), its mark and its cap in the
+    message's `details`. The owner chose this on 2026-11-16, after a review of eight rounds of fixes
+    found the window inferring our messages from their words over a channel that carries no
+    identity. pi gives the details back unchanged at `message_start` and `message_end`, writes them
+    into the entry and never sends them to the model, which reads the content as user text; no
+    `input` handler sees the message, so no other extension rewrites it (probes P8, P10 to P17). The
+    window knows the message by the row it names and reads no words for it. A turn that a stop or a
+    cancel took out of the file before pi wrote it is written with no mark (a `message_end`
+    replacement, probe P18), so it proves no later row of the same id. The person's own page message
+    (a person row the page's pi was rung for) is the one row that goes as a user message, in their
+    words alone. For it the window keeps one list of what it gave pi and of the inputs of others,
+    and decides as each user message starts whose it is (`claimOf`, `src/window-claim.ts`): an input
+    of someone else with the very same words is theirs; a person row with them is that row's;
+    otherwise the input or row whose words start the message, the longest, someone else's before
+    ours when two are as long; otherwise nobody's. What the window is not sure of only takes a mark
+    away: the person's message then goes back to the page as failed, once, with its words in the
+    input box, even when pi answered it. That is paid when another extension changes the words at
+    the start of the person's message. The words of a turn still start with its row's
+    `[Trigger <id>]`, for the person and the model, and an older version proves a row it queued by
+    them; this version proves nothing by a prefix. The proof is read from the conversation at every
+    drain and never from an event. A row of a version 2 line, queued by an earlier version, is still
+    proved by its prefix, or by its words after `handed_at`, in an entry with no mark. In the window,
+    a turn's message runs under the cap the window gave its row when it sent it, for as long as its
+    slot lasts (the mode recomputed from the source, and an attended mode only for a row this window
+    wrote, below). An older version's text proof can end a version 2 row's slot before its message
+    starts, and the message then runs as one this window did not send. One
+    that no hand-over of this window sent (pi kept it over a `/reload`, or another extension sent a
+    message of that type) runs under the cap of its row in the file, read as a row this instance did
+    not write, and under the strictest cap when the file has no such row: unattended, no tool
+    declared, so every tool but pi-loops' own read-only and self-gated ones is asked about. The cap
+    in the details is a record and is never read for a cap. A turn row of a source that asks for no
+    turn (a rule's result written into the file as a turn) runs as unattended. A user message lifts
+    a row's cap, since it is the person's, except while an input of another extension was seen since
+    the cap began, or one seen before still waits for its message: the cap then stays until the turn
+    settles, since that message may carry the scheduled turn on. A message with the very words of a
+    waiting input takes that input out of the list (`claimOf`), and it keeps the cap no more.
+    Whether an input is another extension's or the echo of our person row's send is read from its
+    words when it comes outside our send. Those are the three places words touch a cap, and none
+    gives a turn a wider cap than an older version did. And its attended mode has to be believed:
+    after the
+    append the page sends `/pi-loops ring <id> <fingerprint>` over its pi's rpc stdin, a channel no
+    model tool can write to; the extension records the row as produced by this window only when the
+    row now in the file has that fingerprint (a hash of kind, source, wake, text, the images and the
+    declared tools), then drains; a ring that arrives after the row was handed over upgrades its
+    cap, started or not, while the cap in force is that row's.
     A person row is handed over only once rung for, or two seconds after it was written, so the bell
     normally wins the race with the file watcher, and the drain that waits schedules one for when the
     wait ends; one nobody rang for (a terminal answering a page's row, owner decision O2; a line
@@ -408,7 +442,7 @@ machine. Everything here follows from that, and each one has a price.
     command. `/pi-loops ring` with no arguments only drains; it is plumbing, and not in
     `/pi-loops help`. A person row is sent only while its web.mjs lives: one left behind when pi
     exited is offered by the next page as "not sent before pi stopped", with send (which rewrites
-    `created_by` to that page under the lock, then rings) and discard (a `cancel` row). A send pi
+    `created_by` to that page under the lock, then rings) and discard (a `cancel` row). A person row's send that pi
     refuses (`prompt()` throws before any run starts: compaction in progress, no model, no
     credentials) is found by the holder's tick, or by the drain the page's follow-up ring causes (a
     command handler, outside pi's event cycle), never by the drain `agent_settled` runs, since pi
@@ -417,8 +451,16 @@ machine. Everything here follows from that, and each one has a price.
     the other input handlers and the credential check, is what the grace covers), is refused. A
     person row gets `last_error` and is never handed over again (its cap is kept, so a send pi runs
     late still runs under it); the page, which reads the file for `/state`, removes it, audits
-    `failed`, and puts the text back in the composer with the error. A pi-loops row, proved by its
-    prefix, counts an attempt and is offered again after the backoff, a dead letter at the third;
+    `failed`, and puts the text back in the composer with the error.
+    A turn row's custom message is never refused in silence (probes S2, P17): one sent to an idle
+    pi holds the lane until a run takes it up, with no grace, also from an `agent_settled` handler,
+    where pi starts the run after the handler returns. pi drops one with no word on Esc in a terminal
+    and on the page's clear queue, and never counts one in `hasPendingMessages()`, so the window
+    keeps it until its message is written or a run settles: on a stop in a terminal it is `dropped`,
+    with no stop and not written it is `lost`, and either is offered again; on the page's Stop pi
+    keeps it and writes it in the next run. No turn is handed over while pi compacts the
+    conversation (a turn sent then runs beside the compaction, P14). A turn's images are resized and
+    their type read as pi's user path does it, since pi does neither for a custom message (P16). A pi-loops row counts an attempt and is offered again after the backoff, a dead letter at the third;
     a slot due while it waits replaces it rather than collapsing onto it. After Stop (rpc
     `abort`), as after Esc in a terminal, what is queued runs once pi is idle: the owner decided
     (2026-11-02) that Esc and Stop end the current turn only, as in 0.22.8, and that the queue is
@@ -448,8 +490,8 @@ machine. Everything here follows from that, and each one has a price.
     first. In the background a new slot is spent onto a row of its job that failed, and that row
     keeps its attempts. A row that a run has claimed leaves
     through the closing of that run only. The lane is taken from all
-    the rows before any of them is started, so a turn that sorts first is not handed to pi beside
-    an unwritten turn that only its text proves. A dead letter is filed once for a row, under an
+    the rows before any of them is started, and a turn handed to an idle pi that no run has taken
+    up holds the lane, so an idle pi gets one prompt of ours at a time. A dead letter is filed once for a row, under an
     id derived from the row's lane and id (`Inbox.fileOnce`), so a crash between the finding and
     the removal files nothing the second time. The cost: a row that is queued again in the same
     queue under the same id and fails again gets no second finding, also when the first one was

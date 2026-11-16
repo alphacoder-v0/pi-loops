@@ -619,6 +619,24 @@ test("an update while you are reading back does not yank the page, and the pill 
 	dom.dispose();
 });
 
+test("pi-loops turns have a user row and images, while hidden turns stay hidden", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, {
+		messages: [
+			{ role: "custom", customType: "pi-loops:turn", display: true, content: [{ type: "text", text: "[Trigger row-1] inspect" }, { type: "image", data: "aGVsbG8=" }] },
+			{ role: "custom", customType: "pi-loops:turn", display: false, content: "hidden turn" },
+		],
+	});
+	await new Function(pageScript())();
+	await dom.started();
+	const turns = dom.made.filter((el: any) => el.className === "row user");
+	assert.equal(turns.length, 1);
+	assert.match(dom.rendered(), /pi-loops/);
+	assert.match(dom.rendered(), /\[Trigger row-1\] inspect/);
+	assert.doesNotMatch(dom.rendered(), /hidden turn/);
+	assert.equal(turns[0].children.filter((child: any) => child.tag === "img").length, 1);
+	dom.dispose();
+});
+
 test("terminal escape codes do not reach the screen as text", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();

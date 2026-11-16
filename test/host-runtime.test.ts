@@ -25,24 +25,25 @@ test("a row the background cannot run does not cost a read of the conversation o
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
 	try {
 		const sm = SessionManager.create(dir, dir);
-		// A message as long as the claim's text, so the proof can be swapped in at the same size.
-		const text = "look into finding f1";
-		sm.appendMessage({ role: "user", content: "x".repeat(text.length), timestamp: Date.now() } as any);
 		const file = sm.getSessionFile()!;
 		const sessionId = sm.getSessionId();
+		const text = "look into finding f1";
+		const row = inboxClaimRow(text, "f1", { sessionId, cwd: dir, createdBy: { pid: 1, instance: "w", version: "0" } });
+		// A message with another row's mark, of the same length as this row's id: swapped later, the file keeps its size.
+		const other = "x".repeat(row.id.length);
+		sm.appendMessage({ role: "user", content: "x".repeat(text.length), piLoopsRow: { lane: sessionId, id: other }, timestamp: Date.now() } as any);
 		const old = new Date(Date.now() - 10 * 60_000);
 		fs.utimesSync(file, old, old);
 		fs.mkdirSync(path.join(dir, "leases"), { recursive: true });
 		fs.writeFileSync(path.join(dir, "leases", `${sessionId}.json`), JSON.stringify({ v: 1, sessionId, sessionFile: file, cwd: dir, epoch: 1, holder: null, updatedAt: new Date().toISOString() }));
-		const row = inboxClaimRow(text, "f1", { sessionId, cwd: dir, createdBy: { pid: 1, instance: "w", version: "0" } });
 		new RequestStore(dir).append(row);
-		// Handed over once by the window that quit: a claim's proof is its text after that stamp.
+		// Handed over once by the window that quit: a claim's proof is the mark on the message pi wrote for it.
 		new RequestStore(dir).update(sessionId, row.id, { handed_at: new Date(Date.now() - 60_000).toISOString() });
 		await host.scheduler.tick();
 		assert.equal(new RequestStore(dir).list(sessionId).length, 1, "waits for a window");
 		// The same bytes, apart from the message now carrying the row's proof.
 		const before = fs.statSync(file);
-		fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("x".repeat(text.length), text));
+		fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("x".repeat(text.length), text).replace(`"id":"${other}"`, `"id":"${row.id}"`));
 		fs.utimesSync(file, before.atime, before.mtime);
 		assert.equal(fs.statSync(file).size, before.size);
 		await host.scheduler.tick();

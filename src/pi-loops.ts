@@ -16,7 +16,7 @@
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { ProjectTrustStore, SessionManager, VERSION as PI_VERSION, copyToClipboard, getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
+import { ProjectTrustStore, SessionManager, VERSION as PI_VERSION, copyToClipboard, formatDimensionNote, getAgentDir, readStoredCredential, resizeImage } from "@earendil-works/pi-coding-agent";
 import { ARCHIVE_EXT, type ActivateMode, applyImport, automationOf, defaultExportPath, exportSession, importSession, offerToEnable, parseActivateMode } from "./archive.ts";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -47,7 +47,7 @@ import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
 import { plural } from "./plural.ts";
 import { openWhere, runsHere } from "./job-owner.ts";
-import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, type TurnMarks, closedConversation, markTurnEvent, openWindowPids, procStart, turnSinceOf } from "./lease.ts";
+import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, closedConversation, openWindowPids, procStart } from "./lease.ts";
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
 import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
 import { RequestStore, type Row, type UnclaimedRow } from "./requests.ts";
@@ -55,6 +55,8 @@ import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
+import { TURN_TYPE } from "./mark.ts";
+import { renderTurn } from "./turn-render.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
@@ -138,6 +140,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		},
 		(row) => requests.images(row),
 		() => scheduler.store.allRuns(),
+		{ resizeImage, formatDimensionNote },
 	);
 	let requestWatch: fs.FSWatcher | undefined;
 	let storeWatch: fs.FSWatcher | undefined;
@@ -1163,6 +1166,7 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	/* ------------------------------------------------------------ views */
 
+	pi.registerMessageRenderer(TURN_TYPE, renderTurn);
 	pi.registerEntryRenderer<ViewData>(VIEW_ENTRY, (entry, _opts, theme) => {
 		const data = entry.data ?? { title: "", lines: [] };
 		const box = new Box(1, 0, (text) => theme.bg("customMessageBg", text));
@@ -3406,18 +3410,16 @@ export default function piLoops(pi: ExtensionAPI) {
 		}
 	});
 
-	/** Only the page's pi says on its lease that a turn runs: a terminal takes a conversation from it between turns, never in one. */
-	let turnMarks: TurnMarks = {};
+	/**
+	 * Say on the lease that a turn runs, from pi's events. The page's pi says it for a terminal's
+	 * takeover (src/lease.ts decideAcquire); a terminal says it for the page that views its
+	 * conversation and reads it again when the turn ends (shouldReadAgain). The binding writes it only
+	 * for such a holder (`turns`).
+	 */
 	function markTurn(event: keyof typeof TURN_EVENTS): void {
-		// The page child, for a terminal's takeover (src/lease.ts decideAcquire); a terminal, for the
-		// page that views its conversation and reads it again when the turn ends (shouldReadAgain).
-		if (!pageChild && leaseMode !== "tui") return;
-		const was = turnSinceOf(turnMarks);
-		turnMarks = markTurnEvent(turnMarks, event, stamp());
-		const since = turnSinceOf(turnMarks);
-		if (since === was) return;
+		const e = TURN_EVENTS[event];
 		try {
-			binding.setTurn(since);
+			binding.mark(e.reason, e.busy ? stamp() : undefined);
 		} catch (err: any) {
 			log.info(`lease: ${err?.message ?? err}`);
 		}
@@ -3430,33 +3432,40 @@ export default function piLoops(pi: ExtensionAPI) {
 		executor.agentStarted(Date.now());
 		await fireHook({ event: "agent_start" }, ctx);
 	});
-	// Observed only: the person typing is what makes the next user message theirs (the cap). Our own
-	// hand-overs arrive here too, as `source: "extension"`; either says pi is about to run something,
-	// so nothing handed over is judged refused for a while yet.
+	// Observed only: whose the next user messages are (the window tells the echo of a person row's
+	// send from the rest), and that pi is about to run something, so a person row handed over is not
+	// judged refused for a while yet. A turn row's custom message makes no input.
 	pi.on("input", async (e) => {
-		executor.inputSeen(Date.now());
-		if (e.source !== "extension") executor.personInput();
+		executor.inputSeen({ source: e.source, text: e.text, streamingBehavior: e.streamingBehavior }, Date.now());
 	});
 	pi.on("turn_start", async (_e, ctx) => fireHook({ event: "turn_start" }, ctx));
 	pi.on("turn_end", async (e, ctx) => fireHook({ event: "turn_end", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx));
 	pi.on("message_start", async (e, ctx) => {
-		executor.messageStarted(e.message);
+		executor.messageStarted(e.message, Date.now());
 		await fireHook({ event: "message_start", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx);
 	});
 	pi.on("message_update", async (e, ctx) => fireHook({ event: "message_update", message_kind: messageKind(e.message), message_summary: messageSummary(e.message), assistant_event: (e.assistantMessageEvent as any)?.type }, ctx));
 	pi.on("message_end", async (e, ctx) => {
-		// pi appends the user message once this handler returns: a drain right after finds a person
-		// row's proof in the conversation, and the page's queue stops listing a message that is running.
-		if ((e.message as { role?: unknown } | undefined)?.role === "user" && executor.handedOver.size) setImmediate(() => void drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`)));
+		// pi appends the message once this handler returns: a drain right after finds a row's proof in
+		// the conversation, and the page's queue stops listing a message that is running. A turn row's
+		// custom message carries its mark; a person row's user message gets it here, and pi persists
+		// it with the message (src/mark.ts).
+		const marked = executor.messageEnded(e.message, Date.now());
+		const role = (e.message as { role?: unknown } | undefined)?.role;
+		if ((role === "user" || role === "custom") && executor.handedOver.size) setImmediate(() => void drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`)));
 		await fireHook({ event: "message_end", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx);
+		return marked;
 	});
 	pi.on("tool_execution_start", async (e, ctx) => fireHook({ event: "tool_start", tool_call_id: e.toolCallId, tool_name: e.toolName, tool_args: e.args }, ctx));
 	pi.on("tool_execution_update", async (e, ctx) => fireHook({ event: "tool_update", tool_call_id: e.toolCallId, tool_name: e.toolName, tool_args: e.args, tool_result_summary: resultSummary(e.partialResult) }, ctx));
 	pi.on("tool_execution_end", async (e: any, ctx) => fireHook({ event: "tool_end", tool_call_id: e.toolCallId, tool_name: e.toolName, tool_is_error: !!e.isError, tool_result_summary: resultSummary(e.result) }, ctx));
+	// No turn row is handed to pi between these: one sent during a compaction runs beside it (src/window-executor.ts).
 	pi.on("session_before_compact", async () => {
+		executor.compaction(true);
 		markTurn("session_before_compact");
 	});
 	pi.on("session_compact", async (e, ctx) => {
+		executor.compaction(false);
 		markTurn("session_compact");
 		await fireHook({ event: "compaction", compaction_trigger: e.reason === "manual" ? "manual" : "auto", compaction_tokens_before: e.compactionEntry?.tokensBefore, compaction_summary: e.compactionEntry?.summary ? truncateSummary(e.compactionEntry.summary) : undefined }, ctx);
 	});
@@ -3464,6 +3473,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	// half of it: a session that cannot compact is a session about to fail on context length. It
 	// carries no summary and no token count — nothing was written — only the flag saying so.
 	pi.on("session_compact_failed", async (e, ctx) => {
+		executor.compaction(false);
 		markTurn("session_compact_failed");
 		await fireHook({ event: "compaction", compaction_trigger: e.reason === "manual" ? "manual" : "auto", compaction_failed: true }, ctx);
 	});
@@ -3496,10 +3506,10 @@ export default function piLoops(pi: ExtensionAPI) {
 	});
 	// The goal is evaluated at the end of a turn; pi's hook for that is `agent_settled` — the point where
 	// no automatic retry, compaction or queued continuation will run, so a decision here is final.
-	pi.on("agent_settled", async (_event, ctx) => {
+	pi.on("agent_settled", async (event, ctx) => {
 		markTurn("agent_settled");
-		// pi is idle now: what it dropped is offered again by the drain below.
-		executor.settled();
+		// pi is idle now: what it no longer has is offered again by the drain below, unless a stop named it.
+		executor.settled(event.aborted);
 		// The tracker description `/recipe add` was waiting for: written during this turn, so the
 		// wizard picks up where it stopped — in the same project, with the same words.
 		if (pendingRecipeAdd && sameProject(pendingRecipeAdd.project, session.cwd) && fs.existsSync(path.join(pendingRecipeAdd.project, TRACKER_FILE))) {

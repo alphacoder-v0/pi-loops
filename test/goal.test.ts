@@ -152,6 +152,8 @@ test("a continuation is held when the user typed while the evaluator ran — not
 		"a snapshot and a run card move the leaf without anyone having taken the turn",
 	);
 	assert.equal(branchMovedSince(branch({ id: "e4", type: "message", message: { role: "user" } }), "e3"), true, "an unrelated prompt: the continuation must not be answered under it");
+	assert.equal(branchMovedSince(branch({ id: "e4", type: "custom_message", customType: "pi-loops:turn" }), "e3"), true, "a pi-loops turn also moves the branch");
+	assert.equal(branchMovedSince(branch({ id: "e4", type: "custom_message", customType: "other" }), "e3"), false);
 	assert.equal(branchMovedSince(branch({ id: "e4", type: "message", message: { role: "assistant" } }), "e3"), false);
 	assert.equal(branchMovedSince(branch(), "gone"), true, "rewound or forked: the point the goal was judged at is not on this branch any more");
 	assert.equal(branchMovedSince(branch(), null), false, "no leaf to compare against: behave as before");
@@ -181,8 +183,9 @@ function goalSession() {
 	const sent: string[] = [];
 	const entries: unknown[] = [];
 	const ctx = { idle: true, mode: "tui", hasUI: false, isIdle: () => ctx.idle, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
-	// The request file is where a continuation's proof is read from (its text after its hand-over stamp), as the extension wires it.
-	const executor = new WindowExecutor({ sendMessage: () => undefined, sendUserMessage: (text: string) => void sent.push(text) }, { here: () => ({ sessionId: "s", holds: true }) }, () => ctx, { pid: 1 }, () => true, () => store.list("s"));
+	// A continuation goes to pi as a custom message that names its row: `sent` is the words, `turns` the messages.
+	const turns: Array<{ customType: string; content: string; details: unknown }> = [];
+	const executor = new WindowExecutor({ sendMessage: (m: any) => void (turns.push(m), sent.push(m.content)), sendUserMessage: () => assert.fail("a continuation is not a user message") }, { here: () => ({ sessionId: "s", holds: true }), hold: () => true, letGo: () => undefined }, () => ctx, { pid: 1 }, () => true, () => store.list("s"));
 	const now = Date.parse("2026-06-01T12:00:00Z");
 	const address = { sessionId: "s", cwd: "/p", createdBy: { pid: 1, instance: "w", version: "0" } };
 	let state = newGoal("tests pass", new Date(now));
@@ -200,12 +203,19 @@ function goalSession() {
 		await drain("s", store, executor, at, sinks);
 		return true;
 	};
-	/** The handler at `agent_settled`: what pi dropped is forgotten, then the settle decision (src/goal.ts). */
-	const settled = async (at: number) => {
-		executor.settled();
+	/** The handler at `agent_settled`, with whether the run was aborted (Esc): what pi dropped is forgotten, then the settle decision (src/goal.ts). */
+	const settled = async (at: number, aborted = false) => {
+		executor.settled(aborted);
 		return settledTurn(store.list("s"), executor.handedOver, delivered, evaluate(at), () => drain("s", store, executor, at, sinks));
 	};
-	return { store, sent, entries, ctx, executor, now, settled, pending, drain: (at: number) => drain("s", store, executor, at, sinks), state: () => state, evaluations: () => evaluations, pause: (at: number) => void (state = abortedTurn(state, new Date(at))?.state ?? state) };
+	/** Pi starts, ends and persists the continuation the window sent with `text`. */
+	const writes = (text: string, at: number): void => {
+		const message = { role: "custom", ...turns.find((turn) => turn.content === text)! };
+		executor.messageStarted(message, at);
+		executor.messageEnded(message, at);
+		entries.push({ type: "custom_message", timestamp: new Date(at).toISOString(), ...message });
+	};
+	return { store, sent, entries, ctx, executor, now, settled, pending, writes, drain: (at: number) => drain("s", store, executor, at, sinks), state: () => state, evaluations: () => evaluations, pause: (at: number) => void (state = abortedTurn(state, new Date(at))?.state ?? state) };
 }
 
 test("in the idle-check race, a continuation queued behind the person's turn lands once and is charged once", async () => {
@@ -216,24 +226,25 @@ test("in the idle-check race, a continuation queued behind the person's turn lan
 	assert.equal(g.sent.length, 1, "and the row was handed to pi while idle");
 	const text = g.sent[0];
 	const firstId = g.store.list("s")[0].id;
-	// The person started a run between the idle check and the hand-over: pi holds ours as a follow-up.
+	// pi is busy between the idle check and the hand-over, and holds ours unstarted: no run has taken it up.
 	g.ctx.idle = false;
 	await g.drain(g.now + 1_000);
 	assert.equal(g.sent.length, 1, "not handed over twice while pi has it");
 	assert.equal(g.pending(), true, "on its way: a settle now would not judge");
-	// The person's turn settles with ours still queued in pi (it settles before the follow-up starts).
+	// The person's turn settles while ours is still unstarted (pi defers a prompt sent while it emits agent_settled).
 	assert.deepEqual(await g.settled(g.now + 1_500), { pending: true, continued: false }, "a settle while it is on its way judges nothing");
 	assert.equal(g.evaluations(), 1, "and charges nothing");
-	// pi runs the follow-up after the person's turn: the user message lands, then the turn settles.
-	// In the evaluator's words, with no prefix: the proof is the message's text after the hand-over stamp.
-	g.entries.push({ type: "message", timestamp: new Date(g.now + 1_900).toISOString(), message: { role: "user", content: text } });
+	// pi runs it: the custom message lands, the row's mark in its details, which is the proof. Then the turn settles.
+	g.executor.agentStarted(g.now + 1_800);
+	g.writes(text, g.now + 1_900);
+	g.executor.agentEnded();
 	g.ctx.idle = true;
 	await g.settled(g.now + 2_000);
 	assert.equal(g.evaluations(), 2, "the continuation's own turn is judged, once");
 	assert.equal(g.state().iterations, 2);
 	assert.equal(g.sent.length, 2, "and the next continuation is handed over");
-	// Two continuations read the same (no prefix tells them apart now), so the rows say which landed:
-	// the first is gone, the second waits for pi to write it, and its proof is a message after its own stamp.
+	// Two continuations can read the same, so the marks say which landed:
+	// the first is gone, the second waits for pi to write it, and its proof is the mark on its own message.
 	const [second] = g.store.list("s");
 	assert.deepEqual(g.store.list("s").map((r) => r.payload?.text), [g.sent[1]], "the first is gone, the second waits for pi to write it");
 	assert.notEqual(second.id, firstId, "the second is its own row, not the first offered again");
@@ -251,7 +262,7 @@ test("Esc pauses the goal and its queued continuation is dropped", async () => {
 	assert.equal(g.state().iterations, 1);
 	g.executor.agentStarted(g.now);
 	g.executor.agentEnded();
-	await g.settled(g.now + 1_000);
+	await g.settled(g.now + 1_000, true);
 	assert.equal(g.evaluations(), 1, "a paused goal is not judged");
 	assert.deepEqual(g.store.list("s"), [], "the continuation of a paused goal is stale and dropped");
 	assert.equal(g.sent.length, 1, "never offered again");

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { LeaseBinding, LeaseStore, TURN_EVENTS, closedConversation, VIEWER_REREAD_GAP_MS, decideAcquire, markTurnEvent, shouldReadAgain, turnSinceOf, type TurnMarks, decideHostAcquire, holderAlive, openWindowPids, procStart, type LeaseHolder, type ProcessProbe, type SessionLease } from "../src/lease.ts";
+import { LeaseBinding, LeaseStore, TURN_EVENTS, markTurn, closedConversation, VIEWER_REREAD_GAP_MS, decideAcquire, markTurnEvent, shouldReadAgain, turnSinceOf, type TurnMarks, decideHostAcquire, holderAlive, openWindowPids, procStart, type LeaseHolder, type ProcessProbe, type SessionLease } from "../src/lease.ts";
 
 const me: LeaseHolder = { kind: "terminal", pid: 10, instance: "a", procStart: "start", acquiredAt: "2026-01-01T00:00:00.000Z", pushServers: [] };
 const probe = (over: Partial<ProcessProbe> = {}): ProcessProbe => ({ alive: () => true, startTime: () => "start", bootedAt: () => Date.parse("2025-01-01T00:00:00Z"), ...over });
@@ -313,20 +313,20 @@ test("setTurn writes and deletes turnSince at the holder's epoch, keeps the epoc
 
 test("a tui window viewing the page mid-turn takes the conversation on its first refresh after the turn", () => {
 	const store = new LeaseStore(tmp(), probe());
-	const page = new LeaseBinding(store, "page", () => ({ kind: "terminal", pid: 30, procStart: "start", mode: "rpc", page: true, pushServers: [] }), probe());
+	const page = new LeaseBinding(store, "page", () => ({ kind: "terminal", pid: 30, procStart: "start", mode: "rpc", page: true, turns: true, pushServers: [] }), probe());
 	const window = new LeaseBinding(store, "w1", () => ({ kind: "terminal", pid: 10, procStart: "start", mode: "tui", pushServers: [] }), probe());
 	assert.equal(page.bind("s").outcome, "acquired");
-	page.setTurn("2026-01-01T00:00:01.000Z");
+	page.mark("run", "2026-01-01T00:00:01.000Z");
 	assert.equal(window.bind("s").outcome, "viewer");
 	assert.equal(window.refresh()?.outcome, "viewer", "still mid-turn");
-	page.setTurn(undefined);
+	page.mark("run", undefined);
 	const taken = window.refresh();
 	assert.equal(taken?.outcome, "acquired");
 	assert.equal((taken as any).tookFromPage, 30);
 	assert.equal(window.here().holds, true);
 	assert.equal(page.here().holds, false, "the page's pi sees the lease is gone, as any window does");
 	assert.equal(page.refresh()?.outcome, "viewer");
-	page.setTurn("2026-01-01T00:00:02.000Z");
+	page.mark("run", "2026-01-01T00:00:02.000Z");
 	assert.equal(store.read("s")?.holder?.turnSince, undefined, "a viewer writes no turn");
 });
 
@@ -366,7 +366,8 @@ test("the page's pi and a terminal mark their lease, on every event TURN_EVENTS 
 	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
 	assert.match(source, /const pageChild = claimPageChild\(\);/, "the page-child claim, read once and kept across the factory's re-runs (src/page-children.ts)");
 	assert.match(source, /new LeaseBinding\([^\n]*\.\.\.\(pageChild \? \{ page: true as const \} : \{\}\)/, "page: true on the holder");
-	assert.match(source, /function markTurn\(event: keyof typeof TURN_EVENTS\): void \{\n(?:\t\t\/\/[^\n]*\n)*\t\tif \(!pageChild && leaseMode !== "tui"\) return;/, "a print, json or rpc window that is not the page writes no turn stamp");
+	// Which holder writes a turn is the binding's rule now (`turns` on the holder: the test of a print holder above); markTurn only reports pi's events.
+	assert.match(source, /function markTurn\(event: keyof typeof TURN_EVENTS\): void \{\n\t\tconst e = TURN_EVENTS\[event\];\n\t\ttry \{\n\t\t\tbinding\.mark\(e\.reason, e\.busy \? stamp\(\) : undefined\);/, "markTurn hands each event to the binding");
 	assert.match(source, /new LeaseBinding\([^\n]*\.\.\.\(pageChild \|\| leaseMode === "tui" \? \{ turns: true as const \} : \{\}\)/, "turns: true on a holder that writes them");
 	const marked = [...source.matchAll(/markTurn\("(\w+)"\)/g)].map((m) => m[1]).sort();
 	assert.deepEqual(marked, Object.keys(TURN_EVENTS).sort());
@@ -400,4 +401,92 @@ test("shouldReadAgain: only after a terminal's turn, only for a new message, onl
 	let asked = 0;
 	shouldReadAgain({ ...base, holder: { ...base.holder, turnSince: "x" } as any, newMessage: () => (asked++, true) });
 	assert.equal(asked, 0, "the added bytes are read only when everything else says yes");
+});
+
+test("[held-is-a-turn] markTurn sets a reason once, keeps its first stamp, and takes it out", () => {
+	let m: TurnMarks = markTurn({}, "held", "2026-01-01T00:00:01.000Z");
+	m = markTurn(m, "held", "2026-01-01T00:00:05.000Z");
+	assert.deepEqual(m, { held: "2026-01-01T00:00:01.000Z" });
+	m = markTurn(m, "run", "2026-01-01T00:00:02.000Z");
+	assert.equal(turnSinceOf(m), "2026-01-01T00:00:01.000Z", "the earliest reason is the turn's start");
+	m = markTurn(m, "held", undefined);
+	assert.deepEqual(m, { run: "2026-01-01T00:00:02.000Z" });
+	assert.deepEqual(markTurn(m, "compaction", undefined), m, "taking out a reason that is not there changes nothing");
+});
+
+const pageBinding = (store: LeaseStore, over: Record<string, unknown> = {}) => new LeaseBinding(store, "page", () => ({ kind: "terminal", pid: 30, procStart: "start", mode: "rpc", page: true, turns: true, pushServers: [], ...over }), probe());
+const terminal = (store: LeaseStore) => new LeaseBinding(store, "w1", () => ({ kind: "terminal", pid: 10, procStart: "start", mode: "tui", pushServers: [] }), probe());
+
+test("[held-is-a-turn] a hold is on the lease before the receipt, so a terminal is a viewer until the page's pi lets go", () => {
+	const store = new LeaseStore(tmp(), probe());
+	const page = pageBinding(store);
+	assert.equal(page.bind("s").outcome, "acquired");
+	const receipt = page.hold("2026-01-01T00:00:01.000Z");
+	assert.notEqual(receipt, undefined);
+	assert.equal(store.read("s")?.holder?.turnSince, "2026-01-01T00:00:01.000Z", "on disk when the receipt is given");
+	const window = terminal(store);
+	assert.equal(window.bind("s").outcome, "viewer", "the page's pi holds a row it has not written");
+	page.letGo();
+	assert.equal(Object.hasOwn(store.read("s")!.holder!, "turnSince"), false);
+	assert.equal(window.refresh()?.outcome, "acquired");
+});
+
+test("[held-is-a-turn] a hold under a run keeps the run's start, and letting go of it leaves the run on the lease", () => {
+	const store = new LeaseStore(tmp(), probe());
+	const page = pageBinding(store);
+	page.bind("s");
+	page.mark("run", "2026-01-01T00:00:01.000Z");
+	assert.notEqual(page.hold("2026-01-01T00:00:03.000Z"), undefined);
+	assert.equal(store.read("s")?.holder?.turnSince, "2026-01-01T00:00:01.000Z");
+	page.letGo();
+	assert.equal(store.read("s")?.holder?.turnSince, "2026-01-01T00:00:01.000Z", "the run is still on");
+	page.mark("run", undefined);
+	assert.equal(Object.hasOwn(store.read("s")!.holder!, "turnSince"), false);
+});
+
+test("[fact-before-send] a hold gives no receipt once another holder took the lease, also when the hold was on already", () => {
+	const store = new LeaseStore(tmp(), probe({ alive: (pid) => pid !== 30 }));
+	const page = pageBinding(store);
+	page.bind("s");
+	assert.notEqual(page.hold("2026-01-01T00:00:01.000Z"), undefined);
+	// The page's pi died, as far as the lease can tell, and a terminal took the conversation.
+	assert.equal(terminal(store).bind("s").outcome, "acquired");
+	assert.equal(page.hold("2026-01-01T00:00:02.000Z"), undefined, "the hold was on already: no write, and the lease is read");
+	page.letGo();
+	assert.equal(page.hold("2026-01-01T00:00:03.000Z"), undefined, "a write that finds another holder");
+	assert.equal(store.read("s")?.holder?.pid, 10, "the terminal's lease is not touched");
+});
+
+test("[fact-before-send] a viewer, and a holder that writes no turns, get the receipt with no write", () => {
+	const store = new LeaseStore(tmp(), probe());
+	const page = pageBinding(store);
+	page.bind("s");
+	page.hold("2026-01-01T00:00:01.000Z");
+	const viewer = terminal(store);
+	assert.equal(viewer.bind("s").outcome, "viewer");
+	const before = fs.readFileSync(store.file("s"), "utf8");
+	assert.notEqual(viewer.hold("2026-01-01T00:00:02.000Z"), undefined, "a viewer runs a row it produced itself");
+	viewer.letGo();
+	assert.equal(fs.readFileSync(store.file("s"), "utf8"), before, "a viewer writes nothing");
+	const printStore = new LeaseStore(tmp(), probe());
+	const print = new LeaseBinding(printStore, "p", () => ({ kind: "terminal", pid: 40, procStart: "start", mode: "print", pushServers: [] }), probe());
+	assert.equal(print.bind("t").outcome, "acquired");
+	assert.notEqual(print.hold("2026-01-01T00:00:01.000Z"), undefined);
+	assert.equal(Object.hasOwn(printStore.read("t")!.holder!, "turnSince"), false, "a holder without turns writes none");
+});
+
+test("[fact-before-send] a window that stands aside gets no receipt", () => {
+	const store = new LeaseStore(tmp(), probe());
+	const page = pageBinding(store);
+	page.bind("s");
+	page.standAside();
+	assert.equal(page.hold("2026-01-01T00:00:01.000Z"), undefined);
+});
+
+test("[held-is-a-turn] a lease taken while a row is held says so from the start", () => {
+	const store = new LeaseStore(tmp(), probe());
+	const page = pageBinding(store);
+	page.mark("held", "2026-01-01T00:00:01.000Z");
+	assert.equal(page.bind("s").outcome, "acquired");
+	assert.equal(store.read("s")?.holder?.turnSince, "2026-01-01T00:00:01.000Z");
 });

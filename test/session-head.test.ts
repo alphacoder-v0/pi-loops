@@ -34,6 +34,31 @@ test("the head of a session file: id, when, name, the first thing said, how many
 	assert.ok(small.messages <= 3);
 });
 
+test("a pi-loops turn counts as a message and can be the first thing said", () => {
+	const dir = tmp("pi-loops-head-");
+	const file = path.join(dir, "turn.jsonl");
+	const lines = [
+		{ type: "session", version: 3, id: "01a0-turn", cwd: "/work/api" },
+		{ type: "custom_message", customType: "pi-loops:turn", content: [{ type: "text", text: "[Trigger row-1] inspect" }, { type: "text", text: "the change" }] },
+		{ type: "message", id: "m1", message: { role: "user", content: "later user message" } },
+	];
+	fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+	const head = readSessionHead(file)!;
+	assert.equal(head.messages, 2);
+	assert.equal(head.first, "inspect the change");
+});
+
+test("a conversation pi-loops' own prompt began is titled by its words, not by its row's prefix", () => {
+	const dir = tmp("pi-loops-head-");
+	const file = path.join(dir, "s.jsonl");
+	const lines = [
+		{ type: "session", version: 3, id: "01a0-abc", timestamp: "2026-09-14T13:48:39.061Z", cwd: "/work/api" },
+		{ type: "message", id: "m1", message: { role: "user", content: "[Trigger claim-0dd4cafdd60c222602de482ef2b8fbda] disk is full" } },
+	];
+	fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+	assert.equal(readSessionHead(file)!.first, "disk is full");
+});
+
 test("a conversation's title is its name, else the first thing said, on one line of at most 40 characters", () => {
 	const dir = tmp("pi-loops-head-");
 	const write = (name: string, entries: object[]) => {

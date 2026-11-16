@@ -15,7 +15,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmp } from "./tmp.ts";
 import { cancelRow, conversationHas, enqueue, personRow, plainJobRow, plainRunId, requestFingerprint, ringProduced, ruleResultRow, stopRow } from "../src/engine.ts";
 import { createChecker } from "./sim/invariants.ts";
-import { type Mode, EPOCH, PAGE_PID, REWRITTEN, advance, auditedExits, clearQueue, createWorld, drainAs, kill, label, noFacts, piMove, piMoves } from "./sim/world.ts";
+import { type Mode, EPOCH, PAGE_PID, REWRITTEN, advance, auditedExits, clearQueue, createWorld, drainAs, handOverOutside, kill, label, noFacts, piMove, piMoves } from "./sim/world.ts";
 
 const CWD = "/p";
 const TYPED_KEPT = "what the person typed stays in the editor until they send it";
@@ -55,6 +55,8 @@ function scene(t: TestContext, mode: Mode, opts: { rewrites?: boolean } = {}) {
 				enqueue(world.store, plainJobRow({ id, sessionId: "c0", prompt: `run ${id}, slot ${slot}.`, cwd: CWD }, run, `cron:${id}`, "", { pid: window.pid, instance: window.name, version: "sim" }, world.clock), (queued) => conversationHas(conversation.entries, queued));
 				return run;
 			}),
+		/** Row `id` is handed to the window's pi outside the engine, which hands an idle pi one prompt of ours at a time: two prompts behind one run, as a version before marks could leave them. */
+		outside: (id: string): Promise<void> => step(() => handOverOutside(world, window, world.store.list("c0").find((row) => row.id === id)!)),
 		/** The window drains; returns the names of the rows it handed over. */
 		drains: (): Promise<string[]> => step(async () => (await drainAs(world, window, false))!.delivered.map((id) => label(world, id))),
 		/** The page queues a message of the person and rings the window. */
@@ -106,8 +108,7 @@ test("after the page's Stop the simulated pi starts no run for what it kept, and
 	const s = scene(t, "rpc");
 	await s.job("j1", 1);
 	assert.deepEqual(await s.drains(), ["j1#1"]);
-	await s.job("j2", 2);
-	assert.deepEqual(await s.drains(), ["j2#2"]);
+	await s.outside(await s.job("j2", 2));
 	// A run begins before pi takes up either prompt: both are queued behind it. Then the page's Stop.
 	await s.pi("type");
 	await s.pi("esc");
@@ -128,59 +129,63 @@ test("after the page's Stop the simulated pi starts no run for what it kept, and
 	assert.deepEqual(s.window.pi.kept, []);
 });
 
+// G2, P12: the queued user messages go into the editor; a queued turn of ours is a custom message, and is dropped.
 for (const rewrites of [false, true]) {
-	test(`after Esc in a terminal the editor is one text: the queued prompts, then what the person types, and Enter sends all of it${rewrites ? ", each as another extension rewrote it" : ""}`, async (t) => {
+	test(`after Esc in a terminal the editor is one text: the queued user messages, then what the person types, and none of our turns; Enter sends all of it${rewrites ? ", each as another extension rewrote it" : ""}`, async (t) => {
 		const s = scene(t, "tui", { rewrites });
 		const one = await s.job("j1", 1);
 		await s.drains();
 		const two = await s.job("j2", 2);
-		await s.drains();
+		await s.outside(two);
 		await s.pi("type");
 		const before = s.texts().length;
+		await s.pi("otherSends");
+		await s.pi("otherSends");
+		const [first, second] = s.window.pi.queue.slice(-2).map((item) => item.text);
 		await s.pi("esc");
-		const queued = (id: string, words: string) => `${rewrites ? REWRITTEN : ""}[Trigger ${id}] ${words}`;
-		const prompts = `${queued(one, "run j1, slot 1.")}\n\n${queued(two, "run j2, slot 2.")}`;
-		assert.equal(s.window.pi.editor.text, prompts);
+		const theirs = `${rewrites ? REWRITTEN : ""}${first}\n\n${rewrites ? REWRITTEN : ""}${second}`;
+		assert.equal(s.window.pi.editor.afterStop, theirs, "pi put every queued user message into the editor, as the handlers left it, and no turn of ours");
 		assert.deepEqual(s.window.pi.queue, [], "a stop in a terminal clears pi's queue");
-		// The person types into the editor that holds the prompts: no message, and their words come last.
+		assert.deepEqual([s.copyOf(one).state, s.copyOf(two).state], ["dropped", "dropped"], "our turns are dropped");
+		assert.equal(s.window.pi.editor.text, theirs, "the window changes nothing in the editor");
+		// The person types into the editor that holds those messages: no message, and their words come last.
 		await s.pi("type");
 		const [typed] = s.window.pi.editor.typed;
-		assert.equal(s.window.pi.editor.text, `${prompts}\n\n${typed}`);
+		assert.equal(s.window.pi.editor.text, `${theirs}\n\n${typed}`);
 		assert.equal(s.texts().length, before, "what is in the editor is not sent");
 		await s.pi("enter");
-		assert.deepEqual(s.texts().slice(before), [`${rewrites ? REWRITTEN : ""}${prompts}\n\n${typed}`]);
+		assert.deepEqual(s.texts().slice(before), [`${rewrites ? REWRITTEN : ""}${theirs}\n\n${typed}`], "Enter sends all of it, and the input handlers rewrite it once more");
 		assert.equal(s.window.pi.editor.text, "");
+		assert.deepEqual(s.world.copies.filter((copy) => copy.fromTheEditor), [], "no prompt of ours went from the editor");
 	});
 }
 
 // G2 (ctx.ui): an extension reads and sets the editor's one text.
-test("a cleanup that takes one prompt out of the editor leaves the rest, and Enter sends what is left", async (t) => {
+test("an extension reads and sets the editor's one text, and Enter sends what it left there", async (t) => {
 	const s = scene(t, "tui");
-	const one = await s.job("j1", 1);
-	await s.drains();
-	const two = await s.job("j2", 2);
-	await s.drains();
 	await s.pi("type");
+	await s.pi("otherSends");
+	await s.pi("otherSends");
+	const [first, second] = s.window.pi.queue.map((item) => item.text);
 	await s.pi("esc");
-	await s.pi("type");
-	const [typed] = s.window.pi.editor.typed;
 	const ui = s.window.ctx!.ui;
-	assert.equal(ui.getEditorText(), `[Trigger ${one}] run j1, slot 1.\n\n[Trigger ${two}] run j2, slot 2.\n\n${typed}`);
-	await s.step(() => ui.setEditorText(ui.getEditorText().replace(`[Trigger ${one}] run j1, slot 1.\n\n`, "")));
+	assert.equal(ui.getEditorText(), `${first}\n\n${second}`);
+	await s.step(() => ui.setEditorText(`${second}\n\nmine`));
+	assert.equal(ui.getEditorText(), `${second}\n\nmine`);
 	const before = s.texts().length;
 	await s.pi("enter");
-	assert.deepEqual(s.texts().slice(before), [`[Trigger ${two}] run j2, slot 2.\n\n${typed}`]);
-	const sent = s.world.copies.filter((copy) => copy.fromTheEditor).map((copy) => label(s.world, copy.rowId));
-	assert.deepEqual(sent, ["j2#2"], "only the hand-over whose paragraph was still in the text is sent from the editor");
+	assert.deepEqual(s.texts().slice(before), [`${second}\n\nmine`]);
 });
 
-test("a cleanup that empties the editor loses what the person typed, and the simulation says so", async (t) => {
+test("an extension that empties the editor loses what the person typed, and the simulation says so", async (t) => {
 	const s = scene(t, "tui");
 	await s.job("j1", 1);
 	await s.drains();
 	await s.pi("type");
+	await s.pi("otherSends");
 	await s.pi("esc");
 	await s.pi("type");
+	assert.equal(s.window.pi.editor.typed.length, 1);
 	s.window.ctx!.ui.setEditorText("");
 	s.world.facts = noFacts();
 	assert.equal(s.checker.check().violation?.invariant, TYPED_KEPT);
@@ -189,38 +194,53 @@ test("a cleanup that empties the editor loses what the person typed, and the sim
 // G2 (VIA=esc TYPED=...): the queued texts stand before what the editor holds.
 test("a second stop in a terminal puts its texts before what the editor holds", async (t) => {
 	const s = scene(t, "tui");
-	const one = await s.job("j1", 1);
-	await s.drains();
 	await s.pi("type");
+	await s.pi("otherSends");
 	await s.pi("esc");
 	await s.pi("type");
 	const [typed] = s.window.pi.editor.typed;
-	const held = `[Trigger ${one}] run j1, slot 1.\n\n${typed}`;
-	assert.equal(s.window.pi.editor.text, held);
-	// Two more prompts reach the idle pi; it starts the first, and Esc comes with the second queued.
-	await s.job("j2", 2);
-	await s.drains();
-	await s.job("j1", 3);
-	await s.drains();
-	assert.equal(s.window.pi.queue.length, 2);
-	const queued = s.window.pi.queue[1].text;
-	await s.pi("start");
+	const held = s.window.pi.editor.text;
+	assert.match(held, new RegExp(`^another extension says #\\d+\\.\n\n${typed.replace(".", "\\.")}$`));
+	// A second run, started by another extension's message, with another queued behind it, and Esc.
+	await s.pi("otherSends");
+	assert.equal(s.window.pi.running, true);
+	await s.pi("otherSends");
+	const queued = s.window.pi.queue.at(-1)!.text;
 	await s.pi("esc");
-	assert.equal(s.window.pi.editor.text, `${queued}\n\n${held}`);
+	assert.equal(s.window.pi.editor.afterStop, `${queued}\n\n${held}`);
 });
 
 // G2 (VIA=ctx): a custom follow-up is dropped by a stop in a terminal and is not in the editor.
 test("a stop in a terminal drops a custom follow-up and puts only user messages into the editor", async (t) => {
 	const s = scene(t, "tui");
-	const one = await s.job("j1", 1);
-	await s.drains();
 	await s.pi("type");
+	await s.pi("otherSends");
+	const theirs = s.window.pi.queue[0].text;
 	await s.rule(10);
 	await s.drains();
 	assert.deepEqual(s.window.pi.queue.map((item) => item.custom), [false, true]);
 	await s.pi("esc");
-	assert.equal(s.window.pi.editor.text, `[Trigger ${one}] run j1, slot 1.`);
+	assert.equal(s.window.pi.editor.afterStop, theirs);
 	assert.equal(s.copyOf("rule-10").state, "dropped");
+});
+
+// P12: Esc in a terminal with a turn of ours queued behind the run.
+test("a stop in a terminal drops a queued turn of ours without a word: it is not in the editor, and the window offers its row again", async (t) => {
+	const s = scene(t, "tui");
+	const one = await s.job("j1", 1);
+	assert.deepEqual(await s.drains(), ["j1#1"]);
+	await s.pi("type");
+	assert.deepEqual(s.window.pi.queue.map((item) => [item.custom, item.customType]), [[true, "pi-loops:turn"]]);
+	const before = s.texts().length;
+	await s.pi("esc");
+	assert.equal(s.copyOf(one).state, "dropped");
+	assert.deepEqual([s.window.pi.editor.afterStop, s.window.pi.editor.text, s.window.pi.queue.length], ["", "", 0], "nothing of ours is in the editor, and pi holds nothing");
+	assert.equal(s.texts().length, before, "pi did not write it");
+	assert.ok(!piMoves(s.window).includes("enter"), "there is nothing for the person to send");
+	assert.deepEqual(await s.drains(), ["j1#1"], "the window knows from its own record that the turn went unwritten");
+	await s.pi("start");
+	await s.pi("settle");
+	assert.equal(s.world.copies.filter((copy) => copy.rowId === one && copy.state === "written").length, 1);
 });
 
 // G4: what the page's Stop left is written before a follow-up queued in the next run.
@@ -228,8 +248,7 @@ test("the run after the page's Stop writes what pi kept before its own follow-up
 	const s = scene(t, "rpc");
 	await s.job("j1", 1);
 	await s.drains();
-	await s.job("j2", 2);
-	await s.drains();
+	await s.outside(await s.job("j2", 2));
 	await s.pi("type");
 	await s.pi("esc");
 	await s.person(9);
@@ -249,12 +268,12 @@ test("the run after the page's Stop writes what pi kept before its own follow-up
 
 // G3: `ctx.abort()` asked at the `message_start` of a follow-up. Pi writes that message and stops there.
 for (const mode of ["rpc", "tui"] as const) {
-	test(`a follow-up that a stop named is written and aborted as it starts, and what waits behind it is ${mode === "rpc" ? "kept by the page's pi" : "in a terminal's editor"}`, async (t) => {
+	test(`a follow-up that a stop named is written and aborted as it starts, and what waits behind it is ${mode === "rpc" ? "kept by the page's pi" : "dropped by a terminal's"}`, async (t) => {
 		const s = scene(t, mode);
 		const one = await s.job("j1", 1);
 		await s.drains();
 		const two = await s.job("j2", 2);
-		await s.drains();
+		await s.outside(two);
 		// A run begins with both prompts queued behind it, and a stop names the first of them.
 		await s.pi("type");
 		await s.stop(3, one);
@@ -269,7 +288,7 @@ for (const mode of ["rpc", "tui"] as const) {
 			assert.equal(s.window.pi.editor.text, "");
 		} else {
 			assert.equal(s.copyOf(two).state, "dropped");
-			assert.equal(s.window.pi.editor.text, `[Trigger ${two}] run j2, slot 2.`);
+			assert.equal(s.window.pi.editor.afterStop, "", "a custom message does not go into the editor");
 			assert.deepEqual(s.window.pi.kept, []);
 		}
 	});
@@ -279,8 +298,9 @@ for (const mode of ["rpc", "tui"] as const) {
 test("hasPendingMessages is true for the user messages pi holds behind a turn, and for nothing else", async (t) => {
 	const s = scene(t, "rpc");
 	const pending = () => s.window.ctx!.hasPendingMessages();
-	await s.job("j1", 1);
-	await s.drains();
+	await s.person(1);
+	assert.deepEqual(await s.drains(), ["person#1"]);
+	assert.equal(s.window.pi.queue[0].custom, false, "the person's own page message is a user message");
 	assert.equal(pending(), false, "a prompt that an idle pi has not started is not pending");
 	await s.pi("type");
 	assert.equal(pending(), true, "a user follow-up behind a running turn");
@@ -297,12 +317,28 @@ test("hasPendingMessages is true for the user messages pi holds behind a turn, a
 	assert.equal(pending(), false, "a custom follow-up that pi kept is not counted");
 });
 
+// P17 (CASE=stop): a turn of ours behind a run, and kept by the page's Stop, is never pending.
+test("hasPendingMessages never counts a turn of ours: not behind a run, and not kept by the page's Stop", async (t) => {
+	const s = scene(t, "rpc");
+	const pending = () => s.window.ctx!.hasPendingMessages();
+	const one = await s.job("j1", 1);
+	await s.drains();
+	await s.pi("type");
+	assert.equal(s.window.pi.queue.length, 1);
+	assert.equal(pending(), false, "a custom turn behind a running turn");
+	await s.pi("esc");
+	assert.deepEqual(s.kept(), ["j1#1"]);
+	assert.equal(pending(), false, "kept by the page's Stop");
+	assert.ok(!piMoves(s.window).includes("start"), "and pi starts no run for it");
+	assert.deepEqual(await s.drains(), [], "the window still counts it as handed over: pi tells nobody what it holds");
+	assert.equal(s.copyOf(one).state, "held");
+});
+
 // P3: after a stop in a terminal nothing is pending.
 test("after a stop in a terminal hasPendingMessages is false", async (t) => {
 	const s = scene(t, "tui");
-	await s.job("j1", 1);
-	await s.drains();
 	await s.pi("type");
+	await s.pi("otherSends");
 	assert.equal(s.window.ctx!.hasPendingMessages(), true);
 	await s.pi("esc");
 	assert.equal(s.window.ctx!.hasPendingMessages(), false);
@@ -324,13 +360,23 @@ test("a custom message has its two events, and they do not say it is a user mess
 	assert.deepEqual(roles, ["custom"]);
 });
 
+// P18: pi persists the custom message a `message_end` handler gives back, with the details it gives.
+test("pi writes a custom message with the details its message_end handler gave back", async (t) => {
+	const s = scene(t, "rpc");
+	const window = s.window.window!;
+	window.messageEnded = ((message: { role: string; details?: object }) => (message.role === "custom" ? { message: { ...message, details: { ...message.details, replaced: true } } } : undefined)) as typeof window.messageEnded;
+	await s.rule(10);
+	await s.drains();
+	const [entry] = s.world.conversations[0].entries;
+	assert.equal(entry.type === "custom_message" ? (entry.details as { replaced?: boolean }).replaced : undefined, true);
+});
+
 // P2 (VIA=ctx), g5: an abort asked before the settle. A stop row names the turn that runs, the window asks pi to abort it.
 test("a stop row that names the running turn ends it with what waits behind it kept, as the page's Stop does", async (t) => {
 	const s = scene(t, "rpc");
 	const one = await s.job("j1", 1);
 	await s.drains();
-	await s.job("j2", 2);
-	await s.drains();
+	await s.outside(await s.job("j2", 2));
 	await s.pi("start");
 	await s.pi("write");
 	await s.stop(3, "running");
@@ -357,8 +403,7 @@ for (const mode of ["rpc", "tui"] as const) {
 		await s.drains();
 		await s.job("j2", 2);
 		await s.drains();
-		await s.job("j1", 4);
-		await s.drains();
+		await s.outside(await s.job("j1", 4));
 		assert.equal(s.window.pi.queue.length, 2);
 		const before = s.texts().length;
 		await s.pi("start");
@@ -372,8 +417,7 @@ test("a second Stop in the page's pi writes nothing and keeps everything, the ne
 	const s = scene(t, "rpc");
 	await s.job("j1", 1);
 	await s.drains();
-	await s.job("j2", 2);
-	await s.drains();
+	await s.outside(await s.job("j2", 2));
 	await s.pi("type");
 	await s.pi("esc");
 	await s.person(9);
@@ -402,8 +446,7 @@ test("a custom message can start the run that writes what the page's pi kept", a
 	const s = scene(t, "rpc");
 	await s.job("j1", 1);
 	await s.drains();
-	await s.job("j2", 2);
-	await s.drains();
+	await s.outside(await s.job("j2", 2));
 	await s.pi("type");
 	await s.pi("esc");
 	assert.deepEqual(s.kept(), ["j1#1", "j2#2"]);
@@ -484,9 +527,10 @@ test("the page's clear queue during a turn takes the follow-ups out of pi, custo
 	const one = await s.job("j1", 1);
 	await s.drains();
 	await s.pi("type");
+	await s.pi("typeBehind");
 	await s.rule(10);
 	await s.drains();
-	assert.deepEqual(s.window.pi.queue.map((item) => item.custom), [false, true]);
+	assert.deepEqual(s.window.pi.queue.map((item) => item.customType), ["pi-loops:turn", undefined, "pi-loops:trigger"]);
 	assert.equal(await s.clear(), 2, "one cancel for each input row");
 	assert.deepEqual(s.window.pi.queue, []);
 	assert.equal(s.copyOf(one).state, "dropped");
@@ -525,14 +569,16 @@ test("the page's clear queue does not take a prompt that an idle pi is about to 
 	assert.equal(s.copyOf(one).state, "held");
 });
 
-/** The window's `personInput` and `inputSeen`, counted, for the scenes that pin whose an input is. */
+/** The window's `inputSeen`, counted: every input, and the person's (any source but `extension`), for the scenes that pin whose an input is. */
 function counted(window: object) {
-	const w = window as { personInput: () => void; inputSeen: (at: number) => void };
+	const w = window as { inputSeen: (input: { source: string; text: string }, at: number) => void };
 	const counts = { person: 0, input: 0 };
-	const personInput = w.personInput.bind(w);
 	const inputSeen = w.inputSeen.bind(w);
-	w.personInput = () => (counts.person++, personInput());
-	w.inputSeen = (at: number) => (counts.input++, inputSeen(at));
+	w.inputSeen = (input, at) => {
+		counts.input++;
+		if (input.source !== "extension") counts.person++;
+		inputSeen(input, at);
+	};
 	return counts;
 }
 
@@ -582,19 +628,22 @@ test("the page's clear queue reaches the page's pi only: a terminal's pi keeps i
 // g13: Enter during a run in a terminal steers.
 test("a steer in a terminal is the person's submission, goes ahead of the follow-ups, and Esc puts it first into the editor as their words", async (t) => {
 	const s = scene(t, "tui");
-	const one = await s.job("j1", 1);
+	await s.job("j1", 1);
 	await s.drains();
 	await s.pi("type");
+	await s.pi("otherSends");
+	const theirs = s.window.pi.queue[1].text;
 	assert.ok(piMoves(s.window).includes("steer"));
 	const counts = counted(s.window.window!);
 	await s.pi("steer");
 	assert.deepEqual(counts, { person: 1, input: 1 });
 	const steered = s.window.pi.queue[0].text;
-	assert.match(steered, /^steered #/, "ahead of the prompt that was queued before it");
+	assert.match(steered, /^steered #/, "ahead of the turn and the message that were queued before it");
 	assert.equal(s.window.ctx!.hasPendingMessages(), true);
 	await s.pi("esc");
-	assert.equal(s.window.pi.editor.text, `${steered}\n\n[Trigger ${one}] run j1, slot 1.`);
-	assert.deepEqual(s.window.pi.editor.typed, [steered], "the person's words, which a cleanup must leave");
+	assert.equal(s.window.pi.editor.afterStop, `${steered}\n\n${theirs}`, "pi put the steer first, then the queued user message");
+	assert.deepEqual(s.window.pi.editor.typed, [steered], "the person's words, which nothing must take out");
+	assert.equal(s.window.pi.editor.text, `${steered}\n\n${theirs}`, "and the window left the editor as pi made it");
 });
 
 test("a steer that pi takes is written right after the current turn, before the follow-ups", async (t) => {
@@ -627,49 +676,74 @@ test("two steers are written in the order the person sent them, before the follo
 	assert.match(written[2], /run j1, slot 1\.$/);
 });
 
+// g16: the follow-up a steer overtook was another extension's.
+test("a steer goes ahead of another extension's follow-up too", async (t) => {
+	const s = scene(t, "tui");
+	await s.pi("type");
+	await s.pi("otherSends");
+	await s.pi("steer");
+	const before = s.texts().length;
+	await s.pi("settle");
+	const written = s.texts().slice(before);
+	assert.match(written[0], /steered #/);
+	assert.match(written[1], /another extension says #/);
+});
+
 // g16: Enter during a run sends the editor's whole text as the steer, and empties the editor.
-test("a steer with text in the editor is that text: the editor is empty, and a prompt of ours in it is sent again, by the person", async (t) => {
+test("a steer with text in the editor is that text, and the editor is empty; no prompt of ours is ever in it", async (t) => {
 	const s = scene(t, "tui");
 	const one = await s.job("j1", 1);
 	await s.drains();
 	await s.pi("type");
+	await s.pi("steer");
 	await s.pi("esc");
-	assert.equal(s.window.pi.editor.text, `[Trigger ${one}] run j1, slot 1.`);
+	const words = s.window.pi.editor.text;
+	assert.match(words, /^steered #[0-9]+\.$/, "the person's steer is back in the editor; our prompt is out of it");
 	await s.drains(); // the window takes j1 for dropped and hands it over again
 	await s.pi("start");
 	assert.ok(s.window.pi.current, "pi is in the turn's first message");
 	assert.ok(piMoves(s.window).includes("steer"), "the person can press Enter while pi has not written the turn's message yet");
 	assert.ok(piMoves(s.window).includes("otherRejected"), "another extension's send with no deliverAs is refused in a terminal too");
+	const counts = counted(s.window.window!);
 	await s.pi("steer");
-	assert.deepEqual(s.window.pi.editor, { text: "", put: [], typed: [] }, "the editor is empty after Enter");
-	assert.equal(s.window.pi.queue[0].text, `[Trigger ${one}] run j1, slot 1.`, "the steer is what the editor held");
+	assert.deepEqual(counts, { person: 1, input: 1 }, "the person's input, once");
+	assert.deepEqual([s.window.pi.editor.text, s.window.pi.editor.put, s.window.pi.editor.typed], ["", [], []], "the editor is empty after Enter");
+	assert.equal(s.window.pi.queue[0].text, words, "the steer is what the editor held");
 	await s.pi("settle");
 	const sent = s.world.copies.filter((copy) => copy.rowId === one && copy.state === "written");
-	assert.equal(sent.length, 2, "the turn's own message, and the steer that carried it again");
-	assert.equal(sent.filter((copy) => copy.fromTheEditor).length, 1, "the second is the person's, from the editor");
+	assert.equal(sent.length, 1, "j1 is written once: the steer did not carry it again");
 });
 
-test("a steer that carried the editor goes back into it at Esc: the person's words stay theirs, and the prompts of ours stay known", async (t) => {
+test("a steer that carried the editor goes back into it at Esc: the person's words stay theirs", async (t) => {
 	const s = scene(t, "tui");
-	const one = await s.job("j1", 1);
+	await s.job("j1", 1);
 	await s.drains();
 	await s.pi("type");
-	await s.pi("esc");
-	await s.pi("type"); // words of the person's own, behind the prompt in the editor
-	const typed = [...s.window.pi.editor.typed];
-	await s.pi("otherSends");
 	await s.pi("steer");
 	await s.pi("esc");
-	assert.ok(s.window.pi.editor.text.includes(`[Trigger ${one}] run j1, slot 1.`));
-	assert.deepEqual(s.window.pi.editor.typed, typed);
-	assert.equal(s.window.pi.editor.put.filter((put) => put.copy?.rowId === one).length, 1);
+	const typed = [...s.window.pi.editor.typed];
+	const words = s.window.pi.editor.text;
+	await s.pi("otherSends"); // a run starts with another extension's message
+	await s.pi("steer");
+	assert.equal(s.window.pi.editor.text, "");
+	await s.pi("esc");
+	assert.ok(s.window.pi.editor.text.includes(words), "the steer is back in the editor");
+	assert.deepEqual(s.window.pi.editor.typed, typed, "as the person's words");
 });
 
-test("the page's pi has no steer: the person's message during a run there is a follow-up (typeBehind)", async (t) => {
+// The page sends a message during a run as a follow-up, or as a steer (src/page-server.ts, rpc `prompt` with `streamingBehavior`).
+test("in the page's pi the person's message during a run is a follow-up or a steer, and a steer is written before the follow-ups", async (t) => {
 	const s = scene(t, "rpc");
 	await s.pi("type");
-	assert.ok(!piMoves(s.window).includes("steer"));
+	assert.ok(piMoves(s.window).includes("steer"));
 	assert.ok(piMoves(s.window).includes("typeBehind"));
+	await s.pi("typeBehind");
+	await s.pi("steer");
+	const before = s.texts().length;
+	await s.pi("settle");
+	const written = s.texts().slice(before);
+	assert.match(written[0], /steered #/);
+	assert.match(written[1], /typed behind #/);
 });
 
 // g11 (ours first, no deliverAs): pi refuses another extension's send during a run, after its input.
@@ -720,4 +794,108 @@ test("a turn that a stop named while a terminal's pi held it unstarted, and that
 	await s.step(() => advance(s.world, 3_600_000));
 	assert.deepEqual(await s.drains(), []);
 	assert.equal(s.world.copies.filter((copy) => copy.rowId === run).length, 1, "the row was handed over once");
+});
+
+const CAP_IS_THE_ROWS = "a tool call in a turn a pi-loops custom message started is decided with that row's cap";
+
+// S1, P8, P13: what pi does with a turn row's custom message, beside an extension that rewrites and watches every input.
+test("a turn of ours reaches pi as a custom message: no input event, its words as sent beside a rewriting extension, and its row and cap at message_start", async (t) => {
+	const s = scene(t, "rpc", { rewrites: true });
+	const counts = counted(s.window.window!);
+	const started: Array<{ role?: string; customType?: string; details?: { piLoopsRow?: { id?: string }; cap?: { id?: string; mode?: string } } }> = [];
+	const window = s.window.window!;
+	const messageStarted = window.messageStarted.bind(window);
+	window.messageStarted = (message, now) => {
+		started.push(message as (typeof started)[number]);
+		messageStarted(message, now);
+	};
+	const one = await s.job("j1", 1);
+	assert.deepEqual(await s.drains(), ["j1#1"]);
+	assert.deepEqual(counts, { person: 0, input: 0 }, "pi emits no input for it");
+	await s.pi("start");
+	await s.pi("write");
+	assert.deepEqual(s.texts(), [`[Trigger ${one}] run j1, slot 1.`], "no input handler saw it to rewrite it");
+	assert.deepEqual(started.map((m) => [m.role, m.customType, m.details?.piLoopsRow?.id, m.details?.cap?.id, m.details?.cap?.mode]), [["custom", "pi-loops:turn", one, one, "unattended"]]);
+	assert.equal(s.copyOf(one).markedAs, one, "and pi persists the details: the entry carries the row's mark");
+	// The control: the person's own page message is a user message, rewritten, and the window does not know it by its words.
+	await s.pi("settle");
+	await s.person(2);
+	await s.drains();
+	assert.equal(counts.input, 1, "pi emits input for a user message of ours");
+	await s.pi("start");
+	await s.pi("write");
+	assert.equal(s.texts().at(-1), `${REWRITTEN}the person says 2.`);
+	assert.equal(s.copyOf("person-2").markLess, true);
+});
+
+// S2 of the structural review, against P5: pi refuses a user message without a word, and never a custom message that asks for a turn.
+test("an idle pi can refuse the person's page message without a word, and never a turn of ours", async (t) => {
+	const s = scene(t, "rpc");
+	await s.job("j1", 1);
+	await s.drains();
+	assert.ok(piMoves(s.window).includes("start") && !piMoves(s.window).includes("refuse"), "a custom message that asks for a turn gets its run");
+	await s.pi("start");
+	await s.pi("settle");
+	await s.person(2);
+	await s.drains();
+	assert.ok(piMoves(s.window).includes("refuse"), "a user message can be refused before any run");
+});
+
+// Decision 23: no ring reaches a terminal. A window in a terminal that is rung all the same hands no user message.
+test("a person row a terminal was rung for goes as a custom message, uncapped: a stop puts nothing of ours into the editor", async (t) => {
+	const s = scene(t, "tui");
+	await s.person(1);
+	await s.pi("type");
+	assert.deepEqual(await s.drains(), []);
+	await s.pi("settle");
+	assert.deepEqual(await s.drains(), ["person#1"]);
+	assert.equal(s.window.pi.queue[0].customType, "pi-loops:turn");
+	await s.pi("type");
+	await s.pi("esc");
+	assert.equal(s.window.pi.editor.text, "");
+	assert.equal(s.copyOf("person-1").state, "dropped");
+	assert.deepEqual(await s.drains(), ["person#1"], "a person's message a stop took out is offered again");
+	await s.pi("start");
+	await s.pi("write");
+	assert.deepEqual(s.window.window!.currentTurn(), { kind: "row", id: "person-1", mode: "attended" }, "the ring vouches for it: its turn is attended");
+});
+
+test("the world asks whose turn it is after a turn's message and before the next, and the simulation says so when the answer is not the row's cap", async (t) => {
+	const s = scene(t, "rpc");
+	const one = await s.job("j1", 1);
+	await s.drains();
+	await s.pi("start");
+	s.world.facts = noFacts();
+	piMove(s.world, s.window, "write");
+	assert.deepEqual(s.world.facts.toolCalls.map((call) => [call.copy.rowId, call.decidedWith]), [[one, { kind: "row", id: one, mode: "unattended" }]]);
+	assert.equal(s.checker.check().violation, undefined);
+	// A window that takes the turn for the person's: the check names it at the turn's last tool call.
+	s.window.window!.currentTurn = () => ({ kind: "person" });
+	s.world.facts = noFacts();
+	piMove(s.world, s.window, "settle");
+	assert.equal(s.world.facts.toolCalls.length, 1);
+	assert.equal(s.checker.check().violation?.invariant, CAP_IS_THE_ROWS);
+});
+
+test("the world asks whose turn it is after another extension's message that pi writes behind a turn of ours, and not after a message of the person", async (t) => {
+	const s = scene(t, "rpc");
+	const one = await s.job("j1", 1);
+	await s.drains();
+	await s.pi("type");
+	await s.pi("otherSends");
+	s.world.facts = noFacts();
+	piMove(s.world, s.window, "settle");
+	const behind = s.world.facts.toolCalls.filter((call) => call.after !== undefined);
+	assert.deepEqual(behind.map((call) => [call.copy.rowId, call.after, call.decidedWith]), [[one, "another extension's message", { kind: "row", id: one, mode: "unattended" }]]);
+	assert.equal(s.checker.check().violation, undefined);
+	// The person's message behind the turn may lift its cap: nothing is asked of what follows it.
+	await s.job("j2", 2);
+	await s.drains();
+	await s.pi("type");
+	await s.pi("typeBehind");
+	await s.pi("otherSends");
+	s.world.facts = noFacts();
+	piMove(s.world, s.window, "settle");
+	assert.deepEqual(s.world.facts.toolCalls.filter((call) => call.after !== undefined), []);
+	assert.equal(s.checker.check().violation, undefined);
 });
