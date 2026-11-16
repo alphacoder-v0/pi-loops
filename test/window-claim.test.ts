@@ -1,0 +1,288 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { markFor } from "../src/mark.ts";
+import type { Phase, Slot, TurnSlot } from "../src/window-claim.ts";
+import { claimOf, cleanEditor, settleSlots } from "../src/window-claim.ts";
+
+function turn(id: string, text: string, phase: Phase, opts: { prefix?: string; stop?: true; echoed?: boolean } = {}): TurnSlot {
+	return {
+		whose: "turn",
+		mark: markFor({ lane: "s1", id }),
+		text,
+		...(opts.prefix === undefined ? {} : { prefix: opts.prefix }),
+		cap: { kind: "row", id, mode: "attended" },
+		phase,
+		...(opts.stop ? { stop: true as const } : {}),
+		echoed: opts.echoed ?? false,
+	};
+}
+
+function other(text: string, from: "person" | "extension" = "person"): Slot {
+	return { whose: "other", from, text };
+}
+
+function append(id: string): Slot {
+	return { whose: "append", mark: markFor({ lane: "s1", id }) };
+}
+
+function writingTurn(id: string, text: string): TurnSlot {
+	const pending = turn(id, text, { is: "pending", since: 0 });
+	const claim = claimOf(text, [pending]);
+	if (claim.by !== "turn") throw new Error("pending turn did not claim its exact text");
+	return turn(id, text, { is: "writing", claim });
+}
+
+function assertTurnClaim(result: ReturnType<typeof claimOf>, id: string): void {
+	assert.equal(result.by, "turn");
+	if (result.by === "turn") assert.equal(result.slot.mark.id, id);
+}
+
+function assertOtherClaim(result: ReturnType<typeof claimOf>, expected: Slot): void {
+	assert.equal(result.by, "other");
+	if (result.by === "other") assert.equal(result.slot, expected);
+}
+
+test("claimOf assigns ordered trigger prompts to their own rows", () => {
+	const a = turn("a", "[Trigger a] one", { is: "queued" });
+	const b = turn("b", "[Trigger b] two", { is: "queued" });
+	assertTurnClaim(claimOf(a.text, [a, b]), "a");
+	assertTurnClaim(claimOf(b.text, [a, b]), "b");
+});
+
+test("claimOf chooses the oldest exact turn with duplicate text", () => {
+	const a = turn("a", "yes", { is: "queued" });
+	const b = turn("b", "yes", { is: "queued" });
+	assertTurnClaim(claimOf("yes", [a, b]), "a");
+});
+
+test("claimOf prefers an opening exact turn over an older queued turn", () => {
+	const queued = turn("queued", "yes", { is: "queued" });
+	const opening = turn("opening", "yes", { is: "opening" });
+	assertTurnClaim(claimOf("yes", [queued, opening]), "opening");
+});
+
+test("claimOf gives exact text to the person's other slot", () => {
+	const person = other("yes");
+	const row = turn("row", "yes", { is: "queued" });
+	assertOtherClaim(claimOf("yes", [person, row]), person);
+});
+
+test("claimOf strips pi's trailing image note", () => {
+	// A refused slot claims by the very text only: the note must go for the text to be the same.
+	const row = turn("row", "describe this", { is: "refused" });
+	assertTurnClaim(claimOf("describe this [Image omitted: unsupported format]", [row]), "row");
+});
+
+test("claimOf matches a rewritten prompt with words around it", () => {
+	const row = turn("row", "Run the tests", { is: "queued" });
+	assertTurnClaim(claimOf("[rewritten] Run the tests", [row]), "row");
+});
+
+test("claimOf chooses the longest matching turn text", () => {
+	const short = turn("short", "fix", { is: "queued" });
+	const long = turn("long", "fix it and push", { is: "queued" });
+	assertTurnClaim(claimOf("[rewritten] fix it and push", [short, long]), "long");
+});
+
+test("claimOf gives an exact turn match priority over a waiting other slot", () => {
+	const waiting = other("/review the engine");
+	const row = turn("row", "Run the tests and report what fails. the engine", { is: "queued" });
+	assertTurnClaim(claimOf(row.text, [waiting, row]), "row");
+});
+
+test("claimOf gives a waiting other slot priority over approximate turn text", () => {
+	const waiting = other("/review");
+	const row = turn("row", "Run the", { is: "queued" });
+	assertOtherClaim(claimOf("Run the tests.", [waiting, row]), waiting);
+});
+
+test("claimOf matches an other slot with words around its text", () => {
+	const extension = other("ok", "extension");
+	assertOtherClaim(claimOf("ok, now run it", [extension]), extension);
+});
+
+test("claimOf gives words around to the other slot whose text they are, not to the oldest other slot", () => {
+	const older = other("/review", "person");
+	const extension = other("now run it", "extension");
+	assertOtherClaim(claimOf("ok, now run it", [older, extension]), extension);
+});
+
+test("claimOf matches refused turns only by exact text", () => {
+	const row = turn("row", "report status", { is: "refused" });
+	assertTurnClaim(claimOf("report status", [row]), "row");
+	assert.equal(claimOf("please report status", [row]).by, "nobody");
+});
+
+test("claimOf never claims writing, written or append slots", () => {
+	const writing = writingTurn("writing", "same");
+	const written = turn("written", "same", { is: "written" });
+	const app = append("append");
+	assert.equal(claimOf("same", [writing, written, app]).by, "nobody");
+});
+
+test("claimOf returns nobody when no slot explains the message", () => {
+	assert.deepEqual(claimOf("unmatched", []), { by: "nobody" });
+});
+
+test("claimOf gives an empty image-only message to an empty other slot", () => {
+	const image = other("");
+	assertOtherClaim(claimOf("[Image omitted: unsupported format]", [image]), image);
+});
+
+type Column = "no stop" | "terminal stop" | "non-terminal stop";
+interface SettleCase {
+	name: string;
+	slot: Slot;
+	landed?: boolean;
+	expect: (column: Column) => { kept: boolean; reason?: string; editor?: boolean };
+}
+const settleCases: SettleCase[] = [
+	{
+		name: "landed turn or append",
+		slot: turn("landed", "prompt", { is: "queued" }),
+		landed: true,
+		expect: () => ({ kept: false }),
+	},
+	{
+		name: "pending turn",
+		slot: turn("pending", "prompt", { is: "pending", since: 1 }),
+		expect: () => ({ kept: true }),
+	},
+	{
+		name: "opening or queued turn",
+		slot: turn("waiting", "prompt", { is: "queued" }, { prefix: "[Trigger waiting] " }),
+		expect: (column) => column === "no stop" ? { kept: false, reason: "lost" } : column === "terminal stop" ? { kept: false, reason: "dropped", editor: true } : { kept: true },
+	},
+	{
+		name: "written turn",
+		slot: turn("written", "prompt", { is: "written" }),
+		expect: () => ({ kept: false, reason: "lost" }),
+	},
+	{
+		name: "refused turn",
+		slot: turn("refused", "prompt", { is: "refused" }),
+		expect: () => ({ kept: true }),
+	},
+	{
+		name: "append",
+		slot: append("append"),
+		expect: (column) => column === "no stop" ? { kept: false, reason: "lost" } : column === "terminal stop" ? { kept: false, reason: "dropped" } : { kept: true },
+	},
+	{
+		name: "other slot",
+		slot: other("person text"),
+		expect: (column) => column === "non-terminal stop" ? { kept: true } : { kept: false },
+	},
+];
+const columns: Array<{ name: Column; how: { aborted: boolean; terminal: boolean } }> = [
+	{ name: "no stop", how: { aborted: false, terminal: false } },
+	{ name: "terminal stop", how: { aborted: true, terminal: true } },
+	{ name: "non-terminal stop", how: { aborted: true, terminal: false } },
+];
+for (const row of settleCases) {
+	for (const column of columns) {
+		test(`settleSlots ${row.name}: ${column.name}`, () => {
+			let asked = 0;
+			const slots = row.landed ? [row.slot, append("landed-append")] : [row.slot];
+			const result = settleSlots(slots, column.how, (id) => { asked++; return row.landed === true || id === "landed-append"; });
+			const expected = row.expect(column.name);
+			assert.equal(result.slots.length, expected.kept ? slots.length : 0);
+			assert.deepEqual([...result.gone], expected.reason ? [[row.slot.whose === "other" ? "" : row.slot.mark.id, expected.reason]] : []);
+			assert.equal(result.editor.length === 1, expected.editor ?? false);
+			assert.equal(asked, row.slot.whose === "other" ? 0 : slots.length);
+		});
+	}
+}
+
+test("settleSlots reads writing turns as queued in every column", () => {
+	for (const column of columns) {
+		const slot = writingTurn("writing", "prompt");
+		const result = settleSlots([slot], column.how, () => false);
+		assert.equal(result.slots.length === 1, column.name === "non-terminal stop");
+		if (result.slots[0]?.whose === "turn") assert.deepEqual(result.slots[0].phase, { is: "queued" });
+	}
+});
+
+test("settleSlots turns stopped prompts into stopped gone reasons", () => {
+	for (const column of columns.slice(0, 2)) {
+		const slot = turn("stop-row", "prompt", { is: "queued" }, { stop: true });
+		const result = settleSlots([slot], column.how, () => false);
+		assert.equal(result.gone.get("stop-row"), "stopped");
+	}
+	const written = turn("stop-written", "prompt", { is: "written" }, { stop: true });
+	assert.equal(settleSlots([written], columns[0].how, () => false).gone.get("stop-written"), "stopped");
+});
+
+test("settleSlots returns dropped editor prompts in list order with their prefixes", () => {
+	const first = turn("first", "first prompt", { is: "queued" }, { prefix: "[Trigger first] " });
+	const second = turn("second", "second prompt", { is: "opening" }, { prefix: "[Trigger second] " });
+	const result = settleSlots([first, second], { aborted: true, terminal: true }, () => false);
+	assert.deepEqual(result.editor, [
+		{ text: "first prompt", prefix: "[Trigger first] " },
+		{ text: "second prompt", prefix: "[Trigger second] " },
+	]);
+});
+
+test("settleSlots does not change the input slots or their objects", () => {
+	const input: Slot[] = [
+		writingTurn("writing", "one"),
+		turn("queued", "two", { is: "queued" }),
+		append("append"),
+		other("person"),
+	];
+	const before = structuredClone(input);
+	settleSlots(input, { aborted: true, terminal: false }, () => false);
+	assert.deepEqual(input, before);
+});
+
+test("cleanEditor removes ordered prompts from paragraphs", () => {
+	const editor = "[Trigger run-aaa] queued one\n\nqueued two\n\nwords the person typed";
+	assert.equal(cleanEditor(editor, [
+		{ text: "[Trigger run-aaa] queued one", prefix: "[Trigger run-aaa] " },
+		{ text: "queued two" },
+	]), "words the person typed");
+});
+
+test("cleanEditor removes rewritten prompts", () => {
+	const editor = "[rewritten] [Trigger run-aaa] queued one\n\n[rewritten] queued two\n\nwords the person typed";
+	assert.equal(cleanEditor(editor, [
+		{ text: "[Trigger run-aaa] queued one", prefix: "[Trigger run-aaa] " },
+		{ text: "queued two" },
+	]), "words the person typed");
+});
+
+test("cleanEditor removes a prefixed prompt with appended handler words", () => {
+	assert.equal(cleanEditor("[Trigger run-aaa] queued one (sent by bot)\n\nmine", [
+		{ text: "[Trigger run-aaa] queued one", prefix: "[Trigger run-aaa] " },
+	]), "mine");
+});
+
+test("cleanEditor returns the same string when a prompt is absent", () => {
+	const editor = "[Trigger run-aaa] queued one (sent by bot)\n\nmine";
+	assert.equal(cleanEditor(editor, [{ text: "[Trigger other] missing", prefix: "[Trigger other] " }]) === editor, true);
+});
+
+test("cleanEditor removes a two-paragraph prompt", () => {
+	assert.equal(cleanEditor("line one\n\nline two\n\nmine", [{ text: "line one\n\nline two" }]), "mine");
+});
+
+test("cleanEditor takes the first ending match for an unprefixed prompt", () => {
+	assert.equal(cleanEditor("queued two\n\nI said queued two", [{ text: "queued two" }]), "I said queued two");
+});
+
+test("cleanEditor removes separate blocks for repeated prompts", () => {
+	assert.equal(cleanEditor("go\n\ngo\n\nmine", [{ text: "go" }, { text: "go" }]), "mine");
+});
+
+test("cleanEditor preserves the string for no prompts and empty unprefixed prompts", () => {
+	const editor = "mine\n\nkeep this";
+	assert.equal(cleanEditor(editor, []), editor);
+	assert.equal(cleanEditor(editor, [{ text: "" }]) === editor, true);
+});
+
+test("cleanEditor removes only the prompt named by this stop", () => {
+	assert.equal(cleanEditor("[Trigger run-ccc] third\n\n[Trigger run-aaa] queued one\n\nmine", [
+		{ text: "[Trigger run-ccc] third", prefix: "[Trigger run-ccc] " },
+	]), "[Trigger run-aaa] queued one\n\nmine");
+});
+
