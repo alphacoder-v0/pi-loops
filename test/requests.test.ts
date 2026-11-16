@@ -324,3 +324,44 @@ test("only an input can be claimed: a stop or a cancel is never a run, and a lin
 	assert.deepEqual(store.list("s1").map((r) => r.id), ["st"], "a claimed stop is a line this version does not act on");
 	assert.equal(fs.readFileSync(store.file("s1"), "utf8").includes(forged), true, "and it stays as it was written");
 });
+
+test("a version 2 row is listed with its source line version", () => {
+	const store = new RequestStore(tmp());
+	fs.mkdirSync(path.dirname(store.file("s1")), { recursive: true });
+	fs.writeFileSync(store.file("s1"), `${v2Line}\n`);
+	assert.equal(store.list("s1")[0].line, 2);
+});
+
+test("a version 3 row has no source line field, even when the disk line has one", () => {
+	const store = new RequestStore(tmp());
+	fs.mkdirSync(path.dirname(store.file("s1")), { recursive: true });
+	fs.writeFileSync(store.file("s1"), `${JSON.stringify({ ...row("r1", { lane: "s1" }), line: 2 })}\n`);
+	assert.equal(Object.hasOwn(store.list("s1")[0], "line"), false);
+});
+
+test("updating a version 2 row keeps its version and never writes the reader field", () => {
+	const store = new RequestStore(tmp());
+	fs.mkdirSync(path.dirname(store.file("s1")), { recursive: true });
+	fs.writeFileSync(store.file("s1"), `${v2Line}\n`);
+	assert.equal(store.update("s1", "r1", { attempts: 1 }), true);
+	const written = JSON.parse(fs.readFileSync(store.file("s1"), "utf8"));
+	assert.equal(written.v, 2);
+	assert.equal(Object.hasOwn(written, "line"), false);
+});
+
+test("claiming a version 2 row writes version 3 without the reader field", () => {
+	const store = new RequestStore(tmp());
+	fs.mkdirSync(path.dirname(store.file("s1")), { recursive: true });
+	fs.writeFileSync(store.file("s1"), `${v2Line}\n`);
+	assert.equal(store.claim("s1", "r1", claim), true);
+	const written = JSON.parse(fs.readFileSync(store.file("s1"), "utf8"));
+	assert.equal(written.v, 3);
+	assert.equal(Object.hasOwn(written, "line"), false);
+});
+
+test("appending a row with the reader field never writes it", () => {
+	const store = new RequestStore(tmp());
+	store.append(row("r1", { line: 2 }));
+	const written = JSON.parse(fs.readFileSync(store.file("s"), "utf8"));
+	assert.equal(Object.hasOwn(written, "line"), false);
+});

@@ -52,6 +52,8 @@ export type RequestSource =
 
 interface RowBase {
 	v: 3;
+	/** Set by the reader on a row read from a version 2 line (a row an older version wrote), and never written. */
+	line?: 2;
 	/** pi-loops rows: the id inside `[Trigger <id>] `, the proof of delivery. Person rows: a UUID the page mints. */
 	id: string;
 	lane: LaneId;
@@ -166,7 +168,8 @@ function readLine(line: string): { row: Row; version: 2 | 3 } | undefined {
 	// a version 2 line: no version writes one, and the version that reads such a line sees no claim.
 	const run = (row as { run?: unknown }).run as Record<string, unknown> | null | undefined;
 	if (run !== undefined && (parsed.v === 2 || row.kind !== "input" || !run || typeof run !== "object" || typeof run.id !== "string" || typeof run.pid !== "number" || typeof run.started_at !== "string" || (run.procStart !== undefined && typeof run.procStart !== "string"))) return undefined;
-	return { row: { ...row, attempts: typeof row.attempts === "number" ? row.attempts : 0 } as Row, version: parsed.v === 2 ? 2 : 3 };
+	const { line: _line, ...version3 } = row;
+	return { row: { ...version3, ...(parsed.v === 2 ? { line: 2 } : {}), attempts: typeof row.attempts === "number" ? row.attempts : 0 } as Row, version: parsed.v === 2 ? 2 : 3 };
 }
 
 /**
@@ -179,8 +182,9 @@ function readLine(line: string): { row: Row; version: 2 | 3 } | undefined {
  * every line it does not change back as the bytes it read.
  */
 function rowLine(row: Row, version: 2 | 3 = ROW_VERSION): string {
-	if (version === ROW_VERSION) return JSON.stringify(row);
-	const { v: _, lane, ...rest } = row;
+	const { line: _line, ...withoutLine } = row;
+	if (version === ROW_VERSION) return JSON.stringify(withoutLine);
+	const { v: _, lane, ...rest } = withoutLine;
 	return JSON.stringify({ v: 2, session_id: lane, ...rest });
 }
 
