@@ -1357,7 +1357,7 @@ test("Enter during a run in a terminal is a steer, written before what waits: a 
 	assert.equal(w.executor.messageEnded({ role: "user", content: "[rewritten] keep going" }), undefined, "the steer could be it: no mark for the goal's row");
 });
 
-test("a message's delivery is what pi's input event says, not its source: a steer from the page or an extension, a follow-up from a terminal", () => {
+test("a rewritten message with no prefix gets no mark while someone else's input waits, whatever pi's delivery of that input", () => {
 	const at = (behind: "steer" | "followUp", source: "rpc" | "extension" | "interactive") => {
 		const w = fakeWindowPi(false);
 		const goal = row("g1", { source: "goal", mode: "attended", wake: "turn", payload: { text: "keep going", cwd: "/" } });
@@ -1368,9 +1368,9 @@ test("a message's delivery is what pi's input event says, not its source: a stee
 		w.executor.messageStarted({ role: "user", content: "[rewritten] keep going" }, T0 + 3);
 		return w.executor.messageEnded({ role: "user", content: "[rewritten] keep going" });
 	};
-	assert.equal(at("steer", "rpc"), undefined, "the page's steer is written before the queued goal: it could be this message");
-	assert.equal(at("steer", "extension"), undefined, "another extension's steer too");
-	assert.ok(at("followUp", "interactive"), "a terminal's follow-up (Alt+Enter) comes after the goal: the message is the goal's, marked");
+	assert.equal(at("steer", "rpc"), undefined, "the page's steer");
+	assert.equal(at("steer", "extension"), undefined, "another extension's steer");
+	assert.equal(at("followUp", "interactive"), undefined, "a terminal's follow-up (Alt+Enter): no order of pi is read");
 });
 
 test("a steer waiting as pi writes a refused prompt of ours late takes the message: a mark less, never one on a message that may be the person's", () => {

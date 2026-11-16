@@ -111,13 +111,13 @@ function longest<T>(msg: string, slots: readonly T[], textOf: (slot: T) => strin
 }
 
 /**
- * Assign a user message to the first matching slot under these rules:
- * 1. Exact text chooses the oldest other slot, otherwise a turn by `tieRank` (one no stop named
- *    first; then opening, one pi holds, a refused one, the oldest).
- * 2. A matching other slot with words around its text wins; the longest text wins, then the oldest.
- * 3. A matching turn whose `[Trigger <id>] ` is in the message wins. Otherwise any waiting other
- *    slot wins before approximate turn matches, but for a follow-up given to pi after the matching turn.
- * 4. A turn match wins; the longest text wins, then by `tieRank`.
+ * Whose a user message is, from what the message itself shows, never from an order of pi:
+ * 1. The very same words as a waiting input of someone else: theirs (the oldest). As a prompt of ours:
+ *    ours, by `tieRank` (one no stop named first; then opening, one pi holds, a refused one, the oldest).
+ * 2. Words around a waiting input of someone else: theirs; the longest text wins, then the oldest.
+ * 3. Words around a prompt of ours with its `[Trigger <id>] ` in the message: ours.
+ * 4. Words around a prompt of ours with no prefix: ours only when no input of someone else waits;
+ *    otherwise the oldest such input's (not by its text: `byText` false), and no mark.
  * 5. Otherwise the message belongs to nobody.
  *
  * Only pending, opening, queued and refused turns and other slots are candidates. Writing and written
@@ -141,15 +141,11 @@ export function claimOf(text: string, slots: readonly Slot[]): Claim {
 		tieRank,
 	);
 	// The words of a prompt of ours around the message, with its `[Trigger <id>] `: no one else's
-	// message carries that, so it is ours whatever else waits (a refused send of another extension
-	// leaves an input that never becomes a message: probe G11).
+	// message carries that, so it is ours whatever else waits.
 	if (turnAround?.prefix !== undefined && msg.includes(turnAround.prefix)) return turnClaim(turnAround);
-	// A message that could be someone else's is theirs (a rewriting extension changes both texts, probe
-	// P4), but for one order pi keeps: follow-ups are written in the order pi was given them (P6, g9).
-	// So a follow-up given to pi after the prompt of ours that the words point at is not this message.
-	// Which prompt opens a run is not read: a custom message can open it (P11), and a steer can come first.
-	const notThis = (other: OtherSlot) => turnAround !== undefined && other.behind === "followUp" && slots.indexOf(turnAround) < slots.indexOf(other);
-	const anyOther = candidates.find((slot): slot is OtherSlot => slot.whose === "other" && !notThis(slot));
+	// Words around ours with no prefix: ours only when nothing of someone else waits, since a rewriting
+	// extension changes every text (probe P4). Which of several pi writes first is not read: no mark.
+	const anyOther = candidates.find((slot): slot is OtherSlot => slot.whose === "other");
 	if (anyOther) return namedOther(anyOther, false);
 	return turnAround ? turnClaim(turnAround) : { by: "nobody" };
 }

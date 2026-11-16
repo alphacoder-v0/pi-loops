@@ -338,7 +338,10 @@ type Excuse = "refused" | "refused, proved by its text" | "stop" | "lease" | "ed
 const ACCEPTED: readonly Excuse[] = ["refused", "refused, proved by its text", "a mark less"];
 
 /** A person's message pi refused is never offered again, so nothing excuses a second delivery of one after a refusal. */
-const excuseOf = (copy: Copy): Excuse | undefined => (copy.fromTheEditor ? "editor" : copy.gaveUp !== undefined && copy.gaveUp !== "refused" ? copy.gaveUp : copy.markLess ? "a mark less" : copy.gaveUp !== "refused" ? undefined : copy.person ? undefined : copy.provedByText ? "refused, proved by its text" : "refused");
+// The editor and a lost lease first: either alone delivers a second time. Then a mark taken away, which
+// is the cause when pi kept the prompt after a stop and the window kept its slot, as it does now.
+const excuseOf = (copy: Copy): Excuse | undefined =>
+	copy.fromTheEditor ? "editor" : copy.gaveUp === "lease" ? "lease" : copy.markLess ? "a mark less" : copy.gaveUp === "stop" ? "stop" : copy.gaveUp !== "refused" ? undefined : copy.person ? undefined : copy.provedByText ? "refused, proved by its text" : "refused";
 
 /** The rows pi wrote in this step that are now written more often than once plus their excused late sends. */
 function writtenTooOften(world: World, excused: readonly Excuse[], coverage?: Coverage): string[] {

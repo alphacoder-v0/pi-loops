@@ -109,24 +109,24 @@ test("claimOf gives words around to the other slot whose text they are, not to t
 	assertOtherClaim(claimOf("ok, now run it", [older, extension]), extension);
 });
 
-test("claimOf gives a rewritten message to the prompt of ours that pi was given before another extension's follow-up, and never sets a steer aside", () => {
+test("claimOf gives a rewritten message with no prefix to the prompt of ours only when no input of someone else waits", () => {
 	const ours = turn("ours", "the person says 1.", { is: "opening" });
-	const theirs: OtherSlot = { ...other("another extension says 2.", "extension"), behind: "followUp" };
-	assertTurnClaim(claimOf("[rewritten] the person says 1.", [ours, theirs]), "ours");
-	const before: OtherSlot = other("another extension says 2.", "extension");
-	assertOtherClaim(claimOf("[rewritten] the person says 1.", [ours, before]), before);
-	const steer: OtherSlot = { ...other("steered 3."), behind: "steer" };
-	assertOtherClaim(claimOf("[rewritten] the person says 1.", [ours, steer]), steer, "which prompt opened the run is not read: the steer may be this message, so no mark");
-	const keptBefore: OtherSlot = { ...other("typed behind 4."), behind: "followUp" };
-	assertOtherClaim(claimOf("[rewritten] the person says 1.", [keptBefore, ours]), keptBefore, "a follow-up given before ours, even when ours opened the run: no mark");
+	assertTurnClaim(claimOf("[rewritten] the person says 1.", [ours]), "ours");
+	for (const behind of [undefined, "followUp", "steer"] as const) {
+		const waiting: OtherSlot = { ...other("another extension says 2.", "extension"), ...(behind ? { behind } : {}) };
+		assertOtherClaim(claimOf("[rewritten] the person says 1.", [ours, waiting]), waiting, `${behind ?? "idle"}: no mark`);
+	}
 });
 
-test("claimOf gives a message to a prompt of ours that pi was given before another extension's follow-up", () => {
-	const ours = turn("ours", "[Trigger ours] run j1.", { is: "queued" });
-	const later: OtherSlot = { ...other("another extension says 2.", "extension"), behind: "followUp" };
-	assertTurnClaim(claimOf("[rewritten] [Trigger ours] run j1.", [ours, later]), "ours");
-	const earlier: OtherSlot = { ...other("another extension says 2.", "extension"), behind: "followUp" };
-	assertOtherClaim(claimOf("[rewritten] [Trigger ours] run j1.", [earlier, ours]), earlier);
+test("claimOf reads no order of pi: with someone else's input waiting, words around a prompt of ours are ours only with its prefix", () => {
+	const prefixed = turn("ours", "[Trigger ours] run j1.", { is: "queued" }, { prefix: "[Trigger ours] " });
+	const plain = turn("plain", "address finding 1.", { is: "queued" });
+	for (const order of ["before", "after"] as const) {
+		const theirs: OtherSlot = { ...other("another extension says 2.", "extension"), behind: "followUp" };
+		const slots = (ours: TurnSlot) => (order === "before" ? [ours, theirs] : [theirs, ours]);
+		assertTurnClaim(claimOf("[rewritten] [Trigger ours] run j1.", slots(prefixed)), "ours", `prefix, ${order}`);
+		assertOtherClaim(claimOf("[rewritten] address finding 1.", slots(plain)), theirs, `no prefix, ${order}: no mark`);
+	}
 });
 
 test("claimOf gives the very same words to the run's starter before a refused slot: pi may have dropped the refused one, and either message answers one of the two", () => {

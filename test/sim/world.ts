@@ -476,7 +476,8 @@ function copyFor(world: World, proc: Process, text: string): Copy | undefined {
 	return copy;
 }
 
-function write(world: World, proc: Process, item: Item): void {
+/** `rest`: what still waits behind `item` when pi writes it out of a queue it took whole (a settle). */
+function write(world: World, proc: Process, item: Item, rest: readonly Item[] = []): void {
 	const at = world.clock;
 	const aborts = proc.pi.aborts;
 	// `message_start` first, then `message_end`, then the entry: pi's agent loop emits them back to
@@ -508,7 +509,7 @@ function write(world: World, proc: Process, item: Item): void {
 	if (mark) item.copy.markedAs = mark.id;
 	// Only where the words were rewritten and carry no `[Trigger <id>]`: an unchanged message of ours is its
 	// prompt's very words, and a prefix in it is ours; both are always marked.
-	else if (world.rewrites && !item.custom && !item.text.startsWith("[Trigger ") && [...proc.pi.queue, ...proc.pi.kept].some((waiting) => !waiting.copy && !waiting.custom)) item.copy.markLess = true;
+	else if (world.rewrites && !item.custom && !item.text.startsWith("[Trigger ") && [...proc.pi.queue, ...proc.pi.kept, ...rest].some((waiting) => !waiting.copy && !waiting.custom)) item.copy.markLess = true;
 	if (!item.custom) proc.pi.turnOf = item.copy.rowId;
 	item.copy.abortedAtStart = proc.pi.aborts > aborts;
 	leave(item.copy, "written", at);
@@ -706,7 +707,7 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			const waiting = [...pi.kept.splice(0), ...pi.queue.splice(0)];
 			let stopped = move === "esc" || pi.aborts > 0;
 			while (!stopped && waiting.length) {
-				write(world, proc, waiting.shift()!);
+				write(world, proc, waiting.shift()!, waiting);
 				stopped = pi.aborts > 0;
 			}
 			if (proc.mode === "tui") {
