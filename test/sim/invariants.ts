@@ -76,8 +76,6 @@ function namedExit(world: World, memory: Memory, queues: Queues, coverage: Cover
 		// under the same id and dies again has the one finding and a second line.
 		else if (gone.findings > 0 && gone.dead > spent.dead) gone.exit = "dead";
 		else if (gone.audited.length > spent.audited) gone.exit = gone.audited[0];
-		// The window's word that the row's turn ran, which no file proves: an exit the engine has, held under `KNOWN`.
-		else if (gone.ranUnproved) gone.exit = "ran";
 		memory.spent.set(key, { dead: gone.dead, audited: gone.audited.length });
 		if (gone.exit === undefined) {
 			out.push(`${name} left the queue of ${row.lane} with nothing to account for it: pi wrote no message for it, no finding carries its id, no audit line names it`);
@@ -101,8 +99,6 @@ function notItsExit(world: World, gone: Removal, exit: string): string | undefin
 	const { row } = gone;
 	const input = row.kind === "input";
 	switch (exit) {
-		case "ran":
-			return undefined;
 		case "delivered":
 			return world.tampered.has(row.id) ? "its mode was widened in the file: such a row is refused, never run" : undefined;
 		case "dead":
@@ -110,8 +106,7 @@ function notItsExit(world: World, gone: Removal, exit: string): string | undefin
 		case "done":
 			return input ? "an input is done only by its proof in the conversation" : undefined;
 		case "cancelled":
-			// A window that took another message for this row's (`ranUnproved`) no longer knows that pi holds it: `doneOnlyByProof` names that.
-			if (gone.heldByRemover && !gone.ranUnproved) return "the pi of the process that removed it holds its turn and will run it";
+			if (gone.heldByRemover) return "the pi of the process that removed it holds its turn and will run it";
 			return input && world.targeted.has(row.id) ? undefined : "no stop and no cancel named it";
 		case "job-removed":
 			return row.source.startsWith("cron:") && !world.jobs.get(row.source.slice("cron:".length))?.exists ? undefined : "its job is there";
@@ -125,22 +120,6 @@ function notItsExit(world: World, gone: Removal, exit: string): string | undefin
 		default:
 			return `the audit knows no exit called ${exit}`;
 	}
-}
-
-/**
- * I2, for the one exit no file proves: the window removes a row as done because a turn began with
- * a message that carried no prefix, which it takes for the row's own prompt, rewritten by another
- * extension. In a world where nothing rewrites a prompt, every such exit is a row removed that pi
- * had not written: the message was a late send of another row, the person's own message that pi
- * kept, or another extension's.
- */
-function doneOnlyByProof(world: World): string[] {
-	const out = world.facts.removals.filter((gone) => gone.exit === "ran").map((gone) => `${label(world, gone.row.id)} left the queue of ${gone.row.lane} as done on the window's word that its turn ran, and pi had not written it`);
-	// The same mistake, seen by a cancel: the window says the row's turn ran, so the cancel takes the row out as if pi did not hold it.
-	for (const gone of world.facts.removals) {
-		if (gone.exit === "cancelled" && gone.heldByRemover && gone.ranUnproved) out.push(`${label(world, gone.row.id)} left the queue of ${gone.row.lane} as cancelled while pi holds its turn: the window took another message for its own and stopped holding it`);
-	}
-	return out;
 }
 
 /**
@@ -245,7 +224,7 @@ function decidedOnce(world: World, memory: Memory, queues: Queues, coverage: Cov
  *
  * Which turn pi runs or begins is asked for prefixed rows only: the window knows a text-proved
  * turn by its words, which two rows can share. And a turn pi kept queued behind an aborted turn is
- * left out (the page's pi does that): the window takes it for dropped, a defect `KNOWN` names.
+ * left out (the page's pi does that): pi still holds it, and runs it later.
  */
 function stopsAndCancelsWork(world: World, memory: Memory): string[] {
 	const out: string[] = [];
@@ -353,7 +332,7 @@ function typedStaysInTheEditor(world: World): string[] {
 
 /** Why a hand-over the engine gave up while pi still held it, written late, may be a second delivery of its row. */
 type Excuse = "refused" | "refused, proved by its text" | "stop" | "lease" | "editor";
-/** The two the design accepts (see `deliveredOnce`); the others are defects, each held under `KNOWN`. */
+/** The two the design accepts (see `deliveredOnce`); each of the others has a check of its own (`KNOWN_SECOND_DELIVERIES`). */
 const ACCEPTED: readonly Excuse[] = ["refused", "refused, proved by its text"];
 
 /** A person's message pi refused is never offered again, so nothing excuses a second delivery of one after a refusal. */
@@ -384,7 +363,8 @@ function writtenTooOften(world: World, excused: readonly Excuse[], coverage?: Co
  * pi-loops row is proved by its prefix, or by its hand-over stamp and text, so offering it again is
  * safe"). Both are excused and counted (`Coverage.offeredAgainTwice`); it takes a pi that holds a
  * prompt unstarted past the grace and the backoff. Every other second delivery the simulation
- * finds is a defect; those today's engine has are excused here and held, one by one, under `KNOWN`.
+ * finds is a defect: the classes an older engine had are excused here and checked one by one, each by
+ * a check of its own (`KNOWN_SECOND_DELIVERIES`), so a failure names its class.
  *
  * The brief expected two deliveries "when a crash fell between pi's write and the removal". The
  * simulation finds one: the proof is in the conversation and the next process removes the row by
@@ -400,7 +380,7 @@ function deliveredOnce(world: World, _memory: Memory, _queues: Queues, coverage:
 	return out;
 }
 
-/** The second deliveries today's engine makes that the design does not accept, by the name of the check that fails on each. */
+/** The second deliveries an older engine made that the design does not accept, by the name of the check that fails on each. */
 const KNOWN_SECOND_DELIVERIES: Readonly<Record<string, Excuse>> = {
 	"a row is delivered once when the lease moves while pi holds its turn unstarted": "lease",
 	"a row is delivered once after a stop in the page's pi": "stop",
@@ -423,7 +403,6 @@ export const KNOWN: Readonly<Record<string, { defect: string; seed: number }>> =
 
 export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
 	["I2 a row leaves its queue only by a named exit", namedExit],
-	["I2 a row is done only by its proof", doneOnlyByProof],
 	["I3 one turn at a time, handed over by the holder", oneTurnFromTheHolder],
 	["I3 no turn beside a turn an idle pi holds unstarted", noTurnBesideAnUnstartedTurn],
 	["a mark is on its own row's message", markOnItsOwnMessage],

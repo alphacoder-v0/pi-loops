@@ -229,8 +229,6 @@ export interface Removal {
 	buried: boolean;
 	/** The pi of the process that removes the row holds its turn, handed over and unwritten. */
 	heldByRemover: boolean;
-	/** The window that removes the row says its turn ran under a message that lost its prefix (`ExecutorView.ran`); asked only of an unproved input. */
-	ranUnproved?: boolean;
 	/** For a stop or a cancel that names a row: whether that row is still queued and undelivered, and whether a live pi was handed it and has neither written nor lost it. */
 	named?: { queued: boolean; inFlight: boolean };
 	/** For a stop a window removes: that window's pi at this instant. */
@@ -416,12 +414,10 @@ export const held = (proc: Process): Copy[] => [proc.pi.current, ...proc.pi.kept
 /**
  * The hand-overs of row `rowId` that failed, as the simulated pi saw them: one that threw, one pi
  * dropped or refused, and a turn that sat unstarted for `GRACE_MS`, which a tick may judge
- * refused. The engine's `attempts` may count these and nothing else. One more is counted here
- * though pi did not fail: a row pi kept queued behind an aborted turn, which the window takes for
- * dropped (the known defect `KNOWN` names in invariants.ts).
+ * refused. The engine's `attempts` may count these and nothing else.
  */
 export function failedHandOvers(world: World, rowId: string): number {
-	const failed = (copy: Copy) => copy.state === "dropped" || copy.state === "refused" || copy.gaveUp === "stop" || (copy.wake === "turn" && (copy.leftQueueAt ?? world.clock) - copy.handedAt >= GRACE_MS);
+	const failed = (copy: Copy) => copy.state === "dropped" || copy.state === "refused" || (copy.wake === "turn" && (copy.leftQueueAt ?? world.clock) - copy.handedAt >= GRACE_MS);
 	return (world.threw.get(rowId) ?? 0) + world.copies.filter((copy) => copy.rowId === rowId && failed(copy)).length;
 }
 
@@ -818,7 +814,6 @@ function watchedStore(world: World, fuse: Fuse, remover?: Process, removed: () =
 		for (const row of rows) {
 			if (!gone.includes(row.id)) continue;
 			const removal: Removal = { row, delivered: row.kind === "input" ? deliveredBy(world, row) : undefined, findings: findingsFor(world, row.id), dead: deadLines(world, row.id), audited: auditedExits(world, row.id), failures: failedHandOvers(world, row.id), buried: conversation.deleted, heldByRemover: !!remover && held(remover).some((copy) => copy.rowId === row.id && !copy.gaveUp && !copy.stopNamed) };
-			if (row.kind === "input" && !removal.delivered) removal.ranUnproved = remover?.window?.view(sessionId).ran?.has(row.id) ?? false;
 			const target = row.kind !== "input" && row.target && "id" in row.target ? row.target.id : undefined;
 			// A pi was handed the named row and has neither written nor lost it; one that refused it in silence counts until a tick judges the refusal: its window cannot know before.
 			if (target !== undefined) removal.named = { queued: rows.some((r) => r.id === target && r.kind === "input" && !deliveredBy(world, r)), inFlight: world.copies.some((c) => c.sessionId === sessionId && c.rowId === target && c.process.alive && (c.state === "held" || (c.state === "refused" && c.gaveUp !== "refused"))) };
