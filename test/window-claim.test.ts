@@ -371,3 +371,38 @@ test("narrowestCap meets the lists whatever order pi holds the prompts in", () =
 	assert.deepEqual(narrowestCap([cap("u1", undefined, ["read"]), cap("u2", undefined, ["read", "bash"])])?.builtinTools, ["read"]);
 	assert.deepEqual(narrowestCap([cap("u1", undefined, ["read"]), cap("u2")])?.builtinTools, ["read"]);
 });
+
+// From the Gates review of PR 261, round 5: rules of claimOf no other test pinned.
+const claimTurn = (id: string, text: string, phase: Phase, prefix?: string): TurnSlot => ({ whose: "turn", mark: markFor({ lane: "s1", id }), text, ...(prefix === undefined ? {} : { prefix }), cap: { kind: "row", id, mode: "attended" }, phase, echoed: false });
+const waitingInput = (text: string, from: "person" | "extension" = "person", behind?: "steer" | "followUp"): OtherSlot => ({ whose: "other", from, text, ...(behind ? { behind } : {}) });
+
+test("claimOf: a message that carries our prefix but not our words around it is not ours (a prefix decides nothing by itself)", () => {
+	const ours = claimTurn("ours", "[Trigger ours] run j1.", { is: "queued" }, "[Trigger ours] ");
+	assert.equal(claimOf("look: [Trigger ours] run j1. what is this?", [ours]).by, "nobody");
+});
+
+test("claimOf: someone else's words around the message come before our prefix, and then not by their text", () => {
+	const ours = claimTurn("ours", "[Trigger ours] run j1.", { is: "queued" }, "[Trigger ours] ");
+	const theirs = waitingInput("run j1.", "person", "followUp");
+	const c = claimOf("[rewritten] [Trigger ours] run j1.", [ours, theirs]);
+	assert.equal(c.by, "other");
+	if (c.by === "other") assert.equal(c.byText, false);
+});
+
+test("claimOf: a waiting input takes a message no words place, not by its text", () => {
+	const c = claimOf("something nobody said", [waitingInput("hello there", "person", "followUp")]);
+	assert.equal(c.by, "other");
+	if (c.by === "other") assert.equal(c.byText, false);
+});
+
+test("claimOf: the oldest waiting input takes a message of ours with no prefix, and the oldest of two inputs with the very same words", () => {
+	const ours = claimTurn("ours", "address finding 1.", { is: "queued" });
+	const first = waitingInput("a", "person", "followUp");
+	const second = waitingInput("b", "extension", "followUp");
+	const c = claimOf("[rewritten] address finding 1.", [ours, first, second]);
+	assert.equal(c.by === "other" && c.slot, first);
+	const same1 = waitingInput("same", "person", "followUp");
+	const same2 = waitingInput("same", "extension", "followUp");
+	const d = claimOf("same", [same1, same2]);
+	assert.equal(d.by === "other" && d.slot, same1);
+});

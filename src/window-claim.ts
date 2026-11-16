@@ -117,9 +117,9 @@ function longest<T>(msg: string, slots: readonly T[], textOf: (slot: T) => strin
  * 2. Words around a waiting input of someone else: theirs; the longest text wins, then the oldest. When
  *    words of a prompt of ours are around the message too, not by their text (`byText` false).
  * 3. Words around a prompt of ours with its `[Trigger <id>] ` in the message: ours.
- * 4. Words around a prompt of ours with no prefix: ours only when no input of someone else waits;
- *    otherwise the oldest such input's (not by its text: `byText` false), and no mark.
- * 5. Otherwise the message belongs to nobody.
+ * 4. Words around a prompt of ours with no prefix: ours only when no input of someone else waits.
+ * 5. Otherwise the oldest waiting input of someone else (not by its text: `byText` false), and no mark;
+ *    with none waiting, the message belongs to nobody.
  *
  * Only pending, opening, queued and refused turns and other slots are candidates. Writing and written
  * turns and append slots never claim. Image notes are stripped before matching.
