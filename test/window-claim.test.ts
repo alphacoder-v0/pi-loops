@@ -75,15 +75,18 @@ test("claimOf strips pi's trailing image note", () => {
 	assertTurnClaim(claimOf("describe this [Image omitted: unsupported format]", [row]), "row");
 });
 
-test("claimOf matches a rewritten prompt with words around it", () => {
-	const row = turn("row", "Run the tests", { is: "queued" });
-	assertTurnClaim(claimOf("[rewritten] Run the tests", [row]), "row");
+test("claimOf matches a rewritten prompt of ours by its prefix, and one with no prefix only by its words at the start", () => {
+	const prefixed = turn("row", "[Trigger row] Run the tests", { is: "queued" }, { prefix: "[Trigger row] " });
+	assertTurnClaim(claimOf("[rewritten] [Trigger row] Run the tests", [prefixed]), "row");
+	const bare = turn("row", "Run the tests", { is: "queued" });
+	assertTurnClaim(claimOf("Run the tests [ctx]", [bare]), "row");
+	assert.equal(claimOf("[rewritten] Run the tests", [bare]).by, "nobody", "words before the person's message: no less than the older proof, so no mark");
 });
 
 test("claimOf chooses the longest matching turn text", () => {
 	const short = turn("short", "fix", { is: "queued" });
 	const long = turn("long", "fix it and push", { is: "queued" });
-	assertTurnClaim(claimOf("[rewritten] fix it and push", [short, long]), "long");
+	assertTurnClaim(claimOf("fix it and push [ctx]", [short, long]), "long");
 });
 
 test("claimOf gives an exact turn match priority over a waiting other slot", () => {
@@ -111,10 +114,10 @@ test("claimOf gives words around to the other slot whose text they are, not to t
 
 test("claimOf gives a rewritten message with no prefix to the prompt of ours only when no input of someone else waits", () => {
 	const ours = turn("ours", "the person says 1.", { is: "opening" });
-	assertTurnClaim(claimOf("[rewritten] the person says 1.", [ours]), "ours");
+	assertTurnClaim(claimOf("the person says 1. [ctx]", [ours]), "ours");
 	for (const behind of [undefined, "followUp", "steer"] as const) {
 		const waiting: OtherSlot = { ...other("another extension says 2.", "extension"), ...(behind ? { behind } : {}) };
-		assertOtherClaim(claimOf("[rewritten] the person says 1.", [ours, waiting]), waiting, `${behind ?? "idle"}: no mark`);
+		assertOtherClaim(claimOf("the person says 1. [ctx]", [ours, waiting]), waiting, `${behind ?? "idle"}: no mark`);
 	}
 });
 
@@ -149,7 +152,7 @@ test("claimOf gives the very same words to a prompt no stop named before one a s
 	const stopped: TurnSlot = { ...turn("stopped", "the person says 3.", { is: "refused" }, { stop: true }), left: true };
 	const owed = turn("owed", "the person says 3.", { is: "opening" });
 	assertTurnClaim(claimOf("the person says 3.", [stopped, owed]), "owed");
-	assertTurnClaim(claimOf("[rewritten] the person says 3.", [stopped, owed]), "owed");
+	assertTurnClaim(claimOf("the person says 3. [ctx]", [stopped, owed]), "owed");
 	assertTurnClaim(claimOf("the person says 3.", [stopped]), "stopped");
 	const stoppedOpening: TurnSlot = turn("stopped-opening", "the person says 3.", { is: "opening" }, { stop: true });
 	const queuedOwed = turn("queued-owed", "the person says 3.", { is: "queued" });
@@ -168,9 +171,9 @@ test("settleSlots puts no slot whose row left the file into gone: the same row m
 test("claimOf gives a refused prompt a late send in its words, rewritten or not, and a prompt pi holds before it with the same words", () => {
 	const row = turn("row", "report status", { is: "refused" });
 	assertTurnClaim(claimOf("report status", [row]), "row");
-	assertTurnClaim(claimOf("[rewritten] report status", [row]), "row");
+	assertTurnClaim(claimOf("report status [ctx]", [row]), "row");
 	const queued = turn("queued", "report status", { is: "opening" });
-	assertTurnClaim(claimOf("[rewritten] report status", [queued, row]), "queued", "pi may have dropped the refused one");
+	assertTurnClaim(claimOf("report status [ctx]", [queued, row]), "queued", "pi may have dropped the refused one");
 	assert.equal(claimOf("report status, please", [row, other("report")]).by, "other");
 });
 

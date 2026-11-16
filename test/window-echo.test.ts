@@ -45,6 +45,17 @@ test("another extension's own message with a person row's words in its middle is
 	assert.equal(w.writes(theirs), undefined, "not the row's: it stays to be delivered");
 });
 
+test("another extension's message taken for a person row's echo, then given words before it by a later handler, gets no mark (final-state check A, F4)", () => {
+	const w = win("never"); // an extension ahead of ours handled our send: pi wrote nothing for it
+	const row = personRow("p1", "continue", undefined, { sessionId: "s", cwd: "/p", createdBy: by }, T0);
+	w.queued.set(row.id, row);
+	w.ex.produced(row);
+	w.ex.turn(row, T0);
+	w.ex.inputSeen({ source: "extension", text: "continue the migration plan" }, T0 + 1); // starts with the row's words: taken for its echo
+	w.ex.agentStarted(T0 + 1);
+	assert.equal(w.writes("Context: repo /p\n\ncontinue the migration plan"), undefined, "the message pi writes does not start with the row's words: not the row's");
+});
+
 test("another extension's own message that ends with a person row's words is not that row's echo: it gets no mark (final-state check A, F3)", () => {
 	const w = win("never"); // an extension ahead of ours handled our send: pi wrote nothing for it
 	const row = personRow("p1", "continue", undefined, { sessionId: "s", cwd: "/p", createdBy: by }, T0);
@@ -56,13 +67,14 @@ test("another extension's own message that ends with a person row's words is not
 	assert.equal(w.writes("Please continue"), undefined, "not the row's: it stays to be delivered");
 });
 
-test("a message with our words in its middle is ours only when no input of someone else waits (an extension wraps both sides)", () => {
-	const row = turn("row", "Run the tests", { is: "queued" });
-	assert.equal(claimOf("Please Run the tests now", [row]).by, "turn", "nothing else waits: a wrapped prompt of ours");
+test("a message with a prefixed prompt's words in its middle is ours only when no input of someone else waits (an extension wraps both sides)", () => {
+	const row: TurnSlot = { ...turn("row", "[Trigger row] Run the tests", { is: "queued" }), prefix: "[Trigger row] " };
+	assert.equal(claimOf("Please [Trigger row] Run the tests now", [row]).by, "turn", "nothing else waits: a wrapped prompt of ours");
+	assert.equal(claimOf("Please Run the tests now", [turn("bare", "Run the tests", { is: "queued" })]).by, "nobody", "no prefix: only its words at the start");
 	const waiting: OtherSlot = { whose: "other", from: "person", text: "something else", behind: "followUp" };
-	assert.equal(claimOf("Please Run the tests now", [row, waiting]).by, "other", "an input waits: no mark");
+	assert.equal(claimOf("Please [Trigger row] Run the tests now", [row, waiting]).by, "other", "an input waits: no mark");
 	const other = turn("other", "Report status", { is: "queued" });
-	assert.equal(claimOf("Context: Run the tests. Answer briefly.", [other, row]).by === "turn" && (claimOf("Context: Run the tests. Answer briefly.", [other, row]) as { slot: TurnSlot }).slot.mark.id, "row", "of several, the one whose words are in it");
+	assert.equal(claimOf("Context: [Trigger row] Run the tests. Answer briefly.", [other, row]).by === "turn" && (claimOf("Context: [Trigger row] Run the tests. Answer briefly.", [other, row]) as { slot: TurnSlot }).slot.mark.id, "row", "of several, the one whose words are in it");
 	assert.equal(claimOf("Something else entirely", [row]).by, "nobody", "words replaced whole: no mark");
 });
 

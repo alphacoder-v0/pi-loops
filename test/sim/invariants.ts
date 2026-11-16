@@ -236,7 +236,9 @@ function stopsAndCancelsWork(world: World, memory: Memory): string[] {
 		// A row the page cleared out of pi's queue has a check of its own (`clearedDoesNotComeBack`).
 		if (named?.queued && !named.inFlight && "id" in target && !clearedOutOfPi(world, row.lane, target.id)) out.push(`${label(world, row.id)} left the queue, and ${label(world, target.id)}, which it named, is still queued with no pi holding its turn`);
 		if (row.kind !== "stop" || !pi?.running || pi.aborted) continue;
-		const runs = "id" in target ? pi.turnOf === target.id : pi.startedAt !== undefined && pi.startedAt < Date.parse(target.started_before);
+		// A run the window could not place (`Copy.markLess`) is not known as the row's: a stop that names the row by its id cannot reach it.
+		const unplaced = "id" in target && world.copies.some((copy) => copy.rowId === target.id && copy.markLess);
+		const runs = "id" in target ? pi.turnOf === target.id && !unplaced : pi.startedAt !== undefined && pi.startedAt < Date.parse(target.started_before);
 		if (runs) out.push(`${label(world, row.id)} named the turn pi was running, and pi was not asked to abort it`);
 	}
 	// Two hand-overs of one row with the same words (the row queued again after a cancel took it out)

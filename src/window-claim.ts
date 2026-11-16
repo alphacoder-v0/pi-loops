@@ -117,10 +117,11 @@ function longest<T>(msg: string, slots: readonly T[], textOf: (slot: T) => strin
  * 2. Words around a waiting input of someone else: theirs; the longest text wins, then the oldest. When
  *    words of a prompt of ours are around the message too, not by their text (`byText` false).
  * 3. The words of a prompt of ours at the start or end of the message, with its `[Trigger <id>] ` in it: ours.
- * 4. Words around a prompt of ours with no prefix: ours only when no input of someone else waits.
- * 5. Otherwise the oldest waiting input of someone else (not by its text: `byText` false), and no mark.
- * 6. With none waiting, our words anywhere in the message make it ours (an extension may wrap a prompt
- *    on both sides); otherwise it belongs to nobody.
+ * 4. While an input of someone else waits: the oldest of them (not by its text: `byText` false), and
+ *    no mark.
+ * 5. With none waiting: a prompt of ours with no prefix whose words start the message (no less than
+ *    an older version proved it by); a prompt of ours with its prefix whose words are anywhere in it
+ *    (an extension may wrap it on both sides); otherwise it belongs to nobody.
  *
  * Only pending, opening, queued and refused turns and other slots are candidates. Writing and written
  * turns and append slots never claim. Image notes are stripped before matching.
@@ -152,10 +153,15 @@ export function claimOf(text: string, slots: readonly Slot[]): Claim {
 	// extension changes every text (probe P4). Which of several pi writes first is not read: no mark.
 	const anyOther = candidates.find((slot): slot is OtherSlot => slot.whose === "other");
 	if (anyOther) return namedOther(anyOther, false);
-	// No input of someone else waits: our words around the message, or anywhere in it (an extension
-	// may wrap a prompt on both sides), make it ours. Words replaced whole make it nobody's: no mark.
-	if (turnAround) return turnClaim(turnAround);
-	const inside = longest(msg, candidates.filter((slot): slot is TurnSlot => slot.whose === "turn"), (slot) => slot.text, tieRank, (m, text) => text !== "" && m.includes(text));
+	// No input of someone else waits. A prompt of ours without a prefix (the person's own message) is
+	// known by no less than an older version proved it by: the message starts with its words. Another
+	// extension's handler may have changed someone else's message after ours saw it, so its words at
+	// the end or in the middle prove nothing. A prompt with its prefix: its words anywhere (an
+	// extension may wrap it on both sides). Anything else is nobody's: no mark.
+	const turns = candidates.filter((slot): slot is TurnSlot => slot.whose === "turn");
+	const atStart = longest(msg, turns.filter((slot) => slot.prefix === undefined), (slot) => slot.text, tieRank, (m, text) => text !== "" && m.startsWith(text));
+	if (atStart) return turnClaim(atStart);
+	const inside = longest(msg, turns.filter((slot) => slot.prefix !== undefined), (slot) => slot.text, tieRank, (m, text) => text !== "" && m.includes(text));
 	return inside ? turnClaim(inside) : { by: "nobody" };
 }
 

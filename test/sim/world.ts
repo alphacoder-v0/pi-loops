@@ -508,8 +508,9 @@ function write(world: World, proc: Process, item: Item, rest: readonly Item[] = 
 	const mark = markOn(proc.conversation.entries[proc.conversation.entries.length - 1]);
 	if (mark) item.copy.markedAs = mark.id;
 	// Only where the words were rewritten and carry no `[Trigger <id>]`: an unchanged message of ours is its
-	// prompt's very words, and a prefix in it is ours; both are always marked.
-	else if (world.rewrites && !item.custom && !item.text.startsWith("[Trigger ") && [...proc.pi.queue, ...proc.pi.kept, ...rest].some((waiting) => !waiting.copy && !waiting.custom)) item.copy.markLess = true;
+	// prompt's very words, and a prefix in it is ours; both are always marked. A rewritten one with no
+	// prefix starts with the rewriter's words, so it is not known by its own at the start (decision 23).
+	else if (world.rewrites && !item.custom && !item.text.startsWith("[Trigger ")) item.copy.markLess = true;
 	if (!item.custom) proc.pi.turnOf = item.copy.rowId;
 	item.copy.abortedAtStart = proc.pi.aborts > aborts;
 	leave(item.copy, "written", at);

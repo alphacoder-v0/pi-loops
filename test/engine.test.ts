@@ -1387,12 +1387,12 @@ test("a steer waiting as pi writes a refused prompt of ours late takes the messa
 
 test("an input pi refuses during a run (sent with no delivery) leaves nothing that could take a message", () => {
 	const w = fakeWindowPi(true);
-	const goal = row("g1", { source: "goal", mode: "attended", wake: "turn", payload: { text: "keep going", cwd: "/" } });
+	const goal = row("g1", { source: "goal", mode: "attended", wake: "turn", payload: { text: "[Trigger g1] keep going", cwd: "/" } });
 	w.executor.turn(goal, T0);
 	w.executor.agentStarted(T0 + 1);
 	w.executor.inputSeen({ source: "extension", text: "another extension says hi" }, T0 + 2); // pi throws: already processing
-	w.executor.messageStarted({ role: "user", content: "[rewritten] keep going" }, T0 + 3);
-	assert.ok(w.executor.messageEnded({ role: "user", content: "[rewritten] keep going" }), "the goal's message is marked");
+	w.executor.messageStarted({ role: "user", content: "[rewritten] [Trigger g1] keep going" }, T0 + 3);
+	assert.ok(w.executor.messageEnded({ role: "user", content: "[rewritten] [Trigger g1] keep going" }), "the goal's message is marked");
 });
 
 test("the page's message that a run of ours overtook is still the person's, and runs under that run's cap: the narrow race stays on the safe side", () => {
@@ -1417,11 +1417,11 @@ test("a follow-up of someone else that pi no longer holds (pi idle with nothing 
 	w.executor.inputSeen({ source: "interactive", text: "typed" }, T0 + 2); // the person types into the idle pi
 	w.executor.agentStarted(T0 + 2);
 	w.executor.messageStarted({ role: "user", content: "typed" }, T0 + 2);
-	const goal = row("g1", { source: "goal", mode: "attended", wake: "turn", payload: { text: "keep going", cwd: "/" } });
+	const goal = row("g1", { source: "goal", mode: "attended", wake: "turn", payload: { text: "[Trigger g1] keep going", cwd: "/" } });
 	w.state.rows = [goal];
 	w.executor.turn(goal, T0 + 3);
-	w.executor.messageStarted({ role: "user", content: "[rewritten] keep going" }, T0 + 4);
-	assert.ok(w.ends("[rewritten] keep going"), "the goal's message is marked");
+	w.executor.messageStarted({ role: "user", content: "[rewritten] [Trigger g1] keep going" }, T0 + 4);
+	assert.ok(w.ends("[rewritten] [Trigger g1] keep going"), "the goal's message is marked");
 });
 
 test("an append that cannot write the hold first sends nothing: lease-lost", () => {
