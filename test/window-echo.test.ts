@@ -5,7 +5,7 @@ import { markFor } from "../src/mark.ts";
 import type { OtherSlot, Phase, TurnSlot } from "../src/window-claim.ts";
 import { claimOf } from "../src/window-claim.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
-import { personRow, plainJobRow } from "../src/engine.ts";
+import { inboxClaimRow, personRow, plainJobRow } from "../src/engine.ts";
 import type { Row } from "../src/requests.ts";
 
 const turn = (id: string, text: string, phase: Phase): TurnSlot => ({ whose: "turn", mark: markFor({ lane: "s", id }), text, cap: { kind: "row", id, mode: "attended" }, phase, echoed: false });
@@ -19,6 +19,30 @@ test("our send's echo that another extension's handler wrapped on both sides, ah
 	w.ex.inputSeen({ source: "extension", text: wrapped }, T0); // after the send returned: our handler ran second
 	w.ex.agentStarted(T0);
 	assert.equal(w.writes(wrapped), row.id);
+});
+
+test("a claim's echo that another extension's handler wrapped on both sides, ahead of ours, is ours by its prefix: the message is marked", () => {
+	const w = win("never");
+	const row = inboxClaimRow("look into the cache", "inb-1", { sessionId: "s", cwd: "/p", createdBy: by }, T0);
+	w.queued.set(row.id, row);
+	w.ex.produced(row);
+	w.ex.turn(row, T0);
+	const wrapped = `Context: ${row.payload!.text}\n\nAnswer briefly.`;
+	w.ex.inputSeen({ source: "extension", text: wrapped }, T0);
+	w.ex.agentStarted(T0);
+	assert.equal(w.writes(wrapped), row.id);
+});
+
+test("another extension's own message with a person row's words in its middle is not that row's echo: it gets no mark (final-state check A, F2)", () => {
+	const w = win("never"); // an extension ahead of ours handled our send: pi wrote nothing for it
+	const row = personRow("p1", "continue", undefined, { sessionId: "s", cwd: "/p", createdBy: by }, T0);
+	w.queued.set(row.id, row);
+	w.ex.produced(row);
+	w.ex.turn(row, T0);
+	const theirs = "Please continue with the migration plan.";
+	w.ex.inputSeen({ source: "extension", text: theirs }, T0 + 1);
+	w.ex.agentStarted(T0 + 1);
+	assert.equal(w.writes(theirs), undefined, "not the row's: it stays to be delivered");
 });
 
 test("a message with our words in its middle is ours only when no input of someone else waits (an extension wraps both sides)", () => {

@@ -100,13 +100,19 @@ export interface RowAddress {
 }
 
 /**
- * The sources whose text starts with `[Trigger <id>] `, the proof of delivery read by that prefix:
- * the clock's prompt, `/cron run`, a rule's result, a push. What the person hands over themselves (a
- * claim, a recipe hand-off, `/new-trigger`) and a goal's continuation go as their own words, as in
- * 0.22.8, and are proved as a person row is: by their text, after the stamp they were handed over at.
+ * The sources whose text must start with `[Trigger <id>] `, the proof of delivery an older version
+ * reads by that prefix: the clock's prompt, `/cron run`, a rule's result, a push. A claim, a recipe
+ * hand-off, `/new-trigger` and a goal's continuation carry it too since 0.24.3 (`prefixed`), so the
+ * window knows its prompt when another extension wraps it; one queued by an earlier version does not,
+ * and is proved as a person row is. Only the person's own message goes in their words alone.
  */
 export function carriesPrefix(source: Row["source"]): boolean {
 	return source.startsWith("cron:") || source.startsWith("cron-run:") || source.startsWith("rule:") || source.startsWith("push:");
+}
+
+/** The words pi-loops wrote for a turn, after the row's `[Trigger <id>] `. */
+function prefixed(id: string, prompt: string): string {
+	return `[Trigger ${id}] ${prompt}`;
 }
 
 /** A turn row of one of a window's sources; `text` carries the prefix when `carriesPrefix(source)`. */
@@ -152,12 +158,14 @@ export function goalRunId(goal: { condition: string; iterations: number; updated
 
 /** A `/goal` continuation as the row its session runs as a turn: attended, the person's own goal (design O3), in the evaluator's words. */
 export function goalRow(prompt: string, goal: { condition: string; iterations: number; updatedAt: string }, to: RowAddress, now = Date.now()): UnclaimedRow {
-	return turnRow(goalRunId(goal), "goal", prompt, to, "goal", now);
+	const id = goalRunId(goal);
+	return turnRow(id, "goal", prefixed(id, prompt), to, "goal", now);
 }
 
 /** `/inbox claim`: the finding as the turn that addresses it. A fresh id per claim; one queued hand-off per finding. */
 export function inboxClaimRow(prompt: string, entryId: string, to: RowAddress, now = Date.now()): UnclaimedRow {
-	return turnRow(newId("claim"), `inbox:${entryId}`, prompt, to, `inbox:${entryId}`, now);
+	const id = newId("claim");
+	return turnRow(id, `inbox:${entryId}`, prefixed(id, prompt), to, `inbox:${entryId}`, now);
 }
 
 /**
@@ -189,12 +197,14 @@ export type RecipeHandOff = "tracker" | "merge";
  * is not swallowed by the tracker description still waiting, which says nothing about it.
  */
 export function recipeRow(prompt: string, recipe: string, kind: RecipeHandOff, to: RowAddress, now = Date.now()): UnclaimedRow {
-	return turnRow(newId("recipe"), `recipe:${recipe}`, prompt, to, `recipe:${recipe}:${kind}`, now);
+	const id = newId("recipe");
+	return turnRow(id, `recipe:${recipe}`, prefixed(id, prompt), to, `recipe:${recipe}:${kind}`, now);
 }
 
 /** `/new-trigger <request>`: the turn that turns the request into a rule. Every one is its own. */
 export function newTriggerRow(prompt: string, to: RowAddress, now = Date.now()): UnclaimedRow {
-	return turnRow(newId("nt"), "new-trigger", prompt, to, undefined, now);
+	const id = newId("nt");
+	return turnRow(id, "new-trigger", prefixed(id, prompt), to, undefined, now);
 }
 
 /**

@@ -592,7 +592,7 @@ test("goalRow: the same continuation always has the same id, a goal set again do
 	assert.notEqual(a.id, goalRow("x", { ...state, iterations: 3 }, to, T0).id, "the next iteration is another row");
 	assert.notEqual(a.id, goalRow("x", { ...state, updatedAt: "2026-06-02T12:00:00Z" }, to, T0).id, "the same condition judged again is another row");
 	assert.deepEqual([a.source, a.mode, a.wake, a.collapse_key], ["goal", "attended", "turn", "goal"]);
-	assert.equal(a.payload?.text, "The current /goal is not satisfied yet.", "in the evaluator's own words, as in 0.22.8: its text after the hand-over stamp is its proof");
+	assert.equal(a.payload?.text, `[Trigger ${a.id}] The current /goal is not satisfied yet.`, "the evaluator's words after the row's prefix, so a wrapped continuation is still known");
 	assert.equal(a.payload?.cwd, "/proj");
 	assert.equal(showsTriggeredTurnLine(a.source), false, "the goal prints its own notice");
 });
@@ -602,18 +602,18 @@ test("inboxClaimRow, recipeRow, newTriggerRow: a fresh id each, the person's own
 	assert.match(claim.id, /^claim-[0-9a-f]{32}$/);
 	assert.notEqual(claim.id, inboxClaimRow("x", "inb-1", to, T0).id);
 	assert.deepEqual([claim.source, claim.mode, claim.wake, claim.collapse_key], ["inbox:inb-1", "attended", "turn", "inbox:inb-1"]);
-	assert.equal(claim.payload?.text, "A recurring loop reported this finding", "the person's own hand-off, in its own words");
+	assert.equal(claim.payload?.text, `[Trigger ${claim.id}] A recurring loop reported this finding`, "words pi-loops wrote, after the row's prefix");
 	assert.equal(claim.payload?.cwd, "/proj");
 
 	const recipe = recipeRow("Describe the tracker", "daily", "tracker", to, T0);
 	assert.match(recipe.id, /^recipe-[0-9a-f]{32}$/);
 	assert.deepEqual([recipe.source, recipe.mode, recipe.wake, recipe.collapse_key], ["recipe:daily", "attended", "turn", "recipe:daily:tracker"]);
-	assert.equal(recipe.payload?.text, "Describe the tracker");
+	assert.equal(recipe.payload?.text, `[Trigger ${recipe.id}] Describe the tracker`);
 
 	const nt = newTriggerRow("The user asked pi to create a dynamic trigger.", to, T0);
 	assert.match(nt.id, /^nt-[0-9a-f]{32}$/);
 	assert.deepEqual([nt.source, nt.mode, nt.wake, nt.collapse_key], ["new-trigger", "attended", "turn", undefined]);
-	assert.equal(nt.payload?.text, "The user asked pi to create a dynamic trigger.");
+	assert.equal(nt.payload?.text, `[Trigger ${nt.id}] The user asked pi to create a dynamic trigger.`);
 
 	for (const r of [claim, recipe, nt]) {
 		assert.match(r.id.replace(/^[a-z]+-/, ""), HEX32);
@@ -729,9 +729,10 @@ test("a claim while pi is busy prints the queued line; typed after Esc it runs b
 	assert.equal(pushed.line, "queued triggered turn (trace p1) after the current one");
 });
 
-test("a claim, a recipe hand-off, /new-trigger and a goal continuation go in their own words, and the mark of the message pi writes is the proof", async () => {
-	// Owner decision 2026-11-02: as 0.22.8 sent them. The `[Trigger <id>]` prefix stays on the
-	// clock's, a server's and a rule's rows (`carriesPrefix`).
+test("a claim, a recipe hand-off, /new-trigger and a goal continuation carry their row's prefix, and the mark of the message pi writes is the proof", async () => {
+	// Owner decision 2026-11-16: words pi-loops writes carry `[Trigger <id>]`, so a wrapped prompt is
+	// known; only the person's message goes in their words alone. A row of these sources queued by an
+	// earlier version has no prefix, so it is not required of them (`carriesPrefix`).
 	for (const source of ["cron:j", "cron-run:j", "rule:x", "push:gh"] as const) assert.equal(carriesPrefix(source), true, source);
 	for (const source of ["inbox:i", "recipe:r", "new-trigger", "goal", "person"] as const) assert.equal(carriesPrefix(source), false, source);
 	const { store, sinks } = world();
@@ -740,20 +741,20 @@ test("a claim, a recipe hand-off, /new-trigger and a goal continuation go in the
 	const w = fakeWindowPi(true, { rows: () => store.list("s") });
 	w.executor.produced(claim);
 	let out = await drain("s", store, w.executor, T0, sinks);
-	assert.deepEqual([out.delivered, w.sent.map((s) => s.text)], [[claim.id], ["Finding: disk is full"]], "no prefix on what the person handed over");
+	assert.deepEqual([out.delivered, w.sent.map((s) => s.text)], [[claim.id], [`[Trigger ${claim.id}] Finding: disk is full`]], "the row's prefix before the words pi-loops wrote");
 	assert.equal(typeof store.list("s")[0].handed_at, "string", "stamped under the lock before the hand-over");
 	// A message with the same words that is already in the conversation carries no mark and proves nothing; the one pi writes for it does.
-	w.entries.push(userEntry("Finding: disk is full", T0 - 60_000));
+	w.entries.push(userEntry(claim.payload!.text, T0 - 60_000));
 	out = await drain("s", store, w.executor, T0 + 1_000, sinks);
 	assert.deepEqual([out.removed, out.waiting], [[], [claim.id]], "an earlier message with the same words is not this claim's");
 	w.executor.agentStarted(T0 + 2_000);
-	w.writes("Finding: disk is full", T0 + 2_000);
+	w.writes(claim.payload!.text, T0 + 2_000);
 	out = await drain("s", store, w.executor, T0 + 3_000, sinks);
 	assert.deepEqual([out.removed, store.list("s")], [[claim.id], []], "done once pi wrote its message, with its mark");
 	assert.equal(w.executor.view("s").inFlight.size, 0);
 });
 
-test("a text-proved row's cap is claimed by the longest matching text at message_start, as a person row's is", () => {
+test("a prefixed hand-off's cap is claimed by its own prefix and words at message_start, so a short one never takes a longer one's turn", () => {
 	const w = fakeWindowPi(true);
 	const short = inboxClaimRow("fix", "inb-1", to, T0);
 	const long = recipeRow("fix it and push --force", "daily", "tracker", to, T0);
@@ -761,16 +762,16 @@ test("a text-proved row's cap is claimed by the longest matching text at message
 	w.executor.agentStarted(T0);
 	w.executor.turn(long);
 	w.executor.turn(short);
-	w.executor.messageStarted({ role: "user", content: "fix it and push --force" });
+	w.executor.messageStarted({ role: "user", content: long.payload!.text });
 	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: long.id, mode: "attended", tools: undefined, builtinTools: undefined }, '"fix" does not take the turn of "fix it and push --force"');
 	assert.equal(w.executor.view("s").running?.requestId, long.id);
-	w.executor.messageStarted({ role: "user", content: "fix" });
+	w.executor.messageStarted({ role: "user", content: short.payload!.text });
 	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: short.id, mode: "attended", tools: undefined, builtinTools: undefined });
 	const goal = goalRow("The current /goal is not satisfied yet.", { condition: "c", iterations: 1, updatedAt: "t" }, to, T0);
 	w.executor.produced(goal);
 	w.executor.turn(goal);
 	w.executor.messageStarted({ role: "user", content: goal.payload!.text });
-	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: goal.id, mode: "attended", tools: undefined, builtinTools: undefined }, "a goal continuation is known by its text too");
+	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: goal.id, mode: "attended", tools: undefined, builtinTools: undefined }, "a goal continuation is known by its prefix and words too");
 });
 
 test("a goal row is stale once the goal is cleared", async () => {
@@ -974,7 +975,7 @@ test("a page's claim is born left: the holder runs it capped, attended once rung
 
 	const holder = fakeWindowPi(true, { holds: true, self: { pid: 22, procStart: "start-22" }, alive: producerAlive });
 	await drain("s", store, holder.executor, Date.now(), sinks);
-	assert.deepEqual(holder.sent.map((x) => x.text), ["investigate"], "the holder runs it");
+	assert.deepEqual(holder.sent.map((x) => x.text), [`[Trigger ${claim.id}] investigate`], "the holder runs it");
 	holder.executor.agentStarted(Date.now());
 	holder.executor.messageStarted({ role: "user", content: "investigate" });
 	assert.equal(holder.executor.currentTurn()?.mode, "unattended", "nobody rang this holder for it: capped, the danger check asks");
@@ -986,7 +987,7 @@ test("a page's claim is born left: the holder runs it capped, attended once rung
 	assert.equal(ringProduced(rung.store.list("s"), again.id, requestFingerprint(again), (r) => child.executor.produced(r)), true);
 	await drain("s", rung.store, child.executor, Date.now(), rung.sinks);
 	child.executor.agentStarted(Date.now());
-	child.executor.messageStarted({ role: "user", content: "look into it" });
+	child.executor.messageStarted({ role: "user", content: again.payload!.text });
 	assert.equal(child.executor.currentTurn()?.mode, "attended", "rung by the page that asked: the person's own turn");
 });
 

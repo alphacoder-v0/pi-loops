@@ -37,6 +37,14 @@ All notable changes to pi-loops are documented here. The format follows
     that, the job is turned off again within ten minutes. A `--no-session` conversation cannot be
     opened again: make its jobs again in a new conversation.
 
+### Changed
+
+- **A claim, a recipe hand-off, `/new-trigger` and a goal's continuation start with
+  `[Trigger <id>]`, as a scheduled prompt does.** pi-loops knows its own prompt by it when another
+  extension wraps the prompt in words of its own. What you type yourself, in a terminal or in the
+  page, is sent in your words alone. A conversation that a claim starts is still titled by the
+  claim's words.
+
 ### Fixed
 
 - **Two messages with the same words from the page are both answered.** A message was proved by

@@ -196,7 +196,9 @@ async function inbox(world: World, b: number, c: number): Promise<string> {
 			return async () => "ok" in (await world.inbox.decide(entry.id, "dismissed"));
 		}
 		const window = proc.window!;
-		const row = { ...inboxClaimRow(`address finding ${index + 1} (claim ${n}.${i}).`, entry.id, { sessionId: proc.conversation.id, cwd: CWD, createdBy: signedBy(proc) }, world.clock), id: `claim-${n}.${i}` };
+		const made = inboxClaimRow(`address finding ${index + 1} (claim ${n}.${i}).`, entry.id, { sessionId: proc.conversation.id, cwd: CWD, createdBy: signedBy(proc) }, world.clock);
+		// A readable id for the schedule's lines, in the prefix too, as `inboxClaimRow` writes its own.
+		const row = { ...made, id: `claim-${n}.${i}`, payload: { ...made.payload!, text: made.payload!.text.replace(`[Trigger ${made.id}] `, `[Trigger claim-${n}.${i}] `) } };
 		world.labels.set(row.id, `claim#${n}.${i}`);
 		says.push(`a claim in ${who(proc)}`);
 		const deps = { store: world.store, delivered: (id: string) => window.delivered(id), produced: (queued: Row) => window.produced(queued), drain: () => drainAs(world, proc, false) };

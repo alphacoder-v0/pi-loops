@@ -397,13 +397,20 @@ machine. Everything here follows from that, and each one has a price.
     or end the message is theirs; the prompt of ours with the longest words that begin or end it is
     ours when its `[Trigger <id>]` is in it; while any input of someone else waits, the message is theirs,
     with no mark; when none waits, a prompt of ours whose words are anywhere in it is ours (an
-    extension may wrap a prompt on both sides); else it is nobody's. Every user message pi writes
+    extension may wrap a prompt on both sides); else it is nobody's. The words pi-loops writes for a
+    turn start with its row's `[Trigger <id>]`: a plain job's, a rule's and a push's, and, since the
+    owner chose it on 2026-11-16, a claim's, a recipe hand-off's, `/new-trigger`'s and a goal
+    continuation's; only the person's own message goes in their words alone. An `input` of another
+    extension's handler is the echo of our send when our words begin or end it, or, for a prompt
+    with its prefix, are anywhere in it: another extension's own message may hold the person's words
+    in its middle, and taking it for their row would remove a row pi never wrote. Every user message pi writes
     comes after an `input` (probes P6, P9, g9), which is why none waiting makes it ours. An input
     during a run with no delivery is one pi refuses (G11), never a message. What the window is not
     sure of only takes a mark away: the cost is a second delivery at most, never a row removed that
     pi did not write. It is paid wherever an extension changes the words of a prompt itself (one word
-    is enough), or rewrites messages while someone else's message waits; it reaches the person's
-    own message from the page and a goal's continuation too. A prefix in the text is words, for the
+    is enough), or rewrites messages while someone else's message waits, or, ahead of pi-loops'
+    `input` handler, wraps the person's own message on both sides; it reaches the person's own
+    message from the page and a goal's continuation too. A prefix in the text is words, for the
     person and the model, and proves nothing: the person can send it, and another extension can move
     it. It does decide two things for a message the window cannot otherwise place: the cap (below)
     and which row's run a stop names. A turn handed to an idle pi that no run has taken up keeps the

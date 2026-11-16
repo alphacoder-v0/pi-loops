@@ -69,7 +69,8 @@ export function readSessionHead(file: string, bytes: number = HEAD_BYTES): Sessi
 		if (first || entry.message?.role !== "user") continue;
 		const content = entry.message.content;
 		const said = typeof content === "string" ? content : (content ?? []).map((c: any) => (typeof c?.text === "string" ? c.text : "")).join(" ");
-		if (said.trim()) first = said.trim().slice(0, 200);
+		// pi-loops' own prompts start with their row's `[Trigger <id>] `: a conversation a claim began is titled by the claim's words.
+		if (said.trim()) first = said.trim().replace(/^\[Trigger [^\]]+\]\s*/, "").slice(0, 200);
 	}
 	return { id: header.id, cwd: typeof header.cwd === "string" ? header.cwd : "", startedAt: typeof header.timestamp === "string" ? header.timestamp : undefined, name, first, messages, truncated };
 }
