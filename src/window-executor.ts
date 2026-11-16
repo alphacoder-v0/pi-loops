@@ -1,6 +1,7 @@
 /**
  * The engine's executor in a window: the pi this extension runs in, holding its conversation's
- * lease. Every row goes to pi after the lease says a row is held (`LeaseBinding.hold`). An `append`
+ * lease. A turn row, and an `append` row that asks for a turn, go to pi after the lease says a row
+ * is held (`LeaseBinding.hold`); an `append` written into an idle pi with no turn needs no hold. An `append`
  * row goes into the chat through `pi.sendMessage`, its mark in the message's details: inserted at
  * once while idle, with no turn; as a follow-up during a turn, which runs one when the current one
  * ends (docs/design.md decision 9). A `turn` row goes the same way, as a custom message of
@@ -9,9 +10,13 @@
  * person's own page message (a person row the page's pi was rung for) goes through
  * `pi.sendUserMessage`, as their words, and the window finds its message by its words to write the
  * mark into the entry (`messageEnded`). What it is not sure of there only takes a mark away, and the
- * row goes back to the page once. A turn row's cap is never read from text. One text rule touches a
- * cap: another extension's input that starts with a person row's words is taken for that row's echo
- * (`inputSeen`), and so does not keep a scheduled turn's cap against the user message after it.
+ * row goes back to the page once. A turn row's cap is the one its slot holds. Words touch a cap in
+ * three places, and none gives a turn a wider cap than an older version did: another extension's input
+ * that starts with a person row's words is taken for that row's echo (`inputSeen`), and does not keep
+ * a scheduled turn's cap against the user message after it; a message with the very words of another
+ * extension's waiting input takes that input out of the list (`claimOf`), and it keeps the cap no
+ * more; and an older version's text proof (a version 2 row) can end a turn's slot before its message
+ * starts, which then runs under its row's cap in the file, or the strictest.
  */
 import type { ExtensionAPI, ExtensionContext, InputEvent, formatDimensionNote, resizeImage } from "@earendil-works/pi-coding-agent";
 import { CEILING, type Executor, type ExecutorView, type Producer, type TurnSent, proofOf, landed, modeOf, queuedTriggeredTurn, requestFingerprint, sameProducer, type Proof, claimAlive , type Gone } from "./engine.ts";
@@ -28,7 +33,8 @@ import { type PersonSlot, type Slot, type TurnSlot, claimOf, settleSlots } from 
  * theirs and capped by nothing of ours. Known from the message that starts the turn, and in force
  * until the turn settles: pi's retries and follow-ups start runs with no message of their own, and a
  * cap that ended with the run would end at the first provider error. A message the person queues
- * into a scheduled run makes what follows theirs.
+ * into a scheduled run makes what follows theirs, unless an input of another extension came during
+ * that turn: the cap then stays until the turn settles.
  */
 export type CurrentTurn = { kind: "row"; id: string; mode: RequestMode; tools?: readonly string[]; builtinTools?: readonly string[] } | { kind: "person" };
 
@@ -562,10 +568,12 @@ export class WindowExecutor implements Executor {
 	 *   aborted here; pi still writes the message, with its mark while its row is queued, so the row is done and not offered again.
 	 * - A user message: the person's, with no cap. Except while a row's cap is in force and an input of
 	 *   another extension was seen since it began, or one seen before waits for its message still (pi
-	 *   holds that message, and writes it behind the turn): then the cap stays. That an input waits is
-	 *   read from pi's `input` events; whether an input is another extension's, and not our person
-	 *   row's echo, is read from its words when it comes outside our send (`inputSeen`). Whose the
-	 *   message is (`claimOf`) decides a person row's mark and a stop for it, and never the cap.
+	 *   holds that message, and writes it behind the turn): then the cap stays until the turn settles.
+	 *   That an input waits is read from pi's `input` events and the list of waiting inputs, which a
+	 *   message with the very words of one takes it out of (`claimOf`); whether an input is another
+	 *   extension's, and not our person row's echo, is read from its words when it comes outside our
+	 *   send (`inputSeen`). Whose the message is (`claimOf`) decides a person row's mark and a stop for
+	 *   it, and so whether a waiting input still keeps the cap.
 	 * - Any other message changes nothing.
 	 */
 	messageStarted(message: unknown, now = Date.now()): void {

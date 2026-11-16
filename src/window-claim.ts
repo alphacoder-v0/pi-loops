@@ -78,7 +78,7 @@ export interface PersonClaim {
 	readonly [byTheRule]: true;
 }
 
-/** The slot that owns a user message, if any. It decides a mark and never a cap. */
+/** The slot that owns a user message, if any. It decides a mark, and, as it takes a waiting input out of the list, whether that input still keeps a cap. */
 export type Claim = PersonClaim | { by: "other"; slot: OtherSlot } | { by: "nobody" };
 
 /** The slots left after a run ends, and the rows that went unwritten. */

@@ -43,7 +43,8 @@ All notable changes to pi-loops are documented here. The format follows
   rule's or a push's turn, a claim, a recipe hand-off, `/new-trigger` and a goal's continuation go
   to pi as a message of type `pi-loops:turn`, which the model reads as before. Another extension
   that changes or wraps your messages does not see them. A terminal draws them as it draws your
-  messages, the page labels them `pi-loops`, and each starts with `[Trigger <id>]`, as before. What
+  messages, the page labels them `pi-loops`, and each starts with `[Trigger <id>]`: a scheduled prompt's
+  did before, and a claim's, a recipe hand-off's, `/new-trigger`'s and a goal continuation's do now. What
   you type, in a terminal or in the page, goes in your words alone. Hooks report
   `message_kind: "pi-loops:turn"` for them, where they reported `user`. Undo in the page goes back
   to your own last message, past the prompts of pi-loops after it. In the page and in the
@@ -67,8 +68,8 @@ All notable changes to pi-loops are documented here. The format follows
   the editor (#256).
 - **A scheduled turn stays capped beside another extension that rewrites messages.** Its prompt
   is not rewritten, and it runs under its row's cap; a message of that extension that pi writes
-  behind the turn keeps the cap. Your own message lifts it, unless a message of that extension is
-  still on its way. When an extension changes the start of your page message, the page gives the
+  behind the turn keeps the cap. Your own message lifts it, unless that extension sent a message
+  during the turn: the cap then stays until the turn ends. When an extension changes the start of your page message, the page gives the
   message back to you in the input box as failed, even if pi answered it.
 - **A row written by hand into a conversation's queue as a rule's turn runs capped.** It ran with
   no cap; it now runs as unattended, and the window asks before a dangerous command.

@@ -412,19 +412,24 @@ machine. Everything here follows from that, and each one has a price.
     them; this version proves nothing by a prefix. The proof is read from the conversation at every
     drain and never from an event. A row of a version 2 line, queued by an earlier version, is still
     proved by its prefix, or by its words after `handed_at`, in an entry with no mark. In the window,
-    a turn's message runs under the cap the window gave its row when it sent it (the mode
-    recomputed from the source, and an attended mode only for a row this window wrote, below). One
+    a turn's message runs under the cap the window gave its row when it sent it, for as long as its
+    slot lasts (the mode recomputed from the source, and an attended mode only for a row this window
+    wrote, below). An older version's text proof can end a version 2 row's slot before its message
+    starts, and the message then runs as one this window did not send. One
     that no hand-over of this window sent (pi kept it over a `/reload`, or another extension sent a
     message of that type) runs under the cap of its row in the file, read as a row this instance did
     not write, and under the strictest cap when the file has no such row: unattended, no tool
     declared, so every tool but pi-loops' own read-only and self-gated ones is asked about. The cap
     in the details is a record and is never read for a cap. A turn row of a source that asks for no
     turn (a rule's result written into the file as a turn) runs as unattended. A user message lifts
-    a row's cap, since it is the person's, except while an input of another extension was seen
-    since the cap began, or one seen before still waits for its message: the cap then stays, since
-    that message may carry the scheduled turn on. Whether an input is another extension's or the
-    echo of our person row's send is read from its words when it comes outside our send, and that is
-    the one place words touch a cap. And its attended mode has to be believed: after the
+    a row's cap, since it is the person's, except while an input of another extension was seen since
+    the cap began, or one seen before still waits for its message: the cap then stays until the turn
+    settles, since that message may carry the scheduled turn on. A message with the very words of a
+    waiting input takes that input out of the list (`claimOf`), and it keeps the cap no more.
+    Whether an input is another extension's or the echo of our person row's send is read from its
+    words when it comes outside our send. Those are the three places words touch a cap, and none
+    gives a turn a wider cap than an older version did. And its attended mode has to be believed:
+    after the
     append the page sends `/pi-loops ring <id> <fingerprint>` over its pi's rpc stdin, a channel no
     model tool can write to; the extension records the row as produced by this window only when the
     row now in the file has that fingerprint (a hash of kind, source, wake, text, the images and the

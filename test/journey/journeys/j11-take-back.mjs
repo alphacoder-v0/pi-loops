@@ -27,8 +27,10 @@ export async function run(ctx) {
 	const runs = () => jsonl(path.join(loops, "runs.jsonl")).filter((r) => r.jobId === JOB);
 	const sessionFile = lease()?.sessionFile;
 	if (!sessionFile) throw new Error(`the terminal's lease names no session file: ${JSON.stringify(lease())}`);
-	/** The job's prompts in the conversation, by the id each carries. */
-	const prompts = () => jsonl(sessionFile).filter((e) => e.type === "message" && e.message?.role === "user").map((e) => (typeof e.message.content === "string" ? e.message.content : (e.message.content ?? []).map((c) => c.text ?? "").join(""))).filter((t) => t.includes(PROMPT)).map((t) => /^\[Trigger ([^\]]+)\]/.exec(t)?.[1] ?? "no id");
+	/** The conversation's messages; a window's prompt is a `pi-loops:turn` custom message, read here as the user message the model takes it for. */
+	const messages = () => jsonl(sessionFile).flatMap((e) => (e.type === "message" ? [e] : e.type === "custom_message" && e.customType === "pi-loops:turn" ? [{ ...e, type: "message", message: { role: "user", content: e.content } }] : []));
+	/** The job's prompts in the conversation, by the id each carries: the background's as a user message, the window's as a custom one. */
+	const prompts = () => messages().filter((e) => e.message?.role === "user").map((e) => (typeof e.message.content === "string" ? e.message.content : (e.message.content ?? []).map((c) => c.text ?? "").join(""))).filter((t) => t.includes(PROMPT)).map((t) => /^\[Trigger ([^\]]+)\]/.exec(t)?.[1] ?? "no id");
 
 	// 1. The terminal closes: nobody holds the conversation, and pi-loops in the background knows its file.
 	tmux("kill-session", "-t", ctx.boot.tmux.session);
@@ -63,7 +65,7 @@ export async function run(ctx) {
 	const again = await ctx.waitFor("the successor's prompt in the conversation", () => { const ids = prompts(); return { ok: ids.length === 2 && ids[0] === claimed.id && ids[1] !== claimed.id, last: ids, value: ids }; }, 120000);
 	await ctx.waitFor("the job's queue to be empty", () => ({ ok: rows().length === 0, last: rows() }), 120000);
 	// The successor's own answer: an assistant message that ends the turn, after the successor's prompt.
-	const entries = () => jsonl(sessionFile).filter((e) => e.type === "message");
+	const entries = messages;
 	const text = (e) => (typeof e.message.content === "string" ? e.message.content : (e.message.content ?? []).map((c) => c.text ?? "").join(""));
 	await ctx.waitFor("the successor's answer in the conversation", () => {
 		const all = entries();
