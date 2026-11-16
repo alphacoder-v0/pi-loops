@@ -402,6 +402,39 @@ test("one of this window's own rows that a capped turn rewrote in the file runs 
 	assert.equal(await w.call(rmrf), undefined, "the row as written is the person's own claim: not asked");
 });
 
+test("a scheduled turn that another extension wraps on both sides stays capped: a message the window cannot place is not the person's while a prompt of ours is with pi", async () => {
+	const w = window();
+	const row = plainJobRow(job(), "run-1111222233334444", "cron:job-1", "", by, T0);
+	w.queued.set(row.id, row);
+	w.executor.turn(row);
+	const wrapped = `<ctx>${row.payload!.text}</ctx>`;
+	w.executor.inputSeen({ source: "extension", text: wrapped }, T0);
+	w.executor.agentStarted(T0);
+	w.started(wrapped);
+	assert.equal(w.executor.currentTurn()?.kind, "row", "the cap of the prompt pi holds");
+	assert.equal((await w.call(rmrf))?.block, true);
+});
+
+test("a person's submission that never became a message does not uncap a rewritten scheduled message", async () => {
+	const w = window();
+	w.executor.inputSeen({ source: "interactive", text: "/foo" }, T0); // another extension's handler took it
+	const row = plainJobRow(job(), "run-1111222233334444", "cron:job-1", "", by, T0);
+	w.queued.set(row.id, row);
+	w.executor.turn(row);
+	w.executor.agentStarted(T0);
+	w.started(`CTX: ${row.payload!.text.replace(/^\[Trigger [^\]]+\] /, "")}`); // the prefix rewritten away
+	assert.equal(w.executor.currentTurn()?.kind, "row");
+	assert.equal((await w.call(rmrf))?.block, true);
+});
+
+test("a user message whose text part is not a string is no one's word: a scheduled turn stays capped", async () => {
+	const w = window();
+	w.clockFired();
+	w.executor.messageStarted({ role: "user", content: [{ type: "text", text: 123 }] });
+	assert.equal(w.executor.currentTurn()?.kind, "row");
+	assert.equal((await w.call(rmrf))?.block, true);
+});
+
 test("a submission that never became a message does not uncap the next scheduled turn", async () => {
 	const w = window();
 	w.executor.inputSeen({ source: "interactive", text: "continue" }, T0); // no message followed this submission
@@ -646,7 +679,7 @@ test("a message claims the cap of the longest handed-over row its text starts wi
 	picture.executor.turn(imageOnly, T0);
 	picture.executor.agentStarted(T0 + 1);
 	picture.started("[Trigger abc] run the nightly check");
-	assert.notEqual((picture.executor.currentTurn() as { id?: string }).id, "i1", "a cron turn is not the person's image");
+	assert.equal(picture.executor.messageEnded({ role: "user", content: "[Trigger abc] run the nightly check" }), undefined, "a cron turn's message is not the person's image: no mark (its cap, while pi holds the image row, is that row's: src/window-executor.ts `messageStarted`)");
 	picture.executor.messageStarted({ role: "user", content: [{ type: "text", text: "\n\n[Image: original 2880x1800, displayed at 2000x1250. Multiply coordinates by 1.44 to map to original image.]" }, image] });
 	assert.equal((picture.executor.currentTurn() as { id?: string }).id, "i1", "pi's note and nothing else is");
 });

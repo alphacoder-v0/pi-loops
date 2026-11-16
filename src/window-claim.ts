@@ -56,7 +56,8 @@ export interface TurnClaim {
 }
 
 /** The slot that owns a user message, if any. */
-export type Claim = TurnClaim | { by: "other"; slot: OtherSlot } | { by: "nobody" };
+/** `byText`: its words are the slot's, or around them (steps 1 and 2), not only a slot that waits (step 3). */
+export type Claim = TurnClaim | { by: "other"; slot: OtherSlot; byText: boolean } | { by: "nobody" };
 
 /** Why pi no longer has a row it was handed and did not write. */
 export type Gone = "stopped" | "dropped" | "lost";
@@ -78,8 +79,8 @@ function turnClaim(slot: TurnSlot): TurnClaim {
 	return { by: "turn", slot } as TurnClaim;
 }
 
-function namedOther(slot: OtherSlot): Claim {
-	return { by: "other", slot };
+function namedOther(slot: OtherSlot, byText = true): Claim {
+	return { by: "other", slot, byText };
 }
 
 function textAround(msg: string, text: string): boolean {
@@ -147,7 +148,7 @@ export function claimOf(text: string, slots: readonly Slot[]): Claim {
 	if (turnAround?.prefix !== undefined && msg.includes(turnAround.prefix)) return turnClaim(turnAround);
 	const before = (other: OtherSlot) => turnAround !== undefined && (turnAround.phase.is === "opening" || slots.indexOf(turnAround) < slots.indexOf(other));
 	const anyOther = candidates.find((slot): slot is OtherSlot => slot.whose === "other" && !(slot.followUp && before(slot)));
-	if (anyOther) return namedOther(anyOther);
+	if (anyOther) return namedOther(anyOther, false);
 	return turnAround ? turnClaim(turnAround) : { by: "nobody" };
 }
 

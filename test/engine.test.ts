@@ -1276,6 +1276,85 @@ test("a plain job's dead letter says why it was not delivered, before the prompt
 	]);
 });
 
+/** A window over a fake pi with the request file in a variable: `rows` is what the file holds now. */
+function windowOver(opts: { hold?: () => boolean; throws?: () => boolean } = {}) {
+	const state = { rows: [] as Row[], sent: [] as string[], aborts: 0 };
+	const ctx = { mode: "tui", hasUI: false, isIdle: () => true, hasPendingMessages: () => false, abort: () => void state.aborts++, sessionManager: { getEntries: () => [] }, ui: { notify: () => undefined } } as any;
+	const pi = { sendMessage: () => undefined, sendUserMessage: (text: string) => { if (opts.throws?.()) throw new Error("no model selected"); state.sent.push(text); } };
+	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: true }), hold: opts.hold ?? (() => true), letGo: () => undefined }, () => ctx, { pid: 1 }, () => true, () => state.rows);
+	const ends = (text: string) => executor.messageEnded({ role: "user", content: text });
+	return { state, executor, ends };
+}
+
+test("a proof reads the marks of its own lane only: a fork's entry with another lane's mark and this id proves nothing", () => {
+	const entry = (lane: string) => ({ type: "message", message: withMark({ role: "user", content: "[Trigger t1] hello" }, markFor({ lane, id: "t1" } as Pick<Row, "lane" | "id">)) });
+	assert.equal(proofOf("s", () => [entry("other")], () => []).has("t1"), false);
+	assert.equal(proofOf("s", () => [entry("s")], () => []).has("t1"), true);
+});
+
+test("the message of a prompt a cancel named after its row left is aborted and gets no mark: the same row queued again is not proved by it", () => {
+	const w = windowOver();
+	const t1 = turnRow("t1");
+	w.state.rows = [t1];
+	w.executor.turn(t1, T0);
+	w.executor.abortWhenStarted("t1");
+	w.state.rows = [];
+	w.executor.view("s");
+	w.executor.agentStarted(T0 + 1);
+	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" }, T0 + 2);
+	assert.equal(w.state.aborts, 1, "aborted as it starts");
+	assert.equal(w.ends("[Trigger t1] hello"), undefined, "no mark");
+});
+
+test("a settle after a drain took the row out owes it no exit: the same row queued again is not cancelled by what pi did with the old prompt", () => {
+	const w = windowOver();
+	const t1 = turnRow("t1");
+	w.state.rows = [t1];
+	w.executor.turn(t1, T0);
+	w.executor.abortWhenStarted("t1");
+	w.state.rows = []; // the drain that asked for the abort took the row out; no look since
+	w.executor.agentStarted(T0 + 1);
+	assert.deepEqual(w.executor.settled(true), [], "Esc: nothing is gone for a row that left");
+	w.state.rows = [t1];
+	assert.equal(w.executor.view("s").gone?.get("t1"), undefined, "the same row, queued again, is not taken for stopped");
+});
+
+test("a refused prompt stays after its row left, and a late message with its text still carries its mark", () => {
+	const w = windowOver();
+	const t1 = turnRow("t1");
+	w.state.rows = [t1];
+	w.executor.turn(t1, T0);
+	w.executor.refused("t1");
+	w.state.rows = []; // a dead letter took it out
+	w.executor.view("s");
+	w.executor.agentStarted(T0 + 1);
+	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" }, T0 + 2);
+	assert.deepEqual((w.ends("[Trigger t1] hello")?.message as { piLoopsRow?: unknown } | undefined)?.piLoopsRow, { lane: "s", id: "t1" });
+});
+
+test("a hand-over pi throws at keeps the earlier one pi may still send late", () => {
+	let throwing = false;
+	const w = windowOver({ throws: () => throwing });
+	const t1 = turnRow("t1");
+	w.state.rows = [t1];
+	w.executor.turn(t1, T0);
+	w.executor.refused("t1");
+	throwing = true;
+	assert.throws(() => w.executor.turn(t1, T0 + 60_000));
+	w.executor.agentStarted(T0 + 60_001);
+	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" }, T0 + 60_002);
+	assert.deepEqual((w.ends("[Trigger t1] hello")?.message as { piLoopsRow?: unknown } | undefined)?.piLoopsRow, { lane: "s", id: "t1" }, "the late send of the first is proved");
+});
+
+test("a window that cannot write the hold first sends nothing: lease-lost, and the row stays as it was", () => {
+	const w = windowOver({ hold: () => false });
+	const t1 = turnRow("t1");
+	w.state.rows = [t1];
+	assert.equal(w.executor.turn(t1, T0), "lease-lost");
+	assert.deepEqual(w.state.sent, []);
+	assert.equal(w.executor.view("s").inFlight.has("t1"), false);
+});
+
 test("a stop for a row pi dropped removes it instead of starting it again", async () => {
 	const { store, sinks, audit } = world();
 	store.append(turnRow("t1"));

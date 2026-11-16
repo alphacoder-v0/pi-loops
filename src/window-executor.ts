@@ -93,7 +93,10 @@ function userTextOf(message: unknown): string | undefined {
 	const value = message as { role?: unknown; content?: unknown } | undefined;
 	if (!value || value.role !== "user") return undefined;
 	const content = value.content;
-	return typeof content === "string" ? content : Array.isArray(content) ? ((content.find((part) => part?.type === "text") as { text?: string } | undefined)?.text ?? "") : undefined;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return undefined;
+	const text = (content.find((part) => part?.type === "text") as { text?: unknown } | undefined)?.text;
+	return typeof text === "string" ? text : "";
 }
 
 /** A slot pi holds for a row and has not begun to write: in flight, not a message under way, not one the engine stopped waiting for. */
@@ -433,18 +436,24 @@ export class WindowExecutor implements Executor {
 			if (claim.slot.stop) this.ctx()?.abort();
 			return;
 		}
-		if (claim.by === "other") {
-			if (claim.slot.from === "person" || this.current?.kind !== "row") this.current = { kind: "person" };
+		// The person's words, by their text: their turn, uncapped.
+		if (claim.by === "other" && claim.byText && claim.slot.from === "person") {
+			this.current = { kind: "person" };
 			return;
 		}
-		const id = triggerIdOf(message);
+		if (this.current?.kind === "row") return;
+		const id = claim.by === "nobody" ? triggerIdOf(message) : undefined;
 		const row = id === undefined ? undefined : this.rows().find((r) => r.id === id);
 		if (row) {
 			if (this.running) this.running = { ...this.running, requestId: row.id };
 			this.current = this.capOf(row);
 			return;
 		}
-		if (this.current?.kind !== "row") this.current = { kind: "person" };
+		// A message the window cannot place, or one it gave a waiting input for want of a better: while
+		// pi holds a prompt of ours unwritten it may be that prompt, rewritten, so its cap (with no mark:
+		// the cost is a second delivery at most). Otherwise it is the person's, or nobody's, and uncapped.
+		const held = this.slots.find((slot): slot is TurnSlot => slot.whose === "turn" && (slot.phase.is === "pending" || slot.phase.is === "opening" || slot.phase.is === "queued"));
+		this.current = held ? held.cap : { kind: "person" };
 	}
 
 	/**
