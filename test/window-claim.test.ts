@@ -358,9 +358,11 @@ test("pi-loops.ts hands the window pi's own delivery of an input: the rule of wh
 const claimTurn = (id: string, text: string, phase: Phase, prefix?: string): TurnSlot => ({ whose: "turn", mark: markFor({ lane: "s1", id }), text, ...(prefix === undefined ? {} : { prefix }), cap: { kind: "row", id, mode: "attended" }, phase, echoed: false });
 const waitingInput = (text: string, from: "person" | "extension" = "person", behind?: "steer" | "followUp"): OtherSlot => ({ whose: "other", from, text, ...(behind ? { behind } : {}) });
 
-test("claimOf: a message that carries our prefix but not our words around it is not ours (a prefix decides nothing by itself)", () => {
+test("claimOf: the person's message that quotes our prompt in its middle is theirs, not ours (a prefix proves nothing)", () => {
 	const ours = claimTurn("ours", "[Trigger ours] run j1.", { is: "queued" }, "[Trigger ours] ");
-	assert.equal(claimOf("look: [Trigger ours] run j1. what is this?", [ours]).by, "nobody");
+	const theirs = waitingInput("look: [Trigger ours] run j1. what is this?", "person", "followUp");
+	const c = claimOf("look: [Trigger ours] run j1. what is this?", [ours, theirs]);
+	assert.equal(c.by === "other" && c.slot, theirs);
 });
 
 test("claimOf: someone else's words around the message come before our prefix, and then not by their text", () => {

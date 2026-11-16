@@ -543,7 +543,7 @@ test("a message that begins with a row's [Trigger <id>] and goes to a waiting in
 	assert.equal((await w.call({ toolName: "write", input: {} }))?.block, true);
 });
 
-test("a message the window cannot place takes the cap of a refused prompt pi may still send late", async () => {
+test("a refused prompt that pi sends late, wrapped on both sides by another extension, is its own: its cap and its mark", async () => {
 	const w = window();
 	const row = plainJobRow(job({ tools: ["read"] }), "run-1111222233334444", "cron:job-1", "", by, T0);
 	w.queued.set(row.id, row);
@@ -551,7 +551,8 @@ test("a message the window cannot place takes the cap of a refused prompt pi may
 	w.executor.refused(row.id);
 	w.executor.agentStarted(T0 + 1);
 	w.started(`<ctx>${row.payload!.text}</ctx>`);
-	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: row.id, mode: "unattended", tools: [] }, "the strictest cap");
+	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, ["read"]);
+	assert.ok(w.executor.messageEnded({ role: "user", content: `<ctx>${row.payload!.text}</ctx>` }), "marked");
 	assert.equal((await w.call(rmrf))?.block, true);
 });
 

@@ -99,11 +99,11 @@ function tieRank(slot: TurnSlot): number {
 	return (slot.stop ? 3 : 0) + (slot.phase.is === "opening" ? 0 : slot.phase.is === "refused" ? 2 : 1);
 }
 
-function longest<T>(msg: string, slots: readonly T[], textOf: (slot: T) => string, preferred: (slot: T) => number): T | undefined {
+function longest<T>(msg: string, slots: readonly T[], textOf: (slot: T) => string, preferred: (slot: T) => number, matches: (msg: string, text: string) => boolean = textAround): T | undefined {
 	let winner: T | undefined;
 	for (const slot of slots) {
 		const text = textOf(slot);
-		if (!textAround(msg, text)) continue;
+		if (!matches(msg, text)) continue;
 		if (!winner || text.length > textOf(winner).length || (text.length === textOf(winner).length && preferred(slot) < preferred(winner))) winner = slot;
 	}
 	return winner;
@@ -118,8 +118,9 @@ function longest<T>(msg: string, slots: readonly T[], textOf: (slot: T) => strin
  *    words of a prompt of ours are around the message too, not by their text (`byText` false).
  * 3. Words around a prompt of ours with its `[Trigger <id>] ` in the message: ours.
  * 4. Words around a prompt of ours with no prefix: ours only when no input of someone else waits.
- * 5. Otherwise the oldest waiting input of someone else (not by its text: `byText` false), and no mark;
- *    with none waiting, the message belongs to nobody.
+ * 5. Otherwise the oldest waiting input of someone else (not by its text: `byText` false), and no mark.
+ * 6. With none waiting, our words anywhere in the message make it ours (an extension may wrap a prompt
+ *    on both sides); otherwise it belongs to nobody.
  *
  * Only pending, opening, queued and refused turns and other slots are candidates. Writing and written
  * turns and append slots never claim. Image notes are stripped before matching.
@@ -151,7 +152,11 @@ export function claimOf(text: string, slots: readonly Slot[]): Claim {
 	// extension changes every text (probe P4). Which of several pi writes first is not read: no mark.
 	const anyOther = candidates.find((slot): slot is OtherSlot => slot.whose === "other");
 	if (anyOther) return namedOther(anyOther, false);
-	return turnAround ? turnClaim(turnAround) : { by: "nobody" };
+	// No input of someone else waits: our words around the message, or anywhere in it (an extension
+	// may wrap a prompt on both sides), make it ours. Words replaced whole make it nobody's: no mark.
+	if (turnAround) return turnClaim(turnAround);
+	const inside = longest(msg, candidates.filter((slot): slot is TurnSlot => slot.whose === "turn"), (slot) => slot.text, tieRank, (m, text) => text !== "" && m.includes(text));
+	return inside ? turnClaim(inside) : { by: "nobody" };
 }
 
 /**

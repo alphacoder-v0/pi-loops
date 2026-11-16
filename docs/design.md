@@ -397,11 +397,12 @@ machine. Everything here follows from that, and each one has a price.
     someone else waits (an extension may rewrite it), then any input that waits. What the window is not sure of only takes
     a mark away: the cost is a second delivery at most, never a row removed that pi did not write.
     The window reads no order of pi to decide whose a message is, only what the message shows: the
-    very same words as a prompt of ours, or our `[Trigger <id>]` in it, or our words around it when no
-    input of someone else waits. Anything else gets no mark (the owner chose this, 2026-11-16, after
+    very same words as a prompt of ours, or our `[Trigger <id>]` in it, or our words around it or
+    anywhere in it (an extension may wrap a prompt on both sides) when no input of someone else waits.
+    Anything else gets no mark (the owner chose this, 2026-11-16, after
     four rounds of review each found an order of pi the window had inferred wrongly): the cost is a
     second delivery, only where another extension rewrites messages while someone else's message
-    waits. An input during a run with no delivery is one pi refuses (G11), never a message. While a
+    waits, or replaces a prompt's words whole. An input during a run with no delivery is one pi refuses (G11), never a message. While a
     row's cap is in force, the person's words lift it only when pi delivers them into the run, as its
     `input` event says (`streamingBehavior`, a steer or a follow-up): what they sent to an idle pi
     would have begun a run of its own. And their words lift nothing when a prompt of ours has the same
@@ -410,7 +411,7 @@ machine. Everything here follows from that, and each one has a price.
     force, pi holds a prompt of ours, or it begins with a row's `[Trigger <id>]` and another prompt
     is possible), runs under the strictest cap: unattended, no tool declared. The owner chose this
     over meeting the caps of the prompts it may be (2026-11-16), as the marks were chosen. A
-    prefix in the text is words, for the person and the model, and decides nothing by itself: the person can
+    prefix in the text is words, for the person and the model, and proves nothing (it only gives a lone row's cap to a message the window cannot place otherwise): the person can
     send it, and another extension can move it. A turn handed to an idle pi that no run has taken up
     keeps the lane, so an idle pi gets one prompt of ours at a time. The proof is read from the
     conversation at every drain and never from an event. A row of a version 2 line, queued by an

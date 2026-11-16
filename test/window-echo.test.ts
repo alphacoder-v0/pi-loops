@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { markFor } from "../src/mark.ts";
-import type { Phase, TurnSlot } from "../src/window-claim.ts";
+import type { OtherSlot, Phase, TurnSlot } from "../src/window-claim.ts";
 import { claimOf } from "../src/window-claim.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
 import { personRow, plainJobRow } from "../src/engine.ts";
@@ -10,10 +10,14 @@ import type { Row } from "../src/requests.ts";
 
 const turn = (id: string, text: string, phase: Phase): TurnSlot => ({ whose: "turn", mark: markFor({ lane: "s", id }), text, cap: { kind: "row", id, mode: "attended" }, phase, echoed: false });
 
-test("step 3 does not take a message with the row's words in its middle", () => {
+test("a message with our words in its middle is ours only when no input of someone else waits (an extension wraps both sides)", () => {
 	const row = turn("row", "Run the tests", { is: "queued" });
-	assert.equal(claimOf("Please Run the tests now", [row]).by, "nobody");
-	assert.equal(claimOf("[rewritten] Run the tests", [row]).by, "turn", "control: words before it");
+	assert.equal(claimOf("Please Run the tests now", [row]).by, "turn", "nothing else waits: a wrapped prompt of ours");
+	const waiting: OtherSlot = { whose: "other", from: "person", text: "something else", behind: "followUp" };
+	assert.equal(claimOf("Please Run the tests now", [row, waiting]).by, "other", "an input waits: no mark");
+	const other = turn("other", "Report status", { is: "queued" });
+	assert.equal(claimOf("Context: Run the tests. Answer briefly.", [other, row]).by === "turn" && (claimOf("Context: Run the tests. Answer briefly.", [other, row]) as { slot: TurnSlot }).slot.mark.id, "row", "of several, the one whose words are in it");
+	assert.equal(claimOf("Something else entirely", [row]).by, "nobody", "words replaced whole: no mark");
 });
 
 const T0 = Date.parse("2026-06-01T12:00:00Z");
