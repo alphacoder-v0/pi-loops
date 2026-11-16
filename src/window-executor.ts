@@ -203,8 +203,13 @@ export class WindowExecutor implements Executor {
 				if (!(empty && slot.behind)) next.push(slot);
 				continue;
 			}
-			// What pi wrote is in the conversation, whoever wrote it.
-			if (this.delivered(slot.mark.id)) continue;
+			// What pi wrote is in the conversation, whoever wrote it. A prompt pi still holds behind a run
+			// (a row of an older line its words proved, or one another window wrote) stays until the run
+			// settles, for its cap, with no mark (`messageEnded`).
+			if (this.delivered(slot.mark.id)) {
+				if (slot.whose === "turn" && (slot.phase.is === "queued" || slot.phase.is === "opening")) next.push({ ...slot, left: true });
+				continue;
+			}
 			if (slot.whose === "turn") {
 				// A prompt queued behind a run that pi no longer holds. Not a prompt handed to the idle pi
 				// that it has not started (`pending`, or a `refused` one): `hasPendingMessages()` does not count those.
@@ -220,6 +225,9 @@ export class WindowExecutor implements Executor {
 					// A refused one stays too: pi may still write it, and its mark then proves the row
 					// if the same row is queued again (a loop's slot after a dead letter).
 					else if (slot.phase.is === "refused") next.push({ ...slot, left: true });
+					// One pi holds behind a run stays until the run settles, for its cap: pi still writes
+					// it (an older version kept the row's cap as long), and it gets no mark (`messageEnded`).
+					else if (slot.phase.is === "queued" || slot.phase.is === "opening") next.push({ ...slot, left: true });
 					continue;
 				}
 			} else if (!queued.has(slot.mark.id)) continue;
@@ -491,6 +499,8 @@ export class WindowExecutor implements Executor {
 		// A turn a stop or a cancel named whose row has left already: its message, aborted as it
 		// starts, answers no row, and a mark would prove the same row queued again.
 		if (claimed.stop && claimed.left) return undefined;
+		// A row that left the file while pi held its prompt: its message answers no row that is queued.
+		if (claimed.left && claimed.phase.is !== "refused") return undefined;
 		return { message: withMark(message, claimed.mark) };
 	}
 

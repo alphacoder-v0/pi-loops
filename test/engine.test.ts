@@ -2534,3 +2534,33 @@ test("[R5] two turns that were going when their process stopped are each counted
 		assert.deepEqual([w.job().interruptions, w.job().enabled, other().interruptions, other().enabled], [n, n < 3, n, n < 3], `death ${n}`);
 	}
 });
+
+test("a prompt pi holds behind a run keeps its row's cap when its row leaves the file, and gets no mark (final-state check A, F6)", () => {
+	const job = { id: "job-1", sessionId: "s", prompt: "tidy the cache", cwd: "/p", model: undefined, thinking: undefined, tools: undefined, builtinTools: undefined };
+	const row = plainJobRow(job, "run-1111222233334444", "cron:job-1", "", { pid: 1, instance: "w", version: "0" }, T0);
+	let rows: Row[] = [row];
+	const w = fakeWindowPi(false, { rows: () => rows });
+	w.executor.agentStarted(T0);
+	w.executor.messageStarted({ role: "user", content: "the person's message" }, T0);
+	w.executor.turn(row, T0 + 1); // pi is busy: queued behind the person's run
+	rows = []; // the row left the file (a /goal clear, say)
+	w.executor.view("s");
+	w.executor.messageStarted({ role: "user", content: "tidy the cache" }, T0 + 2); // its words, changed: no prefix to read
+	assert.equal(w.executor.currentTurn()?.mode, "unattended", "pi still held a prompt of ours: not the person's cap");
+});
+
+test("an older version's row its words proved while pi held its prompt keeps its cap for that prompt, with no mark (final-state check A, F6)", () => {
+	const made = newTriggerRow("continue", { sessionId: "s", cwd: "/p", createdBy: { pid: 99, instance: "w", version: "0" } }, T0);
+	const row = { ...made, line: 2, payload: { ...made.payload!, text: "continue" } } as unknown as Row; // 0.24.2 queued it with no prefix
+	let rows: Row[] = [row];
+	const w = fakeWindowPi(false, { rows: () => rows, alive: () => false });
+	w.executor.agentStarted(T0);
+	w.executor.messageStarted({ role: "user", content: "the person's message" }, T0);
+	w.executor.turn(row, T0 + 1);
+	rows = [{ ...row, handed_at: stamp(T0 + 1) } as Row];
+	w.entries.push(userEntry("continue the migration plan", T0 + 2)); // the person's words prove it by the older proof
+	w.executor.view("s");
+	w.executor.messageStarted({ role: "user", content: "continue" }, T0 + 3);
+	assert.equal(w.executor.currentTurn()?.mode, "unattended", "the row's own cap, not the person's");
+	assert.equal(w.executor.messageEnded({ role: "user", content: "continue" }), undefined, "no mark");
+});

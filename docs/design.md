@@ -429,7 +429,10 @@ machine. Everything here follows from that, and each one has a price.
     follow-up), and not when a prompt of ours has the same words, nor, when the message is not their
     very words, when the words of a prompt of ours begin or end it too, nor when the message begins
     with the `[Trigger <id>]` of a row the file has: what an older version read as that row by its
-    prefix is read at least as strictly (owner, 2026-11-16). A message the window cannot place, while it may be a prompt of ours (a row's cap is
+    prefix is read at least as strictly (owner, 2026-11-16). A prompt pi holds behind a run keeps its row's cap until
+    the run settles, even when its row left the file meanwhile (a `/goal clear`, or a row of an
+    older line its words proved), and its message gets no mark: an older version kept the cap as
+    long. A message the window cannot place, while it may be a prompt of ours (a row's cap is
     in force, pi holds a prompt of ours, or it begins with a row's `[Trigger <id>]` and another
     prompt is possible), runs under the strictest cap: unattended, no tool declared, so every tool
     but pi-loops' own read-only and self-gated ones is asked about (the owner chose this over meeting
