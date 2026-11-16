@@ -45,6 +45,17 @@ test("another extension's own message with a person row's words in its middle is
 	assert.equal(w.writes(theirs), undefined, "not the row's: it stays to be delivered");
 });
 
+test("another extension's own message that ends with a person row's words is not that row's echo: it gets no mark (final-state check A, F3)", () => {
+	const w = win("never"); // an extension ahead of ours handled our send: pi wrote nothing for it
+	const row = personRow("p1", "continue", undefined, { sessionId: "s", cwd: "/p", createdBy: by }, T0);
+	w.queued.set(row.id, row);
+	w.ex.produced(row);
+	w.ex.turn(row, T0);
+	w.ex.inputSeen({ source: "extension", text: "Please continue" }, T0 + 1);
+	w.ex.agentStarted(T0 + 1);
+	assert.equal(w.writes("Please continue"), undefined, "not the row's: it stays to be delivered");
+});
+
 test("a message with our words in its middle is ours only when no input of someone else waits (an extension wraps both sides)", () => {
 	const row = turn("row", "Run the tests", { is: "queued" });
 	assert.equal(claimOf("Please Run the tests now", [row]).by, "turn", "nothing else waits: a wrapped prompt of ours");

@@ -41,9 +41,10 @@ All notable changes to pi-loops are documented here. The format follows
 
 - **A claim, a recipe hand-off, `/new-trigger` and a goal's continuation start with
   `[Trigger <id>]`, as a scheduled prompt does.** pi-loops knows its own prompt by it when another
-  extension wraps the prompt in words of its own. What you type yourself, in a terminal or in the
-  page, is sent in your words alone. A conversation that a claim starts is still titled by the
-  claim's words.
+  extension adds words before or after the prompt, or around it while no other message waits. What
+  you type yourself, in a terminal or in the page, is sent in your words alone. In the page and in
+  the `pi-loops` list, a conversation that a claim starts is titled by the claim's words; pi's own
+  `/resume` list shows the prefix first.
 
 ### Fixed
 
