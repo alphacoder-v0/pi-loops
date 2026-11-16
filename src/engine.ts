@@ -22,7 +22,8 @@ import { withinProject } from "./paths.ts";
 import { type ImageContent, type RequestMode, type RequestStore, type Row, imageRef, type UnclaimedRow, type ClaimedRow } from "./requests.ts";
 import type { LockOptions } from "./lock.ts";
 import { markOn } from "./mark.ts";
-import type { Gone } from "./window-claim.ts";
+/** Why pi no longer has a row it was handed and did not write (the window's `settleSlots`). */
+export type Gone = "stopped" | "dropped" | "lost";
 import { backoffFor } from "./backoff.ts";
 import { stamp } from "./schedule.ts";
 import { INTERRUPTED, type RunEnd, type Settlement, runEnd, settle } from "./settle.ts";
@@ -978,6 +979,15 @@ export function formatWait(ms: number): string {
 }
 
 /**
+ * Whether `row` holds its lane: a turn handed to an idle pi that no run has taken up, whatever else the
+ * row waits for (its job disabled, a backoff), since pi has the prompt already; not one that leaves in
+ * this drain (`own`, the row's actions, holds an exit or a fail). An idle pi gets one prompt of ours at a time.
+ */
+function holdsLane(row: Row, view: ExecutorView, own: readonly Action[]): boolean {
+	return row.wake === "turn" && view.inFlightSince?.has(row.id) === true && !own.some((a) => a.do === "exit" || a.do === "fail");
+}
+
+/**
  * Pure. `lane` is the kind of the lane the rows are in. Stops and cancels first, idle or busy; then
  * every input is classified with no regard to whether the lane is free; then the lane is taken, from
  * all the rows; then the rows that could start are started, in order. So where a row sorts does not
@@ -1044,9 +1054,7 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 
 	const unclaimed = (row: UnclaimedRow): Sorted => {
 		const actions: Action[] = [];
-		// A turn handed to an idle pi that no run has taken up holds the lane whatever else this row
-		// waits for (its job disabled, a backoff): pi has the prompt already. Not one that leaves now.
-		const done = (): Sorted => ({ actions, holding: row.wake === "turn" && view.inFlightSince?.has(row.id) === true && !actions.some((a) => a.do === "exit" || a.do === "fail") });
+		const done = (): Sorted => ({ actions, holding: holdsLane(row, view, actions) });
 		if (landed(row, proof)) {
 			actions.push({ do: "exit", row, exit: "delivered" });
 			return done();
@@ -1229,8 +1237,8 @@ export interface Executor {
 	/** What a row of the lane is proved by: the session it writes into, and the run records. */
 	proof(lane: LaneId): Proof;
 	/** Hand a turn row to pi; `now` is when, for `ExecutorView.inFlightSince`. A row with a claim cannot be handed over. */
-	turn(row: UnclaimedRow, now: number): TurnSent | void;
-	append(row: UnclaimedRow, wakeAgent: boolean): TurnSent | void;
+	turn(row: UnclaimedRow, now: number): TurnSent;
+	append(row: UnclaimedRow, wakeAgent: boolean): TurnSent;
 	/** Stop the turn running now. */
 	abort(): void;
 	/** Stop the turn of row `id`, handed to pi and not started yet, as it starts. */
@@ -1477,10 +1485,9 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 				const current = executor.view(sessionId);
 				if (current.inFlight.has(row.id) || landed(row, executor.proof(sessionId)) || current.blocked(row) !== undefined) break;
 				try {
-					// The stamp first, under the lock: the proof of a text-proved row's delivery is a user message
-					// written at or after it. A crash between the two leaves a stamped row with no message,
-					// handed over again with a new stamp; the reverse order could lose the proof of a send.
-					// A stamp that found no row hands nothing over: the row left the file since this drain
+					// The stamp first, under the lock: what the page shows of a hand-over, and the start of a
+					// version 2 row's text proof. A crash between the two leaves a stamped row with no message,
+					// handed over again with a new stamp. A stamp that found no row hands nothing over: the row left the file since this drain
 					// read it (cancelled, or taken back by the page and sent over rpc), and a turn now would
 					// answer it a second time.
 					if (action.do === "turn" && !carriesPrefix(row.source) && !store.update(sessionId, row.id, { handed_at: stamp(moment()) })) break;

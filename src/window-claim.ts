@@ -1,5 +1,5 @@
 /** Pure decisions about which window slot a pi message belongs to. */
-import { stripImageNotes } from "./engine.ts";
+import { type Gone, stripImageNotes } from "./engine.ts";
 import type { RowMark } from "./mark.ts";
 import type { CurrentTurn } from "./window-executor.ts";
 
@@ -39,8 +39,12 @@ export interface OtherSlot {
 	whose: "other";
 	from: "person" | "extension";
 	text: string;
-	/** It came while a run was on: a follow-up, which pi writes after the run's first message. */
-	followUp?: true;
+	/**
+	 * It came while a run was on. From the page's pi or another extension it is a follow-up, which pi
+	 * writes after what it was given before, in that order (probes P6, g9); from a terminal it is a
+	 * steer, which pi writes right after the message under way, before the follow-ups (g13, g16).
+	 */
+	behind?: "followUp" | "steer";
 }
 
 /** A slot the window is tracking. */
@@ -55,12 +59,9 @@ export interface TurnClaim {
 	readonly [byTheRule]: true;
 }
 
-/** The slot that owns a user message, if any. */
-/** `byText`: its words are the slot's, or around them (steps 1 and 2), not only a slot that waits (step 3). */
+/** The slot that owns a user message, if any. `byText`: its words are the slot's, or around them (steps 1 and 2), not only a slot that waits (step 3). */
 export type Claim = TurnClaim | { by: "other"; slot: OtherSlot; byText: boolean } | { by: "nobody" };
 
-/** Why pi no longer has a row it was handed and did not write. */
-export type Gone = "stopped" | "dropped" | "lost";
 
 /** The slots and prompts left after a run ends. */
 export interface Settled {
@@ -113,8 +114,8 @@ function longest<T>(msg: string, slots: readonly T[], textOf: (slot: T) => strin
  *    first; then refused, opening, the oldest).
  * 2. A matching other slot with words around its text wins; the longest text wins, then the oldest.
  * 3. A matching turn whose `[Trigger <id>] ` is in the message wins. Otherwise any waiting other
- *    slot wins before approximate turn matches, but for a follow-up when the matching turn opened
- *    the run or was given to pi before it.
+ *    slot wins before approximate turn matches, but for a follow-up or a steer when the matching turn
+ *    opened the run, and a follow-up given to pi after the matching turn.
  * 4. A turn match wins; the longest text wins, then by `tieRank`.
  * 5. Otherwise the message belongs to nobody.
  *
@@ -138,29 +139,37 @@ export function claimOf(text: string, slots: readonly Slot[]): Claim {
 		(slot) => slot.text,
 		tieRank,
 	);
-	// A message that could be someone else's is theirs, but for one order pi keeps (a rewriting
-	// extension changes both texts, probe P4): a message they sent during a run is a follow-up, which pi
-	// writes after the run's first message and after what was queued before it. So it is not this
-	// message when the prompt of ours that the words point at opened the run, or was given to pi first.
 	// The words of a prompt of ours around the message, with its `[Trigger <id>] `: no one else's
 	// message carries that, so it is ours whatever else waits (a refused send of another extension
 	// leaves an input that never becomes a message: probe G11).
 	if (turnAround?.prefix !== undefined && msg.includes(turnAround.prefix)) return turnClaim(turnAround);
-	const before = (other: OtherSlot) => turnAround !== undefined && (turnAround.phase.is === "opening" || slots.indexOf(turnAround) < slots.indexOf(other));
-	const anyOther = candidates.find((slot): slot is OtherSlot => slot.whose === "other" && !(slot.followUp && before(slot)));
+	// A message that could be someone else's is theirs, but for the orders pi keeps (a rewriting
+	// extension changes both texts, probe P4). A prompt given to an idle pi is the first user message
+	// of the run it starts, before what pi kept after a stop (G1) and before any steer, which pi writes
+	// right after the message under way (g13, g16); follow-ups are written in the order pi was given
+	// them (P6, g9). So when the prompt of ours that the words point at opened the run, no follow-up
+	// and no steer is this message, and a follow-up given after it is not either. (Another extension's
+	// message sent to the idle pi first is the run's first message instead, G11: it came with no run
+	// on, so it is neither a follow-up nor a steer, and nothing here sets it aside.)
+	const notThis = (other: OtherSlot) =>
+		turnAround !== undefined && other.behind !== undefined && (turnAround.phase.is === "opening" || (other.behind === "followUp" && slots.indexOf(turnAround) < slots.indexOf(other)));
+	const anyOther = candidates.find((slot): slot is OtherSlot => slot.whose === "other" && !notThis(slot));
 	if (anyOther) return namedOther(anyOther, false);
 	return turnAround ? turnClaim(turnAround) : { by: "nobody" };
 }
 
 /**
- * Settle slots in their original order. For each turn or append with a landed mark, leave the slot;
- * otherwise pending turns stay, refused ones stay on a stop in the page's pi (it keeps them), leave
- * with no stop (pi wrote all it held), and leave at a terminal stop with their text to `editor`
- * (pi had it queued, if it held it); written turns are lost, and opening/queued turns and
- * appends are lost without a stop, dropped on a terminal stop, or kept on a non-terminal stop (`stopped` with `stop`).
- * Other slots leave without a stop or on a terminal stop and stay on a non-terminal stop. A writing
- * turn is treated as queued. A going turn with `stop: true` is stopped. Dropped or stopped turn
- * prompts from a terminal stop are returned in `editor` order.
+ * Settle slots in their original order, at the end of a run (`how`: whether a stop ended it, and in a terminal).
+ * - A turn or an append whose mark landed leaves.
+ * - A pending turn stays.
+ * - A refused turn leaves with no stop (pi wrote all it held), stays on a stop in the page's pi (pi
+ *   keeps it), and leaves on a stop in a terminal with its text to `editor` (pi had it queued, if it held it).
+ * - A written turn (its mark given, no entry) goes, `lost`.
+ * - An opening, queued or writing turn, and an append, go: `lost` with no stop, `dropped` on a stop in
+ *   a terminal (a turn's text to `editor`); on a stop in the page's pi they stay (a writing one as queued).
+ * - A turn or append that a stop named goes as `stopped` instead of `lost` or `dropped`.
+ * - A turn whose row left the file (`left`) never goes into `gone`.
+ * - Other slots leave with no stop or on a stop in a terminal, and stay on a stop in the page's pi.
  */
 export function settleSlots(slots: readonly Slot[], how: { aborted: boolean; terminal: boolean }, landed: (id: string) => boolean): Settled {
 	const kept: Slot[] = [];

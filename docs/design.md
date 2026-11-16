@@ -394,8 +394,18 @@ machine. Everything here follows from that, and each one has a price.
     words, then the person's or another extension's input by its words, then a prompt of ours whose
     `[Trigger <id>]` is in the message, then any input that waits, then a prompt of ours whose words
     are around the message (an extension may rewrite it). What the window is not sure of only takes
-    a mark away: the cost is a second delivery at most, never a row removed that pi did not write. A
-    prefix in the text is words, for the person and the model, and proves nothing: the person can
+    a mark away: the cost is a second delivery at most, never a row removed that pi did not write.
+    Where an input waits and only a prompt of ours has words around the message, the window reads
+    four orders of pi, each measured by a probe and held by a scene of `test/sim-model.test.ts`: a
+    prompt given to an idle pi is the first user message of the run it starts, before what pi kept
+    after a stop (G1) and before a steer; a steer, Enter during a run in a terminal, is written right
+    after the message under way (g13, g16); follow-ups, from the page's pi or another extension, are
+    written in the order pi was given them (P6, g9); and the person's submission to an idle pi is the
+    first user message of the run it starts, or never a message (another extension's handler took
+    it). So a follow-up or a steer is not the message of a prompt of ours that opened the run, a
+    follow-up given after that prompt is not either, and a person's idle submission that a run's
+    first message did not take is dropped. A
+    prefix in the text is words, for the person and the model, and decides nothing by itself: the person can
     send it, and another extension can move it. A turn handed to an idle pi that no run has taken up
     keeps the lane, so an idle pi gets one prompt of ours at a time. The proof is read from the
     conversation at every drain and never from an event. A row of a version 2 line, queued by an
@@ -453,8 +463,8 @@ machine. Everything here follows from that, and each one has a price.
     first. In the background a new slot is spent onto a row of its job that failed, and that row
     keeps its attempts. A row that a run has claimed leaves
     through the closing of that run only. The lane is taken from all
-    the rows before any of them is started, so a turn that sorts first is not handed to pi beside
-    an unwritten turn that only its text proves. A dead letter is filed once for a row, under an
+    the rows before any of them is started, and a turn handed to an idle pi that no run has taken
+    up holds the lane, so an idle pi gets one prompt of ours at a time. A dead letter is filed once for a row, under an
     id derived from the row's lane and id (`Inbox.fileOnce`), so a crash between the finding and
     the removal files nothing the second time. The cost: a row that is queued again in the same
     queue under the same id and fails again gets no second finding, also when the first one was

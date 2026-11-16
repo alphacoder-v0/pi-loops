@@ -54,7 +54,7 @@ interface RowBase {
 	v: 3;
 	/** Set by the reader on a row read from a version 2 line (a row an older version wrote), and never written. */
 	line?: 2;
-	/** pi-loops rows: the id inside `[Trigger <id>] `, the proof of delivery. Person rows: a UUID the page mints. */
+	/** pi-loops rows: the id inside `[Trigger <id>] `. Person rows: a UUID the page mints. With the lane, what the mark names (src/mark.ts). */
 	id: string;
 	lane: LaneId;
 	kind: RequestKind;
@@ -90,11 +90,11 @@ interface RowBase {
 	attempts: number;
 	last_error?: string;
 	/**
-	 * Rows proved by their text (a person's message, a claim, a recipe hand-off, `/new-trigger`, a goal
-	 * continuation: src/engine.ts `carriesPrefix`): when the holder last handed the row to pi, written
-	 * under the lock just before the call. The proof of delivery is a user message with the row's text
-	 * written at or after this; a row never handed over has none and is never done. Not part of the
-	 * fingerprint.
+	 * Rows with no `[Trigger <id>] ` (a person's message, a claim, a recipe hand-off, `/new-trigger`, a
+	 * goal continuation: src/engine.ts `carriesPrefix`): when the holder last handed the row to pi,
+	 * written under the lock just before the call. The page reads it; for a row of a version 2 line it
+	 * is still the start of the text proof (a message with the row's words at or after it). Not part
+	 * of the fingerprint.
 	 */
 	handed_at?: string;
 }

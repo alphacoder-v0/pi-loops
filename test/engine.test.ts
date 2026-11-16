@@ -1346,6 +1346,16 @@ test("a hand-over pi throws at keeps the earlier one pi may still send late", ()
 	assert.deepEqual((w.ends("[Trigger t1] hello")?.message as { piLoopsRow?: unknown } | undefined)?.piLoopsRow, { lane: "s", id: "t1" }, "the late send of the first is proved");
 });
 
+test("Enter during a run in a terminal is a steer, written before what waits: a rewritten message then may be the steer, and gets no mark", () => {
+	const w = fakeWindowPi(false);
+	const goal = row("g1", { source: "goal", mode: "attended", wake: "turn", payload: { text: "keep going", cwd: "/" } });
+	w.executor.agentStarted(T0);
+	w.executor.turn(goal, T0 + 1); // queued behind the run
+	w.executor.inputSeen({ source: "interactive", text: "and check the logs" }, T0 + 2);
+	w.executor.messageStarted({ role: "user", content: "[rewritten] keep going" }, T0 + 3);
+	assert.equal(w.executor.messageEnded({ role: "user", content: "[rewritten] keep going" }), undefined, "the steer could be it: no mark for the goal's row");
+});
+
 test("a window that cannot write the hold first sends nothing: lease-lost, and the row stays as it was", () => {
 	const w = windowOver({ hold: () => false });
 	const t1 = turnRow("t1");

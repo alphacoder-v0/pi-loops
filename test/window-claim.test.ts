@@ -37,9 +37,9 @@ function assertTurnClaim(result: ReturnType<typeof claimOf>, id: string): void {
 	if (result.by === "turn") assert.equal(result.slot.mark.id, id);
 }
 
-function assertOtherClaim(result: ReturnType<typeof claimOf>, expected: Slot): void {
-	assert.equal(result.by, "other");
-	if (result.by === "other") assert.equal(result.slot, expected);
+function assertOtherClaim(result: ReturnType<typeof claimOf>, expected: Slot, message?: string): void {
+	assert.equal(result.by, "other", message);
+	if (result.by === "other") assert.equal(result.slot, expected, message);
 }
 
 test("claimOf assigns ordered trigger prompts to their own rows", () => {
@@ -107,19 +107,23 @@ test("claimOf gives words around to the other slot whose text they are, not to t
 	assertOtherClaim(claimOf("ok, now run it", [older, extension]), extension);
 });
 
-test("claimOf gives a run's first message to the opening prompt of ours, not to another extension's follow-up, beside a rewriter", () => {
+test("claimOf gives a rewritten message to the prompt of ours that pi was given before another extension's follow-up, not to a steer", () => {
 	const ours = turn("ours", "the person says 1.", { is: "opening" });
-	const theirs: OtherSlot = { ...other("another extension says 2.", "extension"), followUp: true };
+	const theirs: OtherSlot = { ...other("another extension says 2.", "extension"), behind: "followUp" };
 	assertTurnClaim(claimOf("[rewritten] the person says 1.", [ours, theirs]), "ours");
 	const before: OtherSlot = other("another extension says 2.", "extension");
 	assertOtherClaim(claimOf("[rewritten] the person says 1.", [ours, before]), before);
+	const steer: OtherSlot = { ...other("steered 3."), behind: "steer" };
+	assertTurnClaim(claimOf("[rewritten] the person says 1.", [ours, steer]), "ours");
+	const queued = turn("queued", "the person says 1.", { is: "queued" });
+	assertOtherClaim(claimOf("[rewritten] the person says 1.", [queued, steer]), steer, "a steer is written before what waits behind the message under way: it may be this message");
 });
 
 test("claimOf gives a message to a prompt of ours that pi was given before another extension's follow-up", () => {
 	const ours = turn("ours", "[Trigger ours] run j1.", { is: "queued" });
-	const later: OtherSlot = { ...other("another extension says 2.", "extension"), followUp: true };
+	const later: OtherSlot = { ...other("another extension says 2.", "extension"), behind: "followUp" };
 	assertTurnClaim(claimOf("[rewritten] [Trigger ours] run j1.", [ours, later]), "ours");
-	const earlier: OtherSlot = { ...other("another extension says 2.", "extension"), followUp: true };
+	const earlier: OtherSlot = { ...other("another extension says 2.", "extension"), behind: "followUp" };
 	assertOtherClaim(claimOf("[rewritten] [Trigger ours] run j1.", [earlier, ours]), earlier);
 });
 

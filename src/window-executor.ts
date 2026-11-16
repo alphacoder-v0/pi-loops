@@ -11,13 +11,13 @@
  * most, and a mark on another row's message is never written.
  */
 import type { ExtensionAPI, ExtensionContext, InputEvent } from "@earendil-works/pi-coding-agent";
-import { CEILING, type Executor, type ExecutorView, type Producer, type TurnSent, carriesPrefix, proofOf, landed, modeOf, queuedTriggeredTurn, requestFingerprint, sameProducer, type Proof, claimAlive } from "./engine.ts";
+import { CEILING, type Executor, type ExecutorView, type Producer, type TurnSent, carriesPrefix, proofOf, landed, modeOf, queuedTriggeredTurn, requestFingerprint, sameProducer, type Proof, claimAlive , type Gone } from "./engine.ts";
 import { type LeaseBinding, type ProcessProbe, systemProbe } from "./lease.ts";
 import { markDetails, markFor, withMark } from "./mark.ts";
 import type { ImageContent, RequestMode, Row, UnclaimedRow } from "./requests.ts";
 import type { RunRecord } from "./store.ts";
 import { stamp } from "./schedule.ts";
-import { type Gone, type Slot, type TurnSlot, claimOf, cleanEditor, settleSlots } from "./window-claim.ts";
+import { type Slot, type TurnSlot, claimOf, cleanEditor, settleSlots } from "./window-claim.ts";
 
 /**
  * Whose turn the agent is in, and under what cap (design §4.4, §6.3): a pi-loops row, with the mode
@@ -195,7 +195,7 @@ export class WindowExecutor implements Executor {
 		for (const slot of this.slots) {
 			if (slot.whose === "other") {
 				// A message someone sent during a run that pi no longer holds (the page cleared the queue).
-				if (!(empty && slot.followUp)) next.push(slot);
+				if (!(empty && slot.behind)) next.push(slot);
 				continue;
 			}
 			// What pi wrote is in the conversation, whoever wrote it.
@@ -403,7 +403,8 @@ export class WindowExecutor implements Executor {
 				return;
 			}
 		}
-		this.slots.push({ whose: "other", from: input.source === "extension" ? "extension" : "person", text: input.text, ...(this.running ? { followUp: true as const } : {}) });
+		const behind = this.running ? (input.source === "interactive" ? ("steer" as const) : ("followUp" as const)) : undefined;
+		this.slots.push({ whose: "other", from: input.source === "extension" ? "extension" : "person", text: input.text, ...(behind ? { behind } : {}) });
 	}
 
 	/**
@@ -427,7 +428,7 @@ export class WindowExecutor implements Executor {
 			if (claim.by === "other" && slot === claim.slot) return [];
 			// What the person submitted to an idle pi is the first message of the run it starts, or
 			// never a message (another extension's input handler took it): a later message is not theirs.
-			if (first && slot.whose === "other" && slot.from === "person" && !slot.followUp) return [];
+			if (first && slot.whose === "other" && slot.from === "person" && !slot.behind) return [];
 			return slot.whose === "turn" && slot.phase.is === "opening" ? [{ ...slot, phase: { is: "queued" } }] : [slot];
 		});
 		if (claim.by === "turn") {
@@ -452,8 +453,10 @@ export class WindowExecutor implements Executor {
 		// A message the window cannot place, or one it gave a waiting input for want of a better: while
 		// pi holds a prompt of ours unwritten it may be that prompt, rewritten, so its cap (with no mark:
 		// the cost is a second delivery at most). Otherwise it is the person's, or nobody's, and uncapped.
-		const held = this.slots.find((slot): slot is TurnSlot => slot.whose === "turn" && (slot.phase.is === "pending" || slot.phase.is === "opening" || slot.phase.is === "queued"));
-		this.current = held ? held.cap : { kind: "person" };
+		// Of several, an unattended one's: the narrower cap, so no prompt runs under a wider one than its own.
+		const held = this.slots.filter((slot): slot is TurnSlot => slot.whose === "turn" && (slot.phase.is === "pending" || slot.phase.is === "opening" || slot.phase.is === "queued"));
+		const narrowest = held.find((slot) => slot.cap.mode === "unattended") ?? held[0];
+		this.current = narrowest ? narrowest.cap : { kind: "person" };
 	}
 
 	/**

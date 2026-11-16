@@ -195,6 +195,7 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 				// The mark rides in the entry's details: the one proof of an append row, read by `landed` (src/mark.ts).
 				sm.appendCustomMessageEntry("pi-loops:trigger", row.payload?.text ?? "", true, markDetails(markFor(row)));
 				deps.appended(row, held);
+				return "sent";
 			},
 			// The engine calls it only for a row `blocked` let through, so `job` is there and is the row's.
 			turn: (row, now) => {
@@ -204,10 +205,11 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 				const label = job.name ?? row.id.slice(0, 12);
 				// The claim, and the run in the list, in one step. A throw here wrote no claim.
 				const claimed = runs.claim(requests, row, { pid, procStart }, { jobId: job.id, label: job.name ?? job.id, promptPreview: previewRedacted(job.prompt, 120), ctrl: new AbortController(), turn: { ...held, label } }, now);
-				if (!claimed) return; // the row left meanwhile
+				if (!claimed) return "sent"; // the row left meanwhile: nothing to send, and the lease is as it was
 				// From here nothing throws: a failure to start goes through the closing. The lease names
 				// this run already: `fire` took it for the row it owed, or for the slot's own row.
 				started = runTurn(claimed, held, job);
+				return "sent";
 			},
 			// As `/triggers abort` does: the run's AbortController.
 			abort: () => {
