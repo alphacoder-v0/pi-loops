@@ -686,11 +686,19 @@ test("a steer that carried the editor goes back into it at Esc: the person's wor
 	assert.deepEqual(s.window.pi.editor.typed, typed, "as the person's words");
 });
 
-test("the page's pi has no steer: the person's message during a run there is a follow-up (typeBehind)", async (t) => {
+// The page sends a message during a run as a follow-up, or as a steer (src/page-server.ts, rpc `prompt` with `streamingBehavior`).
+test("in the page's pi the person's message during a run is a follow-up or a steer, and a steer is written before the follow-ups", async (t) => {
 	const s = scene(t, "rpc");
 	await s.pi("type");
-	assert.ok(!piMoves(s.window).includes("steer"));
+	assert.ok(piMoves(s.window).includes("steer"));
 	assert.ok(piMoves(s.window).includes("typeBehind"));
+	await s.pi("typeBehind");
+	await s.pi("steer");
+	const before = s.texts().length;
+	await s.pi("settle");
+	const written = s.texts().slice(before);
+	assert.match(written[0], /steered #/);
+	assert.match(written[1], /typed behind #/);
 });
 
 // g11 (ours first, no deliverAs): pi refuses another extension's send during a run, after its input.

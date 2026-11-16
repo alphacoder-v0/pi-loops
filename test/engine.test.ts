@@ -1350,10 +1350,27 @@ test("Enter during a run in a terminal is a steer, written before what waits: a 
 	const w = fakeWindowPi(false);
 	const goal = row("g1", { source: "goal", mode: "attended", wake: "turn", payload: { text: "keep going", cwd: "/" } });
 	w.executor.agentStarted(T0);
+	w.executor.messageStarted({ role: "user", content: "the run's own first message" }, T0); // the person's run, say
 	w.executor.turn(goal, T0 + 1); // queued behind the run
-	w.executor.inputSeen({ source: "interactive", text: "and check the logs" }, T0 + 2);
+	w.executor.inputSeen({ source: "interactive", text: "and check the logs", streamingBehavior: "steer" }, T0 + 2);
 	w.executor.messageStarted({ role: "user", content: "[rewritten] keep going" }, T0 + 3);
 	assert.equal(w.executor.messageEnded({ role: "user", content: "[rewritten] keep going" }), undefined, "the steer could be it: no mark for the goal's row");
+});
+
+test("a message's delivery is what pi's input event says, not its source: a steer from the page or an extension, a follow-up from a terminal", () => {
+	const at = (behind: "steer" | "followUp", source: "rpc" | "extension" | "interactive") => {
+		const w = fakeWindowPi(false);
+		const goal = row("g1", { source: "goal", mode: "attended", wake: "turn", payload: { text: "keep going", cwd: "/" } });
+		w.executor.agentStarted(T0);
+		w.executor.messageStarted({ role: "user", content: "the run's own first message" }, T0); // the person's run, say
+		w.executor.turn(goal, T0 + 1); // queued behind the run
+		w.executor.inputSeen({ source, text: "and check the logs", streamingBehavior: behind }, T0 + 2);
+		w.executor.messageStarted({ role: "user", content: "[rewritten] keep going" }, T0 + 3);
+		return w.executor.messageEnded({ role: "user", content: "[rewritten] keep going" });
+	};
+	assert.equal(at("steer", "rpc"), undefined, "the page's steer is written before the queued goal: it could be this message");
+	assert.equal(at("steer", "extension"), undefined, "another extension's steer too");
+	assert.ok(at("followUp", "interactive"), "a terminal's follow-up (Alt+Enter) comes after the goal: the message is the goal's, marked");
 });
 
 test("a window that cannot write the hold first sends nothing: lease-lost, and the row stays as it was", () => {

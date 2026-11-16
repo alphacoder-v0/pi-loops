@@ -45,8 +45,14 @@ function window(cfg: Partial<GuardConfig> = {}, opts: { hasUI?: boolean; answer?
 	const config = (): GuardConfig => ({ windowGuard: true, allowCommands: [], ...cfg });
 	const handler = windowGuard({ current: () => executor.currentTurn(), config, log: (line) => void logged.push(line), confirmTimeoutMs: opts.confirmTimeoutMs ?? 20 });
 	const started = (text: string) => executor.messageStarted({ role: "user", content: text });
+	// Whether a run is on, as pi's events said: the person's Enter during a run is a steer (pi's `input` says so).
+	let running = false;
+	const agentStarted = executor.agentStarted.bind(executor);
+	executor.agentStarted = (now) => ((running = true), agentStarted(now));
+	const settledOf = executor.settled.bind(executor);
+	executor.settled = (aborted) => ((running = false), settledOf(aborted));
 	const typed = (text: string) => {
-		executor.inputSeen({ source: "interactive", text }, T0);
+		executor.inputSeen({ source: "interactive", text, ...(running ? { streamingBehavior: "steer" as const } : {}) }, T0);
 		started(text);
 	};
 	/** The clock fired: the row is handed over and its turn starts. */

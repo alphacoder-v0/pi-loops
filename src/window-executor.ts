@@ -393,7 +393,7 @@ export class WindowExecutor implements Executor {
 	 * user message starts (`claimOf`). An input the window cannot place is filed as not ours: that can
 	 * only take a mark away.
 	 */
-	inputSeen(input: Pick<InputEvent, "source" | "text">, now: number): void {
+	inputSeen(input: Pick<InputEvent, "source" | "text" | "streamingBehavior">, now: number): void {
 		this.slots = this.slots.map((slot) => (slot.whose === "turn" && slot.phase.is === "pending" ? { ...slot, phase: { is: "pending", since: now } } : slot));
 		if (input.source === "extension") {
 			const ours = (slot: Slot): slot is TurnSlot => slot.whose === "turn" && !slot.echoed && slot.phase.is !== "refused";
@@ -403,8 +403,11 @@ export class WindowExecutor implements Executor {
 				return;
 			}
 		}
-		const behind = this.running ? (input.source === "interactive" ? ("steer" as const) : ("followUp" as const)) : undefined;
-		this.slots.push({ whose: "other", from: input.source === "extension" ? "extension" : "person", text: input.text, ...(behind ? { behind } : {}) });
+		const behind = input.streamingBehavior;
+		// During a run, pi refuses a send with no delivery ("Agent is already processing") after its
+		// `input` (probe G11): it never becomes a message.
+		if (this.running && !behind) return;
+		this.slots.push({ whose: "other", from: input.source === "extension" ? "extension" : "person", text: input.text, ...(behind ? { behind } : {}), ...(input.source === "interactive" ? { typed: true as const } : {}), ...(this.running ? { run: this.running.startedAt } : {}) });
 	}
 
 	/**
@@ -420,15 +423,16 @@ export class WindowExecutor implements Executor {
 		const text = userTextOf(message);
 		if (text === undefined) return;
 		this.slots = this.slots.map((slot) => (slot.whose === "turn" && slot.phase.is === "pending" ? { ...slot, phase: { is: "pending", since: now } } : slot));
-		const claim = claimOf(text, this.slots);
 		const first = this.firstOfRun;
 		this.firstOfRun = false;
+		const claim = claimOf(text, this.slots, first ? this.running?.startedAt : undefined);
 		this.slots = this.slots.flatMap((slot): Slot[] => {
 			if (claim.by === "turn" && slot === claim.slot) return [{ ...slot, phase: { is: "writing", claim } }];
 			if (claim.by === "other" && slot === claim.slot) return [];
-			// What the person submitted to an idle pi is the first message of the run it starts, or
+			// What the person typed into an idle terminal is the first message of the run it starts, or
 			// never a message (another extension's input handler took it): a later message is not theirs.
-			if (first && slot.whose === "other" && slot.from === "person" && !slot.behind) return [];
+			// Not the page's: pi decides its delivery before the handlers run, and a run can begin meanwhile.
+			if (first && slot.whose === "other" && slot.typed && !slot.behind) return [];
 			return slot.whose === "turn" && slot.phase.is === "opening" ? [{ ...slot, phase: { is: "queued" } }] : [slot];
 		});
 		if (claim.by === "turn") {
@@ -453,7 +457,8 @@ export class WindowExecutor implements Executor {
 		// A message the window cannot place, or one it gave a waiting input for want of a better: while
 		// pi holds a prompt of ours unwritten it may be that prompt, rewritten, so its cap (with no mark:
 		// the cost is a second delivery at most). Otherwise it is the person's, or nobody's, and uncapped.
-		// Of several, an unattended one's: the narrower cap, so no prompt runs under a wider one than its own.
+		// Of several, an unattended one's cap before an attended one's (two unattended ones with other
+		// declared tools are not narrowed further: rare, and as before).
 		const held = this.slots.filter((slot): slot is TurnSlot => slot.whose === "turn" && (slot.phase.is === "pending" || slot.phase.is === "opening" || slot.phase.is === "queued"));
 		const narrowest = held.find((slot) => slot.cap.mode === "unattended") ?? held[0];
 		this.current = narrowest ? narrowest.cap : { kind: "person" };

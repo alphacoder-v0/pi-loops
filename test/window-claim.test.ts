@@ -32,9 +32,9 @@ function writingTurn(id: string, text: string): TurnSlot {
 	return turn(id, text, { is: "writing", claim });
 }
 
-function assertTurnClaim(result: ReturnType<typeof claimOf>, id: string): void {
-	assert.equal(result.by, "turn");
-	if (result.by === "turn") assert.equal(result.slot.mark.id, id);
+function assertTurnClaim(result: ReturnType<typeof claimOf>, id: string, message?: string): void {
+	assert.equal(result.by, "turn", message);
+	if (result.by === "turn") assert.equal(result.slot.mark.id, id, message);
 }
 
 function assertOtherClaim(result: ReturnType<typeof claimOf>, expected: Slot, message?: string): void {
@@ -127,10 +127,12 @@ test("claimOf gives a message to a prompt of ours that pi was given before anoth
 	assertOtherClaim(claimOf("[rewritten] [Trigger ours] run j1.", [earlier, ours]), earlier);
 });
 
-test("claimOf gives the very same words to a refused slot before the run's starter: pi starts what it held first", () => {
+test("claimOf gives the very same words to the run's starter before a refused slot: pi may have dropped the refused one, and either message answers one of the two", () => {
 	const late = turn("late", "yes", { is: "refused" });
 	const starter = turn("starter", "yes", { is: "opening" });
-	assertTurnClaim(claimOf("yes", [starter, late]), "late");
+	assertTurnClaim(claimOf("yes", [late, starter]), "starter");
+	const queued = turn("queued", "yes", { is: "queued" });
+	assertTurnClaim(claimOf("yes", [late, queued]), "queued");
 });
 
 test("claimOf gives a rewritten message with a prompt's [Trigger <id>] to that prompt, though another's input waits", () => {
@@ -158,12 +160,12 @@ test("settleSlots puts no slot whose row left the file into gone: the same row m
 	}
 });
 
-test("claimOf gives a refused prompt a late send in its words, rewritten or not, before a later prompt with the same words", () => {
+test("claimOf gives a refused prompt a late send in its words, rewritten or not, and a prompt pi holds before it with the same words", () => {
 	const row = turn("row", "report status", { is: "refused" });
 	assertTurnClaim(claimOf("report status", [row]), "row");
 	assertTurnClaim(claimOf("[rewritten] report status", [row]), "row");
 	const queued = turn("queued", "report status", { is: "opening" });
-	assertTurnClaim(claimOf("[rewritten] report status", [queued, row]), "row");
+	assertTurnClaim(claimOf("[rewritten] report status", [queued, row]), "queued", "pi may have dropped the refused one");
 	assert.equal(claimOf("report status, please", [row, other("report")]).by, "other");
 });
 

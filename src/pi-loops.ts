@@ -3431,7 +3431,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	// Observed only: whose the next user messages are (the window tells its own sends from the rest),
 	// and that pi is about to run something, so nothing handed over is judged refused for a while yet.
 	pi.on("input", async (e) => {
-		executor.inputSeen({ source: e.source, text: e.text }, Date.now());
+		executor.inputSeen({ source: e.source, text: e.text, streamingBehavior: e.streamingBehavior }, Date.now());
 	});
 	pi.on("turn_start", async (_e, ctx) => fireHook({ event: "turn_start" }, ctx));
 	pi.on("turn_end", async (e, ctx) => fireHook({ event: "turn_end", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx));

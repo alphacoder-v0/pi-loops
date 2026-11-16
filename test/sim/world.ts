@@ -517,7 +517,7 @@ function windowProcess(world: World, base: Omit<Process, "executor">): Process {
 		const item: Item = { text, custom, copy: copyFor(world, proc, text), ...(details === undefined ? {} : { details }) };
 		// pi's `input` for a user message an extension sends: our handler first, inside the call, with
 		// the text as sent (probe P6; the other load order is not modelled).
-		if (!custom) proc.window?.inputSeen({ source: "extension", text }, world.clock);
+		if (!custom) proc.window?.inputSeen({ source: "extension", text, ...(queued ? { streamingBehavior: "followUp" as const } : {}) }, world.clock);
 		if (queued) proc.pi.queue.push(item);
 		else write(world, proc, item);
 	};
@@ -590,7 +590,7 @@ export type PiMove = "start" | "write" | "settle" | "esc" | "refuse" | "type" | 
 export function piMoves(proc: Process): PiMove[] {
 	const pi = proc.pi;
 	// While a turn runs: the person sends a message behind it in the page, or steers in a terminal; another extension sends one anywhere, or sends one pi refuses.
-	const behind: PiMove[] = proc.mode === "rpc" ? ["typeBehind", "otherSends", "otherRejected"] : ["steer", "otherSends", "otherRejected"];
+	const behind: PiMove[] = proc.mode === "rpc" ? ["typeBehind", "steer", "otherSends", "otherRejected"] : ["steer", "otherSends", "otherRejected"];
 	if (pi.running) return pi.current ? ["write", "write", "settle", "esc", ...behind] : ["settle", "esc", ...behind];
 	// A terminal's editor that a stop filled: the person sends it, or adds words of their own first
 	// (`type`). What a stop left in the page's pi starts nothing: no `start` and no `refuse` for it.
@@ -639,18 +639,19 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 			// The person's message while a turn runs, sent to pi and not through a row: `input`, and a follow-up of no row.
 			{
 				const words = `typed behind #${++world.made}.`;
-				window.inputSeen({ source: "rpc", text: words }, at);
+				window.inputSeen({ source: "rpc", text: words, streamingBehavior: "followUp" }, at);
 				pi.queue.push({ text: words, custom: false });
 			}
 			break;
 		case "steer": {
-			// Enter during a run in a terminal: `input` from the person, and a message behind the steers
-			// before it and ahead of the follow-ups (g16). With text in the editor, the steer is that
-			// whole text, and the editor is empty (g16; pi's interactive mode does the same).
+			// Enter during a run in a terminal, or the page's steer (rpc `prompt` with `streamingBehavior:
+			// "steer"`, which pi queues the same way): `input` from the person, and a message behind the
+			// steers before it and ahead of the follow-ups (g16). In a terminal with text in the editor, the
+			// steer is that whole text, and the editor is empty (g16; pi's interactive mode does the same).
 			const sent = pi.editor.text !== "" ? pi.editor : undefined;
 			if (sent) pi.editor = idlePi().editor;
 			const item: Item = { text: sent ? sent.text : `steered #${++world.made}.`, custom: false, person: true, ...(sent ? { editor: sent } : {}) };
-			window.inputSeen({ source: "interactive", text: item.text }, at);
+			window.inputSeen({ source: proc.mode === "tui" ? "interactive" : "rpc", text: item.text, streamingBehavior: "steer" }, at);
 			const behindSteers = pi.queue.findIndex((queued) => !queued.person);
 			pi.queue.splice(behindSteers === -1 ? pi.queue.length : behindSteers, 0, item);
 			break;
@@ -662,7 +663,7 @@ export function piMove(world: World, proc: Process, move: PiMove): void {
 		case "otherSends": {
 			// Another extension's `sendUserMessage`: `input` with the source `extension`, so no submission of the person is counted.
 			const item: Item = { text: `another extension says #${++world.made}.`, custom: false };
-			window.inputSeen({ source: "extension", text: item.text }, at);
+			window.inputSeen({ source: "extension", text: item.text, ...(pi.running ? { streamingBehavior: "followUp" as const } : {}) }, at);
 			if (pi.running) pi.queue.push(item);
 			else {
 				pi.running = true;

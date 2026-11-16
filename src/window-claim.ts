@@ -40,11 +40,15 @@ export interface OtherSlot {
 	from: "person" | "extension";
 	text: string;
 	/**
-	 * It came while a run was on. From the page's pi or another extension it is a follow-up, which pi
-	 * writes after what it was given before, in that order (probes P6, g9); from a terminal it is a
-	 * steer, which pi writes right after the message under way, before the follow-ups (g13, g16).
+	 * How pi delivers it during a run, as pi's `input` event says (`streamingBehavior`): a follow-up,
+	 * written after what pi was given before, in that order (probes P6, g9), or a steer, written right
+	 * after the message under way, before the follow-ups (g13, g16). None when pi was idle.
 	 */
 	behind?: "followUp" | "steer";
+	/** The person typed it in a terminal (pi's `input` source `interactive`). */
+	typed?: true;
+	/** The run it came during (the run's start stamp): a steer is never that run's first user message. */
+	run?: string;
 }
 
 /** A slot the window is tracking. */
@@ -91,11 +95,12 @@ function textAround(msg: string, text: string): boolean {
 /**
  * Between turn slots with the same words, the lower rank claims. A slot a stop or a cancel named comes
  * last: a message given to it is aborted, and a wrong guess must not abort a message that is owed. Then
- * one the engine stopped waiting for (pi held it before anything since), the run's starter (G1: before
- * what pi kept), and the oldest.
+ * the run's starter (G1: before what pi kept), the oldest of those pi holds, and last one the engine
+ * stopped waiting for (pi may have dropped it). Two rows with the very same words are told apart by
+ * nobody: whichever the mark names, each message answers one of them.
  */
 function tieRank(slot: TurnSlot): number {
-	return (slot.stop ? 3 : 0) + (slot.phase.is === "refused" ? 0 : slot.phase.is === "opening" ? 1 : 2);
+	return (slot.stop ? 3 : 0) + (slot.phase.is === "opening" ? 0 : slot.phase.is === "refused" ? 2 : 1);
 }
 
 function longest<T>(msg: string, slots: readonly T[], textOf: (slot: T) => string, preferred: (slot: T) => number): T | undefined {
@@ -115,14 +120,15 @@ function longest<T>(msg: string, slots: readonly T[], textOf: (slot: T) => strin
  * 2. A matching other slot with words around its text wins; the longest text wins, then the oldest.
  * 3. A matching turn whose `[Trigger <id>] ` is in the message wins. Otherwise any waiting other
  *    slot wins before approximate turn matches, but for a follow-up or a steer when the matching turn
- *    opened the run, and a follow-up given to pi after the matching turn.
+ *    opened the run, a follow-up given to pi after the matching turn, and a steer when the message is
+ *    the first user message of the run the steer came during (`firstOfRun`, that run's start stamp).
  * 4. A turn match wins; the longest text wins, then by `tieRank`.
  * 5. Otherwise the message belongs to nobody.
  *
  * Only pending, opening, queued and refused turns and other slots are candidates. Writing and written
  * turns and append slots never claim. Image notes are stripped before matching.
  */
-export function claimOf(text: string, slots: readonly Slot[]): Claim {
+export function claimOf(text: string, slots: readonly Slot[], firstOfRun?: string): Claim {
 	const msg = stripImageNotes(text);
 	const candidates = slots.filter((slot): slot is TurnSlot | OtherSlot => slot.whose === "other" || (slot.whose === "turn" && (slot.phase.is === "pending" || slot.phase.is === "opening" || slot.phase.is === "queued" || slot.phase.is === "refused")));
 	const exact = candidates.filter((slot) => slot.text === msg);
@@ -152,7 +158,8 @@ export function claimOf(text: string, slots: readonly Slot[]): Claim {
 	// message sent to the idle pi first is the run's first message instead, G11: it came with no run
 	// on, so it is neither a follow-up nor a steer, and nothing here sets it aside.)
 	const notThis = (other: OtherSlot) =>
-		turnAround !== undefined && other.behind !== undefined && (turnAround.phase.is === "opening" || (other.behind === "followUp" && slots.indexOf(turnAround) < slots.indexOf(other)));
+		(other.behind === "steer" && firstOfRun !== undefined && other.run === firstOfRun) ||
+		(turnAround !== undefined && other.behind !== undefined && (turnAround.phase.is === "opening" || (other.behind === "followUp" && slots.indexOf(turnAround) < slots.indexOf(other))));
 	const anyOther = candidates.find((slot): slot is OtherSlot => slot.whose === "other" && !notThis(slot));
 	if (anyOther) return namedOther(anyOther, false);
 	return turnAround ? turnClaim(turnAround) : { by: "nobody" };
