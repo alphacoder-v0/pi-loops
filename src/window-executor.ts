@@ -395,7 +395,7 @@ export class WindowExecutor implements Executor {
 	 * pi emitted `input`: it is in its pre-run phase for something, so what was handed over is not
 	 * refused yet (the grace counts again from here). And the input is ours or not. Ours: the source
 	 * `extension`, and the event comes inside our own send, or its text is the text of a prompt of ours
-	 * not yet echoed, or starts or ends with it (another extension's handler ran first: probe P6).
+	 * not yet echoed, or has it anywhere in it (another extension's handler ran first and wrapped it: P6).
 	 * Anything else is a message that is not ours, from the person or from another extension, until its
 	 * user message starts (`claimOf`). An input the window cannot place is filed as not ours: that can
 	 * only take a mark away.
@@ -404,7 +404,7 @@ export class WindowExecutor implements Executor {
 		this.slots = this.slots.map((slot) => (slot.whose === "turn" && slot.phase.is === "pending" ? { ...slot, phase: { is: "pending", since: now } } : slot));
 		if (input.source === "extension") {
 			const ours = (slot: Slot): slot is TurnSlot => slot.whose === "turn" && !slot.echoed && slot.phase.is !== "refused";
-			const echo = this.sending ? this.slots.filter(ours).at(-1) : this.slots.find((slot) => ours(slot) && slot.text !== "" && (input.text === slot.text || input.text.startsWith(slot.text) || input.text.endsWith(slot.text)));
+			const echo = this.sending ? this.slots.filter(ours).at(-1) : this.slots.find((slot) => ours(slot) && slot.text !== "" && input.text.includes(slot.text));
 			if (echo) {
 				this.slots = this.slots.map((slot) => (slot === echo ? { ...echo, echoed: true } : slot));
 				return;

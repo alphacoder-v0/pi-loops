@@ -10,6 +10,17 @@ import type { Row } from "../src/requests.ts";
 
 const turn = (id: string, text: string, phase: Phase): TurnSlot => ({ whose: "turn", mark: markFor({ lane: "s", id }), text, cap: { kind: "row", id, mode: "attended" }, phase, echoed: false });
 
+test("our send's echo that another extension's handler wrapped on both sides, ahead of ours, is ours: the message is marked", () => {
+	const w = win("never");
+	const row = plainJobRow(job, "run-1", "cron:job-1", "", by, T0);
+	w.queued.set(row.id, row);
+	w.ex.turn(row, T0);
+	const wrapped = `Context: ${row.payload!.text}\n\nAnswer briefly.`;
+	w.ex.inputSeen({ source: "extension", text: wrapped }, T0); // after the send returned: our handler ran second
+	w.ex.agentStarted(T0);
+	assert.equal(w.writes(wrapped), row.id);
+});
+
 test("a message with our words in its middle is ours only when no input of someone else waits (an extension wraps both sides)", () => {
 	const row = turn("row", "Run the tests", { is: "queued" });
 	assert.equal(claimOf("Please Run the tests now", [row]).by, "turn", "nothing else waits: a wrapped prompt of ours");
