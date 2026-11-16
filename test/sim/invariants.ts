@@ -40,6 +40,8 @@ export interface Coverage {
 	decisions: number;
 	/** Rows delivered a second time by a hand-over offered again after a refusal, which the design accepts: prefixed rows, and rows only their text proves. */
 	offeredAgainTwice: { prefixed: number; byText: number };
+	/** Messages of ours pi wrote with no mark beside someone else's waiting message (`Copy.markLess`): the design's one cost of not knowing. */
+	markLess: number;
 }
 
 type Queues = ReadonlyMap<string, Row[]>;
@@ -331,12 +333,12 @@ function typedStaysInTheEditor(world: World): string[] {
 }
 
 /** Why a hand-over the engine gave up while pi still held it, written late, may be a second delivery of its row. */
-type Excuse = "refused" | "refused, proved by its text" | "stop" | "lease" | "editor";
+type Excuse = "refused" | "refused, proved by its text" | "stop" | "lease" | "editor" | "a mark less";
 /** The two the design accepts (see `deliveredOnce`); each of the others has a check of its own (`KNOWN_SECOND_DELIVERIES`). */
-const ACCEPTED: readonly Excuse[] = ["refused", "refused, proved by its text"];
+const ACCEPTED: readonly Excuse[] = ["refused", "refused, proved by its text", "a mark less"];
 
 /** A person's message pi refused is never offered again, so nothing excuses a second delivery of one after a refusal. */
-const excuseOf = (copy: Copy): Excuse | undefined => (copy.fromTheEditor ? "editor" : copy.gaveUp !== "refused" ? copy.gaveUp : copy.person ? undefined : copy.provedByText ? "refused, proved by its text" : "refused");
+const excuseOf = (copy: Copy): Excuse | undefined => (copy.markLess ? "a mark less" : copy.fromTheEditor ? "editor" : copy.gaveUp !== "refused" ? copy.gaveUp : copy.person ? undefined : copy.provedByText ? "refused, proved by its text" : "refused");
 
 /** The rows pi wrote in this step that are now written more often than once plus their excused late sends. */
 function writtenTooOften(world: World, excused: readonly Excuse[], coverage?: Coverage): string[] {
@@ -347,7 +349,8 @@ function writtenTooOften(world: World, excused: readonly Excuse[], coverage?: Co
 		const written = world.copies.filter((copy) => answered(copy) && keyOf(copy.sessionId, countsFor(world, copy)) === key);
 		const late = written.filter((copy) => excused.includes(excuseOf(copy)!));
 		if (written.length > 1 + late.length) out.push(`pi wrote ${label(world, rowId)} into ${sessionId} ${written.length} times (${written.map((copy) => `${who(copy.process)}${copy.fromTheEditor ? ", sent by the person from the editor" : copy.gaveUp ? `, given up: ${copy.gaveUp}` : ""}`).join("; ")})`);
-		else if (coverage && written.length === 2 && late.some((copy) => ACCEPTED.includes(excuseOf(copy)!))) coverage.offeredAgainTwice[late[0].provedByText ? "byText" : "prefixed"]++;
+		if (coverage) coverage.markLess += world.facts.written.filter((copy) => copy.markLess && keyOf(copy.sessionId, copy.rowId) === key).length;
+		if (written.length <= 1 + late.length && coverage && written.length === 2 && late.some((copy) => ACCEPTED.includes(excuseOf(copy)!))) coverage.offeredAgainTwice[late[0].provedByText ? "byText" : "prefixed"]++;
 	}
 	return out;
 }
@@ -424,7 +427,7 @@ export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
  */
 export function createChecker(world: World, enforce?: string): { check(end?: boolean): { violation?: Violation; known: Violation[] }; coverage: Coverage } {
 	const memory: Memory = { queued: new Map(), spent: new Map(), exited: new Set(), findings: new Map(), released: new Set() };
-	const coverage: Coverage = { exits: {}, handOvers: 0, turnsBesideATurn: 0, decisions: 0, offeredAgainTwice: { prefixed: 0, byText: 0 } };
+	const coverage: Coverage = { exits: {}, handOvers: 0, turnsBesideATurn: 0, decisions: 0, offeredAgainTwice: { prefixed: 0, byText: 0 }, markLess: 0 };
 	return {
 		coverage,
 		check(end = false) {

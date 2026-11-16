@@ -115,8 +115,6 @@ export class WindowExecutor implements Executor {
 	private readonly gone = new Map<string, Gone>();
 	/** The run pi is in, and the row whose message it last began. */
 	private running: ExecutorView["running"];
-	/** No user message of the run that is on has started yet. */
-	private firstOfRun = false;
 	/** The rows still in the request file: the cap of a turn this instance did not hand over itself. */
 	private readonly rows: () => Row[];
 	/**
@@ -380,7 +378,6 @@ export class WindowExecutor implements Executor {
 	/** At `agent_start`: a run is on, and a prompt handed to the idle pi is opening it, or queued behind whatever does. */
 	agentStarted(now: number): void {
 		this.running = { startedAt: stamp(now) };
-		this.firstOfRun = true;
 		this.slots = this.slots.map((slot) => (slot.whose === "turn" && slot.phase.is === "pending" ? { ...slot, phase: { is: "opening" } } : slot));
 	}
 
@@ -407,7 +404,7 @@ export class WindowExecutor implements Executor {
 		// During a run, pi refuses a send with no delivery ("Agent is already processing") after its
 		// `input` (probe G11): it never becomes a message.
 		if (this.running && !behind) return;
-		this.slots.push({ whose: "other", from: input.source === "extension" ? "extension" : "person", text: input.text, ...(behind ? { behind } : {}), ...(input.source === "interactive" ? { typed: true as const } : {}), ...(this.running ? { run: this.running.startedAt } : {}) });
+		this.slots.push({ whose: "other", from: input.source === "extension" ? "extension" : "person", text: input.text, ...(behind ? { behind } : {}) });
 	}
 
 	/**
@@ -423,16 +420,10 @@ export class WindowExecutor implements Executor {
 		const text = userTextOf(message);
 		if (text === undefined) return;
 		this.slots = this.slots.map((slot) => (slot.whose === "turn" && slot.phase.is === "pending" ? { ...slot, phase: { is: "pending", since: now } } : slot));
-		const first = this.firstOfRun;
-		this.firstOfRun = false;
-		const claim = claimOf(text, this.slots, first ? this.running?.startedAt : undefined);
+		const claim = claimOf(text, this.slots);
 		this.slots = this.slots.flatMap((slot): Slot[] => {
 			if (claim.by === "turn" && slot === claim.slot) return [{ ...slot, phase: { is: "writing", claim } }];
 			if (claim.by === "other" && slot === claim.slot) return [];
-			// What the person typed into an idle terminal is the first message of the run it starts, or
-			// never a message (another extension's input handler took it): a later message is not theirs.
-			// Not the page's: pi decides its delivery before the handlers run, and a run can begin meanwhile.
-			if (first && slot.whose === "other" && slot.typed && !slot.behind) return [];
 			return slot.whose === "turn" && slot.phase.is === "opening" ? [{ ...slot, phase: { is: "queued" } }] : [slot];
 		});
 		if (claim.by === "turn") {
@@ -441,8 +432,10 @@ export class WindowExecutor implements Executor {
 			if (claim.slot.stop) this.ctx()?.abort();
 			return;
 		}
-		// The person's words, by their text: their turn, uncapped.
-		if (claim.by === "other" && claim.byText && claim.slot.from === "person") {
+		// The person's words, by their text: their turn, uncapped. While a row's cap is in force, only words
+		// they sent during a run (pi delivers them as a steer or a follow-up): what they sent to an idle pi
+		// would have begun a run of its own, and this one began with a prompt of ours.
+		if (claim.by === "other" && claim.byText && claim.slot.from === "person" && (this.current?.kind !== "row" || claim.slot.behind !== undefined)) {
 			this.current = { kind: "person" };
 			return;
 		}

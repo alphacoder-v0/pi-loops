@@ -1373,7 +1373,7 @@ test("a message's delivery is what pi's input event says, not its source: a stee
 	assert.ok(at("followUp", "interactive"), "a terminal's follow-up (Alt+Enter) comes after the goal: the message is the goal's, marked");
 });
 
-test("a steer is never the first message of the run it came during: a rewritten first message is the prompt of ours pi took late", () => {
+test("a steer waiting as pi writes a refused prompt of ours late takes the message: a mark less, never one on a message that may be the person's", () => {
 	const w = fakeWindowPi(true, { mode: "rpc" });
 	const claim = row("c1", { source: "inbox:i", mode: "attended", wake: "turn", payload: { text: "address finding 1.", cwd: "/" } });
 	w.executor.turn(claim, T0);
@@ -1381,7 +1381,7 @@ test("a steer is never the first message of the run it came during: a rewritten 
 	w.executor.agentStarted(T0 + 1);
 	w.executor.inputSeen({ source: "rpc", text: "and the logs", streamingBehavior: "steer" }, T0 + 2);
 	w.executor.messageStarted({ role: "user", content: "[rewritten] address finding 1." }, T0 + 3);
-	assert.ok(w.executor.messageEnded({ role: "user", content: "[rewritten] address finding 1." }), "marked for the claim");
+	assert.equal(w.executor.messageEnded({ role: "user", content: "[rewritten] address finding 1." }), undefined, "the steer could be it: no mark (the claim is offered again)");
 });
 
 test("an input pi refuses during a run (sent with no delivery) leaves nothing that could take a message", () => {
@@ -1394,15 +1394,17 @@ test("an input pi refuses during a run (sent with no delivery) leaves nothing th
 	assert.ok(w.executor.messageEnded({ role: "user", content: "[rewritten] keep going" }), "the goal's message is marked");
 });
 
-test("the page's message sent to an idle pi is not dropped when a run of ours starts first: pi decided its delivery before the handlers ran", () => {
+test("the page's message that a run of ours overtook is still the person's, and runs under that run's cap: the narrow race stays on the safe side", () => {
 	const w = fakeWindowPi(true, { mode: "rpc" });
 	w.executor.inputSeen({ source: "rpc", text: "look" }, T0);
 	const t1 = turnRow("t1");
 	w.executor.turn(t1, T0 + 1);
 	w.executor.agentStarted(T0 + 2);
 	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" }, T0 + 3);
+	w.executor.messageEnded({ role: "user", content: "[Trigger t1] hello" });
 	w.executor.messageStarted({ role: "user", content: "[rewritten] look" }, T0 + 4);
-	assert.deepEqual(w.executor.currentTurn(), { kind: "person" }, "the person's words, by their text");
+	assert.equal(w.executor.messageEnded({ role: "user", content: "[rewritten] look" }), undefined, "no mark of ours on the person's message");
+	assert.equal(w.executor.currentTurn()?.kind, "row", "and the cap of the run in force stays");
 });
 
 test("a follow-up of someone else that pi no longer holds (pi idle with nothing pending) takes no later message", () => {

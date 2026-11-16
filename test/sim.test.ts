@@ -120,6 +120,7 @@ test("the request engine keeps its invariants through seeded schedules of append
 	let turnsBesideATurn = 0;
 	const clears = { drawn: 0, cancels: 0 };
 	const offeredAgainTwice = { prefixed: 0, byText: 0 };
+	let markLess = 0;
 	let firstBeside: number | undefined;
 	const exits: Record<string, number> = {};
 	for (let seed = FIRST_SEED; seed < FIRST_SEED + SCHEDULES; seed++) {
@@ -137,13 +138,14 @@ test("the request engine keeps its invariants through seeded schedules of append
 		clears.cancels += ran.clears.cancels;
 		offeredAgainTwice.prefixed += ran.coverage.offeredAgainTwice.prefixed;
 		offeredAgainTwice.byText += ran.coverage.offeredAgainTwice.byText;
+		markLess += ran.coverage.markLess;
 		if (ran.coverage.turnsBesideATurn && firstBeside === undefined) firstBeside = seed;
 		for (const [exit, count] of Object.entries(ran.coverage.exits)) exits[exit] = (exits[exit] ?? 0) + count;
 	}
 	t.diagnostic(`simulated ${SCHEDULES} schedules, ${steps} steps, ${crashes} crashes injected (seeds ${FIRST_SEED} to ${FIRST_SEED + SCHEDULES - 1})`);
 	t.diagnostic(`${handOvers} hand-overs; exits: ${EXITS.map((exit) => `${exit} ${exits[exit] ?? 0}`).join(", ")}; ${decisions} findings decided twice at once; ${turnsBesideATurn} turns handed to a pi that held another unstarted${firstBeside === undefined ? "" : ` (first in seed ${firstBeside})`}`);
 	t.diagnostic(`the page cleared a queue ${clears.drawn} times, with ${clears.cancels} cancels`);
-	t.diagnostic(`excused by the design: ${offeredAgainTwice.prefixed} prefixed rows and ${offeredAgainTwice.byText} text-proved rows delivered twice after a refusal and a second offer`);
+	t.diagnostic(`excused by the design: ${offeredAgainTwice.prefixed} prefixed rows and ${offeredAgainTwice.byText} text-proved rows delivered twice after a refusal and a second offer; ${markLess} messages of ours written with no mark beside someone else's waiting message`);
 	if (SCHEDULES >= 1000 && STEPS >= 30) {
 		assert.deepEqual(EXITS.filter((exit) => !exits[exit]), [], "every exit is taken at least once in a full run");
 		assert.ok(clears.drawn > 0 && clears.cancels > 0, `a full run clears the page's queue and writes the cancels (${clears.drawn} clears, ${clears.cancels} cancels)`);

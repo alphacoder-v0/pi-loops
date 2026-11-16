@@ -397,17 +397,16 @@ machine. Everything here follows from that, and each one has a price.
     a mark away: the cost is a second delivery at most, never a row removed that pi did not write.
     Where an input waits and only a prompt of ours has words around the message, the window reads
     how pi delivers each input, as pi's `input` event says it (`streamingBehavior`: a steer, a
-    follow-up, or none when pi is idle), and four orders of pi, each measured by a probe and held by
-    a scene of `test/sim-model.test.ts`. A prompt given to an idle pi is the first user message of
-    the run it starts, before what pi kept after a stop (G1). A steer (Enter during a run in a
-    terminal, the page's steer, an extension's `deliverAs: "steer"`) is written right after the
-    message under way, so never as the first user message of the run it came during (g13, g16).
-    Follow-ups are written in the order pi was given them (P6, g9). And what the person types into an
-    idle terminal is the first user message of the run it starts, or never a message (another
-    extension's handler took it). So a follow-up or a steer is not the message of a prompt of ours
-    that opened the run, a follow-up given after that prompt is not either, nor is a steer the first
-    message of its own run; a terminal's idle submission that a run's first message did not take is
-    dropped; and an input during a run with no delivery is one pi refuses (G11), never a message. A
+    follow-up, or none when pi is idle), and two orders of pi, each measured by a probe and held by a
+    scene of `test/sim-model.test.ts`: a prompt given to an idle pi is the first user message of the
+    run it starts, before what pi kept after a stop and before a steer (G1, g13, g16); and follow-ups
+    are written in the order pi was given them (P6, g9). So a follow-up or a steer is not the message
+    of a prompt of ours that opened the run, and a follow-up given after that prompt is not either.
+    An input during a run with no delivery is one pi refuses (G11), never a message. Anything else
+    that waits may be the message, and the window gives no mark (the owner chose this over more
+    inference, 2026-11-16). While a row's cap is in force, the person's words lift it only when pi
+    delivers them into the run (a steer or a follow-up): what they sent to an idle pi would have begun
+    a run of its own. A
     prefix in the text is words, for the person and the model, and decides nothing by itself: the person can
     send it, and another extension can move it. A turn handed to an idle pi that no run has taken up
     keeps the lane, so an idle pi gets one prompt of ours at a time. The proof is read from the

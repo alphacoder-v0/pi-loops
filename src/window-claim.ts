@@ -46,10 +46,6 @@ export interface OtherSlot {
 	 * after the message under way, before the follow-ups (g13, g16). None when pi was idle.
 	 */
 	behind?: "followUp" | "steer";
-	/** The person typed it in a terminal (pi's `input` source `interactive`). */
-	typed?: true;
-	/** The run it came during (the run's start stamp): a steer is never that run's first user message. */
-	run?: string;
 }
 
 /** A slot the window is tracking. */
@@ -117,19 +113,18 @@ function longest<T>(msg: string, slots: readonly T[], textOf: (slot: T) => strin
 /**
  * Assign a user message to the first matching slot under these rules:
  * 1. Exact text chooses the oldest other slot, otherwise a turn by `tieRank` (one no stop named
- *    first; then refused, opening, the oldest).
+ *    first; then opening, one pi holds, a refused one, the oldest).
  * 2. A matching other slot with words around its text wins; the longest text wins, then the oldest.
  * 3. A matching turn whose `[Trigger <id>] ` is in the message wins. Otherwise any waiting other
  *    slot wins before approximate turn matches, but for a follow-up or a steer when the matching turn
- *    opened the run, a follow-up given to pi after the matching turn, and a steer when the message is
- *    the first user message of the run the steer came during (`firstOfRun`, that run's start stamp).
+ *    opened the run, and a follow-up given to pi after the matching turn.
  * 4. A turn match wins; the longest text wins, then by `tieRank`.
  * 5. Otherwise the message belongs to nobody.
  *
  * Only pending, opening, queued and refused turns and other slots are candidates. Writing and written
  * turns and append slots never claim. Image notes are stripped before matching.
  */
-export function claimOf(text: string, slots: readonly Slot[], firstOfRun?: string): Claim {
+export function claimOf(text: string, slots: readonly Slot[]): Claim {
 	const msg = stripImageNotes(text);
 	const candidates = slots.filter((slot): slot is TurnSlot | OtherSlot => slot.whose === "other" || (slot.whose === "turn" && (slot.phase.is === "pending" || slot.phase.is === "opening" || slot.phase.is === "queued" || slot.phase.is === "refused")));
 	const exact = candidates.filter((slot) => slot.text === msg);
@@ -159,7 +154,6 @@ export function claimOf(text: string, slots: readonly Slot[], firstOfRun?: strin
 	// message sent to the idle pi first is the run's first message instead, G11: it came with no run
 	// on, so it is neither a follow-up nor a steer, and nothing here sets it aside.)
 	const notThis = (other: OtherSlot) =>
-		(other.behind === "steer" && firstOfRun !== undefined && other.run === firstOfRun) ||
 		(turnAround !== undefined && other.behind !== undefined && (turnAround.phase.is === "opening" || (other.behind === "followUp" && slots.indexOf(turnAround) < slots.indexOf(other))));
 	const anyOther = candidates.find((slot): slot is OtherSlot => slot.whose === "other" && !notThis(slot));
 	if (anyOther) return namedOther(anyOther, false);

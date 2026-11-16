@@ -436,6 +436,20 @@ test("a message the window cannot place takes the narrowest cap of the prompts p
 	assert.equal((await w.call(rmrf))?.block, true);
 });
 
+test("a message the window cannot place takes the narrowest cap when the narrow prompt was handed first", async () => {
+	const w = window();
+	const narrow = plainJobRow(job({ tools: ["read"] }), "run-1111222233334444", "cron:job-1", "", by, T0);
+	const wide = plainJobRow(job(), "run-5555666677778888", "cron:job-1", "", by, T0);
+	w.queued.set(narrow.id, narrow);
+	w.queued.set(wide.id, wide);
+	w.executor.turn(narrow, T0);
+	w.executor.turn(wide, T0 + 1);
+	w.executor.agentStarted(T0 + 2);
+	w.started("<ctx>a message neither prompt's words are around</ctx>");
+	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, ["read"]);
+	assert.equal((await w.call({ toolName: "bash", input: { command: "ls" } }))?.block, true, "bash is not among what every held prompt allows");
+});
+
 test("a message the window cannot place takes the cap of a refused prompt pi may still send late", async () => {
 	const w = window();
 	const row = plainJobRow(job({ tools: ["read"] }), "run-1111222233334444", "cron:job-1", "", by, T0);

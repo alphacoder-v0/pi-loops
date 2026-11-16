@@ -128,6 +128,11 @@ export interface Copy {
 	abortedAtStart?: boolean;
 	/** The row whose mark pi's entry of this copy carries, when it carries one. */
 	markedAs?: string;
+	/**
+	 * Written with no mark while someone else's message waited in pi: the window could not tell which
+	 * was written, and took a mark away, as the design allows (a second delivery at most).
+	 */
+	markLess?: true;
 	/** A stop in a terminal put this hand-over's text into the editor, and the person sent it: written by them, not by pi's queue. */
 	fromTheEditor?: boolean;
 }
@@ -416,7 +421,7 @@ export const held = (proc: Process): Copy[] => [proc.pi.current, ...proc.pi.kept
  * refused. The engine's `attempts` may count these and nothing else.
  */
 export function failedHandOvers(world: World, rowId: string): number {
-	const failed = (copy: Copy) => copy.state === "dropped" || copy.state === "refused" || (copy.wake === "turn" && (copy.leftQueueAt ?? world.clock) - copy.handedAt >= GRACE_MS);
+	const failed = (copy: Copy) => copy.markLess || copy.state === "dropped" || copy.state === "refused" || (copy.wake === "turn" && (copy.leftQueueAt ?? world.clock) - copy.handedAt >= GRACE_MS);
 	return (world.threw.get(rowId) ?? 0) + world.copies.filter((copy) => copy.rowId === rowId && failed(copy)).length;
 }
 
@@ -501,6 +506,7 @@ function write(world: World, proc: Process, item: Item): void {
 	if (!item.copy) return;
 	const mark = markOn(proc.conversation.entries[proc.conversation.entries.length - 1]);
 	if (mark) item.copy.markedAs = mark.id;
+	else if (!item.custom && [...proc.pi.queue, ...proc.pi.kept].some((waiting) => !waiting.copy && !waiting.custom)) item.copy.markLess = true;
 	if (!item.custom) proc.pi.turnOf = item.copy.rowId;
 	item.copy.abortedAtStart = proc.pi.aborts > aborts;
 	leave(item.copy, "written", at);
@@ -890,7 +896,7 @@ export async function drainAs(world: World, proc: Process, tick: boolean, fault:
 		crash.write();
 		const turns = held(proc).filter((copy) => copy.wake === "turn" && !copy.gaveUp);
 		const local = row.source === "goal" || row.source.startsWith("inbox:");
-		world.facts.handOvers.push({ drain: number, process: proc, row, wake, holds: conversation.holder === proc, queued: world.store.list(conversation.id).some((queued) => queued.id === row.id), producerRunsIt: local && row.created_by.left === undefined && pidAlive(world, row.created_by.pid), piRunning: proc.pi.running, turnsHeld: turns.length, textTurnsHeld: turns.filter((copy) => copy.provedByText && world.clock - copy.handedAt < GRACE_MS).length, pendingTurnsHeld: proc.pi.running ? 0 : proc.pi.queue.filter((item) => item.copy && item.copy.wake === "turn" && !item.copy.gaveUp && !item.copy.stopNamed && world.clock - item.copy.handedAt < GRACE_MS).length, written: world.copies.some((copy) => copy.sessionId === conversation.id && countsFor(world, copy) === row.id && answered(copy) && !copy.fromTheEditor), sentFromTheEditor: world.copies.some((copy) => copy.sessionId === conversation.id && copy.rowId === row.id && copy.state === "written" && copy.fromTheEditor === true) });
+		world.facts.handOvers.push({ drain: number, process: proc, row, wake, holds: conversation.holder === proc, queued: world.store.list(conversation.id).some((queued) => queued.id === row.id), producerRunsIt: local && row.created_by.left === undefined && pidAlive(world, row.created_by.pid), piRunning: proc.pi.running, turnsHeld: turns.length, textTurnsHeld: turns.filter((copy) => copy.provedByText && world.clock - copy.handedAt < GRACE_MS).length, pendingTurnsHeld: proc.pi.running ? 0 : proc.pi.queue.filter((item) => item.copy && item.copy.wake === "turn" && !item.copy.gaveUp && !item.copy.stopNamed && world.clock - item.copy.handedAt < GRACE_MS).length, written: world.copies.some((copy) => copy.sessionId === conversation.id && countsFor(world, copy) === row.id && answered(copy) && !copy.fromTheEditor && !copy.markLess), sentFromTheEditor: world.copies.some((copy) => copy.sessionId === conversation.id && copy.rowId === row.id && copy.state === "written" && copy.fromTheEditor === true) });
 		world.sending = { row, wake };
 		world.handOverThrows = fault.handOverThrows === true;
 		let sent: T;

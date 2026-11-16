@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { markFor } from "../src/mark.ts";
 import type { OtherSlot, Phase, Slot, TurnSlot } from "../src/window-claim.ts";
 import { claimOf, cleanEditor, narrowestCap, settleSlots } from "../src/window-claim.ts";
@@ -354,4 +356,18 @@ test("narrowestCap: unattended before attended, only the tools every unattended 
 	assert.deepEqual(narrowestCap([cap("u1", "unattended", ["read", "bash"]), cap("u2", "unattended", ["read"])]), cap("u1", "unattended", ["read"]));
 	assert.deepEqual(narrowestCap([cap("u1", "unattended"), cap("u2", "unattended", ["read"])]), cap("u1", "unattended", ["read"]), "one that declares nothing narrows nothing");
 	assert.deepEqual(narrowestCap([cap("u1", "unattended", ["read", "bash", "my_tool"]), cap("u2", "unattended", undefined, ["read"])]), cap("u1", "unattended", ["read", "my_tool"], ["read"]));
+});
+
+test("pi-loops.ts hands the window pi's own delivery of an input: the rule of whose a message is reads it", () => {
+	// pi-loops.ts has no harness: its source is the thing pinned (as test/lease.test.ts does).
+	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
+	assert.match(source, /executor\.inputSeen\(\{ source: e\.source, text: e\.text, streamingBehavior: e\.streamingBehavior \}, Date\.now\(\)\)/);
+});
+
+test("narrowestCap meets the lists whatever order pi holds the prompts in", () => {
+	const cap = (id: string, tools?: string[], builtinTools?: string[]) => ({ kind: "row" as const, id, mode: "unattended" as const, ...(tools ? { tools } : {}), ...(builtinTools ? { builtinTools } : {}) });
+	assert.deepEqual(narrowestCap([cap("u1", ["read"]), cap("u2", ["read", "bash"])])?.tools, ["read"]);
+	assert.deepEqual(narrowestCap([cap("u1", ["read"]), cap("u2")])?.tools, ["read"], "the narrow one first, then one that declares nothing");
+	assert.deepEqual(narrowestCap([cap("u1", undefined, ["read"]), cap("u2", undefined, ["read", "bash"])])?.builtinTools, ["read"]);
+	assert.deepEqual(narrowestCap([cap("u1", undefined, ["read"]), cap("u2")])?.builtinTools, ["read"]);
 });
