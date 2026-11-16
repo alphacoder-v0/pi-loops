@@ -421,7 +421,7 @@ test("a scheduled turn that another extension wraps on both sides stays capped: 
 	assert.equal((await w.call(rmrf))?.block, true);
 });
 
-test("a message the window cannot place takes the narrowest cap of the prompts pi holds: an attended row before an unattended one does not widen it", async () => {
+test("a message the window cannot place runs under the strictest cap while pi holds prompts of ours: an attended one beside does not widen it", async () => {
 	const w = window();
 	const mine = pageRow("p1", "keep going");
 	w.queued.set(mine.id, mine);
@@ -436,7 +436,7 @@ test("a message the window cannot place takes the narrowest cap of the prompts p
 	assert.equal((await w.call(rmrf))?.block, true);
 });
 
-test("a message the window cannot place takes the narrowest cap when the narrow prompt was handed first", async () => {
+test("a message the window cannot place runs under the strictest cap whatever order pi was handed its prompts in", async () => {
 	const w = window();
 	const narrow = plainJobRow(job({ tools: ["read"] }), "run-1111222233334444", "cron:job-1", "", by, T0);
 	const wide = plainJobRow(job(), "run-5555666677778888", "cron:job-1", "", by, T0);
@@ -446,7 +446,7 @@ test("a message the window cannot place takes the narrowest cap when the narrow 
 	w.executor.turn(wide, T0 + 1);
 	w.executor.agentStarted(T0 + 2);
 	w.started("<ctx>a message neither prompt's words are around</ctx>");
-	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, ["read"]);
+	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, [], "the strictest cap: no tool declared");
 	assert.equal((await w.call({ toolName: "bash", input: { command: "ls" } }))?.block, true, "bash is not among what every held prompt allows");
 });
 
@@ -481,7 +481,7 @@ test("the person's words that end with a prompt of ours do not lift its cap when
 	assert.equal((await w.call(rmrf))?.block, true);
 });
 
-test("a late ring for one of the prompts a met cap came from replaces that prompt's part only: the narrowest stays", async () => {
+test("a late ring for one of the prompts pi holds lifts nothing from the strictest cap", async () => {
 	const w = window();
 	const mine = pageRow("p1", "keep going");
 	w.queued.set(mine.id, mine);
@@ -493,11 +493,11 @@ test("a late ring for one of the prompts a met cap came from replaces that promp
 	w.started("<ctx>neither prompt's words</ctx>");
 	assert.equal(ringProduced([...w.queued.values()], mine.id, requestFingerprint(mine), (r) => w.executor.produced(r)), true, "the page rings late");
 	assert.equal((w.executor.currentTurn() as { mode?: string }).mode, "unattended", "the loop's prompt may be the message: its cap stays");
-	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, ["read"]);
+	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, [], "the strictest cap: no tool declared");
 	assert.equal((await w.call(rmrf))?.block, true);
 });
 
-test("a second message the window cannot place meets from the parts, so a late ring still replaces its own row's part only", async () => {
+test("a second message the window cannot place keeps the strictest cap, and a late ring lifts nothing", async () => {
 	const w = window();
 	const mine = pageRow("p1", "keep going");
 	w.queued.set(mine.id, mine);
@@ -509,11 +509,11 @@ test("a second message the window cannot place meets from the parts, so a late r
 	w.started(`[Trigger ${x.id}] whatever it says`); // met with x's cap
 	w.started("<ctx>a second message nothing places</ctx>");
 	assert.equal(ringProduced([...w.queued.values()], mine.id, requestFingerprint(mine), (r) => w.executor.produced(r)), true, "the page rings late");
-	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, ["read"], "x's part stays");
+	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, [], "the strictest cap stays");
 	assert.equal((await w.call(rmrf))?.block, true);
 });
 
-test("a part of a met cap whose prompt left the list mid-run stays in the next meet: a late ring cannot drop it", async () => {
+test("the strictest cap stays when a prompt pi held leaves the list mid-run, and a late ring lifts nothing", async () => {
 	const w = window();
 	const mine = pageRow("p1", "keep going");
 	w.queued.set(mine.id, mine);
@@ -528,7 +528,7 @@ test("a part of a met cap whose prompt left the list mid-run stays in the next m
 	w.executor.view("s");
 	w.started("<ctx>second message nothing places</ctx>");
 	assert.equal(ringProduced([...w.queued.values()], mine.id, requestFingerprint(mine), (r) => w.executor.produced(r)), true);
-	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, ["read"]);
+	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, [], "the strictest cap: no tool declared");
 	assert.equal((await w.call(rmrf))?.block, true);
 });
 
@@ -540,7 +540,7 @@ test("a message the window cannot place takes the cap of a refused prompt pi may
 	w.executor.refused(row.id);
 	w.executor.agentStarted(T0 + 1);
 	w.started(`<ctx>${row.payload!.text}</ctx>`);
-	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: row.id, mode: "unattended", tools: ["read"], builtinTools: undefined });
+	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: row.id, mode: "unattended", tools: [] }, "the strictest cap");
 	assert.equal((await w.call(rmrf))?.block, true);
 });
 
@@ -892,12 +892,12 @@ test("the person's rewritten follow-up lifts a row's cap", async () => {
 	assert.equal(await w.call(rmrf), undefined);
 });
 
-// From the Gates review of PR 261, round 7: the parts of a met cap, where they are cleared, and the ring that replaces one.
+// From the Gates review of PR 261, round 7, kept for the strictest cap that replaced the meet: a late ring lifts nothing from it, and where the claimed cap is cleared.
 const jobRowRead = (runId: string) => plainJobRow(job({ tools: ["read"] }), runId, "cron:job-1", "", by, T0);
 const ring = (w: ReturnType<typeof window>, r: Row) => assert.equal(ringProduced([...w.queued.values()], r.id, requestFingerprint(r), (x) => w.executor.produced(x)), true, "the page rings late");
 const mode = (w: ReturnType<typeof window>) => (w.executor.currentTurn() as { mode?: string } | undefined)?.mode;
 
-test("nested meet: a second unplaced message keeps the parts of the met cap in force; a late ring replaces only its own row's part", async () => {
+test("a second unplaced message after a run's own message: the strictest cap, and a late ring lifts nothing", async () => {
 	const w = window();
 	const p1 = pageRow("p1", "keep going");
 	w.queued.set(p1.id, p1);
@@ -907,7 +907,7 @@ test("nested meet: a second unplaced message keeps the parts of the met cap in f
 	const j = jobRowRead("run-aaaabbbbccccdddd");
 	w.queued.set(j.id, j); // in the file, not handed over here
 	w.started(`[Trigger ${j.id}] tidy the cache, rewritten`); // unplaced: meet of p1 and j
-	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, ["read"]);
+	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, [], "the strictest cap: no tool declared");
 	w.started("<ctx>another extension's message</ctx>"); // unplaced again
 	ring(w, p1);
 	assert.equal(mode(w), "unattended", "j's part is not p1's: it stays");
@@ -929,7 +929,7 @@ test("control: the same without the second unplaced message stays capped", async
 	assert.equal(await w.blocked(rmrf), true);
 });
 
-test("the cap in force is a part: a late ring of a held prompt does not lift it", async () => {
+test("with a row's cap in force, an unplaced message runs under the strictest cap: a late ring of a held prompt lifts nothing", async () => {
 	const w = window();
 	w.clockFired({ tools: ["read"] });
 	const p1 = pageRow("p1", "keep going");
@@ -941,7 +941,7 @@ test("the cap in force is a part: a late ring of a held prompt does not lift it"
 	assert.equal(await w.blocked(rmrf), true);
 });
 
-test("a [Trigger <id>] row's cap is a part: a late ring of a held prompt does not lift it", async () => {
+test("a [Trigger <id>] row beside a held prompt: the strictest cap, and a late ring lifts nothing", async () => {
 	const w = window();
 	const j = jobRowRead("run-aaaabbbbccccdddd");
 	w.queued.set(j.id, j);
@@ -955,7 +955,7 @@ test("a [Trigger <id>] row's cap is a part: a late ring of a held prompt does no
 	assert.equal(await w.blocked(rmrf), true);
 });
 
-test("a turn's own message after a meet: a late ring of an old part does not touch its cap", async () => {
+test("a turn's own message after the strictest cap: a late ring of another row does not touch its cap", async () => {
 	const w = window();
 	const p1 = pageRow("p1", "keep going");
 	w.queued.set(p1.id, p1);
@@ -971,7 +971,7 @@ test("a turn's own message after a meet: a late ring of an old part does not tou
 	assert.equal(await w.blocked(rmrf), true);
 });
 
-test("the person's follow-up after a meet: a late ring does not cap their turn", async () => {
+test("the person's follow-up after the strictest cap: a late ring does not cap their turn", async () => {
 	const w = window();
 	const p1 = pageRow("p1", "keep going");
 	w.queued.set(p1.id, p1);
@@ -988,7 +988,7 @@ test("the person's follow-up after a meet: a late ring does not cap their turn",
 	assert.equal(await w.call(rmrf), undefined);
 });
 
-test("a settled meet leaves nothing: a ring after it and the person's next own turn run uncapped", async () => {
+test("a settle leaves no cap: a ring after it and the person's next own turn run uncapped", async () => {
 	const w = window();
 	const p1 = pageRow("p1", "keep going");
 	w.queued.set(p1.id, p1);
@@ -1006,7 +1006,7 @@ test("a settled meet leaves nothing: a ring after it and the person's next own t
 	assert.equal(await w.call(rmrf), undefined);
 });
 
-test("a met cap of one part: its late ring upgrades it", async () => {
+test("a late ring does not lift the strictest cap of a message the window could not place: that message may be another prompt", async () => {
 	const w = window();
 	const p1 = pageRow("p1", "keep going");
 	w.queued.set(p1.id, p1);
@@ -1015,11 +1015,11 @@ test("a met cap of one part: its late ring upgrades it", async () => {
 	w.started("<ctx>rewritten</ctx>");
 	assert.equal(mode(w), "unattended");
 	ring(w, p1);
-	assert.equal(mode(w), "attended");
-	assert.equal(await w.call(rmrf), undefined);
+	assert.equal(mode(w), "unattended", "the window does not know the message is p1's");
+	assert.equal((await w.call(rmrf))?.block, true);
 });
 
-test("two late rings of the two parts: both replaced, attended", async () => {
+test("two late rings leave the strictest cap as it was", async () => {
 	const w = window();
 	const p1 = pageRow("p1", "keep going");
 	const p2 = pageRow("p2", "and the other");
@@ -1030,7 +1030,6 @@ test("two late rings of the two parts: both replaced, attended", async () => {
 	w.executor.agentStarted(T0 + 2);
 	w.started("<ctx>rewritten</ctx>");
 	ring(w, p1);
-	assert.equal(mode(w), "unattended", "p2 is still a part");
 	ring(w, p2);
-	assert.equal(mode(w), "attended");
+	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: "p1", mode: "unattended", tools: [] });
 });

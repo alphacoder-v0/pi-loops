@@ -17,7 +17,7 @@ import { markDetails, markFor, withMark } from "./mark.ts";
 import type { ImageContent, RequestMode, Row, UnclaimedRow } from "./requests.ts";
 import type { RunRecord } from "./store.ts";
 import { stamp } from "./schedule.ts";
-import { type Slot, type TurnSlot, claimOf, cleanEditor, narrowestCap, settleSlots } from "./window-claim.ts";
+import { type Slot, type TurnSlot, claimOf, cleanEditor, settleSlots } from "./window-claim.ts";
 
 /**
  * Whose turn the agent is in, and under what cap (design §4.4, §6.3): a pi-loops row, with the mode
@@ -83,6 +83,16 @@ const noImages = (row: Row): ImageContent[] => {
 	throw new Error(`request ${row.id} has images and this window has no way to read them`);
 };
 
+/**
+ * The cap of a message the window cannot place while a prompt of ours may be it (one pi holds, a row's
+ * cap in force, a row whose `[Trigger <id>]` begins it): unattended, and no tool declared, so every
+ * tool but pi-loops' read-only ones is asked about, and refused with no one to answer. `id` names a
+ * row it may be, for the question and the log. Strict on purpose: the window does not guess which.
+ */
+function strictest(id: string): CurrentTurn & { kind: "row" } {
+	return { kind: "row", id, mode: "unattended", tools: [] };
+}
+
 /** The text of a user message, as pi starts it; undefined for any other role. */
 function userTextOf(message: unknown): string | undefined {
 	const value = message as { role?: unknown; content?: unknown } | undefined;
@@ -110,8 +120,8 @@ export class WindowExecutor implements Executor {
 	private readonly gone = new Map<string, Gone>();
 	/** The run pi is in, and the row whose message it last began. */
 	private running: ExecutorView["running"];
-	/** The caps the cap in force was met from, when a message the window could not place set it (`narrowestCap`). */
-	private currentParts: Array<CurrentTurn & { kind: "row" }> | undefined;
+	/** The cap in force is the one of the row whose message claimed it, so a late ring for that row may upgrade it. */
+	private currentClaimed = false;
 	/** The rows still in the request file: the cap of a turn this instance did not hand over itself. */
 	private readonly rows: () => Row[];
 	/**
@@ -249,12 +259,9 @@ export class WindowExecutor implements Executor {
 		// and the drain in that handler went first): the row is the page's all the same, so its turn,
 		// started or not, runs under the cap the ring vouches for.
 		this.slots = this.slots.map((slot) => (slot.whose === "turn" && slot.mark.id === row.id ? { ...slot, cap: this.capOf(row) } : slot));
-		// The cap in force is this row's own (its message claimed it): the ring's. One met from several
-		// caps (a message the window could not place) has this row's part replaced, and is met again.
-		if (this.currentParts) {
-			this.currentParts = this.currentParts.map((cap) => (cap.id === row.id ? this.capOf(row) : cap));
-			this.current = narrowestCap(this.currentParts);
-		} else if (this.current?.kind === "row" && this.current.id === row.id) this.current = this.capOf(row);
+		// Only a cap this row's own message claimed: the strictest cap of a message the window could not
+		// place stays, since that message may be another prompt's.
+		if (this.currentClaimed && this.current?.kind === "row" && this.current.id === row.id) this.current = this.capOf(row);
 	}
 
 	/**
@@ -359,7 +366,7 @@ export class WindowExecutor implements Executor {
 	 */
 	settled(aborted = false): string[] {
 		this.current = undefined;
-		this.currentParts = undefined;
+		this.currentClaimed = false;
 		const ctx = this.ctx();
 		const terminal = ctx?.mode === "tui";
 		// A row that left the file since the last look (an exit in the drain that ran since) owes no exit:
@@ -432,7 +439,7 @@ export class WindowExecutor implements Executor {
 		if (claim.by === "turn") {
 			if (this.running) this.running = { ...this.running, requestId: claim.slot.mark.id };
 			this.current = claim.slot.cap;
-			this.currentParts = undefined;
+			this.currentClaimed = true;
 			if (claim.slot.stop) this.ctx()?.abort();
 			return;
 		}
@@ -441,26 +448,28 @@ export class WindowExecutor implements Executor {
 		// would have begun a run of its own, and this one began with a prompt of ours.
 		if (claim.by === "other" && claim.byText && claim.slot.from === "person" && (this.current?.kind !== "row" || claim.slot.behind !== undefined)) {
 			this.current = { kind: "person" };
-			this.currentParts = undefined;
+			this.currentClaimed = false;
 			return;
 		}
-		// A message the window cannot place, or one it gave a waiting input for want of a better: it may
-		// be a prompt of ours, rewritten, that pi holds unwritten (a refused one too: pi may send it late),
-		// or a row's prompt the file still has, by its `[Trigger <id>]`. So the narrowest of those caps and
-		// of the one in force (with no mark: the cost is a second delivery at most). With none of them, it
-		// is the person's, or nobody's, and uncapped.
-		// From the parts the cap in force was met from, when it was: a met cap names one row only.
-		const caps: Array<CurrentTurn & { kind: "row" }> = this.currentParts ? [...this.currentParts] : this.current?.kind === "row" ? [this.current] : [];
+		// A message the window cannot place, or one it gave a waiting input for want of a better: while a
+		// row's cap is in force, pi holds a prompt of ours unwritten (a refused one too: pi may send it
+		// late), or the message begins with the `[Trigger <id>]` of a row the file still has, it may be a
+		// prompt of ours, rewritten: the strictest cap (and no mark: the cost is a second delivery at most).
+		// With none of them, it is the person's, or nobody's, and uncapped.
 		const id = claim.by === "nobody" ? triggerIdOf(message) : undefined;
 		const row = id === undefined ? undefined : this.rows().find((r) => r.id === id);
-		if (row) {
-			if (this.running) this.running = { ...this.running, requestId: row.id };
-			caps.push(this.capOf(row));
+		if (row && this.running) this.running = { ...this.running, requestId: row.id };
+		const held = this.slots.find((slot): slot is TurnSlot => slot.whose === "turn" && slot.phase.is !== "writing" && slot.phase.is !== "written");
+		// The `[Trigger <id>]` of a row the file has, and no other prompt of ours it could be: that row's
+		// cap, recomputed (a prompt a window handed before a reload, sent late).
+		if (row && !held && this.current?.kind !== "row") {
+			this.current = this.capOf(row);
+			this.currentClaimed = true;
+			return;
 		}
-		const held = this.slots.filter((slot): slot is TurnSlot => slot.whose === "turn" && slot.phase.is !== "writing" && slot.phase.is !== "written");
-		const parts = [...caps, ...held.map((slot) => slot.cap)];
-		this.current = narrowestCap(parts) ?? { kind: "person" };
-		this.currentParts = parts.length ? parts : undefined;
+		const near = this.current?.kind === "row" ? this.current.id : (row?.id ?? held?.mark.id);
+		this.current = near === undefined ? { kind: "person" } : strictest(near);
+		this.currentClaimed = false;
 	}
 
 	/**

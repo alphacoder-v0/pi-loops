@@ -406,8 +406,10 @@ machine. Everything here follows from that, and each one has a price.
     `input` event says (`streamingBehavior`, a steer or a follow-up): what they sent to an idle pi
     would have begun a run of its own. And their words lift nothing when a prompt of ours has the same
     words, or when the message is not their very words and the words of a prompt of ours are around
-    it too. A message the window cannot place runs under the narrowest of the cap in force and the
-    caps of the prompts of ours pi holds. A
+    it too. A message the window cannot place, while it may be a prompt of ours (a row's cap is in
+    force, pi holds a prompt of ours, or it begins with a row's `[Trigger <id>]` and another prompt
+    is possible), runs under the strictest cap: unattended, no tool declared. The owner chose this
+    over meeting the caps of the prompts it may be (2026-11-16), as the marks were chosen. A
     prefix in the text is words, for the person and the model, and decides nothing by itself: the person can
     send it, and another extension can move it. A turn handed to an idle pi that no run has taken up
     keeps the lane, so an idle pi gets one prompt of ours at a time. The proof is read from the
@@ -419,9 +421,9 @@ machine. Everything here follows from that, and each one has a price.
     `/pi-loops ring <id> <fingerprint>` over its pi's rpc stdin, a channel no model tool can write
     to; the extension records the row as produced by this window only when the row now in the file
     has that fingerprint (a hash of kind, source, wake, text, the images and the declared tools),
-    then drains; a ring that arrives after the row was handed over upgrades its cap, started or not;
-    where the cap in force was met from several prompts' caps, only that row's part is replaced, and
-    the parts are met again.
+    then drains; a ring that arrives after the row was handed over upgrades its cap, started or not,
+    when that row's own message claimed it, and never the strictest cap of a message the window
+    could not place.
     A person row is handed over only once rung for, or two seconds after it was written, so the bell
     normally wins the race with the file watcher, and the drain that waits schedules one for when the
     wait ends; one nobody rang for (a terminal answering a page's row, owner decision O2; a line
