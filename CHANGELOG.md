@@ -64,8 +64,9 @@ All notable changes to pi-loops are documented here. The format follows
 - **A scheduled turn stays capped when another extension rewrites its prompt.** A message that
   pi-loops cannot place, while it may be one of its prompts, runs under the strictest cap: every tool
   call but pi-loops' own read-only and self-gated ones is asked about. Your own words lift it. When
-  an extension changes the words of your page message or of a goal's continuation, it may be
-  delivered a second time, and its tool calls are asked about too.
+  an extension changes the words of a goal's continuation, it may be delivered a second time. When
+  one changes the words of your page message, the page gives the message back to you in the input
+  box as failed, even if pi answered it. Their tool calls are asked about too.
 
 - **A scheduled prompt in a closed conversation is not answered twice after pi-loops stopped in
   the middle of it.** When pi-loops in the background stopped after it wrote a job's prompt into

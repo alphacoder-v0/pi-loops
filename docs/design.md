@@ -408,9 +408,11 @@ machine. Everything here follows from that, and each one has a price.
     taking it for their row would remove a row pi never wrote (owner, 2026-11-16). Every user message pi writes
     comes after an `input` (probes P6, P9, g9), which is why none waiting makes it ours. An input
     during a run with no delivery is one pi refuses (G11), never a message. What the window is not
-    sure of only takes a mark away: the cost is a second delivery at most, never a row removed that
-    pi did not write. It is paid wherever an extension changes the words of a prompt itself (one word
-    is enough), or rewrites messages while someone else's message waits, or, ahead of pi-loops'
+    sure of only takes a mark away, never a row removed that pi did not write: a row of ours that pi
+    wrote with no mark is delivered a second time, and a person's message goes back to the page as
+    failed, once, with its words in the input box, even when pi answered it (a person's row is never
+    sent again by itself). It is paid wherever an extension changes the words of a prompt itself (one
+    word is enough), or rewrites messages while someone else's message waits, or, ahead of pi-loops'
     `input` handler, puts words before the person's own message; it reaches the person's own
     message from the page and a goal's continuation too. A prefix in the text is words, for the
     person and the model, and proves nothing: the person can send it, and another extension can move
