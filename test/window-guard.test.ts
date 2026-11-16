@@ -450,7 +450,7 @@ test("a message the window cannot place runs under the strictest cap whatever or
 	assert.equal((await w.call({ toolName: "bash", input: { command: "ls" } }))?.block, true, "bash is not among what every held prompt allows");
 });
 
-test("a message the window cannot place during a run under an attended cap takes the narrower cap of a prompt pi holds", async () => {
+test("a message the window cannot place during a run under an attended cap runs under the strictest cap while pi holds a prompt of ours", async () => {
 	const w = window();
 	const mine = pageRow("p1", "keep going");
 	w.queued.set(mine.id, mine);
@@ -1044,3 +1044,73 @@ test("two late rings leave the strictest cap as it was", async () => {
 	ring(w, p2);
 	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: "p1", mode: "unattended", tools: [] });
 });
+
+// From the Gates review of PR 261, round 8: the strictest cap beside a held prompt, the lone row's cap, and which prompts count as held.
+const ringIt = (w: ReturnType<typeof window>, r: Row) => assert.equal(ringProduced([...w.queued.values()], r.id, requestFingerprint(r), (x) => w.executor.produced(x)), true, "the page rings late");
+const strictTools = (w: ReturnType<typeof window>) => (w.executor.currentTurn() as { tools?: string[] } | undefined)?.tools;
+test("a [Trigger <id>] of a wide row beside a held prompt is the strictest cap, not that row's", async () => {
+	const w = window();
+	const j = plainJobRow(job(), "run-aaaabbbbccccdddd", "cron:job-1", "", by, T0); // declares no tool
+	w.queued.set(j.id, j);
+	const k = plainJobRow(job({ tools: ["read"] }), "run-5555666677778888", "cron:job-1", "", by, T0);
+	w.queued.set(k.id, k);
+	w.executor.turn(k, T0); // pi holds k, unwritten
+	w.executor.agentStarted(T0 + 1);
+	w.started(`[Trigger ${j.id}] the message may be k's, rewritten`);
+	assert.deepEqual(strictTools(w), []);
+	assert.equal(await w.blocked(echo), true, "k declared read only: bash asks");
+});
+
+test("a lone [Trigger <id>] row during the person's own turn keeps that row's cap", async () => {
+	const w = window();
+	w.typed("my own words"); // the person's turn: no row's cap in force
+	assert.deepEqual(w.executor.currentTurn(), { kind: "person" });
+	const j = plainJobRow(job({ tools: ["read", "bash"] }), "run-aaaabbbbccccdddd", "cron:job-1", "", by, T0);
+	w.queued.set(j.id, j);
+	w.started(`[Trigger ${j.id}] tidy the cache`);
+	assert.deepEqual(strictTools(w), ["read", "bash"]);
+	assert.equal(await w.blocked(echo), false, "the row declared bash");
+});
+
+test("a lone [Trigger <id>] page row's cap is claimed: its late ring upgrades it", async () => {
+	const w = window();
+	const p1 = pageRow("p1", "keep going");
+	w.queued.set(p1.id, p1); // in the file, not handed here, not rung yet
+	w.executor.agentStarted(T0);
+	w.started(`[Trigger ${p1.id}] keep going`);
+	assert.equal((w.executor.currentTurn() as { mode?: string }).mode, "unattended");
+	ringIt(w, p1);
+	assert.equal((w.executor.currentTurn() as { mode?: string }).mode, "attended");
+	assert.equal(await w.call(rmrf), undefined);
+});
+
+for (const end of [false, true]) {
+	test(`after the person's steer lifted a row's cap, an unplaced message is uncapped: a ${end ? "written" : "writing"} prompt of ours is not held`, async () => {
+		const w = window();
+		const row = w.clockFired();
+		if (end) w.executor.messageEnded({ role: "user", content: row.payload!.text });
+		w.typed("stop that and do this");
+		assert.deepEqual(w.executor.currentTurn(), { kind: "person" });
+		w.started("<ctx>another extension's message</ctx>");
+		assert.deepEqual(w.executor.currentTurn(), { kind: "person" });
+		assert.equal(await w.call(rmrf), undefined);
+	});
+}
+
+for (const left of [false, true]) {
+	test(`a prompt a stop named${left ? " whose row left the file" : ""} is still held: an unplaced message is capped`, async () => {
+		const w = window();
+		const k = plainJobRow(job({ tools: ["read"] }), "run-5555666677778888", "cron:job-1", "", by, T0);
+		w.queued.set(k.id, k);
+		w.executor.turn(k, T0);
+		w.executor.abortWhenStarted(k.id);
+		if (left) {
+			w.queued.delete(k.id);
+			w.executor.view("s");
+		}
+		w.executor.agentStarted(T0 + 1);
+		w.started("<ctx>k's words, rewritten</ctx>");
+		assert.equal((w.executor.currentTurn() as { mode?: string }).mode, "unattended");
+		assert.equal(await w.blocked(rmrf), true);
+	});
+}
