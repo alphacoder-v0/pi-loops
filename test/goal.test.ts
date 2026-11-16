@@ -152,6 +152,8 @@ test("a continuation is held when the user typed while the evaluator ran — not
 		"a snapshot and a run card move the leaf without anyone having taken the turn",
 	);
 	assert.equal(branchMovedSince(branch({ id: "e4", type: "message", message: { role: "user" } }), "e3"), true, "an unrelated prompt: the continuation must not be answered under it");
+	assert.equal(branchMovedSince(branch({ id: "e4", type: "custom_message", customType: "pi-loops:turn" }), "e3"), true, "a pi-loops turn also moves the branch");
+	assert.equal(branchMovedSince(branch({ id: "e4", type: "custom_message", customType: "other" }), "e3"), false);
 	assert.equal(branchMovedSince(branch({ id: "e4", type: "message", message: { role: "assistant" } }), "e3"), false);
 	assert.equal(branchMovedSince(branch(), "gone"), true, "rewound or forked: the point the goal was judged at is not on this branch any more");
 	assert.equal(branchMovedSince(branch(), null), false, "no leaf to compare against: behave as before");

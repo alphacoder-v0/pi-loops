@@ -90,9 +90,10 @@ src/background-executor.ts  what pi-loops in the background does to the queue of
 src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid, or by a terminal from the page's pi (`page`) while no turn runs (`turnSince`)
 src/requests.ts             requests/<lane>.jsonl: what is addressed to a lane (a conversation's is its session id), kept until it is in it (the row, claimed or not, append, remove, claim)
 src/engine.ts               decideDrain, the pure decision for a lane's rows: classify, take the lane, start; drain, which applies it through an executor; the exits, attempts and dead letters
-src/window-executor.ts      the engine's executor in a window: pi.sendMessage, the list of what it gave pi, and the mark it writes into pi's entry
+src/window-executor.ts      the engine's executor in a window: a turn row as a `pi-loops:turn` custom message with its mark and cap, the person's page message as a user message, the list of what it gave pi, and the cap of each turn
 src/window-claim.ts         the window's three decisions over that list: whose a message is, what a settle leaves, the editor without our prompts
-src/mark.ts                 the mark { lane, id } on the entry pi writes for a row: one writer, one reader
+src/mark.ts                 the mark { lane, id } on the entry pi writes for a row: one writer, one reader; `TURN_TYPE` and the row a turn's message names
+src/turn-render.ts          how a terminal draws a `pi-loops:turn` message: as a message the person typed
 src/register-pi.mjs         node --import hook resolving pi's packages outside pi (pi-loops, tests)
 src/pi-resolver.mjs         where that hook looks for them
 
@@ -171,11 +172,14 @@ SIM_SEED=<seed> SIM_SCHEDULES=1 PI_LOOPS_HOST=off node --import ./src/register-p
 
 A check named in `KNOWN` (`test/sim/invariants.ts`) is a defect of `src/` the simulation found and
 nobody has fixed: it runs under `todo`, visible and not red. Fix the defect, then take the name out.
-`KNOWN` is empty: every check holds in every world, the ones with a rewriting extension too.
+`KNOWN` holds one: a turn a stop named keeps its mark when pi begins it while its row is still
+queued, and that mark proves a row of the same id queued again later (main has it too; the fix puts
+the enqueue time in the mark). Every other check holds in every world, the ones with a rewriting
+extension too.
 
 `test/sim-model.test.ts` holds the simulated pi to what a real pi was measured to do, in scenes
 written out step by step: what the page's Stop keeps and when pi writes it, what Esc in a terminal
-puts into the editor, an abort asked as a follow-up starts, and a turn that a stop named and Esc
+puts into the editor and what it drops, an abort asked as a follow-up starts, and a turn that a stop named and Esc
 dropped. A fact of pi that `test/sim/world.ts` states and no scene holds is checked by nobody: a
 change to pi's part of that file needs a measurement first and a scene here.
 

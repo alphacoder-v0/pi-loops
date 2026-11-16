@@ -1,3 +1,4 @@
+import { TURN_TYPE } from "./mark.ts";
 import { stamp } from "./schedule.ts";
 /**
  * `/goal`: a stop condition the agent is held to.
@@ -173,15 +174,16 @@ export function applyDecision(state: GoalState, decision: EvaluatorDecision, now
  * `entries` is the current branch root-first (pi's `sessionManager.getBranch()`), `at` the leaf id
  * captured before the evaluation started. A moved leaf is not enough on its own: run cards, panel
  * snapshots and the goal's own state entries all append there and mean nothing here — only a user
- * message the goal did not send. The goal's own previous continuation is never one of them; the
- * turn that carried it had settled before this evaluation began, so it is already behind `at`.
+ * message or a pi-loops turn the goal did not send. The goal's own previous continuation is never
+ * one of them; the turn that carried it had settled before this evaluation began, so it is already
+ * behind `at`.
  */
-export function branchMovedSince(entries: Array<{ id: string; type: string; message?: { role?: string } }>, at: string | null): boolean {
+export function branchMovedSince(entries: Array<{ id: string; type: string; customType?: string; message?: { role?: string } }>, at: string | null): boolean {
 	if (at === null) return false; // nothing to compare against (an empty session): behave as before
 	const from = entries.findIndex((e) => e.id === at);
 	// Rewound, forked or edited: the branch the goal was judged on is not the one we are on.
 	if (from < 0) return true;
-	return entries.slice(from + 1).some((e) => e.type === "message" && e.message?.role === "user");
+	return entries.slice(from + 1).some((e) => (e.type === "message" && e.message?.role === "user") || (e.type === "custom_message" && e.customType === TURN_TYPE));
 }
 
 /**

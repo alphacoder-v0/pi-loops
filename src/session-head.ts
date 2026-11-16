@@ -1,13 +1,11 @@
 /**
  * What a session listing needs from a session file without reading the whole file: the header,
- * the name someone gave it, the first thing the person said, and how many messages there are.
- *
- * `src/web.mjs` carries its own copy of this (it is one file with no imports, on purpose); a
- * change here is a change there.
+ * the name someone gave it, the first thing the person or pi-loops said, and how many messages there are.
  */
 import * as fs from "node:fs";
 import type { DynamicTriggerRule } from "./triggers.ts";
 import type { LoopJob } from "./store.ts";
+import { TURN_TYPE } from "./mark.ts";
 
 export interface SessionHead {
 	id: string;
@@ -64,10 +62,11 @@ export function readSessionHead(file: string, bytes: number = HEAD_BYTES): Sessi
 			continue;
 		}
 		if (entry?.type === "session_info" && typeof entry.name === "string") name = entry.name.slice(0, 200);
-		if (entry?.type !== "message") continue;
-		messages++;
-		if (first || entry.message?.role !== "user") continue;
-		const content = entry.message.content;
+		const userMessage = entry?.type === "message" && entry.message?.role === "user";
+		const turnMessage = entry?.type === "custom_message" && entry.customType === TURN_TYPE;
+		if (entry?.type === "message" || turnMessage) messages++;
+		if (first || (!userMessage && !turnMessage)) continue;
+		const content = userMessage ? entry.message.content : entry.content;
 		const said = typeof content === "string" ? content : (content ?? []).map((c: any) => (typeof c?.text === "string" ? c.text : "")).join(" ");
 		// pi-loops' own prompts start with their row's `[Trigger <id>] `: a conversation a claim began is titled by the claim's words.
 		if (said.trim()) first = said.trim().replace(/^\[Trigger [^\]]+\]\s*/, "").slice(0, 200);
