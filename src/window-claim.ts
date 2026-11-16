@@ -1,6 +1,7 @@
 /** Pure decisions about which window slot a pi message belongs to. */
 import { type Gone, stripImageNotes } from "./engine.ts";
 import type { RowMark } from "./mark.ts";
+import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import type { CurrentTurn } from "./window-executor.ts";
 
 /** Where a turn's prompt is, as far as the window can know. */
@@ -242,4 +243,21 @@ export function cleanEditor(editor: string, own: readonly OwnPrompt[]): string {
 		}
 	}
 	return changed ? paragraphs.join("\n\n") : editor;
+}
+
+/**
+ * The narrowest cap of several prompts of ours pi holds, for a message the window cannot place: it
+ * may be any of them. Unattended when any is; then only the tools every unattended one declared (a
+ * prompt that declares none caps nothing beyond the dangerous-command policy, so it narrows nothing),
+ * and of pi's built-in tools only those every built-in list allows. Undefined for no prompt.
+ */
+export function narrowestCap(caps: ReadonlyArray<CurrentTurn & { kind: "row" }>): (CurrentTurn & { kind: "row" }) | undefined {
+	const unattended = caps.filter((cap) => cap.mode === "unattended");
+	if (!unattended.length) return caps[0];
+	const meet = (lists: ReadonlyArray<readonly string[]>): string[] | undefined => (lists.length ? lists.reduce<string[]>((acc, list) => acc.filter((tool) => list.includes(tool)), [...lists[0]]) : undefined);
+	const builtinTools = meet(unattended.flatMap((cap) => (cap.builtinTools ? [cap.builtinTools] : [])));
+	const declared = meet(unattended.flatMap((cap) => (cap.tools ? [cap.tools] : [])));
+	// A built-in list caps a declared list too: the guard reads `tools` first.
+	const tools = declared && builtinTools ? declared.filter((tool) => !PI_BUILTIN_TOOL_NAMES.includes(tool) || builtinTools.includes(tool)) : declared;
+	return { ...unattended[0], ...(tools ? { tools } : {}), ...(builtinTools ? { builtinTools } : {}) };
 }

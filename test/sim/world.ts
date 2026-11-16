@@ -49,10 +49,9 @@
  *   sees it at once. A real second pi reads its own copy, which can be behind the file, so nothing
  *   here speaks for what a process does with a write it has not read (a crash between pi's write
  *   and the removal, then another window: src/engine.ts `releaseLocalRows`).
- * - No model, no tools, no compaction, no images, no MCP server. In three worlds of four no
- *   extension rewrites a prompt, so whatever the window puts in `ExecutorView.ran` it took for a
- *   rewritten prompt by mistake; in the fourth another extension's `input` handler puts words
- *   before every user message (`World.rewrites`), as pi lets one (probes, P4). No window leaves a conversation and lives on
+ * - No model, no tools, no compaction, no images, no MCP server. In one world of four another
+ *   extension's `input` handler puts words before every user message (`World.rewrites`), as pi lets
+ *   one (probes, P4). No window leaves a conversation and lives on
  *   (`created_by.left`), stands aside or runs `pi -p`, so `holderDelivers` is never false.
  * - The lease is a field, not src/lease.ts. It moves as the real one does: from a dead holder to any
  *   live process, from the background process to a window, and between two live windows only from

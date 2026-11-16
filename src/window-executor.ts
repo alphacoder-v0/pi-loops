@@ -17,7 +17,7 @@ import { markDetails, markFor, withMark } from "./mark.ts";
 import type { ImageContent, RequestMode, Row, UnclaimedRow } from "./requests.ts";
 import type { RunRecord } from "./store.ts";
 import { stamp } from "./schedule.ts";
-import { type Slot, type TurnSlot, claimOf, cleanEditor, settleSlots } from "./window-claim.ts";
+import { type Slot, type TurnSlot, claimOf, cleanEditor, narrowestCap, settleSlots } from "./window-claim.ts";
 
 /**
  * Whose turn the agent is in, and under what cap (design §4.4, §6.3): a pi-loops row, with the mode
@@ -455,13 +455,11 @@ export class WindowExecutor implements Executor {
 			return;
 		}
 		// A message the window cannot place, or one it gave a waiting input for want of a better: while
-		// pi holds a prompt of ours unwritten it may be that prompt, rewritten, so its cap (with no mark:
-		// the cost is a second delivery at most). Otherwise it is the person's, or nobody's, and uncapped.
-		// Of several, an unattended one's cap before an attended one's (two unattended ones with other
-		// declared tools are not narrowed further: rare, and as before).
-		const held = this.slots.filter((slot): slot is TurnSlot => slot.whose === "turn" && (slot.phase.is === "pending" || slot.phase.is === "opening" || slot.phase.is === "queued"));
-		const narrowest = held.find((slot) => slot.cap.mode === "unattended") ?? held[0];
-		this.current = narrowest ? narrowest.cap : { kind: "person" };
+		// pi holds a prompt of ours unwritten (a refused one too: pi may send it late) it may be that
+		// prompt, rewritten, so the narrowest of their caps (with no mark: the cost is a second delivery
+		// at most). Otherwise it is the person's, or nobody's, and uncapped.
+		const held = this.slots.filter((slot): slot is TurnSlot => slot.whose === "turn" && slot.phase.is !== "writing" && slot.phase.is !== "written");
+		this.current = narrowestCap(held.map((slot) => slot.cap)) ?? { kind: "person" };
 	}
 
 	/**

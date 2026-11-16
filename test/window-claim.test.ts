@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { markFor } from "../src/mark.ts";
 import type { OtherSlot, Phase, Slot, TurnSlot } from "../src/window-claim.ts";
-import { claimOf, cleanEditor, settleSlots } from "../src/window-claim.ts";
+import { claimOf, cleanEditor, narrowestCap, settleSlots } from "../src/window-claim.ts";
 
 function turn(id: string, text: string, phase: Phase, opts: { prefix?: string; stop?: true; echoed?: boolean } = {}): TurnSlot {
 	return {
@@ -149,6 +149,9 @@ test("claimOf gives the very same words to a prompt no stop named before one a s
 	assertTurnClaim(claimOf("the person says 3.", [stopped, owed]), "owed");
 	assertTurnClaim(claimOf("[rewritten] the person says 3.", [stopped, owed]), "owed");
 	assertTurnClaim(claimOf("the person says 3.", [stopped]), "stopped");
+	const stoppedOpening: TurnSlot = turn("stopped-opening", "the person says 3.", { is: "opening" }, { stop: true });
+	const queuedOwed = turn("queued-owed", "the person says 3.", { is: "queued" });
+	assertTurnClaim(claimOf("the person says 3.", [stoppedOpening, queuedOwed]), "queued-owed", "a stop named the run's starter: the owed one claims");
 });
 
 test("settleSlots puts no slot whose row left the file into gone: the same row may be queued again", () => {
@@ -342,3 +345,13 @@ test("cleanEditor removes only the prompt named by this stop", () => {
 	]), "[Trigger run-aaa] queued one\n\nmine");
 });
 
+
+test("narrowestCap: unattended before attended, only the tools every unattended prompt declared, and a built-in list caps a declared one", () => {
+	const cap = (id: string, mode: "attended" | "unattended", tools?: string[], builtinTools?: string[]) => ({ kind: "row" as const, id, mode, ...(tools ? { tools } : {}), ...(builtinTools ? { builtinTools } : {}) });
+	assert.equal(narrowestCap([]), undefined);
+	assert.deepEqual(narrowestCap([cap("a", "attended")]), cap("a", "attended"));
+	assert.deepEqual(narrowestCap([cap("a", "attended"), cap("u", "unattended")]), cap("u", "unattended"));
+	assert.deepEqual(narrowestCap([cap("u1", "unattended", ["read", "bash"]), cap("u2", "unattended", ["read"])]), cap("u1", "unattended", ["read"]));
+	assert.deepEqual(narrowestCap([cap("u1", "unattended"), cap("u2", "unattended", ["read"])]), cap("u1", "unattended", ["read"]), "one that declares nothing narrows nothing");
+	assert.deepEqual(narrowestCap([cap("u1", "unattended", ["read", "bash", "my_tool"]), cap("u2", "unattended", undefined, ["read"])]), cap("u1", "unattended", ["read", "my_tool"], ["read"]));
+});

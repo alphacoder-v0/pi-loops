@@ -1278,9 +1278,9 @@ test("a plain job's dead letter says why it was not delivered, before the prompt
 
 /** A window over a fake pi with the request file in a variable: `rows` is what the file holds now. */
 function windowOver(opts: { hold?: () => boolean; throws?: () => boolean } = {}) {
-	const state = { rows: [] as Row[], sent: [] as string[], aborts: 0 };
+	const state = { rows: [] as Row[], sent: [] as string[], appended: [] as unknown[], aborts: 0 };
 	const ctx = { mode: "tui", hasUI: false, isIdle: () => true, hasPendingMessages: () => false, abort: () => void state.aborts++, sessionManager: { getEntries: () => [] }, ui: { notify: () => undefined } } as any;
-	const pi = { sendMessage: () => undefined, sendUserMessage: (text: string) => { if (opts.throws?.()) throw new Error("no model selected"); state.sent.push(text); } };
+	const pi = { sendMessage: (message: unknown) => void state.appended.push(message), sendUserMessage: (text: string) => { if (opts.throws?.()) throw new Error("no model selected"); state.sent.push(text); } };
 	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: true }), hold: opts.hold ?? (() => true), letGo: () => undefined }, () => ctx, { pid: 1 }, () => true, () => state.rows);
 	const ends = (text: string) => executor.messageEnded({ role: "user", content: text });
 	return { state, executor, ends };
@@ -1403,6 +1403,31 @@ test("the page's message sent to an idle pi is not dropped when a run of ours st
 	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" }, T0 + 3);
 	w.executor.messageStarted({ role: "user", content: "[rewritten] look" }, T0 + 4);
 	assert.deepEqual(w.executor.currentTurn(), { kind: "person" }, "the person's words, by their text");
+});
+
+test("a follow-up of someone else that pi no longer holds (pi idle with nothing pending) takes no later message", () => {
+	const w = windowOver();
+	w.executor.agentStarted(T0);
+	w.executor.inputSeen({ source: "extension", text: "another extension says hi", streamingBehavior: "followUp" }, T0 + 1);
+	w.executor.agentEnded(); // the page cleared pi's queue: nothing pending, and pi idle
+	w.executor.view("s");
+	w.executor.inputSeen({ source: "interactive", text: "typed" }, T0 + 2); // the person types into the idle pi
+	w.executor.agentStarted(T0 + 2);
+	w.executor.messageStarted({ role: "user", content: "typed" }, T0 + 2);
+	const goal = row("g1", { source: "goal", mode: "attended", wake: "turn", payload: { text: "keep going", cwd: "/" } });
+	w.state.rows = [goal];
+	w.executor.turn(goal, T0 + 3);
+	w.executor.messageStarted({ role: "user", content: "[rewritten] keep going" }, T0 + 4);
+	assert.ok(w.ends("[rewritten] keep going"), "the goal's message is marked");
+});
+
+test("an append that cannot write the hold first sends nothing: lease-lost", () => {
+	const w = windowOver({ hold: () => false });
+	const r = row("r1");
+	w.state.rows = [r];
+	w.executor.agentStarted(T0); // a follow-up during a run takes the hold
+	assert.equal(w.executor.append(r, true), "lease-lost");
+	assert.deepEqual(w.state.appended, []);
 });
 
 test("a window that cannot write the hold first sends nothing: lease-lost, and the row stays as it was", () => {

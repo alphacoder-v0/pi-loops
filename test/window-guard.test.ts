@@ -436,6 +436,18 @@ test("a message the window cannot place takes the narrowest cap of the prompts p
 	assert.equal((await w.call(rmrf))?.block, true);
 });
 
+test("a message the window cannot place takes the cap of a refused prompt pi may still send late", async () => {
+	const w = window();
+	const row = plainJobRow(job({ tools: ["read"] }), "run-1111222233334444", "cron:job-1", "", by, T0);
+	w.queued.set(row.id, row);
+	w.executor.turn(row, T0);
+	w.executor.refused(row.id);
+	w.executor.agentStarted(T0 + 1);
+	w.started(`<ctx>${row.payload!.text}</ctx>`);
+	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: row.id, mode: "unattended", tools: ["read"], builtinTools: undefined });
+	assert.equal((await w.call(rmrf))?.block, true);
+});
+
 test("a person's submission that never became a message does not uncap a rewritten scheduled message", async () => {
 	const w = window();
 	w.executor.inputSeen({ source: "interactive", text: "/foo" }, T0); // another extension's handler took it
