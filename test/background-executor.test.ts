@@ -289,7 +289,7 @@ test("a row whose prompt is already in the conversation is done, not run again",
 	const s = scene(ok);
 	try {
 		await s.host.scheduler.store.add(job(s, notDue()) as any);
-		SessionManager.open(s.file).appendMessage({ role: "user", content: "[Trigger run-left] remind me", timestamp: Date.now() } as any);
+		SessionManager.open(s.file).appendMessage({ role: "user", content: "[Trigger run-left] remind me", piLoopsRow: { lane: s.sessionId, id: "run-left" }, timestamp: Date.now() } as any);
 		aged(s.file);
 		s.requests.append(leftRow(s, "run-left"));
 		await s.tick();

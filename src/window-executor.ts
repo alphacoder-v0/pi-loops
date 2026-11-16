@@ -112,6 +112,8 @@ export class WindowExecutor implements Executor {
 	private readonly gone = new Map<string, Gone>();
 	/** The run pi is in, and the row whose message it last began. */
 	private running: ExecutorView["running"];
+	/** No user message of the run that is on has started yet. */
+	private firstOfRun = false;
 	/** The rows still in the request file: the cap of a turn this instance did not hand over itself. */
 	private readonly rows: () => Row[];
 	/**
@@ -371,6 +373,7 @@ export class WindowExecutor implements Executor {
 	/** At `agent_start`: a run is on, and a prompt handed to the idle pi is opening it, or queued behind whatever does. */
 	agentStarted(now: number): void {
 		this.running = { startedAt: stamp(now) };
+		this.firstOfRun = true;
 		this.slots = this.slots.map((slot) => (slot.whose === "turn" && slot.phase.is === "pending" ? { ...slot, phase: { is: "opening" } } : slot));
 	}
 
@@ -410,9 +413,14 @@ export class WindowExecutor implements Executor {
 		if (text === undefined) return;
 		this.slots = this.slots.map((slot) => (slot.whose === "turn" && slot.phase.is === "pending" ? { ...slot, phase: { is: "pending", since: now } } : slot));
 		const claim = claimOf(text, this.slots);
+		const first = this.firstOfRun;
+		this.firstOfRun = false;
 		this.slots = this.slots.flatMap((slot): Slot[] => {
 			if (claim.by === "turn" && slot === claim.slot) return [{ ...slot, phase: { is: "writing", claim } }];
 			if (claim.by === "other" && slot === claim.slot) return [];
+			// What the person submitted to an idle pi is the first message of the run it starts, or
+			// never a message (another extension's input handler took it): a later message is not theirs.
+			if (first && slot.whose === "other" && slot.from === "person" && !slot.followUp) return [];
 			return slot.whose === "turn" && slot.phase.is === "opening" ? [{ ...slot, phase: { is: "queued" } }] : [slot];
 		});
 		if (claim.by === "turn") {

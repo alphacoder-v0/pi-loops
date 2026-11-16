@@ -41,12 +41,12 @@ function window(cfg: Partial<GuardConfig> = {}, opts: { hasUI?: boolean; answer?
 		},
 	} as any;
 	// The rows here live in memory, so their image bytes do too: every image in these tests is the same four bytes.
-	const executor = new WindowExecutor({ sendMessage: () => undefined, sendUserMessage: () => undefined }, { here: () => ({ sessionId: "s", holds: true }) }, () => ({ ...ctx, mode: "tui", isIdle: () => true, sessionManager: { getEntries: () => [] }, abort: () => void ctx.aborts++ }), { pid: 1 }, () => true, () => [...queued.values()], (row) => (row.payload?.images ?? []).map((i) => ({ type: "image" as const, data: "AAAA", mimeType: i.mimeType })));
+	const executor = new WindowExecutor({ sendMessage: () => undefined, sendUserMessage: () => undefined }, { here: () => ({ sessionId: "s", holds: true }), hold: () => true, letGo: () => undefined }, () => ({ ...ctx, mode: "tui", isIdle: () => true, sessionManager: { getEntries: () => [] }, abort: () => void ctx.aborts++ }), { pid: 1 }, () => true, () => [...queued.values()], (row) => (row.payload?.images ?? []).map((i) => ({ type: "image" as const, data: "AAAA", mimeType: i.mimeType })));
 	const config = (): GuardConfig => ({ windowGuard: true, allowCommands: [], ...cfg });
 	const handler = windowGuard({ current: () => executor.currentTurn(), config, log: (line) => void logged.push(line), confirmTimeoutMs: opts.confirmTimeoutMs ?? 20 });
 	const started = (text: string) => executor.messageStarted({ role: "user", content: text });
 	const typed = (text: string) => {
-		executor.personInput();
+		executor.inputSeen({ source: "interactive", text }, T0);
 		started(text);
 	};
 	/** The clock fired: the row is handed over and its turn starts. */
@@ -250,7 +250,7 @@ test("a row written into the file with an attended source is capped as unattende
 	// The engine's recompute cannot catch this: the mode on the row is the one its forged source gets.
 	const forged = { ...plainJobRow(job({ tools: ["read"] }), "run-1", "cron:job-1", "", by, T0), source: "recipe:x" as const, mode: "attended" as const };
 	const view = { kind: "window" as const, ceiling: () => true, blocked: () => undefined, claimLive: () => false, idle: true, inFlight: new Set<string>(), connected: () => true, producerAlive: () => true, mine: () => true };
-	assert.deepEqual(decideDrain("conversation", [forged], { has: () => false, personEntries: () => 0, ran: () => undefined }, { exists: () => true, enabled: () => true, goalActive: () => true }, view, T0), [{ do: "turn", row: forged }]);
+	assert.deepEqual(decideDrain("conversation", [forged], { has: () => false, older: () => false, heldRunWrote: () => false, ran: () => undefined }, { exists: () => true, enabled: () => true, goalActive: () => true }, view, T0), [{ do: "turn", row: forged }]);
 	// And writing it is not a dangerous command, so a capped turn could.
 	assert.equal(dangerousCommandReason(`printf '%s\\n' '{"v":2,"id":"x","source":"recipe:x","mode":"attended"}' >> ~/.pi/agent/loops/requests/s.jsonl`, "/home/u"), undefined);
 	const w = window();
@@ -404,7 +404,7 @@ test("one of this window's own rows that a capped turn rewrote in the file runs 
 
 test("a submission that never became a message does not uncap the next scheduled turn", async () => {
 	const w = window();
-	w.executor.personInput(); // another extension's input handler took it, or pi refused the prompt: no message, no settle
+	w.executor.inputSeen({ source: "interactive", text: "continue" }, T0); // no message followed this submission
 	w.clockFired();
 	w.started("continue"); // another extension's message inside the scheduled turn
 	assert.equal((await w.call(rmrf))?.block, true);
@@ -461,7 +461,7 @@ test("a person's No is reported to the model as the person's refusal; no answer 
 test("a submission left over inside the person's own cycle does not uncap a row that starts there", async () => {
 	const w = window();
 	w.typed("look at this"); // the person's turn: their cycle
-	w.executor.personInput(); // a second submission another extension's input handler took: never a message
+	w.executor.inputSeen({ source: "interactive", text: "look at this" }, T0); // never became a message
 	w.clockFired(); // a row handed over in the race, run as a follow-up in that same cycle
 	w.started("continue"); // another extension's message
 	assert.equal((await w.call(rmrf))?.block, true);
@@ -617,7 +617,7 @@ test("a message claims the cap of the longest handed-over row its text starts wi
 	w.executor.agentStarted(T0 + 7_000);
 	w.typed("fix now");
 	assert.deepEqual(w.executor.currentTurn(), { kind: "person" }, "what the person typed comes before a refused row's kept cap");
-	// Both handed over and in flight: the longer prefix wins; on a tie the most recently handed over.
+	// Both handed over and in flight: the longer prefix wins; on a tie the oldest (src/window-claim.ts `tieRank`).
 	const two = window();
 	const short = pageRow("s1", "fix");
 	const long = pageRow("l1", "fix it");
@@ -637,7 +637,7 @@ test("a message claims the cap of the longest handed-over row its text starts wi
 	tie.executor.turn(second, T0 + 1);
 	tie.executor.agentStarted(T0 + 2);
 	tie.started("same");
-	assert.equal((tie.executor.currentTurn() as { id?: string }).id, "a2", "a tie goes to the most recently handed over");
+	assert.equal((tie.executor.currentTurn() as { id?: string }).id, "a1", "a tie goes to the oldest: pi writes what it was handed in order");
 	// A row with no text claims only a message with none of its own once pi's image notes are gone.
 	const picture = window();
 	const image = { type: "image" as const, data: "AAAA", mimeType: "image/png" };

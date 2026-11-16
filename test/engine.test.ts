@@ -21,7 +21,7 @@ test("a row removed between the drain's read and its hand-over is not handed ove
 	const turned: string[] = [];
 	const executor: Executor = {
 		holds: () => true,
-		proof: () => ({ has: () => false, personEntries: () => 0, ran: () => undefined }),
+		proof: () => ({ has: () => false, older: () => false, heldRunWrote: () => false, ran: () => undefined }),
 		view: () => {
 			// The second view is the re-check just before the hand-over: the page removes the row now.
 			if (++views === 2) store.remove("s", ["p1"]);
@@ -73,9 +73,10 @@ test("a quiet mark holds while the files and the rows are as they were, and unti
 	assert.equal(quietMark(files, [row("1")], T).until, Infinity, "no backoff: the files and the rows alone decide");
 	assert.equal(quietMark(files, [{ ...row("2"), not_before: new Date(T - 1).toISOString() }], T).until, Infinity, "a backoff already over is not a wait");
 });
-import { WindowExecutor, forgetDropped, producerAlive, showsTriggeredTurnLine } from "../src/window-executor.ts";
+import { WindowExecutor, producerAlive, showsTriggeredTurnLine } from "../src/window-executor.ts";
 import { LeaseStore, procStart } from "../src/lease.ts";
 import { stamp } from "../src/schedule.ts";
+import { markFor, withMark } from "../src/mark.ts";
 
 const row = (id: string, over: Partial<UnclaimedRow> = {}): UnclaimedRow => ({ v: 3, id, lane: "s", kind: "input", source: "rule:local:dynamic", mode: "none", wake: "append", payload: { text: `[Trigger ${id}] hello`, cwd: "/" }, created_at: "2026-01-01T00:00:00Z", created_by: { pid: 1, instance: "w", version: "0" }, attempts: 0, ...over });
 
@@ -99,7 +100,7 @@ function fakeExecutor(opts: { holds?: () => boolean; idle?: boolean; deliver?: (
 	const inFlight = new Set<string>();
 	const executor: Executor = {
 		holds: opts.holds ?? (() => true),
-		proof: () => ({ has: (id) => written.has(id), personEntries: () => 0, ran: () => undefined }),
+		proof: () => ({ has: (id) => written.has(id), older: () => false, heldRunWrote: () => false, ran: () => undefined }),
 		view: () => ({ kind: "window", ceiling: () => true, blocked: () => undefined, claimLive: () => false, idle: opts.idle ?? true, inFlight, connected: () => true, producerAlive: () => true, mine: () => true }),
 		append: (r) => {
 			(opts.deliver ?? ((d, w) => w.add(d.id)))(r, written);
@@ -212,19 +213,20 @@ test("a follow-up pi dropped (Esc) is offered again once pi has settled, not hel
 	const sent: Array<{ content: unknown; options: unknown }> = [];
 	const pi = { sendMessage: (message: { content: unknown }, options: unknown) => void sent.push({ content: message.content, options }) };
 	const ctx = { isIdle: () => idle, mode: "tui", sessionManager: { getEntries: () => entries } } as any;
-	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: true }) }, () => ctx);
+	// The request file as the extension wires it: what the window gave pi is remembered while its row is there.
+	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: true }), hold: () => true, letGo: () => undefined }, () => ctx, { pid: 1 }, () => true, () => store.list("s"));
 	for (let i = 0; i < 6; i++) await drain("s", store, executor, T0, sinks);
 	assert.deepEqual(sent, [{ content: "[Trigger 1] hello", options: { triggerTurn: true, deliverAs: "followUp" } }], "a busy chat gets it once, as a follow-up that wakes the agent");
 	assert.deepEqual(store.list("s").map((d) => d.id), ["1"], "and it stays in the file until pi writes it");
 	// pi settled and "1" is not in the conversation: Esc cleared the queue it was in.
 	idle = true;
-	assert.deepEqual(executor.settled(), ["1"]);
+	assert.deepEqual(executor.settled(true), ["1"]);
 	await drain("s", store, executor, T0, sinks);
 	assert.deepEqual(sent[1], { content: "[Trigger 1] hello", options: { triggerTurn: false } }, "offered again, inserted without a turn now that pi is idle");
-	entries.push({ type: "custom_message", content: "[Trigger 1] hello" });
+	entries.push({ type: "custom_message", content: "[Trigger 1] hello", details: { piLoopsRow: { lane: "s", id: "1" } } });
 	await drain("s", store, executor, T0, sinks);
 	assert.deepEqual(store.list("s"), [], "gone once pi wrote it");
-	assert.deepEqual(forgetDropped(new Set(["2"]), () => true), [], "one that reached the conversation stays handled");
+	assert.equal(executor.delivered("1"), true, "the marked entry proves the row");
 	ctx.mode = "print";
 	assert.equal(executor.holds("s"), false, "a one-shot run is not where a result should land");
 });
@@ -305,7 +307,7 @@ test("modeOf gives each source the mode its trigger decided", () => {
 });
 
 const view = (over: Partial<ExecutorView> = {}): ExecutorView => ({ kind: "window", ceiling: () => true, blocked: () => undefined, claimLive: () => false, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => true, ...over });
-const none: Proof = { has: () => false, personEntries: () => 0, ran: () => undefined };
+const none: Proof = { has: () => false, older: () => false, heldRunWrote: () => false, ran: () => undefined };
 const jobs = { exists: () => true, enabled: () => true, goalActive: () => true };
 
 test("a row wider than its source is refused, audited and removed, never run or left waiting", async () => {
@@ -498,10 +500,27 @@ function fakeWindowPi(idle: boolean, opts: { holds?: boolean; self?: Producer; a
 	const appended: Array<{ content: unknown; options: unknown }> = [];
 	const notices: string[] = [];
 	const entries: unknown[] = [];
-	const ctx = { idle, aborts: 0, mode: opts.mode ?? "tui", hasUI: true, isIdle: () => ctx.idle, abort: () => void ctx.aborts++, sessionManager: { getEntries: () => entries }, ui: { notify: (line: string) => void notices.push(line) } } as any;
+	const ctx = { idle, aborts: 0, mode: opts.mode ?? "tui", hasUI: true, isIdle: () => ctx.idle, abort: () => void ctx.aborts++, sessionManager: { getEntries: () => entries }, editor: "", ui: { notify: (line: string) => void notices.push(line), getEditorText: () => ctx.editor, setEditorText: (text: string) => void (ctx.editor = text) } } as any;
 	const pi = { sendMessage: (m: { content: unknown }, options: unknown) => void appended.push({ content: m.content, options }), sendUserMessage: (text: string, options: unknown) => void sent.push({ text, options }) };
-	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: opts.holds ?? true }) }, () => ctx, opts.self ?? { pid: 1 }, opts.alive ?? (() => true), opts.rows ?? (() => []), opts.images);
-	return { sent, appended, notices, entries, ctx, executor };
+	const handed: Row[] = [];
+	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: opts.holds ?? true }), hold: () => true, letGo: () => undefined }, () => ctx, opts.self ?? { pid: 1 }, opts.alive ?? (() => true), opts.rows ?? (() => handed), opts.images);
+	const turn = executor.turn.bind(executor);
+	executor.turn = (row, now) => { handed.push(row); return turn(row, now); };
+	/**
+	 * Pi writes a user message at `at`, as a real pi does: `message_start`, then `message_end`, whose
+	 * answer (the message with a row's mark, when it is a prompt of ours) is what pi persists.
+	 */
+	const writes = (text: string, at = Date.now()): void => {
+		const message = { role: "user", content: [{ type: "text", text }] };
+		executor.messageStarted(message, at);
+		entries.push({ type: "message", timestamp: new Date(at).toISOString(), message: executor.messageEnded(message, at)?.message ?? message });
+	};
+	/** The person sends `text` in this window at `at`: pi's `input`, then the message pi writes for it. */
+	const types = (text: string, at = Date.now()): void => {
+		executor.inputSeen({ source: "interactive", text }, at);
+		writes(text, at);
+	};
+	return { sent, appended, notices, entries, ctx, executor, writes, types };
 }
 const turnRow = (id: string) => row(id, { source: "cron:j", mode: "unattended", wake: "turn", collapse_key: "cron:j" });
 /** A user message pi wrote at `at`: what proves a text-proved row (a person's, a claim's) once it is at or after the hand-over stamp. */
@@ -523,7 +542,7 @@ test("nothing is handed to pi while a turn runs", async () => {
 	await drain("s", store, w.executor, T0, sinks);
 	assert.equal(w.sent.length, 1, "and not again while pi has it");
 	assert.deepEqual(store.list("s").map((r) => r.id), ["t1"], "in the file until pi writes it");
-	w.entries.push({ type: "message", message: { role: "user", content: "[Trigger t1] hello" } });
+	w.writes("[Trigger t1] hello", T0 + 2_500);
 	await drain("s", store, w.executor, T0, sinks);
 	assert.deepEqual(store.list("s"), []);
 });
@@ -710,7 +729,7 @@ test("a claim while pi is busy prints the queued line; typed after Esc it runs b
 	assert.equal(pushed.line, "queued triggered turn (trace p1) after the current one");
 });
 
-test("a claim, a recipe hand-off, /new-trigger and a goal continuation go in their own words, and their text after the hand-over stamp is the proof", async () => {
+test("a claim, a recipe hand-off, /new-trigger and a goal continuation go in their own words, and the mark of the message pi writes is the proof", async () => {
 	// Owner decision 2026-11-02: as 0.22.8 sent them. The `[Trigger <id>]` prefix stays on the
 	// clock's, a server's and a rule's rows (`carriesPrefix`).
 	for (const source of ["cron:j", "cron-run:j", "rule:x", "push:gh"] as const) assert.equal(carriesPrefix(source), true, source);
@@ -723,13 +742,14 @@ test("a claim, a recipe hand-off, /new-trigger and a goal continuation go in the
 	let out = await drain("s", store, w.executor, T0, sinks);
 	assert.deepEqual([out.delivered, w.sent.map((s) => s.text)], [[claim.id], ["Finding: disk is full"]], "no prefix on what the person handed over");
 	assert.equal(typeof store.list("s")[0].handed_at, "string", "stamped under the lock before the hand-over");
-	// An older message with the same words proves nothing; one at or after the stamp does.
+	// A message with the same words that is already in the conversation carries no mark and proves nothing; the one pi writes for it does.
 	w.entries.push(userEntry("Finding: disk is full", T0 - 60_000));
 	out = await drain("s", store, w.executor, T0 + 1_000, sinks);
 	assert.deepEqual([out.removed, out.waiting], [[], [claim.id]], "an earlier message with the same words is not this claim's");
-	w.entries.push(userEntry("Finding: disk is full", T0 + 2_000));
+	w.executor.agentStarted(T0 + 2_000);
+	w.writes("Finding: disk is full", T0 + 2_000);
 	out = await drain("s", store, w.executor, T0 + 3_000, sinks);
-	assert.deepEqual([out.removed, store.list("s")], [[claim.id], []], "done once its words are in the conversation after the stamp");
+	assert.deepEqual([out.removed, store.list("s")], [[claim.id], []], "done once pi wrote its message, with its mark");
 	assert.equal(w.executor.view("s").inFlight.size, 0);
 });
 
@@ -788,7 +808,7 @@ test("a claim typed in a viewer window runs there, not in the holder", async () 
 	// A row of somebody else's is not the viewer's to touch: a cron row waits for the holder.
 	const cron = turnRow("t1");
 	store.append(cron);
-	viewer.entries.push(userEntry(claim.payload!.text, T0 + 1_000));
+	viewer.writes(claim.payload!.text, T0 + 1_000);
 	const again = await drain("s", store, viewer.executor, T0, sinks);
 	assert.deepEqual([again.delivered, again.removed, again.waiting], [[], [claim.id], []], "the viewer finishes its claim and does not see the cron row");
 	assert.deepEqual(store.list("s").map((r) => r.id), [cron.id]);
@@ -950,7 +970,7 @@ test("a page's claim is born left: the holder runs it capped, attended once rung
 	await drain("s", store, viewer.executor, Date.now(), sinks);
 	assert.deepEqual(viewer.sent, [], "a pi that only views the conversation leaves it to the holder, even one signed as the page");
 	const host: ExecutorView = { kind: "held", ceiling: CEILING.held, blocked: (r) => (r.wake === "turn" ? "turn rows wait for a window" : undefined), claimLive: () => false, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false };
-	assert.deepEqual(decideDrain("conversation", [claim], proofOf(() => [], () => []), sinks.jobs, host, Date.now()).map((a) => a.do), ["wait"], "pi-loops in the background never runs it");
+	assert.deepEqual(decideDrain("conversation", [claim], proofOf("s", () => [], () => []), sinks.jobs, host, Date.now()).map((a) => a.do), ["wait"], "pi-loops in the background never runs it");
 
 	const holder = fakeWindowPi(true, { holds: true, self: { pid: 22, procStart: "start-22" }, alive: producerAlive });
 	await drain("s", store, holder.executor, Date.now(), sinks);
@@ -1038,7 +1058,7 @@ async function doorbellWorld(dropProbability: number, seed: number) {
 	const failures: unknown[] = [];
 	const executorFor = (sid: string): Executor => ({
 		holds: () => true,
-		proof: () => ({ has: (id) => written.get(sid)!.has(id), personEntries: () => 0, ran: () => undefined }),
+		proof: () => ({ has: (id) => written.get(sid)!.has(id), older: () => false, heldRunWrote: () => false, ran: () => undefined }),
 		view: () => ({ kind: "window", ceiling: () => true, blocked: () => undefined, claimLive: () => false, idle: true, inFlight: inFlight.get(sid)!, connected: () => true, producerAlive: () => true, mine: () => true }),
 		append: (r) => {
 			inFlight.get(sid)!.add(r.id);
@@ -1193,7 +1213,8 @@ test("a stop for a row pi has queued but not started aborts it when it starts", 
 	assert.equal(w.ctx.aborts, 0);
 	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" });
 	assert.equal(w.ctx.aborts, 1, "aborted as its turn starts");
-	w.entries.push({ type: "message", message: { role: "user", content: "[Trigger t1] hello" } });
+	const message = { role: "user", content: "[Trigger t1] hello" };
+	w.entries.push({ type: "message", message: w.executor.messageEnded(message)?.message ?? message });
 	w.executor.agentEnded();
 	await drain("s", store, w.executor, T0 + 4_000, sinks);
 	assert.deepEqual(store.list("s"), [], "pi wrote the prompt at message_end: the row is done, not offered again");
@@ -1263,8 +1284,9 @@ test("a stop for a row pi dropped removes it instead of starting it again", asyn
 	assert.equal(w.sent.length, 1, "handed to pi");
 	store.append(stopRow("s", { id: "t1" }, "cli", { pid: 1, instance: "cli", version: "0" }, T0));
 	await drain("s", store, w.executor, T0 + 1_000, sinks);
-	// Esc: pi dropped t1 without starting it.
-	assert.deepEqual(w.executor.settled(), ["t1"]);
+	// A run started and Esc stopped it before its first message: pi dropped t1 without starting it.
+	w.executor.agentStarted(T0 + 1_500);
+	assert.deepEqual(w.executor.settled(true), ["t1"]);
 	const out = await drain("s", store, w.executor, T0 + 2_000, sinks);
 	assert.deepEqual([out.removed, w.sent.length, store.list("s")], [["t1"], 1, []], "removed, not offered again");
 	assert.equal(audit.listAudit(1, (r) => r.type === "request" && r.traceId === "t1")[0]?.state, "cancelled");
@@ -1278,23 +1300,24 @@ test("a stop for a row pi dropped removes it instead of starting it again", asyn
 const page = { pid: 4242, instance: "page", version: "0" };
 const fromPage = (id: string, text: string, at: number) => personRow(id, text, undefined, { sessionId: "s", cwd: "/p", createdBy: page }, at);
 
-test("a person row is done once a user message with its text follows its hand-over stamp, and pi's image note does not hide it", async () => {
+test("a person row of version 2 is done once a user message with its text follows its hand-over stamp, and pi's image note does not hide it", async () => {
 	// pi appends a note to the text when it resizes or converts an image ("\n\n[Image: original …]"),
 	// so the message starts with the row's text and need not equal it. The proof is read against
 	// `handed_at`, the stamp the drain writes under the lock just before the hand-over: a "look" from
 	// an hour ago, or from before the stamp, proves nothing, and a row never handed over is never done.
 	const image = { type: "image" as const, data: "AAAA", mimeType: "image/png" };
-	const row = personRow("p1", "look", [image], { sessionId: "s", cwd: "/p", createdBy: page }, T0);
+	const row = { ...personRow("p1", "look", [image], { sessionId: "s", cwd: "/p", createdBy: page }, T0), line: 2 as const };
 	const note = "look\n\n[Image: original 2880x1800, displayed at 2000x1250. Multiply coordinates by 1.44 to map to original image.]";
 	const entries: unknown[] = [userEntry("look", T0 - 3_600_000)];
-	const conv = proofOf(() => entries, () => []);
+	const conv = proofOf("s", () => entries, () => []);
 	assert.equal(landed(row, conv), false, "never handed over: never done");
 	const handed = { ...row, handed_at: stamp(T0 + 1_000) };
 	assert.equal(landed(handed, conv), false, "a 'look' from an hour ago is not this delivery");
 	entries.push(userEntry(note, T0 + 2_000));
 	assert.equal(landed(handed, conv), true, "pi's note after the text is still this message");
 	assert.equal(landed({ ...row, handed_at: stamp(T0 + 3_000) }, conv), false, "and never a message older than the stamp");
-	// Through the drain: the stamp is written as the row is handed over, and the message removes it.
+	// Through the drain, as a row of this version (the store writes no version 2 line): the stamp is
+	// written as the row is handed over, and the message pi writes, with its mark and pi's note, removes it.
 	const { store, sinks, audit } = world();
 	store.append(row, [image]);
 	const w = fakeWindowPi(true, { rows: () => store.list("s"), images: (r) => store.images(r) });
@@ -1302,7 +1325,8 @@ test("a person row is done once a user message with its text follows its hand-ov
 	await drain("s", store, w.executor, T0, sinks);
 	const stampedAt = Date.parse(store.list("s")[0]?.handed_at ?? "");
 	assert.ok(stampedAt >= T0 && stampedAt < T0 + 1_000, `stamped under the lock as it went, at the moment of the stamp (${stampedAt - T0} ms after the drain was asked for)`);
-	w.entries.push(userEntry(note, T0 + 500));
+	w.executor.agentStarted(T0 + 500);
+	w.writes(note, T0 + 500);
 	const out = await drain("s", store, w.executor, T0 + 1_000, sinks);
 	assert.deepEqual([out.removed, store.list("s"), w.sent.length], [["p1"], [], 1], "done, with no audit line, like a prefixed row");
 	assert.equal(audit.listAudit(5, (r) => r.traceId === "p1").length, 0);
@@ -1323,13 +1347,13 @@ test("two identical messages are both sent and each is proved by its own entry",
 	// flight, and holds the lane until its message is in the conversation.
 	let out = await drain("s", store, w.executor, T0 + 2_200, sinks);
 	assert.deepEqual([w.sent.length, out.waiting], [1, ["p1", "p2"]], "a turn pi holds and has not written is the lane's");
-	w.entries.push(userEntry("yes", T0 + 2_500));
+	w.writes("yes", T0 + 2_500);
 	out = await drain("s", store, w.executor, T0 + 3_000, sinks);
 	assert.deepEqual([out.removed, out.delivered], [["p1"], ["p2"]], "the first is proved and the second goes, in one drain");
 	assert.deepEqual(store.list("s").map((r) => [r.id, Date.parse(r.handed_at!) >= T0 + 3_000]), [["p2", true]], "the second waits for a message after its own stamp");
 	out = await drain("s", store, w.executor, T0 + 4_000, sinks);
 	assert.deepEqual([out.removed, w.sent.length], [[], 2], "the first's message does not prove the second");
-	w.entries.push(userEntry("yes", T0 + 4_500));
+	w.writes("yes", T0 + 4_500);
 	out = await drain("s", store, w.executor, T0 + 5_000, sinks);
 	assert.deepEqual([out.removed, store.list("s"), w.sent.length], [["p2"], [], 2], "both sent once, each proved by its own message");
 });
@@ -1380,14 +1404,20 @@ test("a person row goes to pi as the person's message, images with it, and a per
 	w.executor.produced(row);
 	await drain("s", store, w.executor, T0, sinks);
 	assert.deepEqual(w.sent, [{ text: [{ type: "text", text: "look" }, image], options: { deliverAs: "followUp" } }], "the person's row first, as pi's own prompt takes it, the bytes read from beside the queue");
-	// A row with no text is proved by a message with no text of its own once pi's image notes are
-	// stripped, and by nothing else: not a cron turn, not words the person typed in the terminal.
-	const imageOnly = { ...personRow("p2", "", [image], { sessionId: "s", cwd: "/p", createdBy: page }, T0), handed_at: stamp(T0 + 100) };
-	assert.equal(landed(imageOnly, proofOf(() => [], () => [])), false);
-	assert.equal(landed(imageOnly, proofOf(() => [userEntry("[Trigger abc] run the nightly check", T0 + 200)], () => [])), false, "a cron turn is not the person's image");
-	assert.equal(landed(imageOnly, proofOf(() => [userEntry("look at this", T0 + 200)], () => [])), false, "nor are words typed in the terminal");
-	assert.equal(landed(imageOnly, proofOf(() => [userEntry("\n\n[Image: original 2880x1800, displayed at 2000x1250. Multiply coordinates by 1.44 to map to original image.]", T0 + 200)], () => [])), true, "its own entry: pi's note and nothing else");
-	assert.equal(landed(imageOnly, proofOf(() => [{ type: "message", timestamp: new Date(T0 + 200).toISOString(), message: { role: "user", content: [image] } }], () => [])), true, "or no text at all");
+	// A row of this version is proved by its mark only, also one with no text.
+	const current = { ...personRow("p2", "", [image], { sessionId: "s", cwd: "/p", createdBy: page }, T0), handed_at: stamp(T0 + 100) };
+	const noteEntry = userEntry("\n\n[Image: original 2880x1800, displayed at 2000x1250. Multiply coordinates by 1.44 to map to original image.]", T0 + 200);
+	assert.equal(landed(current, proofOf("s", () => [noteEntry], () => [])), false, "a message with no mark is not this row's");
+	assert.equal(landed(current, proofOf("s", () => [{ ...noteEntry, message: withMark(noteEntry.message, markFor(current)) }], () => [])), true, "the message with its mark is");
+	// A row of a version 2 line, queued before marks, with no text, is proved by a message with no
+	// text of its own once pi's image notes are stripped, and by nothing else: not a cron turn, not
+	// words the person typed in the terminal.
+	const imageOnly = { ...current, line: 2 as const };
+	assert.equal(landed(imageOnly, proofOf("s", () => [], () => [])), false);
+	assert.equal(landed(imageOnly, proofOf("s", () => [userEntry("[Trigger abc] run the nightly check", T0 + 200)], () => [])), false, "a cron turn is not the person's image");
+	assert.equal(landed(imageOnly, proofOf("s", () => [userEntry("look at this", T0 + 200)], () => [])), false, "nor are words typed in the terminal");
+	assert.equal(landed(imageOnly, proofOf("s", () => [userEntry("\n\n[Image: original 2880x1800, displayed at 2000x1250. Multiply coordinates by 1.44 to map to original image.]", T0 + 200)], () => [])), true, "its own entry: pi's note and nothing else");
+	assert.equal(landed(imageOnly, proofOf("s", () => [{ type: "message", timestamp: new Date(T0 + 200).toISOString(), message: { role: "user", content: [image] } }], () => [])), true, "or no text at all");
 	assert.equal(stripImageNotes("fix\n\n[Image: original 2880x1800, displayed at 2000x1250. Multiply coordinates by 1.44 to map to original image.][Image omitted: could not be resized below the inline image size limit.]\n[Image converted from image/avif to image/png.]"), "fix");
 	const alone = world();
 	alone.store.append(personRow("p2", "", [image], { sessionId: "s", cwd: "/p", createdBy: page }, T0), [image]);
@@ -1439,7 +1469,7 @@ test("a person row pi refused gets last_error once pi stayed idle past the grace
 	w2.ctx.idle = false;
 	out = await drain("s", slow.store, w2.executor, T0 + 30_000, slow.sinks, { tick: true });
 	assert.deepEqual([out.failed, out.waiting], [[], ["p2"]]);
-	w2.entries.push(userEntry("slow", T0 + 30_500));
+	w2.writes("slow", T0 + 30_500);
 	w2.ctx.idle = true;
 	out = await drain("s", slow.store, w2.executor, T0 + 31_000, slow.sinks);
 	assert.deepEqual([out.removed, slow.store.list("s")], [["p2"], []], "landed late, done");
@@ -1469,7 +1499,7 @@ test("a person row pi refused gets last_error once pi stayed idle past the grace
 	w4.executor.agentEnded();
 	out = await drain("s", taken.store, w4.executor, T0 + 6_000, taken.sinks, { tick: true });
 	assert.deepEqual([out.failed, out.waiting], [[], ["p4"]], "pi took a run since: not a refusal");
-	assert.deepEqual(w4.executor.settled(), ["p4"], "dropped with pi's queue: offered again");
+	assert.deepEqual(w4.executor.settled(true), ["p4"], "Esc dropped it with pi's queue: offered again");
 	await drain("s", taken.store, w4.executor, T0 + 7_000, taken.sinks);
 	assert.equal(w4.sent.length, 2);
 });
@@ -1491,7 +1521,7 @@ test("after Stop, the person's queued rows run once pi is idle, oldest first, on
 	w.executor.produced(second);
 	out = await drain("s", store, w.executor, T0 + 3_000, sinks);
 	assert.deepEqual([w.sent.length, out.waiting], [1, ["p1", "p2"]], "one lane: the next waits until pi has written the first");
-	w.entries.push(userEntry("first", T0 + 4_000));
+	w.writes("first", T0 + 4_000);
 	out = await drain("s", store, w.executor, T0 + 5_000, sinks);
 	assert.deepEqual([w.sent.map((s) => s.text), out.removed, out.delivered], [["first", "second"], ["p1"], ["p2"]]);
 	// The person's row and the clock's queued together after a Stop: the person's first, nothing held.
@@ -1584,7 +1614,7 @@ function windowOn(store: RequestStore, idle = true) {
 	const entries: unknown[] = [];
 	const ctx = { idle, mode: "tui", hasUI: false, isIdle: () => ctx.idle, abort: () => undefined, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
 	const pi = { sendMessage: (m: { content: unknown }, options: unknown) => void appended.push({ content: m.content, options }), sendUserMessage: (text: string, options: unknown) => void sent.push({ text, options }) };
-	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: true }) }, () => ctx, { pid: 1 }, () => true, () => store.list("s"));
+	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: true }), hold: () => true, letGo: () => undefined }, () => ctx, { pid: 1 }, () => true, () => store.list("s"));
 	return { sent, appended, entries, ctx, executor };
 }
 
@@ -1602,7 +1632,7 @@ test("a damaged jobs.json costs only the rows that name a job: the person's mess
 	const out = await drain("s", store, w.executor, T0 + 5_000, broken);
 	assert.deepEqual([out.delivered.sort(), out.waiting], [[page.id, "tr-1"].sort(), [clock.id]], "the queue drains around the one row that cannot be judged");
 	assert.deepEqual([w.sent.length, w.appended.length], [1, 1]);
-	const why = decideDrain("conversation", store.list("s"), proofOf(() => [], () => []), broken.jobs, w.executor.view("s"), T0 + 5_000).find((a) => a.row?.id === clock.id);
+	const why = decideDrain("conversation", store.list("s"), proofOf("s", () => [], () => []), broken.jobs, w.executor.view("s"), T0 + 5_000).find((a) => a.row?.id === clock.id);
 	assert.equal(why?.do, "wait");
 	assert.match((why as { why: string }).why, /^cannot read the jobs: jobs\.json is empty/);
 });
@@ -1616,10 +1646,17 @@ test("a disabled job's queued prompt waits until the job is enabled again; /cron
 	const w = windowOn(store);
 	let out = await drain("s", store, w.executor, T0, sinks);
 	assert.deepEqual([out.delivered, out.waiting, w.sent.length], [[], [parked.id], 0], "a parked job's prompt is not handed to pi because a window opened the conversation");
-	assert.deepEqual(decideDrain("conversation", store.list("s"), proofOf(() => [], () => []), sinks.jobs, w.executor.view("s"), T0).map((a) => (a.do === "wait" ? a.why : a.do)), ["its job is disabled"]);
+	assert.deepEqual(decideDrain("conversation", store.list("s"), proofOf("s", () => [], () => []), sinks.jobs, w.executor.view("s"), T0).map((a) => (a.do === "wait" ? a.why : a.do)), ["its job is disabled"]);
 	enabled = true;
 	out = await drain("s", store, w.executor, T0 + 1, sinks);
 	assert.deepEqual(out.delivered, [parked.id], "enabled again: it runs");
+	// pi runs it and writes its prompt, with its mark: an idle pi gets one prompt of ours at a time.
+	w.executor.agentStarted(T0 + 1);
+	const message = { role: "user", content: w.sent[0].text };
+	w.executor.messageStarted(message, T0 + 1);
+	w.entries.push({ type: "message", message: w.executor.messageEnded(message, T0 + 1)?.message ?? message });
+	w.executor.agentEnded();
+	w.executor.settled();
 	enabled = false;
 	const asked = plainJobRow(plainJob(), plainRunId("j1", "2026-06-01T13:00:00Z"), "cron-run:j1", "", plainBy, T0 + 2);
 	store.append(asked);
@@ -1660,7 +1697,7 @@ test("the background process leaves a goal continuation a quitting window left f
 	const left = goalRow("[goal] keep going", { condition: "tests pass", iterations: 2, updatedAt: stamp(now) }, { sessionId: "s", cwd: "/x", createdBy: { ...plainBy, left: stamp(now) } }, now);
 	// heldView in src/host-runtime.ts, and its sinks: goalActive is always false there.
 	const host: ExecutorView = { kind: "held", ceiling: CEILING.held, blocked: (r) => (r.wake === "turn" ? "turn rows wait for a window" : undefined), claimLive: () => false, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false };
-	assert.deepEqual(decideDrain("conversation", [left], proofOf(() => [], () => []), { exists: () => true, enabled: () => true, goalActive: () => false }, host, now).map((a) => a.do), ["wait"]);
+	assert.deepEqual(decideDrain("conversation", [left], proofOf("s", () => [], () => []), { exists: () => true, enabled: () => true, goalActive: () => false }, host, now).map((a) => a.do), ["wait"]);
 });
 
 test("a prompt an input extension rewrites runs once, under its row's cap, as 0.22 did", async () => {
@@ -1681,11 +1718,12 @@ test("a prompt an input extension rewrites runs once, under its row's cap, as 0.
 		w.executor.agentStarted(at + 1);
 		w.executor.messageStarted({ role: "user", content: text }, at + 2);
 		caps.push(w.executor.currentTurn());
-		w.entries.push({ type: "message", message: { role: "user", content: text } });
+		const message = { role: "user", content: text };
+		w.entries.push({ type: "message", message: w.executor.messageEnded(message, at + 3)?.message ?? message });
 		w.executor.agentEnded();
 		w.executor.settled();
 	}
-	assert.equal(turns, 1, "it ran: offered again it would run a second time, with whatever side effects it has");
+	assert.equal(turns, 1, "it ran, and its mark is in the entry: offered again it would run a second time, with whatever side effects it has");
 	assert.deepEqual(caps, [{ kind: "row", id, mode: "unattended", tools: ["read"], builtinTools: undefined }], "under the row's cap, prefix or not");
 	assert.deepEqual(store.list("s"), [], "the row is gone");
 	assert.equal(inbox.listNew().length, 0, "and a run that happened is not a dead letter");
@@ -1697,7 +1735,7 @@ test("a hand-over is judged refused only after the grace has passed since pi's l
 	store.append(plainJobRow(plainJob(), id, "cron:j1", "", plainBy, T0));
 	const w = windowOn(store);
 	assert.deepEqual((await drain("s", store, w.executor, T0, sinks)).delivered, [id]);
-	w.executor.inputSeen(T0 + 8_000); // pi emitted `input` for our prompt: it is in its pre-run phase
+	w.executor.inputSeen({ source: "extension", text: "[Trigger p1] look" }, T0 + 8_000); // pi emitted `input` for our prompt: it is in its pre-run phase
 	let out = await drain("s", store, w.executor, T0 + 8_000 + PERSON_SEND_GRACE_MS - 1, sinks, { tick: true });
 	assert.deepEqual([out.failed, out.waiting], [[], [id]], "past the grace since the hand-over, not since the input");
 	out = await drain("s", store, w.executor, T0 + 8_000 + PERSON_SEND_GRACE_MS, sinks, { tick: true });
@@ -1730,19 +1768,19 @@ test("a dead letter's text is read back as why and the prompt, so a claim asks f
 	assert.equal(deadLetterParts({ text }), undefined, "and the text alone is not a dead letter: a loop can write it");
 });
 
-test("a turn that sorts first is not handed to pi beside an unwritten turn that only its text proves (#245)", () => {
-	// The goal's continuation is with pi and not written yet: it has the lane. The person's message
+test("a turn that sorts first is not handed to an idle pi that holds another prompt of ours unstarted (#245)", () => {
+	// The goal's continuation is with an idle pi that no run has taken up (`inFlightSince`): it has the lane. The person's message
 	// sorts before it (`queueOrder`), so it was decided before the lane was known to be taken.
 	const held = row("g1", { source: "goal", mode: "attended", wake: "turn", payload: { text: "keep going", cwd: "/" }, handed_at: "2026-01-01T00:00:00Z" });
 	const person = row("p1", { source: "person", mode: "attended", wake: "turn", payload: { text: "hello", cwd: "/" } });
 	for (const fileOrder of [[held, person], [person, held]]) {
-		const actions = decideDrain("conversation", fileOrder, none, jobs, view({ inFlight: new Set(["g1"]) }), T0);
+		const actions = decideDrain("conversation", fileOrder, none, jobs, view({ inFlight: new Set(["g1"]), inFlightSince: new Map([["g1", T0]]) }), T0);
 		assert.deepEqual(actions.map((a) => [a.do, "row" in a ? a.row.id : "", "why" in a ? a.why : ""]), [["wait", "p1", "pi is busy"], ["wait", "g1", "handed to pi, not yet in the conversation"]]);
 	}
 	// An append row beside it is still written, and wakes the agent only when it comes after the held turn, as before.
 	const result = row("r1");
-	assert.deepEqual(decideDrain("conversation", [result, held], none, jobs, view({ inFlight: new Set(["g1"]) }), T0).map((a) => [a.do, "row" in a ? a.row.id : "", "wakeAgent" in a ? a.wakeAgent : ""]), [["append", "r1", false], ["wait", "g1", ""]]);
-	assert.deepEqual(decideDrain("conversation", [held, result], none, jobs, view({ inFlight: new Set(["g1"]) }), T0).map((a) => [a.do, "row" in a ? a.row.id : "", "wakeAgent" in a ? a.wakeAgent : ""]), [["wait", "g1", ""], ["append", "r1", true]]);
+	assert.deepEqual(decideDrain("conversation", [result, held], none, jobs, view({ inFlight: new Set(["g1"]), inFlightSince: new Map([["g1", T0]]) }), T0).map((a) => [a.do, "row" in a ? a.row.id : "", "wakeAgent" in a ? a.wakeAgent : ""]), [["append", "r1", false], ["wait", "g1", ""]]);
+	assert.deepEqual(decideDrain("conversation", [held, result], none, jobs, view({ inFlight: new Set(["g1"]), inFlightSince: new Map([["g1", T0]]) }), T0).map((a) => [a.do, "row" in a ? a.row.id : "", "wakeAgent" in a ? a.wakeAgent : ""]), [["wait", "g1", ""], ["append", "r1", true]]);
 });
 
 /* ------------------------------------------------------------------ a row a run has claimed */
@@ -1822,12 +1860,16 @@ function closingWorld(job: Record<string, unknown> | null = { id: "j", sessionId
 	};
 	w.sinks.self = () => ({ pid: 7, instance: "test", version: "0" });
 	/** The prompt of row `id`, as the runner writes it into the conversation. */
-	const written = (id: string) => void entries.push({ type: "message", timestamp: "2026-06-01T11:59:30Z", message: { role: "user", content: `[Trigger ${id}] go` } });
+	/** Pi wrote the prompt of row `id`: with its mark when a window gave it pi (`marked`), with none when a held turn of the background did. */
+	const written = (id: string, marked = false) => {
+		const message = { role: "user", content: `[Trigger ${id}] go` };
+		entries.push({ type: "message", timestamp: "2026-06-01T11:59:30Z", message: marked ? withMark(message, markFor({ lane: "s", id } as Pick<Row, "lane" | "id">)) : message });
+	};
 	/** An executor for a queue with claimed rows: nothing is alive, and it must hand nothing over. Its proof is the real one, over this world's conversation and run log. */
 	const never = () => {
 		throw new Error("a claimed row was handed over");
 	};
-	const executor: Executor = { holds: () => true, proof: () => proofOf(() => entries, () => runs), view: () => view(gone), append: never, turn: never, abort: () => undefined, abortWhenStarted: () => undefined, refused: () => undefined };
+	const executor: Executor = { holds: () => true, proof: () => proofOf("s", () => entries, () => runs), view: () => view(gone), append: never, turn: never, abort: () => undefined, abortWhenStarted: () => undefined, refused: () => undefined };
 	const requestAudit = () => w.audit.listAudit(10, (r) => r.type === "request").map((r) => [r.state, r.traceId]);
 	return { ...w, runs, jobsList, entries, log, written, executor, requestAudit, job: () => jobsList[0] as any };
 }
@@ -2021,7 +2063,7 @@ test("[claim-record] a record belongs to its claim: the record of a row's first 
 	// Read as the first run's record, the row would stay owed for ever with no attempt counted.
 	assert.deepEqual([out.failed, w.store.list("s")[0].attempts, w.runs.length, w.runs[1].interrupted], [["c1"], 1, 2, true]);
 	// A record that started with the claim is the claim's.
-	assert.deepEqual(proofOf(() => [], () => [recordOf("c1", { ok: false, aborted: true })]).ran(claimed), { how: "handed-back", at: "2026-06-01T12:00:00Z" });
+	assert.deepEqual(proofOf("s", () => [], () => [recordOf("c1", { ok: false, aborted: true })]).ran(claimed), { how: "handed-back", at: "2026-06-01T12:00:00Z" });
 });
 
 /* ------------------------------------------------------------------ the exits, each with its trace */
@@ -2112,7 +2154,7 @@ test("[mode-by-lane] a row in a loop's lane or a check's lane is unattended what
 test("a proof reads what a claim's run came to from the run records: the newest record of the claim's run, and nothing for a row with no claim", () => {
 	const claimed = claimedRow("c1");
 	const record = (over: Record<string, unknown>) => recordOf("c1", over as Partial<RunRecord>);
-	const ran = (records: unknown[]) => proofOf(() => [], () => records as any).ran(claimed)?.how;
+	const ran = (records: unknown[]) => proofOf("s", () => [], () => records as any).ran(claimed)?.how;
 	assert.equal(ran([]), undefined, "no record has the run's id");
 	assert.equal(ran([record({ runId: "another-run" })]), undefined);
 	assert.equal(ran([record({})]), "succeeded");
@@ -2123,7 +2165,7 @@ test("a proof reads what a claim's run came to from the run records: the newest 
 	assert.equal(ran([record({ ok: false, aborted: true }), record({})]), "succeeded", "the newest record of the run");
 	// A row with no claim: nothing to ask, and the run log is not read.
 	let read = 0;
-	const lazy = proofOf(() => [], () => (read++, [record({ runId: "t9" })]));
+	const lazy = proofOf("s", () => [], () => (read++, [record({ runId: "t9" })]));
 	assert.equal(lazy.ran(row("t9")), undefined);
 	assert.equal(landed(row("t9"), lazy), false);
 	assert.equal(read, 0);
@@ -2171,7 +2213,7 @@ test("a window decides a claimed row as the background does: it holds nothing ba
 	const records: unknown[] = [];
 	const entries: unknown[] = [];
 	const ctx = { idle: true, mode: "tui", hasUI: false, isIdle: () => true, abort: () => undefined, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
-	const executor = new WindowExecutor({ sendMessage: () => undefined, sendUserMessage: () => undefined } as any, { here: () => ({ sessionId: "s", holds: true }) }, () => ctx, { pid: 1 }, () => true, () => store.list("s"), () => [], () => records as any);
+	const executor = new WindowExecutor({ sendMessage: () => undefined, sendUserMessage: () => undefined } as any, { here: () => ({ sessionId: "s", holds: true }), hold: () => true, letGo: () => undefined }, () => ctx, { pid: 1 }, () => true, () => store.list("s"), () => [], () => records as any);
 	const view = executor.view("s");
 	assert.equal(view.blocked(row("b1")), undefined, "a window holds no row back for a reason of its own");
 	// Claimed a moment ago by this process: a claim older than the machine's start is a process of before the reboot.
@@ -2270,7 +2312,7 @@ test("the drain does not remove a row that a run has claimed, though its prompt 
 	// With no claim the same row is removed at once, as a window's append is.
 	const free = closingWorld();
 	free.store.append(slotRow("t1"));
-	const out2 = await drain("s", free.store, { ...free.executor, view: () => view(), turn: (r) => free.written(r.id) }, T0, free.sinks);
+	const out2 = await drain("s", free.store, { ...free.executor, view: () => view(), turn: (r) => free.written(r.id, true) }, T0, free.sinks);
 	assert.deepEqual([free.store.list("s"), out2.removed], [[], ["t1"]]);
 });
 

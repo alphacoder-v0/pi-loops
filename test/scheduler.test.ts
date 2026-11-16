@@ -33,11 +33,15 @@ function fakeWindow(sched: LoopScheduler, sessionId: string) {
 	const entries: unknown[] = [];
 	const ctx = { idle: true, mode: "tui", hasUI: false, isIdle: () => ctx.idle, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
 	const pi = { sendMessage: () => undefined, sendUserMessage: (text: string) => void sent.push(text) };
-	const executor = new WindowExecutor(pi, { here: () => ({ sessionId, holds: true }) }, () => ctx);
+	const executor = new WindowExecutor(pi, { here: () => ({ sessionId, holds: true }), hold: () => true, letGo: () => undefined }, () => ctx, { pid: process.pid }, () => true, () => sched.requests.list(sessionId));
 	const sinks: EngineSinks = { jobs: { exists: (id) => sched.store.load().some((j) => j.id === id), enabled: () => true, goalActive: () => false }, inbox: sched.inbox, audit: new TriggerStore(sched.requests.dir) };
 	const drainNow = (now = Date.now()) => drain(sessionId, sched.requests, executor, now, sinks);
 	/** pi wrote the prompt: the user message is in the conversation. */
-	const landed = (text: string) => void entries.push({ type: "message", message: { role: "user", content: text } });
+	const landed = (text: string) => {
+		const message = { role: "user", content: text };
+		executor.messageStarted(message);
+		entries.push({ type: "message", message: executor.messageEnded(message)?.message ?? message });
+	};
 	return { sent, entries, ctx, executor, drainNow, landed };
 }
 
@@ -1417,9 +1421,20 @@ function refusingWindow(sched: LoopScheduler, clock: () => number) {
 	const sent: string[] = [];
 	const state = { refusing: true };
 	const ctx = { mode: "tui", hasUI: false, isIdle: () => true, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
-	// pi's sendUserMessage never throws to the caller: a refusal is an extension_error, a success writes the user message.
-	const pi = { sendMessage: () => undefined, sendUserMessage: (text: string) => { sent.push(text); if (!state.refusing) entries.push({ type: "message", message: { role: "user", content: text } }); } };
-	const executor = new WindowExecutor(pi as any, { here: () => ({ sessionId: "s", holds: true }) }, () => ctx, { pid: process.pid }, () => true, () => sched.requests.list("s"));
+	// pi's sendUserMessage never throws to the caller: a refusal is an extension_error, a success runs
+	// the turn: pi's input, the run, and the user message, which the window gives the row's mark.
+	const writes = (text: string): void => {
+		const at = clock();
+		executor.inputSeen({ source: "extension", text }, at);
+		executor.agentStarted(at);
+		const message = { role: "user", content: text };
+		executor.messageStarted(message, at);
+		entries.push({ type: "message", message: executor.messageEnded(message, at)?.message ?? message });
+		executor.agentEnded();
+		executor.settled();
+	};
+	const pi = { sendMessage: () => undefined, sendUserMessage: (text: string) => { sent.push(text); if (!state.refusing) writes(text); } };
+	const executor: WindowExecutor = new WindowExecutor(pi as any, { here: () => ({ sessionId: "s", holds: true }), hold: () => true, letGo: () => undefined }, () => ctx, { pid: process.pid }, () => true, () => sched.requests.list("s"));
 	const sinks: EngineSinks = { jobs: { exists: (id) => sched.store.load().some((j) => j.id === id), enabled: (id) => sched.store.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: sched.inbox, audit: new TriggerStore(sched.requests.dir) };
 	const tick = async () => {
 		await sched.tick();
