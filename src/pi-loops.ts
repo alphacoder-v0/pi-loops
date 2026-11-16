@@ -47,7 +47,7 @@ import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
 import { plural } from "./plural.ts";
 import { openWhere, runsHere } from "./job-owner.ts";
-import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, type TurnMarks, closedConversation, markTurnEvent, openWindowPids, procStart, turnSinceOf } from "./lease.ts";
+import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, closedConversation, openWindowPids, procStart } from "./lease.ts";
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
 import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
 import { RequestStore, type Row, type UnclaimedRow } from "./requests.ts";
@@ -3406,18 +3406,16 @@ export default function piLoops(pi: ExtensionAPI) {
 		}
 	});
 
-	/** Only the page's pi says on its lease that a turn runs: a terminal takes a conversation from it between turns, never in one. */
-	let turnMarks: TurnMarks = {};
+	/**
+	 * Say on the lease that a turn runs, from pi's events. The page's pi says it for a terminal's
+	 * takeover (src/lease.ts decideAcquire); a terminal says it for the page that views its
+	 * conversation and reads it again when the turn ends (shouldReadAgain). The binding writes it only
+	 * for such a holder (`turns`).
+	 */
 	function markTurn(event: keyof typeof TURN_EVENTS): void {
-		// The page child, for a terminal's takeover (src/lease.ts decideAcquire); a terminal, for the
-		// page that views its conversation and reads it again when the turn ends (shouldReadAgain).
-		if (!pageChild && leaseMode !== "tui") return;
-		const was = turnSinceOf(turnMarks);
-		turnMarks = markTurnEvent(turnMarks, event, stamp());
-		const since = turnSinceOf(turnMarks);
-		if (since === was) return;
+		const e = TURN_EVENTS[event];
 		try {
-			binding.setTurn(since);
+			binding.mark(e.reason, e.busy ? stamp() : undefined);
 		} catch (err: any) {
 			log.info(`lease: ${err?.message ?? err}`);
 		}
