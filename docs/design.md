@@ -415,8 +415,9 @@ machine. Everything here follows from that, and each one has a price.
     sent again by itself). It is paid wherever an extension changes the words of a prompt itself (one
     word is enough), or rewrites messages while someone else's message waits, or puts words before
     the person's own message; it reaches the person's own message from the page and a goal's
-    continuation too. A run the window could not place is no row's, so a stop that names a row by
-    its id (`pi-loops abort <id>`) does not reach it; a stop of the turn running now does. A prefix in the text is words, for the
+    continuation too. A run the window could not place is no row's unless it begins with a row's
+    `[Trigger <id>]` (below), so a stop that names the person's row by its id (`pi-loops abort <id>`)
+    does not reach it; a stop of the turn running now does. A prefix in the text is words, for the
     person and the model, and proves nothing: the person can send it, and another extension can move
     it. It does decide two things for a message the window cannot otherwise place: the cap (below)
     and which row's run a stop names. A turn handed to an idle pi that no run has taken up keeps the
