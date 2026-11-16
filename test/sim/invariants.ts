@@ -350,7 +350,7 @@ function writtenTooOften(world: World, excused: readonly Excuse[], coverage?: Co
 		const late = written.filter((copy) => excused.includes(excuseOf(copy)!));
 		if (written.length > 1 + late.length) out.push(`pi wrote ${label(world, rowId)} into ${sessionId} ${written.length} times (${written.map((copy) => `${who(copy.process)}${copy.fromTheEditor ? ", sent by the person from the editor" : copy.gaveUp ? `, given up: ${copy.gaveUp}` : ""}`).join("; ")})`);
 		if (coverage) coverage.markLess += world.facts.written.filter((copy) => copy.markLess && keyOf(copy.sessionId, copy.rowId) === key).length;
-		if (written.length <= 1 + late.length && coverage && written.length === 2 && late.some((copy) => ACCEPTED.includes(excuseOf(copy)!))) coverage.offeredAgainTwice[late[0].provedByText ? "byText" : "prefixed"]++;
+		if (written.length <= 1 + late.length && coverage && written.length === 2 && late.some((copy) => excuseOf(copy) === "refused" || excuseOf(copy) === "refused, proved by its text")) coverage.offeredAgainTwice[late[0].provedByText ? "byText" : "prefixed"]++;
 	}
 	return out;
 }

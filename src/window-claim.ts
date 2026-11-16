@@ -116,8 +116,7 @@ function longest<T>(msg: string, slots: readonly T[], textOf: (slot: T) => strin
  *    first; then opening, one pi holds, a refused one, the oldest).
  * 2. A matching other slot with words around its text wins; the longest text wins, then the oldest.
  * 3. A matching turn whose `[Trigger <id>] ` is in the message wins. Otherwise any waiting other
- *    slot wins before approximate turn matches, but for a follow-up or a steer when the matching turn
- *    opened the run, and a follow-up given to pi after the matching turn.
+ *    slot wins before approximate turn matches, but for a follow-up given to pi after the matching turn.
  * 4. A turn match wins; the longest text wins, then by `tieRank`.
  * 5. Otherwise the message belongs to nobody.
  *
@@ -145,16 +144,11 @@ export function claimOf(text: string, slots: readonly Slot[]): Claim {
 	// message carries that, so it is ours whatever else waits (a refused send of another extension
 	// leaves an input that never becomes a message: probe G11).
 	if (turnAround?.prefix !== undefined && msg.includes(turnAround.prefix)) return turnClaim(turnAround);
-	// A message that could be someone else's is theirs, but for the orders pi keeps (a rewriting
-	// extension changes both texts, probe P4). A prompt given to an idle pi is the first user message
-	// of the run it starts, before what pi kept after a stop (G1) and before any steer, which pi writes
-	// right after the message under way (g13, g16); follow-ups are written in the order pi was given
-	// them (P6, g9). So when the prompt of ours that the words point at opened the run, no follow-up
-	// and no steer is this message, and a follow-up given after it is not either. (Another extension's
-	// message sent to the idle pi first is the run's first message instead, G11: it came with no run
-	// on, so it is neither a follow-up nor a steer, and nothing here sets it aside.)
-	const notThis = (other: OtherSlot) =>
-		(turnAround !== undefined && other.behind !== undefined && (turnAround.phase.is === "opening" || (other.behind === "followUp" && slots.indexOf(turnAround) < slots.indexOf(other))));
+	// A message that could be someone else's is theirs (a rewriting extension changes both texts, probe
+	// P4), but for one order pi keeps: follow-ups are written in the order pi was given them (P6, g9).
+	// So a follow-up given to pi after the prompt of ours that the words point at is not this message.
+	// Which prompt opens a run is not read: a custom message can open it (P11), and a steer can come first.
+	const notThis = (other: OtherSlot) => turnAround !== undefined && other.behind === "followUp" && slots.indexOf(turnAround) < slots.indexOf(other);
 	const anyOther = candidates.find((slot): slot is OtherSlot => slot.whose === "other" && !notThis(slot));
 	if (anyOther) return namedOther(anyOther, false);
 	return turnAround ? turnClaim(turnAround) : { by: "nobody" };

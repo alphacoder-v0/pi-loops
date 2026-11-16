@@ -109,16 +109,16 @@ test("claimOf gives words around to the other slot whose text they are, not to t
 	assertOtherClaim(claimOf("ok, now run it", [older, extension]), extension);
 });
 
-test("claimOf gives a rewritten message to the prompt of ours that pi was given before another extension's follow-up, not to a steer", () => {
+test("claimOf gives a rewritten message to the prompt of ours that pi was given before another extension's follow-up, and never sets a steer aside", () => {
 	const ours = turn("ours", "the person says 1.", { is: "opening" });
 	const theirs: OtherSlot = { ...other("another extension says 2.", "extension"), behind: "followUp" };
 	assertTurnClaim(claimOf("[rewritten] the person says 1.", [ours, theirs]), "ours");
 	const before: OtherSlot = other("another extension says 2.", "extension");
 	assertOtherClaim(claimOf("[rewritten] the person says 1.", [ours, before]), before);
 	const steer: OtherSlot = { ...other("steered 3."), behind: "steer" };
-	assertTurnClaim(claimOf("[rewritten] the person says 1.", [ours, steer]), "ours");
-	const queued = turn("queued", "the person says 1.", { is: "queued" });
-	assertOtherClaim(claimOf("[rewritten] the person says 1.", [queued, steer]), steer, "a steer is written before what waits behind the message under way: it may be this message");
+	assertOtherClaim(claimOf("[rewritten] the person says 1.", [ours, steer]), steer, "which prompt opened the run is not read: the steer may be this message, so no mark");
+	const keptBefore: OtherSlot = { ...other("typed behind 4."), behind: "followUp" };
+	assertOtherClaim(claimOf("[rewritten] the person says 1.", [keptBefore, ours]), keptBefore, "a follow-up given before ours, even when ours opened the run: no mark");
 });
 
 test("claimOf gives a message to a prompt of ours that pi was given before another extension's follow-up", () => {

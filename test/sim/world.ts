@@ -506,7 +506,8 @@ function write(world: World, proc: Process, item: Item): void {
 	if (!item.copy) return;
 	const mark = markOn(proc.conversation.entries[proc.conversation.entries.length - 1]);
 	if (mark) item.copy.markedAs = mark.id;
-	else if (!item.custom && [...proc.pi.queue, ...proc.pi.kept].some((waiting) => !waiting.copy && !waiting.custom)) item.copy.markLess = true;
+	// Only where the words were rewritten: an unchanged message of ours is its prompt's very words, and is always marked.
+	else if (world.rewrites && !item.custom && [...proc.pi.queue, ...proc.pi.kept].some((waiting) => !waiting.copy && !waiting.custom)) item.copy.markLess = true;
 	if (!item.custom) proc.pi.turnOf = item.copy.rowId;
 	item.copy.abortedAtStart = proc.pi.aborts > aborts;
 	leave(item.copy, "written", at);

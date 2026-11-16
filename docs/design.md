@@ -397,11 +397,10 @@ machine. Everything here follows from that, and each one has a price.
     a mark away: the cost is a second delivery at most, never a row removed that pi did not write.
     Where an input waits and only a prompt of ours has words around the message, the window reads
     how pi delivers each input, as pi's `input` event says it (`streamingBehavior`: a steer, a
-    follow-up, or none when pi is idle), and two orders of pi, each measured by a probe and held by a
-    scene of `test/sim-model.test.ts`: a prompt given to an idle pi is the first user message of the
-    run it starts, before what pi kept after a stop and before a steer (G1, g13, g16); and follow-ups
-    are written in the order pi was given them (P6, g9). So a follow-up or a steer is not the message
-    of a prompt of ours that opened the run, and a follow-up given after that prompt is not either.
+    follow-up, or none when pi is idle), and one order of pi, measured by probes and held by a scene
+    of `test/sim-model.test.ts`: follow-ups are written in the order pi was given them (P6, g9). So a
+    follow-up given after the prompt of ours that the words point at is not its message. Which
+    prompt opens a run is not read: a custom message can open it (P11), and a steer can come first.
     An input during a run with no delivery is one pi refuses (G11), never a message. Anything else
     that waits may be the message, and the window gives no mark (the owner chose this over more
     inference, 2026-11-16). While a row's cap is in force, the person's words lift it only when pi
