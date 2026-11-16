@@ -112,7 +112,8 @@ function longest<T>(msg: string, slots: readonly T[], textOf: (slot: T) => strin
 
 /**
  * Whose a user message is, from what the message itself shows, never from an order of pi:
- * 1. The very same words as a waiting input of someone else: theirs (the oldest). As a prompt of ours:
+ * 1. The very same words as a waiting input of someone else: theirs (the oldest), not by their text
+ *    (`byText` false) when a prompt of ours has those words too. As a prompt of ours only:
  *    ours, by `tieRank` (one no stop named first; then opening, one pi holds, a refused one, the oldest).
  * 2. Words around a waiting input of someone else: theirs; the longest text wins, then the oldest. When
  *    words of a prompt of ours are around the message too, not by their text (`byText` false).

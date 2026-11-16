@@ -204,8 +204,8 @@ export class WindowExecutor implements Executor {
 				}
 				if (!queued.has(slot.mark.id)) {
 					// The row left the file. A prompt a cancel or a stop named stays, to be aborted if pi
-					// writes it after all; anything else has nothing left to start. One that opened the run
-					// stays `opening`: its message is the run's first, before any follow-up.
+					// writes it after all; anything else has nothing left to start. One that was `opening`
+					// stays so: a guess for `tieRank` only, no order of pi.
 					if (slot.stop && slot.phase.is !== "written" && slot.phase.is !== "writing") next.push({ ...slot, left: true, ...(slot.phase.is === "opening" ? {} : { phase: { is: "refused" } as const }) });
 					// A refused one stays too: pi may still write it, and its mark then proves the row
 					// if the same row is queued again (a loop's slot after a dead letter).
@@ -449,7 +449,8 @@ export class WindowExecutor implements Executor {
 		// or a row's prompt the file still has, by its `[Trigger <id>]`. So the narrowest of those caps and
 		// of the one in force (with no mark: the cost is a second delivery at most). With none of them, it
 		// is the person's, or nobody's, and uncapped.
-		const caps: Array<CurrentTurn & { kind: "row" }> = this.current?.kind === "row" ? [this.current] : [];
+		// From the parts the cap in force was met from, when it was: a met cap names one row only.
+		const caps: Array<CurrentTurn & { kind: "row" }> = this.currentParts ? [...this.currentParts] : this.current?.kind === "row" ? [this.current] : [];
 		const id = claim.by === "nobody" ? triggerIdOf(message) : undefined;
 		const row = id === undefined ? undefined : this.rows().find((r) => r.id === id);
 		if (row) {

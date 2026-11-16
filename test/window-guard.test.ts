@@ -497,6 +497,41 @@ test("a late ring for one of the prompts a met cap came from replaces that promp
 	assert.equal((await w.call(rmrf))?.block, true);
 });
 
+test("a second message the window cannot place meets from the parts, so a late ring still replaces its own row's part only", async () => {
+	const w = window();
+	const mine = pageRow("p1", "keep going");
+	w.queued.set(mine.id, mine);
+	w.executor.turn(mine, T0); // not rung yet: capped as unattended
+	w.executor.agentStarted(T0 + 1);
+	w.started("keep going"); // p1's own message: its cap in force
+	const x = plainJobRow(job({ tools: ["read"] }), "run-1111222233334444", "cron:job-1", "", by, T0);
+	w.queued.set(x.id, x); // in the file, not handed over here
+	w.started(`[Trigger ${x.id}] whatever it says`); // met with x's cap
+	w.started("<ctx>a second message nothing places</ctx>");
+	assert.equal(ringProduced([...w.queued.values()], mine.id, requestFingerprint(mine), (r) => w.executor.produced(r)), true, "the page rings late");
+	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, ["read"], "x's part stays");
+	assert.equal((await w.call(rmrf))?.block, true);
+});
+
+test("a part of a met cap whose prompt left the list mid-run stays in the next meet: a late ring cannot drop it", async () => {
+	const w = window();
+	const mine = pageRow("p1", "keep going");
+	w.queued.set(mine.id, mine);
+	w.executor.turn(mine, T0);
+	w.executor.agentStarted(T0 + 1);
+	w.started("keep going");
+	const x = plainJobRow(job({ tools: ["read"] }), "run-1111222233334444", "cron:job-1", "", by, T0);
+	w.queued.set(x.id, x);
+	w.executor.turn(x, T0 + 2); // held behind the run
+	w.started("<ctx>first message nothing places</ctx>");
+	w.queued.delete(x.id); // its row left the file (a cancel): the window lets its slot go
+	w.executor.view("s");
+	w.started("<ctx>second message nothing places</ctx>");
+	assert.equal(ringProduced([...w.queued.values()], mine.id, requestFingerprint(mine), (r) => w.executor.produced(r)), true);
+	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, ["read"]);
+	assert.equal((await w.call(rmrf))?.block, true);
+});
+
 test("a message the window cannot place takes the cap of a refused prompt pi may still send late", async () => {
 	const w = window();
 	const row = plainJobRow(job({ tools: ["read"] }), "run-1111222233334444", "cron:job-1", "", by, T0);
