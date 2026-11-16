@@ -17,7 +17,7 @@ import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { track } from "./tmp.ts";
-import { KNOWN, REWRITTEN_HOLDS } from "./sim/invariants.ts";
+import { KNOWN } from "./sim/invariants.ts";
 import { type Plan, type Run, plan, run } from "./sim/schedule.ts";
 import { EPOCH } from "./sim/world.ts";
 
@@ -118,7 +118,6 @@ test("the request engine keeps its invariants through seeded schedules of append
 	let handOvers = 0;
 	let decisions = 0;
 	let turnsBesideATurn = 0;
-	let provedByAnother = 0;
 	const clears = { drawn: 0, cancels: 0 };
 	const offeredAgainTwice = { prefixed: 0, byText: 0 };
 	let firstBeside: number | undefined;
@@ -128,14 +127,12 @@ test("the request engine keeps its invariants through seeded schedules of append
 		const ran = await play(planned);
 		if (SCHEDULES === 1) console.log([`schedule of seed ${seed} (${worldOf(planned)}):`, ...ran.lines.map((line) => `  ${line}`)].join("\n"));
 		if (ran.violation) assert.fail(await failure(planned, ran, play));
-		// A known defect is shown in a world where no extension rewrites, but for the one that is of such worlds: there another check can break first and be taken for that one.
-		for (const invariant of Object.keys(ran.known)) if (!firstSeedOf.has(invariant) && (!planned.rewrites || invariant === REWRITTEN_HOLDS)) firstSeedOf.set(invariant, seed);
+		for (const invariant of Object.keys(ran.known)) if (!firstSeedOf.has(invariant)) firstSeedOf.set(invariant, seed);
 		steps += planned.steps.length;
 		crashes += ran.crashes;
 		handOvers += ran.coverage.handOvers;
 		decisions += ran.coverage.decisions;
 		turnsBesideATurn += ran.coverage.turnsBesideATurn;
-		provedByAnother += ran.coverage.provedByAnother;
 		clears.drawn += ran.clears.drawn;
 		clears.cancels += ran.clears.cancels;
 		offeredAgainTwice.prefixed += ran.coverage.offeredAgainTwice.prefixed;
@@ -146,7 +143,7 @@ test("the request engine keeps its invariants through seeded schedules of append
 	t.diagnostic(`simulated ${SCHEDULES} schedules, ${steps} steps, ${crashes} crashes injected (seeds ${FIRST_SEED} to ${FIRST_SEED + SCHEDULES - 1})`);
 	t.diagnostic(`${handOvers} hand-overs; exits: ${EXITS.map((exit) => `${exit} ${exits[exit] ?? 0}`).join(", ")}; ${decisions} findings decided twice at once; ${turnsBesideATurn} turns handed to a pi that held another unstarted${firstBeside === undefined ? "" : ` (first in seed ${firstBeside})`}`);
 	t.diagnostic(`the page cleared a queue ${clears.drawn} times, with ${clears.cancels} cancels`);
-	t.diagnostic(`excused by the design: ${offeredAgainTwice.prefixed} prefixed rows and ${offeredAgainTwice.byText} text-proved rows delivered twice after a refusal and a second offer; ${provedByAnother} rows delivered on another row's message with the same words`);
+	t.diagnostic(`excused by the design: ${offeredAgainTwice.prefixed} prefixed rows and ${offeredAgainTwice.byText} text-proved rows delivered twice after a refusal and a second offer`);
 	if (SCHEDULES >= 1000 && STEPS >= 30) {
 		assert.deepEqual(EXITS.filter((exit) => !exits[exit]), [], "every exit is taken at least once in a full run");
 		assert.ok(clears.drawn > 0 && clears.cancels > 0, `a full run clears the page's queue and writes the cancels (${clears.drawn} clears, ${clears.cancels} cancels)`);

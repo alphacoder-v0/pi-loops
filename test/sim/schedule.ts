@@ -8,7 +8,7 @@
 import { type DrainResult, cancelRow, conversationHas, enqueue, goalRow, handOver, inboxClaimRow, personRow, plainJobRow, plainRunId, requestFingerprint, ringProduced, ruleResultRow, stopRow } from "../../src/engine.ts";
 import type { Row } from "../../src/requests.ts";
 import { stamp } from "../../src/schedule.ts";
-import { type Violation, KNOWN, REWRITTEN_HOLDS, createChecker, type Coverage } from "./invariants.ts";
+import { type Violation, createChecker, type Coverage } from "./invariants.ts";
 import { pick, prng, weighted } from "./prng.ts";
 import { type Conversation, type Fault, PAGE_PID, type Mode, type PiMove, type Process, type Timers, type World, advance, atOnce, buryAs, clearQueue, createWorld, drainAs, everyProcess, held, kill, label, leaseMayMove, live, moveLease, noFacts, piMove, piMoves, start, who } from "./world.ts";
 
@@ -371,9 +371,6 @@ async function killEveryProcessAndFinish(world: World, numbers: readonly number[
 	return left;
 }
 
-/** The checks today's engine breaks where another extension rewrites every message, and no other does: what `REWRITTEN_HOLDS` excuses there. */
-const BROKEN_BY_REWRITING: readonly string[] = ["a row is delivered once per proof", "I8 attempts count failed hand-overs, a backoff is waited out, and three failures make a dead letter", "a stop and a cancel do what they name", AFTER_RESTART];
-
 export interface Run {
 	/** The page's "clear queue" steps drawn, and the cancels they wrote: a full run must reach the path. */
 	clears: { drawn: number; cancels: number };
@@ -399,18 +396,7 @@ export async function run(plan: Plan, dir: string, time: Timers, enforce?: strin
 	const check = (step: number | "end", end = false): Violation | undefined => {
 		const found = checker.check(end);
 		for (const { invariant, message } of found.known) known[invariant] ??= { step, message };
-		return rewritten(found.violation, step);
-	};
-	// In a world where another extension rewrites every message, today's engine cannot prove a row
-	// by its prefix or its words. The checks it breaks (`BROKEN_BY_REWRITING`) are that one defect
-	// there, held under `KNOWN`; every other check fails such a world as it fails any other.
-	const rewritten = (violation: Violation | undefined, step: number | "end"): Violation | undefined => {
-		// The check a run is told to enforce stays itself, in a rewriting world as in any other.
-		if (!violation || !plan.rewrites || !(REWRITTEN_HOLDS in KNOWN) || violation.invariant === enforce || !BROKEN_BY_REWRITING.includes(violation.invariant)) return violation;
-		const broken = { invariant: REWRITTEN_HOLDS, message: `${violation.invariant}: ${violation.message}` };
-		if (enforce === REWRITTEN_HOLDS) return broken;
-		known[REWRITTEN_HOLDS] ??= { step, message: broken.message };
-		return undefined;
+		return found.violation;
 	};
 	for (const [index, step] of plan.steps.entries()) {
 		world.facts = noFacts();
@@ -427,7 +413,7 @@ export async function run(plan: Plan, dir: string, time: Timers, enforce?: strin
 	let violation: Violation | undefined;
 	try {
 		const left = await killEveryProcessAndFinish(world, plan.closing, () => (violation = check("end")) === undefined);
-		if (!violation && left.length) violation = rewritten({ invariant: AFTER_RESTART, message: `still queued, neither delivered nor reported: ${left.join(", ")}` }, "end");
+		if (!violation && left.length) violation = { invariant: AFTER_RESTART, message: `still queued, neither delivered nor reported: ${left.join(", ")}` };
 		// Once more with nothing new to look at, for what can only be said when the schedule is over.
 		world.facts = noFacts();
 		violation ??= check("end", true);

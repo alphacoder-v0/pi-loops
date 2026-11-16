@@ -219,7 +219,7 @@ export interface Conversation {
 export interface Removal {
 	row: Row;
 	/** For an input: how its delivery shows in what pi wrote (`deliveredBy`). */
-	delivered?: "its own message" | "another row's message";
+	delivered?: "its own message";
 	findings: number;
 	/** How many `dead` lines the audit holds for the row: a dead letter writes one each time, and its finding once. */
 	dead: number;
@@ -379,20 +379,12 @@ const pidAlive = (world: World, pid: number): boolean => pid === PAGE_PID || eve
 /** The sources whose rows carry no `[Trigger <id>]`: only a message with the row's words proves one. */
 const provedByText = (source: string): boolean => source === "goal" || source === "person" || source.startsWith("inbox:");
 /**
- * How `row`'s delivery shows in what the simulated pi wrote: by a hand-over of the row itself, or,
- * for a row only its text proves, by another row's message in the same conversation with the same
- * words, written at or after this row's hand-over stamp. The second is the one thing the engine's
- * text proof cannot tell from the first, by design (docs/design.md decision 23: "Its proof of
- * delivery is a user message whose text starts with the row's … written at or after `handed_at`").
- * A row's words end in a full stop, so none is the start of another's; two messages of the person
- * can be the same words.
+ * How `row`'s delivery shows in what the simulated pi wrote: a message that counts for it
+ * (`countsFor`: its own, or one with the very same words that carries its mark). The simulation
+ * writes no version 2 line, so the text proof of one is not modelled.
  */
 export function deliveredBy(world: World, row: Row): Removal["delivered"] {
-	const written = world.copies.filter((copy) => copy.sessionId === row.lane && copy.state === "written");
-	if (written.some((copy) => countsFor(world, copy) === row.id)) return "its own message";
-	// The engine proves a row by its mark only. A mark can name the other of two rows with the very same
-	// words (a swap the rule allows: nobody can tell the two messages apart); that is the one other way.
-	return written.some((copy) => copy.text === row.payload?.text && copy.rowId !== row.id && (row.line === 2 || markedFor(world, row.lane, row.id))) ? "another row's message" : undefined;
+	return world.copies.some((copy) => copy.sessionId === row.lane && copy.state === "written" && countsFor(world, copy) === row.id) ? "its own message" : undefined;
 }
 
 /**
@@ -412,14 +404,6 @@ export function countsFor(world: World, copy: Copy): string {
  */
 export const answered = (copy: Copy): boolean => copy.state === "written" && !copy.abortedAtStart;
 
-/** Whether an entry of the conversation carries the mark of row `id`. */
-function markedFor(world: World, lane: string, id: string): boolean {
-	const conversation = world.conversations.find((c) => c.id === lane);
-	return !!conversation?.entries.some((entry) => {
-		const mark = markOn(entry);
-		return mark?.lane === lane && mark.id === id;
-	});
-}
 export const findingsFor = (world: World, rowId: string): number => world.inbox.list().filter((entry) => entry.run_id === rowId).length;
 /** The states the audit's `request` lines give row `rowId`, newest first, without `failed` and `dead`: those two are not exits a line alone proves. */
 /** How many times the audit says row `rowId` became a dead letter. */

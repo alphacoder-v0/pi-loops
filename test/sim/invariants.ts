@@ -29,8 +29,6 @@ interface Memory {
 	findings: Map<string, string>;
 	/** Hand-overs of a row that has left its queue since: what a stop asked of them is over. */
 	released: Set<Copy>;
-	/** Rows that left as delivered on another row's message with the same words: still owed a message of their own. */
-	owedItsOwn: Map<string, { sessionId: string; rowId: string }>;
 }
 
 /** How often each exit was taken and how many rows were handed over, for the test's summary: a schedule that exercises nothing proves nothing. */
@@ -42,8 +40,6 @@ export interface Coverage {
 	decisions: number;
 	/** Rows delivered a second time by a hand-over offered again after a refusal, which the design accepts: prefixed rows, and rows only their text proves. */
 	offeredAgainTwice: { prefixed: number; byText: number };
-	/** Rows that left as delivered on another row's message with the same words, which the text proof cannot tell apart. */
-	provedByAnother: number;
 }
 
 type Queues = ReadonlyMap<string, Row[]>;
@@ -63,10 +59,7 @@ const conversationOf = (world: World, sessionId: string): Conversation => world.
  * starts); `job-removed` a job that is gone; `refused` a mode that is not the source's, and such a
  * row is never delivered.
  *
- * `delivered` needs a message pi wrote for that row itself, with one excuse, which is counted
- * (`Coverage.provedByAnother`): another row's message with the same words, written at or after this
- * row's hand-over stamp, which the engine's text proof takes for this row's by design (world.ts
- * `deliveredBy`).
+ * `delivered` needs a message pi wrote that counts for that row (world.ts `deliveredBy`, `countsFor`).
  */
 function namedExit(world: World, memory: Memory, queues: Queues, coverage: Coverage): string[] {
 	const out: string[] = [];
@@ -93,10 +86,6 @@ function namedExit(world: World, memory: Memory, queues: Queues, coverage: Cover
 		memory.exited.add(key);
 		for (const copy of world.copies) if (copy.sessionId === row.lane && copy.rowId === row.id) memory.released.add(copy);
 		coverage.exits[gone.exit] = (coverage.exits[gone.exit] ?? 0) + 1;
-		if (gone.delivered === "another row's message") {
-			coverage.provedByAnother++;
-			memory.owedItsOwn.set(key, { sessionId: row.lane, rowId: row.id });
-		}
 		const why = notItsExit(world, gone, gone.exit);
 		if (why) out.push(`${name} left the queue of ${row.lane} as ${gone.exit}, but ${why}`);
 	}
@@ -136,24 +125,6 @@ function notItsExit(world: World, gone: Removal, exit: string): string | undefin
 		default:
 			return `the audit knows no exit called ${exit}`;
 	}
-}
-
-/**
- * I2, for a row that left as delivered on another row's message with the same words. The text
- * proof cannot tell the two apart, and that is harmless when pi writes both in the end, which
- * takes a hand-over of the row's own that pi still holds when the row leaves: once out of the
- * queue it is never handed over again. So when the schedule is over (`end`), pi has written the
- * row itself or still holds it; otherwise the person said the same words twice and was answered
- * once.
- */
-function answeredThoughAnotherSaidTheSame(world: World, memory: Memory, _queues: Queues, _coverage: Coverage, end: boolean): string[] {
-	if (!end) return [];
-	const out: string[] = [];
-	for (const { sessionId, rowId } of memory.owedItsOwn.values()) {
-		const copies = world.copies.filter((copy) => copy.sessionId === sessionId && copy.rowId === rowId);
-		if (!copies.some((copy) => copy.state === "written" || copy.state === "held")) out.push(`${label(world, rowId)} left the queue of ${sessionId} as delivered on another row's message with the same words, and pi never wrote it: two messages, one answer`);
-	}
-	return out;
 }
 
 /**
@@ -448,15 +419,11 @@ const handedOverAfterTheEditor = (world: World): string[] => world.facts.handOve
  * (unless `createChecker` is told to enforce it); what it finds is reported beside, and
  * test/sim.test.ts shows it under `todo` on the first seed of its run that breaks it, or on this one.
  */
-/** The one check of a world in which another extension rewrites every user message: every other check holds there too. */
-export const REWRITTEN_HOLDS = "a row is proved by its own message also when another extension rewrote the text";
-
 export const KNOWN: Readonly<Record<string, { defect: string; seed: number }>> = {};
 
 export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
 	["I2 a row leaves its queue only by a named exit", namedExit],
 	["I2 a row is done only by its proof", doneOnlyByProof],
-	["I2 a person's message is answered even when another has the same words", answeredThoughAnotherSaidTheSame],
 	["I3 one turn at a time, handed over by the holder", oneTurnFromTheHolder],
 	["I3 no turn beside a turn an idle pi holds unstarted", noTurnBesideAnUnstartedTurn],
 	["a mark is on its own row's message", markOnItsOwnMessage],
@@ -477,8 +444,8 @@ export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
  * as any other check. `check(true)` is the last one, when the schedule is over.
  */
 export function createChecker(world: World, enforce?: string): { check(end?: boolean): { violation?: Violation; known: Violation[] }; coverage: Coverage } {
-	const memory: Memory = { queued: new Map(), spent: new Map(), exited: new Set(), findings: new Map(), released: new Set(), owedItsOwn: new Map() };
-	const coverage: Coverage = { exits: {}, handOvers: 0, turnsBesideATurn: 0, decisions: 0, offeredAgainTwice: { prefixed: 0, byText: 0 }, provedByAnother: 0 };
+	const memory: Memory = { queued: new Map(), spent: new Map(), exited: new Set(), findings: new Map(), released: new Set() };
+	const coverage: Coverage = { exits: {}, handOvers: 0, turnsBesideATurn: 0, decisions: 0, offeredAgainTwice: { prefixed: 0, byText: 0 } };
 	return {
 		coverage,
 		check(end = false) {
