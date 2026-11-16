@@ -110,6 +110,8 @@ export class WindowExecutor implements Executor {
 	private readonly gone = new Map<string, Gone>();
 	/** The run pi is in, and the row whose message it last began. */
 	private running: ExecutorView["running"];
+	/** The caps the cap in force was met from, when a message the window could not place set it (`narrowestCap`). */
+	private currentParts: Array<CurrentTurn & { kind: "row" }> | undefined;
 	/** The rows still in the request file: the cap of a turn this instance did not hand over itself. */
 	private readonly rows: () => Row[];
 	/**
@@ -247,7 +249,12 @@ export class WindowExecutor implements Executor {
 		// and the drain in that handler went first): the row is the page's all the same, so its turn,
 		// started or not, runs under the cap the ring vouches for.
 		this.slots = this.slots.map((slot) => (slot.whose === "turn" && slot.mark.id === row.id ? { ...slot, cap: this.capOf(row) } : slot));
-		if (this.current?.kind === "row" && this.current.id === row.id) this.current = this.capOf(row);
+		// The cap in force is this row's own (its message claimed it): the ring's. One met from several
+		// caps (a message the window could not place) has this row's part replaced, and is met again.
+		if (this.currentParts) {
+			this.currentParts = this.currentParts.map((cap) => (cap.id === row.id ? this.capOf(row) : cap));
+			this.current = narrowestCap(this.currentParts);
+		} else if (this.current?.kind === "row" && this.current.id === row.id) this.current = this.capOf(row);
 	}
 
 	/**
@@ -352,6 +359,7 @@ export class WindowExecutor implements Executor {
 	 */
 	settled(aborted = false): string[] {
 		this.current = undefined;
+		this.currentParts = undefined;
 		const ctx = this.ctx();
 		const terminal = ctx?.mode === "tui";
 		// A row that left the file since the last look (an exit in the drain that ran since) owes no exit:
@@ -406,10 +414,10 @@ export class WindowExecutor implements Executor {
 	 * At `message_start`, for a user message (a custom one changes nothing): whose it is, decided once
 	 * (`claimOf`). A prompt of ours: its turn runs under the row's cap, and a row a stop named is
 	 * aborted here; pi still writes the message at `message_end` (its agent loop emits the two back to
-	 * back), with the mark, so the row is done and not offered again. A message that is not ours: the
-	 * person's runs uncapped, another extension's leaves a row's cap in force. A message nobody
-	 * claims is marked as nobody's; a `[Trigger <id>] ` of a row still in the file (a prompt pi sent
-	 * late, or the person sent from the editor) narrows its cap to that row's, and proves nothing.
+	 * back), with the mark, so the row is done and not offered again. The person's words, by their
+	 * text and delivered into the run when a row's cap is in force, run uncapped. Anything else runs
+	 * under the narrowest of the cap in force, the caps of the prompts of ours pi holds, and the cap
+	 * of a row the file still has whose `[Trigger <id>] ` begins the message (which proves nothing).
 	 */
 	messageStarted(message: unknown, now = Date.now()): void {
 		const text = userTextOf(message);
@@ -424,6 +432,7 @@ export class WindowExecutor implements Executor {
 		if (claim.by === "turn") {
 			if (this.running) this.running = { ...this.running, requestId: claim.slot.mark.id };
 			this.current = claim.slot.cap;
+			this.currentParts = undefined;
 			if (claim.slot.stop) this.ctx()?.abort();
 			return;
 		}
@@ -432,6 +441,7 @@ export class WindowExecutor implements Executor {
 		// would have begun a run of its own, and this one began with a prompt of ours.
 		if (claim.by === "other" && claim.byText && claim.slot.from === "person" && (this.current?.kind !== "row" || claim.slot.behind !== undefined)) {
 			this.current = { kind: "person" };
+			this.currentParts = undefined;
 			return;
 		}
 		// A message the window cannot place, or one it gave a waiting input for want of a better: it may
@@ -447,7 +457,9 @@ export class WindowExecutor implements Executor {
 			caps.push(this.capOf(row));
 		}
 		const held = this.slots.filter((slot): slot is TurnSlot => slot.whose === "turn" && slot.phase.is !== "writing" && slot.phase.is !== "written");
-		this.current = narrowestCap([...caps, ...held.map((slot) => slot.cap)]) ?? { kind: "person" };
+		const parts = [...caps, ...held.map((slot) => slot.cap)];
+		this.current = narrowestCap(parts) ?? { kind: "person" };
+		this.currentParts = parts.length ? parts : undefined;
 	}
 
 	/**

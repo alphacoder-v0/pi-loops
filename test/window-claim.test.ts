@@ -406,3 +406,13 @@ test("claimOf: the oldest waiting input takes a message of ours with no prefix, 
 	const d = claimOf("same", [same1, same2]);
 	assert.equal(d.by === "other" && d.slot, same1);
 });
+
+test("claimOf: the person's input with the very same words as a prompt of ours is theirs, but not by their text: no cap is lifted on words we sent too", () => {
+	const ours = claimTurn("ours", "run the tests.", { is: "queued" });
+	const theirs = waitingInput("run the tests.", "person", "steer");
+	const c = claimOf("run the tests.", [ours, theirs]);
+	assert.equal(c.by === "other" && c.slot, theirs);
+	if (c.by === "other") assert.equal(c.byText, false);
+	const alone = claimOf("run the tests.", [theirs]);
+	if (alone.by === "other") assert.equal(alone.byText, true, "with no prompt of ours in those words, by their text");
+});

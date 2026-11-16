@@ -390,10 +390,11 @@ machine. Everything here follows from that, and each one has a price.
     proof of delivery, whatever its source: the mark `{ lane, id }` that the window writes into the
     entry pi persists for it (`src/mark.ts`; on the user message at `message_end`, in a custom
     message's `details`). The window keeps one list of what it gave pi and decides, as each user
-    message starts, whose it is (`claimOf`, `src/window-claim.ts`): a prompt of ours by its very
-    words, then the person's or another extension's input by its words, then a prompt of ours whose
-    `[Trigger <id>]` is in the message, then any input that waits, then a prompt of ours whose words
-    are around the message (an extension may rewrite it). What the window is not sure of only takes
+    message starts, whose it is (`claimOf`, `src/window-claim.ts`): the person's or another
+    extension's input with the very same words, then a prompt of ours with them, then an input of
+    someone else's whose words are around the message, then a prompt of ours whose words and
+    `[Trigger <id>]` are in it, then a prompt of ours whose words are around it when no input of
+    someone else waits (an extension may rewrite it), then any input that waits. What the window is not sure of only takes
     a mark away: the cost is a second delivery at most, never a row removed that pi did not write.
     The window reads no order of pi to decide whose a message is, only what the message shows: the
     very same words as a prompt of ours, or our `[Trigger <id>]` in it, or our words around it when no
@@ -403,8 +404,8 @@ machine. Everything here follows from that, and each one has a price.
     waits. An input during a run with no delivery is one pi refuses (G11), never a message. While a
     row's cap is in force, the person's words lift it only when pi delivers them into the run, as its
     `input` event says (`streamingBehavior`, a steer or a follow-up): what they sent to an idle pi
-    would have begun a run of its own. And their words lift nothing when words of a prompt of ours are
-    around the message too. A message the window cannot place runs under the narrowest of the cap in
+    would have begun a run of its own. And their words lift nothing when a prompt of ours has the same
+    words, or its words are around the message too. A message the window cannot place runs under the narrowest of the cap in
     force and the caps of the prompts of ours pi holds. A
     prefix in the text is words, for the person and the model, and decides nothing by itself: the person can
     send it, and another extension can move it. A turn handed to an idle pi that no run has taken up

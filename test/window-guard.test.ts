@@ -481,6 +481,22 @@ test("the person's words that end with a prompt of ours do not lift its cap when
 	assert.equal((await w.call(rmrf))?.block, true);
 });
 
+test("a late ring for one of the prompts a met cap came from replaces that prompt's part only: the narrowest stays", async () => {
+	const w = window();
+	const mine = pageRow("p1", "keep going");
+	w.queued.set(mine.id, mine);
+	w.executor.turn(mine, T0); // not rung yet: capped as unattended
+	const row = plainJobRow(job({ tools: ["read"] }), "run-1111222233334444", "cron:job-1", "", by, T0);
+	w.queued.set(row.id, row);
+	w.executor.turn(row, T0 + 1);
+	w.executor.agentStarted(T0 + 2);
+	w.started("<ctx>neither prompt's words</ctx>");
+	assert.equal(ringProduced([...w.queued.values()], mine.id, requestFingerprint(mine), (r) => w.executor.produced(r)), true, "the page rings late");
+	assert.equal((w.executor.currentTurn() as { mode?: string }).mode, "unattended", "the loop's prompt may be the message: its cap stays");
+	assert.deepEqual((w.executor.currentTurn() as { tools?: string[] }).tools, ["read"]);
+	assert.equal((await w.call(rmrf))?.block, true);
+});
+
 test("a message the window cannot place takes the cap of a refused prompt pi may still send late", async () => {
 	const w = window();
 	const row = plainJobRow(job({ tools: ["read"] }), "run-1111222233334444", "cron:job-1", "", by, T0);

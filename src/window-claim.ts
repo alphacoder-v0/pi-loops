@@ -60,7 +60,7 @@ export interface TurnClaim {
 	readonly [byTheRule]: true;
 }
 
-/** The slot that owns a user message, if any. `byText`: its words are the slot's, or around them (steps 1 and 2), not only a slot that waits (step 3). */
+/** The slot that owns a user message, if any. `byText`: its words are the slot's, or around them (rules 1 and 2), and no prompt of ours has those words too; false for a slot that only waits (rule 5). */
 export type Claim = TurnClaim | { by: "other"; slot: OtherSlot; byText: boolean } | { by: "nobody" };
 
 
@@ -91,10 +91,10 @@ function textAround(msg: string, text: string): boolean {
 
 /**
  * Between turn slots with the same words, the lower rank claims. A slot a stop or a cancel named comes
- * last: a message given to it is aborted, and a wrong guess must not abort a message that is owed. Then
- * the run's starter (G1: before what pi kept), the oldest of those pi holds, and last one the engine
- * stopped waiting for (pi may have dropped it). Two rows with the very same words are told apart by
- * nobody: whichever the mark names, each message answers one of them.
+ * last: a message given to it is aborted, and a wrong guess must not abort a message that is owed. Then,
+ * as a guess and no order of pi, `opening` before the others pi holds, and last one the engine stopped
+ * waiting for (pi may have dropped it). Two rows with the very same words are told apart by nobody:
+ * whichever the mark names, each message answers one of them.
  */
 function tieRank(slot: TurnSlot): number {
 	return (slot.stop ? 3 : 0) + (slot.phase.is === "opening" ? 0 : slot.phase.is === "refused" ? 2 : 1);
@@ -129,7 +129,8 @@ export function claimOf(text: string, slots: readonly Slot[]): Claim {
 	const candidates = slots.filter((slot): slot is TurnSlot | OtherSlot => slot.whose === "other" || (slot.whose === "turn" && (slot.phase.is === "pending" || slot.phase.is === "opening" || slot.phase.is === "queued" || slot.phase.is === "refused")));
 	const exact = candidates.filter((slot) => slot.text === msg);
 	const exactOther = exact.find((slot): slot is OtherSlot => slot.whose === "other");
-	if (exactOther) return namedOther(exactOther);
+	// The very same words as a prompt of ours too: theirs, and not by their text (no cap lifted).
+	if (exactOther) return namedOther(exactOther, !exact.some((slot) => slot.whose === "turn"));
 	const exactTurns = exact.filter((slot): slot is TurnSlot => slot.whose === "turn");
 	if (exactTurns.length) return turnClaim(exactTurns.reduce((best, slot) => (tieRank(slot) < tieRank(best) ? slot : best)));
 
@@ -144,7 +145,7 @@ export function claimOf(text: string, slots: readonly Slot[]): Claim {
 	const otherAround = longest(msg, candidates.filter((slot): slot is OtherSlot => slot.whose === "other"), (slot) => slot.text, () => 0);
 	if (otherAround) return namedOther(otherAround, turnAround === undefined);
 	// The words of a prompt of ours around the message, with its `[Trigger <id>] `: no one else's
-	// message carries that, so it is ours whatever else waits.
+	// message carries that, so it is ours, unless someone else's words are around it too (rule 2).
 	if (turnAround?.prefix !== undefined && msg.includes(turnAround.prefix)) return turnClaim(turnAround);
 	// Words around ours with no prefix: ours only when nothing of someone else waits, since a rewriting
 	// extension changes every text (probe P4). Which of several pi writes first is not read: no mark.
