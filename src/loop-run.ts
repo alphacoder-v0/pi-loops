@@ -127,17 +127,40 @@ export async function runLoop(row: ClaimedRow, job: LoopJobV3, deps: LoopRunDeps
 			retries: result.retries, compactions: result.compactions,
 			summary: previewRedacted(findings[0] ?? stripProtocolTags(result.text), 400) || undefined,
 			sessionId: result.sessionId, sessionFile: result.sessionFile, checker,
-			forSession: job.createdBy?.sessionId, ordinal: (deps.stores.history().get(job.id)?.ordinal ?? 0) + 1,
+			forSession: job.createdBy?.sessionId, ordinal: nextOrdinal(job.id, deps),
 			...(payload?.requested_by ? { requestedBy: { sessionId: payload.requested_by } } : {}),
 			...(aborted ? { aborted: true as const } : {}),
 			...(byPerson ? { stoppedBy: "person" as const, stoppedFrom: running?.stoppedFrom ?? "cli" } : {}),
 		};
+		// As main, before the record: the newest transcripts are kept, and those a finding points at.
+		try { deps.stores.jobs.pruneSessions(job.id, undefined, deps.stores.inbox.pinnedTranscripts(job.id)); }
+		catch (error) { deps.sinks.log(`loop ${job.id}: transcript pruning failed: ${error instanceof Error ? error.message : String(error)}`, "info", job); }
 		await closeLoopRun(row, deps, now(), record);
 		if (findings.length) deps.sinks.filed?.();
 	} catch (error) {
 		deps.sinks.log(`loop ${job.id}: run failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job);
 	} finally {
 		deps.runs.remove(runId);
+		// A closing that threw before it wrote the row: the run happened, so its slot is spent now, as
+		// main's end of a run clears its marker whatever failed. The lane's drain does the same for a
+		// claim this misses.
+		try {
+			if (deps.stores.requests.list(row.lane).some((item) => item.id === row.id && item.run?.id === runId)) {
+				deps.stores.requests.remove(row.lane, [row.id]);
+				deps.sinks.log(`loop ${job.id}: run ${runId.slice(0, 12)} ended without its closing; its slot is spent`, "info", job);
+			}
+		} catch (error) {
+			deps.sinks.log(`loop ${job.id}: run ${runId.slice(0, 12)} could not be closed: ${error instanceof Error ? error.message : String(error)}`, undefined, job);
+		}
+	}
+}
+
+/** The ordinal of the run that ends now. A run log that cannot be read leaves it out; the closing counts the run from what it can read. */
+function nextOrdinal(jobId: string, deps: Pick<LoopRunDeps, "stores" | "sinks">): number | undefined {
+	try { return (deps.stores.history().get(jobId)?.ordinal ?? 0) + 1; }
+	catch (error) {
+		deps.sinks.log(`loop ${jobId}: run history read failed: ${error instanceof Error ? error.message : String(error)}`, "info");
+		return undefined;
 	}
 }
 
@@ -199,9 +222,9 @@ export function ensureRecord(row: ClaimedRow, deps: Pick<LoopRunDeps, "stores" |
 
 export interface RunClose { readonly ordinal?: number; readonly fired?: string }
 export type Fate =
-	| { readonly do: "leave"; readonly exit: "delivered" | "stopped" }
+	| { readonly do: "leave"; readonly exit: "delivered" | "stopped" | "parked" }
 	| { readonly do: "owed" }
-	| { readonly do: "retry"; readonly attempts: number; readonly why: string }
+	| { readonly do: "retry"; readonly attempts: number; readonly why: string; readonly wait?: false }
 	| { readonly do: "dead"; readonly attempts: number; readonly why: string };
 export type ClosedM4b = { readonly end: ReturnType<typeof runEnd>; readonly outcome: "removed" | "waiting" | "failed" | "dead"; readonly job?: LoopJobV3 };
 export type CloseStep =
@@ -234,8 +257,9 @@ export function closeSteps(input: CloseInput): ClosePlan {
 export async function closeLoopRun(row: ClaimedRow, deps: Pick<LoopRunDeps, "stores" | "engine" | "sinks" | "holder">, now: number, ended?: RunRecordM4b): Promise<ClosedM4b> {
 	const fail = (what: string, error: unknown): void => deps.sinks.log(`loop run ${row.id}: ${what} failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 	// A run that ended here closes on what it holds, as main's end of a run does: a store that cannot be
-	// read or written now is logged, and the row is still written last, so the slot is spent once and
-	// the lane does not stay "running" until a restart.
+	// read or written now is logged, and the row is still written last. Whatever still throws before the
+	// row is written, the loop lane's drain spends the slot of a claim of this process whose run has left
+	// the list (src/background-executor.ts), so the lane does not stay "running" and the slot runs once.
 	let record: RunRecordM4b;
 	let recorded = true;
 	try {
@@ -265,7 +289,10 @@ export async function closeLoopRun(row: ClaimedRow, deps: Pick<LoopRunDeps, "sto
 			switch (step.write) {
 				case "run-end": deps.sinks.finished(step.record); break;
 				case "clock": deps.stores.clock.closeRun(step.job, step.close); break;
-				case "disable": closedJob = (await deps.stores.jobs.disable(step.job, step.disabled)) as LoopJobV3 | undefined; break;
+				case "disable":
+					closedJob = (await deps.stores.jobs.disable(step.job, step.disabled)) as LoopJobV3 | undefined;
+					if (step.disabled.code === "interrupted" && job) deps.sinks.log(`cron ${job.name ?? job.id}: parked after ${row.attempts + 1} interrupted runs`, undefined, job);
+					break;
 				case "successor": deps.stores.requests.appendIfAbsent(step.row); break;
 			}
 		} catch (error) {

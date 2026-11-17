@@ -56,6 +56,10 @@ All notable changes to pi-loops are documented here. The format follows
   rise once for each slot. The run
   after a long run is the one at the next slot of the schedule; before, a loop with an `every`
   schedule ran again at the first tick after the long run ended.
+- **`/triggers audit` says more about a loop's runs.** It also lists a run that is stopped, removed
+  with its job, failed because the process running it stopped, or parked, and the removal of a
+  one-shot that has finished. The second try of a failed one-shot is listed with the time it runs,
+  not the time it was first due.
 
 ### Fixed
 

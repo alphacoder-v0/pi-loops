@@ -174,12 +174,12 @@ test("[settle-stopped] A person stop leaves the row and a one-shot keeps main's 
 	assert.deepEqual(settleLoop(claimed, loopJob({ kind: "once", at: 1 }), stopped, true), { row: { do: "leave", exit: "stopped" }, job: { disabled: { code: "person", why: "stopped by a person; /cron run cron-j runs it now", at } } });
 });
 
-test("[settle-interrupted] Alone interruptions retry and dead-letter on the shared third attempt.", () => {
+test("[settle-interrupted] Alone interruptions retry at once and park the job on the third, with the row spent and no dead letter, as main.", () => {
 	const end = loopEnded({ interrupted: true });
-	assert.deepEqual(settleLoop({ ...claimed, attempts: 0 }, loopJob(), end, true).row, { do: "retry", attempts: 1, why: INTERRUPTED });
-	const dead = settleLoop({ ...claimed, attempts: 2 }, loopJob(), end, true);
-	assert.deepEqual(dead.row, { do: "dead", attempts: 3, why: INTERRUPTED });
-	assert.equal(dead.job?.disabled.code, "interrupted");
+	assert.deepEqual(settleLoop({ ...claimed, attempts: 0 }, loopJob(), end, true).row, { do: "retry", attempts: 1, why: INTERRUPTED, wait: false });
+	const parked = settleLoop({ ...claimed, attempts: 2 }, loopJob(), end, true);
+	assert.deepEqual(parked.row, { do: "leave", exit: "parked" });
+	assert.equal(parked.job?.disabled.code, "interrupted");
 });
 
 test("[settle-alone] A process interruption beside another run leaves the slot owed without an attempt.", () => {

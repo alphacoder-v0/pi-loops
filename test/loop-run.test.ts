@@ -135,7 +135,7 @@ test("[loop-R5] interrupted claims share a stop record; the live process has no 
 	void job;
 });
 
-test("[loop-R6] the third alone interruption disables before dead-lettering and removing the row", async () => {
+test("[loop-R6] the third alone interruption disables the job before it removes the row, and files nothing in the inbox, as main", async () => {
 	const f = setup();
 	const job = await f.stores.jobs.add(makeJob());
 	const claimed = rowFor(f.dir, { pid: 99999999, instance: "dead", procStart: "dead", version: "test" });
@@ -150,9 +150,9 @@ test("[loop-R6] the third alone interruption disables before dead-lettering and 
 	const prior = [record, record].map((item, index) => ({ ...item, runId: `old-${index}`, finishedAt: stamp(now - 1000 + index), ordinal: index + 1 }));
 	for (const item of prior) f.stores.jobs.appendRun(item);
 	const outcome = await closeLoopRun(row, f.deps, now, record);
-	assert.equal(outcome.outcome, "dead");
+	assert.equal(outcome.outcome, "removed");
 	assert.equal(f.stores.requests.list(row.lane).length, 0);
-	assert.equal(f.stores.inbox.listNew().length, 1);
+	assert.equal(f.stores.inbox.listNew().length, 0);
 });
 
 test("[kept-catch-up-note] a caught-up run tells the model it is catching up", async () => {

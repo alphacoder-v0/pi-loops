@@ -514,6 +514,15 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 			abortWhenStarted: () => undefined, refused: () => undefined,
 			close: (row, at) => closeLoopRun(row, deps, at),
 		};
+		// A claim of this process whose run is no longer in the list: the run ended here, and its closing
+		// threw before it wrote the row. The run happened, so its slot is spent, as main spends it when the
+		// end of a run fails: it does not run again, here or after a restart.
+		const self = deps.holder();
+		for (const row of stores.requests.list(lane.id)) {
+			if (!row.run || row.run.pid !== self.pid || row.run.procStart !== self.procStart || runs.get(row.run.id) !== undefined) continue;
+			stores.requests.remove(lane.id, [row.id]);
+			deps.sinks.log(`loop ${jobId}: run ${row.run.id.slice(0, 12)} ended without its closing; its slot is spent`, "info", current);
+		}
 		if (current) {
 			// Main's rule: the grace counts from the first look that found the checkout missing (a mount
 			// that comes up after pi-loops is the common case), not from when the row was queued.

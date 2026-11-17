@@ -856,7 +856,7 @@ export interface ExecutorView {
 }
 
 /** Every way a row leaves its queue (docs/design.md; the request engine's exits). */
-type Exit = "delivered" | "dead" | "cancelled" | "stale" | "refused" | "job-removed" | "stopped";
+type Exit = "delivered" | "dead" | "cancelled" | "stale" | "refused" | "job-removed" | "stopped" | "parked";
 
 /**
  * The audit line's `state` for each exit, and the one place the strings are written: `pi-loops
@@ -871,6 +871,7 @@ const AUDIT_STATE = {
 	refused: "refused",
 	"job-removed": "job-removed",
 	stopped: "stopped",
+	parked: "parked",
 } as const satisfies Record<Exit, string>;
 
 /**
@@ -1388,7 +1389,7 @@ function leaveRow(store: RequestStore, sinks: EngineSinks, row: Row, exit: Exclu
 	store.remove(row.lane, [row.id]);
 }
 
-export async function applyFate(store: RequestStore, sinks: EngineSinks, row: ClaimedRow, fate: { do: "leave"; exit: "delivered" | "stopped" } | { do: "owed" } | { do: "retry"; attempts: number; why: string } | { do: "dead"; attempts: number; why: string }, now: number): Promise<"removed" | "waiting" | "failed" | "dead"> {
+export async function applyFate(store: RequestStore, sinks: EngineSinks, row: ClaimedRow, fate: { do: "leave"; exit: "delivered" | "stopped" | "parked" } | { do: "owed" } | { do: "retry"; attempts: number; why: string; wait?: false } | { do: "dead"; attempts: number; why: string }, now: number): Promise<"removed" | "waiting" | "failed" | "dead"> {
 	if (fate.do === "leave") {
 		leaveRow(store, sinks, row, fate.exit);
 		return "removed";
@@ -1401,7 +1402,7 @@ export async function applyFate(store: RequestStore, sinks: EngineSinks, row: Cl
 		await deadLetter(store, sinks, { ...row, attempts: fate.attempts, last_error: fate.why }, `failed ${fate.attempts} times: ${fate.why}`);
 		return "dead";
 	}
-	store.update(row.lane, row.id, { attempts: fate.attempts, last_error: fate.why, not_before: stamp(now + backoffFor(fate.attempts)), run: undefined });
+	store.update(row.lane, row.id, { attempts: fate.attempts, last_error: fate.why, not_before: fate.wait === false ? undefined : stamp(now + backoffFor(fate.attempts)), run: undefined });
 	sinks.audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "failed", sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, attempts: fate.attempts, error: fate.why } });
 	return "failed";
 }

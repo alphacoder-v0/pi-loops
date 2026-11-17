@@ -360,6 +360,12 @@ export interface TickSources {
 	proof(lane: LaneId): import("./engine.ts").Proof;
 	cwdExists(cwd: string): boolean;
 	heldEpoch(sessionId: string): number | undefined;
+	/**
+	 * Whether the process that claimed a row still runs it. Absent: every claim is live. A loop's row whose
+	 * claim is dead is owed again, so a slot that comes due beside it collapses onto it as onto a queued
+	 * row, and counts no skipped overlap: main clears a dead run's marker before it decides the tick.
+	 */
+	claimLive?(row: import("./requests.ts").ClaimedRow): boolean;
 }
 export interface Ticked { readonly decision: TickDecision; readonly outcome: TickOutcome }
 
@@ -385,7 +391,9 @@ function clockPass(scope: TickScope, sources: TickSources, now: number): { reado
 	const read = new Map<string, JobRead>();
 	for (const [id, lane] of lanes) {
 		const job = jobs.find((item) => item.id === id)!;
-		read.set(id, { rows: rowsByLane.get(lane) ?? [], history: history.get(id), cwdMissing: job.stateful && !sources.cwdExists(job.cwd) });
+		const rows = rowsByLane.get(lane) ?? [];
+		const live = sources.claimLive;
+		read.set(id, { rows: job.stateful && live ? rows.map((row) => row.run && !live(row as import("./requests.ts").ClaimedRow) ? { ...row, run: undefined } : row) : rows, history: history.get(id), cwdMissing: job.stateful && !sources.cwdExists(job.cwd) });
 	}
 	const decisions = decideTick({ jobs, clock, view: { now, startedAt: scope.startedAt, tickMs: scope.tickMs, catchUp: scope.catchUp, kind: scope.kind, self: scope.self, budgetOver: scope.budgetOver, mine, read } });
 	const outcomes = applyTick(decisions, { requests: sources.requests, clock: sources.clock, heldEpoch: sources.heldEpoch });
