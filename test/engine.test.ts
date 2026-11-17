@@ -214,7 +214,7 @@ test("a follow-up pi dropped (Esc) is offered again once pi has settled, not hel
 	const pi = { sendMessage: (message: { content: unknown }, options: unknown) => void sent.push({ content: message.content, options }) };
 	const ctx = { isIdle: () => idle, mode: "tui", sessionManager: { getEntries: () => entries } } as any;
 	// The request file as the extension wires it: what the window gave pi is remembered while its row is there.
-	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: true }), hold: () => true, letGo: () => undefined }, () => ctx, { pid: 1 }, () => true, () => store.list("s"));
+	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: true }), hold: () => true, letGo: () => undefined }, () => ctx, { pid: 1 }, () => true, () => store.list("s"), undefined, () => []);
 	for (let i = 0; i < 6; i++) await drain("s", store, executor, T0, sinks);
 	assert.deepEqual(sent, [{ content: "[Trigger 1] hello", options: { triggerTurn: true, deliverAs: "followUp" } }], "a busy chat gets it once, as a follow-up that wakes the agent");
 	assert.deepEqual(store.list("s").map((d) => d.id), ["1"], "and it stays in the file until pi writes it");
@@ -1304,7 +1304,7 @@ function windowOver(opts: { hold?: () => boolean; throws?: () => boolean; mode?:
 	const state = { rows: [] as Row[], sent: [] as string[], appended: [] as unknown[], aborts: 0 };
 	const ctx = { mode: opts.mode ?? "tui", hasUI: false, isIdle: () => true, hasPendingMessages: () => false, abort: () => void state.aborts++, sessionManager: { getEntries: () => [] }, ui: { notify: () => undefined } } as any;
 	const pi = { sendMessage: (message: unknown) => void state.appended.push(message), sendUserMessage: (text: string) => { if (opts.throws?.()) throw new Error("no model selected"); state.sent.push(text); } };
-	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: true }), hold: opts.hold ?? (() => true), letGo: () => undefined }, () => ctx, { pid: 1 }, () => true, () => state.rows);
+	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: true }), hold: opts.hold ?? (() => true), letGo: () => undefined }, () => ctx, { pid: 1 }, () => true, () => state.rows, undefined, () => []);
 	const ends = (text: string) => executor.messageEnded({ role: "user", content: text });
 	/** The page queued a message of the person and rang this window for it. */
 	const rung = (id: string, text: string): UnclaimedRow => {
@@ -1809,7 +1809,7 @@ function windowOn(store: RequestStore, idle = true, mode: "tui" | "rpc" = "tui")
 	const ctx = { idle, mode, hasUI: false, isIdle: () => ctx.idle, abort: () => undefined, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
 	const turns: CustomTurn[] = [];
 	const pi = { sendMessage: (m: CustomTurn, options: unknown) => void (m.customType === TURN_TYPE ? (turns.push(m), sent.push({ text: m.content as string, options })) : appended.push({ content: m.content, options })), sendUserMessage: (text: string, options: unknown) => void sent.push({ text, options }) };
-	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: true }), hold: () => true, letGo: () => undefined }, () => ctx, { pid: 1 }, () => true, () => store.list("s"));
+	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: true }), hold: () => true, letGo: () => undefined }, () => ctx, { pid: 1 }, () => true, () => store.list("s"), undefined, () => []);
 	/** Pi writes the custom turn the window sent with `text`. */
 	const writes = (text: string, at = Date.now()): void => writesTurn(executor, entries, turns.splice(turns.findIndex((turn) => turn.content === text), 1)[0], at);
 	return { sent, appended, entries, ctx, executor, turns, writes };
@@ -2601,4 +2601,24 @@ test("an older version's row its words proved while pi held its turn keeps its c
 	w.executor.view("s");
 	w.starts("continue", T0 + 3);
 	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: row.id, mode: "unattended" }, "the row's own cap, not the person's");
+});
+
+/* ------------------------------------------------------------------ M4a: a row with no claim is proved by a record of its id (D3) */
+
+test("[T2-ran] a slot appended again after its row ran and left is proved by the record of its id, whatever its stamp; [T2-aborted-runs] a handed-back or interrupted record proves nothing, and a row that cannot be claimed never reads the run log", () => {
+	const job = { id: "cron-d3", sessionId: "s", prompt: "go", cwd: "/p" } as Parameters<typeof plainJobRow>[0];
+	const id = plainRunId(job.id, "2026-06-01T12:00:00.000Z");
+	const again = plainJobRow(job, id, `cron:${job.id}`, "", page, Date.parse("2026-06-01T12:10:00.000Z"));
+	const record = (over: Partial<RunRecord>): RunRecord => ({ runId: id, jobId: job.id, stateful: false, cwd: "/p", pid: 1, startedAt: "2026-06-01T12:01:00.000Z", finishedAt: "2026-06-01T12:02:00.000Z", ok: true, findings: 0, droppedFindings: 0, stateUpdated: false, ...over });
+	const proved = (records: RunRecord[], row: Row = again) => landed(row, proofOf("s", () => [], () => records));
+	assert.equal(proved([record({})]), true, "succeeded: the slot ran, the copy appended after it is not run again");
+	assert.equal(proved([record({ ok: false, error: "boom" })]), true, "failed: the slot ran");
+	assert.equal(proved([record({ ok: false, aborted: true, stoppedBy: "person" })]), true, "a person stopped it: the slot is spent");
+	assert.equal(proved([record({ ok: false, aborted: true })]), false, "handed back: the slot is owed, the copy runs");
+	assert.equal(proved([record({ ok: false, interrupted: true })]), false, "interrupted: the copy runs");
+	assert.equal(proved([record({ runId: "another" })]), false, "a record of another id proves nothing");
+	let read = 0;
+	const attended = { ...again, mode: "attended" as const };
+	assert.equal(landed(attended, proofOf("s", () => [], () => (read++, [record({})]))), false, "a row no run can claim is not proved by a record");
+	assert.equal(read, 0, "and the run log is not read for it");
 });

@@ -24,7 +24,7 @@ function piOn(dir: string, instance: string, mode: LeaseHolder["mode"], requests
 	const sent: unknown[] = [];
 	const turns: any[] = [];
 	const ctx = { ...mkctx(), mode };
-	const executor = new WindowExecutor({ sendMessage: (m: any) => void (m.customType === TURN_TYPE && (turns.push(m), sent.push(m.content))), sendUserMessage: (t: unknown) => void sent.push(t) }, binding, () => ctx, { pid: process.pid }, () => true, () => requests.list("s"));
+	const executor = new WindowExecutor({ sendMessage: (m: any) => void (m.customType === TURN_TYPE && (turns.push(m), sent.push(m.content))), sendUserMessage: (t: unknown) => void sent.push(t) }, binding, () => ctx, { pid: process.pid }, () => true, () => requests.list("s"), undefined, () => []);
 	return { binding, sent, turns, executor, drain: (at: number) => drain("s", requests, executor, at, sinksOf(dir), { tick: true }) };
 }
 
@@ -106,7 +106,7 @@ test("a pi-loops turn handed to an idle pi has the lane until a run takes it up,
 	const b = pushRunRow("[Trigger t2] two", { traceId: "t2", idempotencyKey: "k2", source: { kind: "local", subkind: "x" } }, to, T0 + 1);
 	store.append(a); store.append(b);
 	const sent: unknown[] = [];
-	const ex = new WindowExecutor({ sendMessage: (m: any) => void sent.push(m.content), sendUserMessage: () => assert.fail("a push is no user message") }, { here: () => ({ sessionId: "s", holds: true }), hold: () => true, letGo: () => undefined }, () => mkctx(), { pid: 1 }, () => true, () => store.list("s"));
+	const ex = new WindowExecutor({ sendMessage: (m: any) => void sent.push(m.content), sendUserMessage: () => assert.fail("a push is no user message") }, { here: () => ({ sessionId: "s", holds: true }), hold: () => true, letGo: () => undefined }, () => mkctx(), { pid: 1 }, () => true, () => store.list("s"), undefined, () => []);
 	await drain("s", store, ex, T0 + 100, sinksOf(dir), { tick: true });
 	const later = await drain("s", store, ex, T0 + 3_600_000, sinksOf(dir), { tick: true });
 	// pi starts a run for a custom message at once, or says why not: no tick takes its silence for a refusal.

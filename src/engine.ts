@@ -584,11 +584,18 @@ export interface Proof {
 	heldRunWrote(row: ClaimedRow): boolean;
 	/**
 	 * The end of the run that claimed `row`, as its run record states it: the newest record whose
-	 * `runId` is `row.run.id` and whose `startedAt` is at or after `row.run.started_at`. Undefined
-	 * for a row with no claim, and when no such record is there. Every writer of a record for a
-	 * claim copies `startedAt` from the claim, so the record of a row's first run is older than the
-	 * claim of its second, and does not close it. Whether the run is still going is the executor's
-	 * question (`ExecutorView.claimLive`).
+	 * `runId` is `row.run.id` and whose `startedAt` is at or after `row.run.started_at`. Every writer
+	 * of a record for a claim copies `startedAt` from the claim, so the record of a row's first run
+	 * is older than the claim of its second, and does not close it. Whether the run is still going is
+	 * the executor's question (`ExecutorView.claimLive`).
+	 *
+	 * A row with no claim: the newest record whose `runId` is `row.id` and whose end spent the slot
+	 * (it succeeded, it failed, or a person stopped it), for a row a run can claim (`claimable`);
+	 * undefined for any other row, and the run log is then not read. A row's id is derived from what
+	 * it asks for (a slot, a successor), so a record of that id is a run of the same request,
+	 * whenever the row in hand was appended: the clock appends a slot again after a crash between
+	 * its row and its cursor (design T2). A handed-back or interrupted run left its slot owed, so its
+	 * record proves nothing. This is the rule marks follow (src/mark.ts `marksRow`).
 	 */
 	ran(row: Row): RunEnd | undefined;
 }
@@ -605,8 +612,22 @@ export interface Proof {
 export function landed(row: Row, proof: Proof): boolean {
 	if (proof.has(row)) return true;
 	if (row.run) return proof.heldRunWrote(row);
+	if (proof.ran(row) !== undefined) return true;
 	const old = olderRow(row);
 	return old !== undefined && proof.older(old);
+}
+
+/**
+ * Whether a run can have claimed `row` under the row's own id: an input that starts a turn, run
+ * unattended. Only such a row is ever claimed, so only for such a row can a record name it.
+ */
+export function claimable(row: Row): boolean {
+	return row.kind === "input" && row.wake === "turn" && row.mode === "unattended";
+}
+
+/** The ends that spend a slot for good: the run ended (succeeded or failed), or a person stopped it. */
+function spendsSlot(end: RunEnd): boolean {
+	return end.how === "succeeded" || end.how === "failed" || end.how === "stopped";
 }
 
 declare const older: unique symbol;
@@ -690,6 +711,9 @@ export function claimAlive(row: ClaimedRow, probe: ProcessProbe = systemProbe): 
  * `runs` is read only when a row with a claim is asked about.
  */
 export function proofOf(lane: LaneId, entries: () => readonly unknown[], runs: () => readonly RunRecord[]): Proof {
+	// A drain asks about several rows: the run log is parsed once for this proof, and only when a row needs it.
+	let records: readonly RunRecord[] | undefined;
+	const read = (): readonly RunRecord[] => (records ??= runs());
 	return {
 		has: (row) =>
 			entries().some((entry) => {
@@ -699,11 +723,16 @@ export function proofOf(lane: LaneId, entries: () => readonly unknown[], runs: (
 		older: (row) => olderProved(row, entries()),
 		heldRunWrote: (row) => conversationHas(entries(), row.id),
 		ran: (row) => {
-			if (!row.run) return undefined;
+			if (!row.run) {
+				if (!claimable(row)) return undefined;
+				let spent: RunEnd | undefined;
+				for (const r of read()) if (r.runId === row.id) { const end = runEnd(r); if (spendsSlot(end)) spent = end; } // the newest one that spent it
+				return spent;
+			}
 			const id = row.run.id;
 			const from = Date.parse(row.run.started_at);
 			let record: RunRecord | undefined;
-			for (const r of runs()) if (r.runId === id && Date.parse(r.startedAt) >= from) record = r; // the newest one of this claim
+			for (const r of read()) if (r.runId === id && Date.parse(r.startedAt) >= from) record = r; // the newest one of this claim
 			return record && runEnd(record);
 		},
 	};

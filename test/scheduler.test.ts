@@ -35,7 +35,7 @@ function fakeWindow(sched: LoopScheduler, sessionId: string) {
 	const ctx = { idle: true, mode: "tui", hasUI: false, isIdle: () => ctx.idle, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
 	const turns: Array<{ customType: string; content: string; details: unknown }> = [];
 	const pi = { sendMessage: (m: any) => void (turns.push(m), sent.push(m.content)), sendUserMessage: () => assert.fail("a plain job's prompt is not a user message") };
-	const executor = new WindowExecutor(pi, { here: () => ({ sessionId, holds: true }), hold: () => true, letGo: () => undefined }, () => ctx, { pid: process.pid }, () => true, () => sched.requests.list(sessionId));
+	const executor = new WindowExecutor(pi, { here: () => ({ sessionId, holds: true }), hold: () => true, letGo: () => undefined }, () => ctx, { pid: process.pid }, () => true, () => sched.requests.list(sessionId), undefined, () => sched.store.allRuns());
 	const sinks: EngineSinks = { jobs: { exists: (id) => sched.store.load().some((j) => j.id === id), enabled: () => true, goalActive: () => false }, inbox: sched.inbox, audit: new TriggerStore(sched.requests.dir) };
 	const drainNow = (now = Date.now()) => drain(sessionId, sched.requests, executor, now, sinks);
 	/** pi wrote the prompt: the custom message the window sent with `text` is in the conversation, its row's mark in its details. */
@@ -1440,7 +1440,7 @@ function losingWindow(sched: LoopScheduler, clock: () => number) {
 		executor.settled();
 	};
 	const pi = { sendMessage: (turn: { content: string }) => { sent.push(turn.content); runs(turn); }, sendUserMessage: () => assert.fail("a plain job's prompt is not a user message") };
-	const executor: WindowExecutor = new WindowExecutor(pi as any, { here: () => ({ sessionId: "s", holds: true }), hold: () => true, letGo: () => undefined }, () => ctx, { pid: process.pid }, () => true, () => sched.requests.list("s"));
+	const executor: WindowExecutor = new WindowExecutor(pi as any, { here: () => ({ sessionId: "s", holds: true }), hold: () => true, letGo: () => undefined }, () => ctx, { pid: process.pid }, () => true, () => sched.requests.list("s"), undefined, () => sched.store.allRuns());
 	const sinks: EngineSinks = { jobs: { exists: (id) => sched.store.load().some((j) => j.id === id), enabled: (id) => sched.store.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: sched.inbox, audit: new TriggerStore(sched.requests.dir) };
 	const tick = async () => {
 		await sched.tick();
