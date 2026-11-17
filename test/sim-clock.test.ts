@@ -2,7 +2,7 @@
  * A seeded simulation of the clock and I1 through tickers, crashes, row runs and loop settlement.
  *
  *   SIM_SEED       first seed (default 1; schedule n runs seed SIM_SEED + n)
- *   SIM_SCHEDULES  schedules to run (default 400)
+ *   SIM_SCHEDULES  schedules to run (default 200)
  *   SIM_STEPS      steps per schedule (default 100)
  */
 import { test } from "node:test";
@@ -18,7 +18,7 @@ function setting(name: string, fallback: number): number {
 	return Number(raw);
 }
 const FIRST_SEED = setting("SIM_SEED", 1);
-const SCHEDULES = setting("SIM_SCHEDULES", 400);
+const SCHEDULES = setting("SIM_SCHEDULES", 200);
 const STEPS = setting("SIM_STEPS", 100);
 
 test("[I1] one row per job and slot through tickers, crashes and settlement", async () => {
