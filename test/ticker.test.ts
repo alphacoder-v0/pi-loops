@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Ticker, BACKGROUND_RIDERS_AT_M4B_2, HOST_RIDERS, WINDOW_RIDERS_AT_M4B_2 } from "../src/ticker.ts";
+import { Ticker, BACKGROUND_RIDERS, HOST_RIDERS, RUNTIME_RIDERS, WINDOW_RIDERS } from "../src/ticker.ts";
 
-test("[ticker-riders] Every transitional background and window rider is required and runs in order.", async () => {
-	assert.equal(BACKGROUND_RIDERS_AT_M4B_2.at(-1), "scheduler");
-	assert.equal(WINDOW_RIDERS_AT_M4B_2.at(-1), "scheduler");
+test("[ticker-riders] Every background and window rider is required and runs in order.", async () => {
+	assert.deepEqual(BACKGROUND_RIDERS, [...HOST_RIDERS, ...RUNTIME_RIDERS]);
+	assert.equal(BACKGROUND_RIDERS.includes("loop-lanes" as never), true);
+	assert.deepEqual(WINDOW_RIDERS, ["lease", "finished-runs", "snapshot", "background", "clock"]);
 	const seen: string[] = [];
 	const ticker = new Ticker({ names: ["a", "b", "c"] as const, riders: { a: () => { seen.push("a"); }, b: async () => { seen.push("b"); }, c: () => { seen.push("c"); } }, now: () => 10, log: () => undefined });
 	await ticker.tick();
@@ -33,10 +34,10 @@ test("stop prevents the next rider and waits for the rider already running.", as
 	assert.deepEqual(seen, ["active"]);
 });
 
-test("[ticker-riders] The background's riders keep the order of the tick they replace, and a process that leaves writes no heartbeat after it", async () => {
+test("[ticker-riders] The host's riders keep main's order, and a process that leaves writes no heartbeat after it", async () => {
 	// The order of main's everyTick (src/host.ts): still named, auto-leave, the two sweeps, the page's bind, the heartbeat, the channel's heal.
 	assert.deepEqual(HOST_RIDERS, ["still-named", "auto-leave", "conversation-sweep", "page-sweep", "page-bind", "heartbeat", "channel-heal"]);
-	assert.deepEqual(BACKGROUND_RIDERS_AT_M4B_2.slice(0, HOST_RIDERS.length), [...HOST_RIDERS]);
+	assert.deepEqual(RUNTIME_RIDERS, ["stray-leases", "closed-conversations", "rule-checks", "removed-jobs", "dead-sessions", "clock", "loop-lanes", "notices"]);
 	const seen: string[] = [];
 	const ticker: Ticker<(typeof HOST_RIDERS)[number]> = new Ticker({
 		names: HOST_RIDERS,

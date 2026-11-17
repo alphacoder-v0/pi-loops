@@ -42,7 +42,8 @@ src/backoff.ts              the one table of waits after a failure: a row, a loo
 src/job-status.ts           what a list shows for one job, folded from its clock, rows and run history
 src/clock.ts                the schedule cursor, pure tick decisions and their compare-and-set writes
 src/settle.ts               how a plain job's turn ends, as one table: what becomes of its row and of its job, for each way a run ends
-src/scheduler.ts            tick loop, due/catch-up/overlap, sub-agent runs, checker; pi-loops runs loops, a window its conversation's plain jobs; the clock that writes a plain job's row, in a window and, under the lease the background executor took, in the background
+src/scheduler.ts            transitional plain-job scheduler and shared run/status helpers; its tick loop is replaced by the clock rider and loop lanes
+src/loop-run.ts              one loop run, its stop record, and its ordered closing writes
 src/ticker.ts               one process timer and its typed, ordered riders
 src/stores.ts               stores of a loops directory, opened once, and job removal
 src/trigger-runtime.ts      dynamic-rule evaluation, deliveries, promotion, audit

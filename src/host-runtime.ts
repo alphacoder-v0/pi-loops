@@ -15,9 +15,10 @@ import { redact } from "./redact.ts";
 import { keepNotice, parseRingNote, type Notice } from "./host-control-channel.ts";
 import type { SubagentRequest, SubagentRunner } from "./runner.ts";
 import { type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart, sameHolder } from "./lease.ts";
-import { type EngineSinks, promotionTarget, promotionView, ruleResultRow } from "./engine.ts";
-import { RequestStore, type Row } from "./requests.ts";
+import { type EngineSinks, promotionTarget, promotionView, ruleResultRow, proofOf, sessionFileEntries } from "./engine.ts";
+import type { Row } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
+import type { OwnerView } from "./job-owner.ts";
 import { type BackgroundExecutor, createBackgroundExecutor } from "./background-executor.ts";
 import { RunList } from "./run-list.ts";
 import { DEFAULT_RUN_TIMEOUT_MS, LoopScheduler, type PlainJobLeases, type SessionSnapshot } from "./scheduler.ts";
@@ -25,14 +26,21 @@ import { stamp } from "./schedule.ts";
 import { budgetState } from "./job-status.ts";
 import { SubagentSlots } from "./slots.ts";
 import { type LoopJob, newId } from "./store.ts";
-import { RUNTIME_RIDERS, type Riders } from "./ticker.ts";
+import { RUNTIME_RIDERS, type Riders, type TickFacts } from "./ticker.ts";
+import { openStores, type Stores } from "./stores.ts";
+import { createLoopLanes, abortRemovedJobs, type LoopLanes } from "./background-executor.ts";
+import { runClockTick, type TickScope } from "./clock.ts";
+import { FAILING_AFTER, failurePause } from "./backoff.ts";
+import { computeDue } from "./schedule.ts";
 import { type ToolHost, automationTools, createLoopJob } from "./tools.ts";
 import { TriggerRuntime, promotionToInbox } from "./trigger-runtime.ts";
-import { auditCronFinish, auditCronStart, TriggerStore, controlPlanePreflight } from "./triggers.ts";
+import { auditCronFinish, auditCronStart, controlPlanePreflight } from "./triggers.ts";
 import { shortSessionId } from "./session-head.ts";
 
 export interface HostRuntimeDeps {
 	dir: string;
+	/** The stores to use; omitted, this process opens them (a test, or a process with no earlier read). */
+	stores?: Stores;
 	config: () => LoopsConfig;
 	/** The host's own defaults: no cwd, the settings' model and thinking level. */
 	session: () => SessionSnapshot;
@@ -53,7 +61,15 @@ export interface HostRuntimeDeps {
 }
 
 export interface HostRuntime {
+	/** Transitional command adapter; host execution is driven by typed riders and `loops`. */
 	scheduler: LoopScheduler;
+	stores: ReturnType<typeof openStores>;
+	runs: RunList;
+	loops: LoopLanes;
+	budget(): ReturnType<typeof budgetState>;
+	slotCount(): { inUse: number; limit: number };
+	/** Wait up to `ms` for the plain jobs and loops this process started to close. */
+	drain(ms: number): Promise<void>;
 	riders: Riders<(typeof RUNTIME_RIDERS)[number]>;
 	tick(): Promise<void>;
 	triggers: TriggerRuntime;
@@ -79,13 +95,14 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const kept: Notice[] = [];
 	let noticeSeq = 0;
 	let budgetSaid: string | undefined;
+	const failingSaid = new Map<string, string>();
 	const notice = (text: string, cwd?: string) => {
 		noticeSeq = keepNotice(kept, noticeSeq, text, cwd, Date.now());
 	};
 	let triggers: TriggerRuntime;
-	let runtimeRidersRan = false;
+	const stores = deps.stores ?? openStores(dir, log);
 	const leases = new LeaseStore(dir);
-	const requests = new RequestStore(dir);
+	const requests = stores.requests;
 	/** The host as a lease holder: it holds a closed conversation for one piece of work, then lets go. */
 	const ownStart = procStart(process.pid);
 	/** This process, as the rows it writes name it. */
@@ -110,9 +127,11 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	let background: BackgroundExecutor;
 	/** A plain job the host may fire: a conversation pi-loops knows the file of, that nobody holds and the page does not have open. */
 	const canHold = (sessionId: string | undefined): boolean => !(sessionId !== undefined && deps.pageHolds?.(sessionId)) && closedConversation(leases, sessionId);
+	/** What this process's tools see: every loop runs here, and a plain job whose conversation is closed. */
+	const ownerView: OwnerView = { holdsOwn: false, hostRuns: (sessionId) => canHold(sessionId) };
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
-	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), enabled: (id) => scheduler.store.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: scheduler.inbox, audit: triggers.store, ledger: scheduler.store, self: createdBy });
+	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: stores.inbox, audit: triggers.store, ledger: stores.jobs, self: createdBy });
 
 	/* ------------------------------------------------------ lifecycle hooks */
 
@@ -204,7 +223,6 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				void hooks.fire(runEndEvent(job, record)).then(forget, forget);
 			},
 			onTick: async (now) => {
-				if (runtimeRidersRan) { runtimeRidersRan = false; return; }
 				releaseStrayLeases(now);
 				await deliverToClosed();
 				await triggers.tick(now);
@@ -232,7 +250,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 
 	const toInbox = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string) => {
 		// The check decided this result's finding already (TriggerRuntime's inbox); a push with no rule did not.
-		await promotionToInbox(scheduler.inbox, triggers.store, content, trigger, { cwd: trigger.cwd ?? "", sessionId: forSession });
+		await promotionToInbox(stores.inbox, triggers.store, content, trigger, { cwd: trigger.cwd ?? "", sessionId: forSession });
 		return "inbox" as const;
 	};
 
@@ -240,7 +258,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		dir,
 		requests,
 		leases,
-		jobs: scheduler.store,
+		jobs: stores.jobs,
 		runs,
 		runner: deps.runner,
 		sinks,
@@ -265,6 +283,41 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		},
 		log,
 	});
+	const loops: LoopLanes = createLoopLanes({
+		stores,
+		runs,
+		runner: deps.runner,
+		session: deps.session,
+		hop: 0,
+		holder: () => ({ pid: process.pid, procStart: ownStart }),
+		engine: sinks,
+		slots,
+		budgetCap: () => deps.config().dailyBudgetUsd,
+		cwdExists: fs.existsSync,
+		sinks: {
+			started: (job, row) => {
+				auditCronStart(triggers.store, job, row.run.id, row.payload?.slot);
+				log(`loop ${job.name ?? job.id}: run ${row.run.id.slice(0, 12)} started`);
+				const hooks = hookRunnerFor(job as LoopJob, row.run.id);
+				if (hooks) void hooks.fire(runStartEvent(job as LoopJob, row.run.id)).catch((err: any) => log(`hooks: ${redact(err?.message ?? String(err))}`));
+			},
+			finished: (record) => {
+				auditCronFinish(triggers.store, { id: record.jobId, cwd: record.cwd }, record, !!record.aborted);
+				log(`loop ${record.jobName ?? record.jobId}: ${record.ok ? "ok" : record.stoppedBy === "person" ? `stopped by you (from ${record.stoppedFrom === "page" ? "the page" : "a terminal"})` : `FAILED (${redact(record.error ?? "")})`} · ${record.findings} finding(s)${record.usage?.cost ? ` · $${record.usage.cost.toFixed(3)}` : ""}`);
+				const hooks = runHooks.get(record.runId);
+				if (hooks) void hooks.fire(runEndEvent({ id: record.jobId, name: record.jobName, cwd: record.cwd } as LoopJob, record)).then(() => runHooks.delete(record.runId), () => runHooks.delete(record.runId));
+				if (!record.ok) {
+					const job = stores.book().jobs.find((candidate) => candidate.id === record.jobId);
+					if (job && !job.stateful && (stores.history().get(job.id)?.streak ?? 0) >= FAILING_AFTER) notice(`${job.name ?? job.id} has failed ${stores.history().get(job.id)?.streak} times in a row; backing off (last: ${record.error ?? "unknown"})`, job.cwd);
+				}
+			},
+			filed: () => undefined,
+			retired: (job, reason) => {
+				triggers.store.appendAudit({ cwd: job.cwd, type: "cron_control_plane", traceId: newId("audit"), state: "remove", sourceLabel: "clock", eventLabel: job.id, summary: `${job.name ?? job.id}: ${reason}` });
+			},
+			log: (message, level, job) => { log(redact(message)); if (level !== "info") notice(message, job?.cwd); },
+		},
+	});
 	/**
 	 * A rule's result is a request addressed to a conversation (src/engine.ts promotionTarget): the one
 	 * that created the rule while a window holds it, else one a window holds in the rule's project,
@@ -286,7 +339,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	 * until a restart. Given back here, a minute after the turn began, which no turn's setup takes.
 	 */
 	function releaseStrayLeases(now: number): void {
-		const running = new Set(scheduler.runningRuns().map((r) => r.runId));
+		const running = new Set(runs.all().map((run) => run.runId));
 		for (const lease of leases.list()) {
 			const busy = lease.holder?.busy;
 			if (!lease.holder || !busy || !sameHolder(lease.holder, me()) || running.has(busy.runId) || now - Date.parse(busy.since) < 60_000) continue;
@@ -396,16 +449,16 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	}
 
 	triggers = new TriggerRuntime({
-		store: new TriggerStore(dir),
-		jobStore: scheduler.store,
+		store: stores.rules,
+		jobStore: stores.jobs,
 		getSession: deps.session,
 		pollIntervalSecs: deps.config().triggerPollIntervalSecs,
 		runTimeoutMs: deps.config().triggerRunTimeoutMs,
 		runner: deps.runner,
 		dedupFile: path.join(dir, "dedup.json"),
 		slots,
-		budget: () => budgetState(scheduler.store, deps.config().dailyBudgetUsd, Date.now()),
-		inbox: scheduler.inbox,
+		budget: () => budgetState(stores.jobs, deps.config().dailyBudgetUsd, Date.now()),
+		inbox: stores.inbox,
 		hooks: {
 			onPromote: promote,
 			// A push that injects and runs reaches the host only when no window has its server (host.ts): the inbox.
@@ -419,8 +472,10 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const toolHostFor = (req: Pick<SubagentRequest, "cwd" | "model" | "thinking" | "builtinTools" | "tools" | "kind" | "parentSessionId">): ToolHost => {
 		const held = req.kind === "held";
 		const host: ToolHost = {
-			scheduler,
+			stores,
+			runs,
 			triggers,
+			owner: () => ownerView,
 			// A job a run makes gets no more built-in tools than that run (createLoopJob trims to them), and no trust of its own.
 			// A held turn's session is the conversation it runs in; a loop's run has none.
 			session: () => ({ ...deps.session(), sessionId: req.parentSessionId, cwd: req.cwd, model: req.model ?? deps.session().model, thinking: req.thinking ?? deps.session().thinking, builtinTools: req.builtinTools ?? req.tools?.filter((t) => PI_BUILTIN_TOOL_NAMES.includes(t)) ?? deps.session().builtinTools, trusted: false }),
@@ -441,15 +496,111 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		return host;
 	};
 
+	const plainRuns = new Set<Promise<void>>();
+	function firePlain(now: number): void {
+		const book = stores.book();
+		const budget = budgetState(stores.jobs, deps.config().dailyBudgetUsd, now);
+		for (const job of book.jobs) {
+			if (job.stateful || !job.sessionId || !canHold(job.sessionId) || !job.enabled) continue;
+			let due: number | undefined;
+			try { due = computeDue({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastDueAt: book.clock.jobs[job.id]?.slot ? Date.parse(book.clock.jobs[job.id].slot!) : undefined, lastFiredAt: book.clock.jobs[job.id]?.fired ? Date.parse(book.clock.jobs[job.id].fired!) : undefined }, now); }
+			catch (error) { log(`cron ${job.name ?? job.id}: ${error instanceof Error ? error.message : String(error)}`); continue; }
+			if (due === undefined && !background.owes(job, now)) continue;
+			if (due !== undefined && budget.over) continue;
+			const history = stores.history().get(job.id);
+			const legacy = stores.jobs.load().find((candidate) => candidate.id === job.id);
+			const streak = legacy?.consecutiveFailures ?? history?.streak ?? 0;
+			const failedAt = history?.failed?.at ?? legacy?.lastCompletedAt;
+			if (streak >= FAILING_AFTER && failedAt && now - Date.parse(failedAt) < failurePause(streak)) continue;
+			const permit = slots.acquire();
+			if (!permit) continue;
+			const dueAt = due === undefined ? undefined : stamp(due);
+			const task = background.fire(job as LoopJob, dueAt, permit, async () => {
+				if (dueAt === undefined) return "fired";
+				const heldEpoch = leases.read(job.sessionId!)?.epoch;
+				if (heldEpoch === undefined || !leases.holds(job.sessionId!, me(), heldEpoch)) return "lost";
+				const scope: TickScope = { kind: "background", self: createdBy(), startedAt: tickerFacts.startedAt, tickMs: tickerFacts.tickMs, catchUp: deps.config().cronCatchUp, budgetOver: false, mine: (candidate) => candidate.id === job.id ? { kind: "plain", epoch: heldEpoch } : undefined };
+				const sources = { book: () => stores.book(), history: () => stores.history(), requests: stores.requests, clock: stores.clock, proof: (lane: string) => { const file = leases.read(lane)?.sessionFile; return proofOf(lane, () => file ? sessionFileEntries(file) : [], () => stores.jobs.allRuns()); }, cwdExists: fs.existsSync, heldEpoch: (sessionId: string) => leases.holds(sessionId, me(), heldEpoch) ? leases.read(sessionId)?.epoch : undefined };
+				await runClockTick(scope, sources, { jobs: { remove: (id) => stores.jobs.remove(id), disable: (id, disabled) => stores.jobs.disable(id, disabled) }, log: (message) => log(message) }, now);
+				return stores.book().clock.jobs[job.id]?.slot === dueAt ? "fired" : "lost";
+			}, now);
+			const tracked = task.finally(() => { permit.release(); plainRuns.delete(tracked); }).catch((error) => log(`cron ${job.name ?? job.id}: ${error instanceof Error ? error.message : String(error)}`));
+			plainRuns.add(tracked);
+		}
+	}
+	let lastDeadSessionScan = 0;
+	let tickerFacts: TickFacts = { startedAt: Date.now(), tickMs: 30_000 };
 	const riders: Riders<(typeof RUNTIME_RIDERS)[number]> = {
 		"stray-leases": (now) => releaseStrayLeases(now),
 		"closed-conversations": () => deliverToClosed(),
-		"rule-checks": async (now) => { await triggers.tick(now); runtimeRidersRan = true; },
+		"rule-checks": async (now) => { await triggers.tick(now); },
+		"removed-jobs": () => { abortRemovedJobs(runs, (id) => stores.jobs.load().some((job) => job.id === id), log); },
+		"dead-sessions": async (now) => {
+			if (!deps.sessionExists || now - lastDeadSessionScan < 10 * 60_000) return;
+			lastDeadSessionScan = now;
+			for (const job of stores.jobs.load()) {
+				if (!job.enabled || job.stateful || !job.sessionId || deps.sessionExists(job.sessionId)) continue;
+				const why = `disabled: session ${shortSessionId(job.sessionId)} no longer exists (/cron gc removes it)`;
+				await stores.jobs.disable(job.id, { code: "session-gone", why, at: stamp(now) });
+				log(`cron ${job.name ?? job.id}: disabled, its session ${shortSessionId(job.sessionId)} no longer exists`);
+			}
+		},
+		clock: async (now, facts) => {
+			tickerFacts = facts;
+			const sources = {
+				book: () => stores.book(), history: () => stores.history(), requests: stores.requests, clock: stores.clock,
+				proof: (lane: string) => {
+					const file = lane.startsWith("@") ? undefined : leases.read(lane)?.sessionFile;
+					return proofOf(lane, () => file ? sessionFileEntries(file) : [], () => stores.jobs.allRuns());
+				},
+				cwdExists: fs.existsSync,
+				heldEpoch: (sessionId: string) => leases.holds(sessionId, me()) ? leases.read(sessionId)?.epoch : undefined,
+			};
+			const scope: TickScope = { kind: "background", self: createdBy(), startedAt: facts.startedAt, tickMs: facts.tickMs, catchUp: deps.config().cronCatchUp, budgetOver: budgetState(stores.jobs, deps.config().dailyBudgetUsd, now).over, mine: (job) => job.stateful ? { kind: "loop" } : undefined };
+			await runClockTick(scope, sources, { jobs: { remove: (id) => stores.jobs.remove(id), disable: (id, disabled) => stores.jobs.disable(id, disabled) }, caughtUp: (job) => log(`loop ${job.name ?? job.id}: catching up a missed tick`), log: (message, level, job) => { log(redact(message)); if (level !== "info") notice(message, job?.cwd); } }, now);
+			firePlain(now);
+		},
+		"loop-lanes": (now) => loops.drainAll(now),
+		notices: (now, facts) => {
+			const budget = budgetState(stores.jobs, deps.config().dailyBudgetUsd, now);
+			const day = stamp(now).slice(0, 10);
+			if (budget.over && budgetSaid !== day) {
+				budgetSaid = day;
+				const message = `today's automation has cost $${budget.spent.toFixed(2)} of the $${budget.cap.toFixed(2)} budget; dispatching is paused until tomorrow or a higher [limits] daily_budget_usd`;
+				log(message); notice(message);
+			}
+			for (const job of stores.book().jobs) {
+				if (!job.stateful) continue;
+				const history = stores.history().get(job.id);
+				const failed = history?.failed;
+				if (!failed || Date.parse(failed.at) <= facts.startedAt || failingSaid.get(job.id) === failed.at || history.streak < FAILING_AFTER) continue;
+				failingSaid.set(job.id, failed.at);
+				const message = `${job.name ?? job.id} has failed ${history.streak} times in a row; backing off (last: ${failed.error})`;
+				log(redact(message)); notice(message, job.cwd);
+			}
+		},
 	};
 	return {
 		scheduler,
+		stores,
+		runs,
+		loops,
+		budget: () => budgetState(stores.jobs, deps.config().dailyBudgetUsd, Date.now()),
+		slotCount: () => ({ inUse: slots.inUseCount, limit: slots.limit }),
+		drain: async (ms) => {
+			const deadline = Date.now() + ms;
+			while (plainRuns.size && Date.now() < deadline) await Promise.race([Promise.allSettled([...plainRuns]), new Promise((resolve) => setTimeout(resolve, 25))]);
+			await loops.settle(Math.max(0, deadline - Date.now()));
+		},
 		riders,
-		tick: () => { runtimeRidersRan = true; return scheduler.tick(); },
+		tick: async () => {
+			const now = Date.now();
+			const facts = { startedAt: tickerFacts.startedAt, tickMs: tickerFacts.tickMs };
+			for (const name of RUNTIME_RIDERS) {
+				try { await riders[name](now, facts); }
+				catch (error) { log(`tick: ${name} failed: ${error instanceof Error ? error.message : String(error)}`); }
+			}
+		},
 		triggers,
 		notice,
 		notices: () => [...kept],
@@ -471,6 +622,9 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		stop: async () => {
 			for (const w of watchers.splice(0)) w.close();
 			await triggers.stop();
+			await loops.stop(5_000);
+			for (const run of runs.all()) run.ctrl.abort();
+			await Promise.race([Promise.allSettled([...plainRuns]), new Promise((resolve) => setTimeout(resolve, 5_000).unref())]);
 			await scheduler.stop();
 			// The runs are over; their hooks may still be in flight. Same bounded wait as the
 			// interactive path, so a "the run failed" webhook survives the host being told to quit.

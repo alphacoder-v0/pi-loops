@@ -10,7 +10,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileMark, type Proof, type QuietMark, DEAD_AFTER_ATTEMPTS, bury, changesSomething, claimAlive, closeRun, conversationHas, decideDrain, drain, jobQueued, plainRunId, proofOf, quietMark, sessionFileEntries, stillQuiet } from "./engine.ts";
+import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileMark, type Proof, type QuietMark, DEAD_AFTER_ATTEMPTS, bury, changesSomething, claimAlive, closeRun, conversationHas, decideDrain, drain, jobQueued, modeOf, plainRunId, plainJobRow, proofOf, quietMark, sessionFileEntries, stillQuiet } from "./engine.ts";
 import { type ConversationId, parseLane } from "./lane.ts";
 import { DELIVERY_JOB_ID, type LeaseHolder, type LeaseStore, closedConversation, liveHolderPid } from "./lease.ts";
 import { markDetails, markFor } from "./mark.ts";
@@ -18,12 +18,15 @@ import { previewRedacted, redact } from "./redact.ts";
 import type { ClaimedRow, RequestStore, Row, UnclaimedRow } from "./requests.ts";
 import { type RunList, STOPPED_BY_PERSON } from "./run-list.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
-import { stamp } from "./schedule.ts";
+import { formatLocal, stamp } from "./schedule.ts";
 import { shortSessionId } from "./session-head.ts";
 import { oneShotDone } from "./settle.ts";
-import type { SubagentSlot } from "./slots.ts";
-import type { JobStore, LoopJob, RunRecord } from "./store.ts";
-import { FAILING_AFTER } from "./backoff.ts";
+import type { SubagentSlot, SubagentSlots } from "./slots.ts";
+import type { JobStore, LoopJob, LoopJobV3, RunRecord } from "./store.ts";
+import { FAILING_AFTER, failurePause } from "./backoff.ts";
+import { loopLane, type LaneId } from "./lane.ts";
+import { runLoop, closeLoopRun, type LoopRunDeps } from "./loop-run.ts";
+import { budgetState } from "./job-status.ts";
 
 /** A closed conversation this process holds: its lease at the epoch it took, and its file. */
 export interface Held {
@@ -271,6 +274,7 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 		// closing finds the record by the claim.
 		const record: RunRecord = {
 			runId,
+			row: row.id,
 			jobId: job.id,
 			jobName: job.name,
 			stateful: false,
@@ -417,5 +421,147 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 		owes: (job, now) => !job.stateful && job.sessionId !== undefined && turnOwed(requests.list(job.sessionId), job.id, now) !== undefined,
 		deliverSession,
 		deliverQueued,
+	};
+}
+
+export interface LoopLaneDeps extends LoopRunDeps {
+	slots: SubagentSlots;
+	budgetCap(): number | undefined;
+	cwdExists(cwd: string): boolean;
+}
+
+export interface LoopLanes {
+	drainAll(now: number): Promise<void>;
+	drain(lane: Extract<ReturnType<typeof parseLane>, { kind: "loop" }>, now: number): ReturnType<typeof drain>;
+	runNow(jobId: string, requestedBy?: { sessionId: string }): Promise<true | string>;
+	stop(drainMs: number): Promise<void>;
+	/** Wait up to `ms` for the runs this drain started to close, without aborting them. */
+	settle(ms: number): Promise<void>;
+}
+
+export function abortRemovedJobs(runs: RunList, exists: (jobId: string) => boolean, log: (line: string) => void): number {
+	let aborted = 0;
+	for (const run of runs.all()) {
+		if (exists(run.jobId) || run.ctrl.signal.aborted) continue;
+		run.ctrl.abort();
+		log(`cron ${run.label}: removed while it ran; stopped run ${run.runId}`);
+		aborted++;
+	}
+	return aborted;
+}
+
+export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
+	const { stores, runs, slots } = deps;
+	let stopped = false;
+	const inFlight = new Set<Promise<void>>();
+	const baseSinks = deps.engine;
+	const proof = (lane: LaneId): Proof => proofOf(lane, () => [], () => stores.jobs.allRuns());
+	const laneJobs = (): Map<string, LoopJobV3> => {
+		const result = new Map<string, LoopJobV3>();
+		for (const job of stores.book().jobs) {
+			const lane = job.stateful ? loopLane(job.id) : undefined;
+			if (lane) result.set(lane, job);
+		}
+		return result;
+	};
+
+	async function drainLane(lane: Extract<ReturnType<typeof parseLane>, { kind: "loop" }>, now: number): ReturnType<typeof drain> {
+		const jobId = lane.id.slice("@".length);
+		const current = laneJobs().get(lane.id);
+		const jobs = stores.book().jobs;
+		const sinks = baseSinks();
+		const executor: Executor = {
+			holds: () => true,
+			proof: () => proof(lane.id),
+			view: () => ({
+				kind: "held", ceiling: CEILING.held, idle: !runs.all().some((run) => run.jobId === jobId),
+				running: undefined, inFlight: new Set(), connected: () => true, producerAlive: () => true,
+				mine: () => false, claimLive: claimAlive,
+				blocked: (row) => {
+					if (row.source.startsWith("cron-run:")) return undefined;
+					const job = jobs.find((item) => item.id === jobId);
+					if (!job) return undefined;
+					if (!job.enabled) return "its job is disabled";
+					if (!deps.cwdExists(job.cwd)) {
+						const since = Date.parse(row.created_at);
+						if (now - since >= 30 * 60_000) {
+							void stores.jobs.disable(jobId, { code: "cwd-missing", at: stamp(now), why: `disabled: cwd ${job.cwd} has been missing since ${formatLocal(since)} (re-enable after /cron add --cwd or restoring it)` }).catch((error) => deps.sinks.log(`loop ${jobId}: ${error instanceof Error ? error.message : String(error)}`));
+						}
+						return `waiting: cwd ${job.cwd} is not there yet (since ${formatLocal(since)}; disabled if it stays missing)`;
+					}
+					const budget = budgetState(stores.jobs, deps.budgetCap(), now);
+					if (budget.over) return `paused: today's automation has cost $${budget.spent.toFixed(2)} of the $${budget.cap.toFixed(2)} budget ([limits] daily_budget_usd)`;
+					if (slots.free <= 0) return `deferred: ${slots.inUseCount} sub-agent(s) already in flight (max ${slots.limit})`;
+					return undefined;
+				},
+			}),
+			turn: (row) => {
+				if (stopped) return "no-slot";
+				const permit = row.source.startsWith("cron-run:") ? slots.occupy() : slots.acquire();
+				if (!permit) return "no-slot";
+				const job = laneJobs().get(lane.id);
+				if (!job) { permit.release(); return "sent"; }
+				const claimed = runs.claim(stores.requests, row, deps.holder(), { jobId, label: job.name ?? job.id, promptPreview: previewRedacted(row.payload?.text ?? job.prompt, 120), ctrl: new AbortController() }, now);
+				if (!claimed) { permit.release(); return "sent"; }
+				const task = runLoop(claimed, job, deps).finally(() => { permit.release(); inFlight.delete(task); }).catch((error) => deps.sinks.log(`loop ${jobId}: ${error instanceof Error ? error.message : String(error)}`));
+				inFlight.add(task);
+				return "sent";
+			},
+			append: () => "sent", abort: () => { const run = runs.all().find((item) => item.jobId === jobId); if (run) runs.stop(run.runId); },
+			abortWhenStarted: () => undefined, refused: () => undefined,
+			close: (row, at) => closeLoopRun(row, deps, at),
+		};
+		if (current) {
+			const row = stores.requests.list(lane.id).find((item) => item.kind === "input" && !item.run && item.source.startsWith("cron:") && !deps.cwdExists(current.cwd));
+			if (row && now - Date.parse(row.created_at) >= 30 * 60_000) {
+				const since = Date.parse(row.created_at);
+				await stores.jobs.disable(current.id, { code: "cwd-missing", at: stamp(now), why: `disabled: cwd ${current.cwd} has been missing since ${formatLocal(since)} (re-enable after /cron add --cwd or restoring it)` });
+				stores.requests.remove(lane.id, [row.id]); // the slot is spent; a re-enabled job does not run the stale row
+				deps.sinks.log(`cron ${current.name ?? current.id}: disabled, cwd ${current.cwd} missing since ${formatLocal(since)}`, undefined, current);
+			}
+		}
+		return drain(lane.id, stores.requests, executor, now, sinks);
+	}
+
+	return {
+		async drainAll(now) {
+			for (const lane of stores.requests.lanes()) if (lane.kind === "loop") {
+				const jobId = lane.id.slice("@".length);
+				if (!stores.book().jobs.some((job) => job.id === jobId && job.stateful)) {
+					// A removed job's rows still need the drain that takes them out as `job-removed`; any other row in such a lane is not this executor's.
+					const removed = stores.requests.list(lane.id).some((row) => row.source.startsWith("cron:") || row.source.startsWith("cron-run:"));
+					if (!removed) continue;
+				}
+				try { await drainLane(lane, now); }
+				catch (error) { deps.sinks.log(`loop lane ${lane.id}: ${error instanceof Error ? error.message : String(error)}`); }
+			}
+		},
+		drain: drainLane,
+		async runNow(jobId, requestedBy) {
+			const job = stores.book().jobs.find((item) => item.id === jobId);
+			if (!job) return "is no longer in the store";
+			if (!job.stateful) return "cannot run: its id is not a loop id";
+			const lane = loopLane(job.id);
+			if (runs.all().some((run) => run.jobId === jobId) || (lane !== undefined && stores.requests.list(lane).some((row) => !!row.run))) return "is already running";
+			if (stopped) return "cannot run: pi-loops is stopping";
+			if (!lane) return "cannot run: its id is not a loop id";
+			const id = plainRunId(job.id, stamp());
+			const base = plainJobRow({ ...job, sessionId: lane }, id, `cron-run:${job.id}`, "", deps.engine().self(), Date.now());
+			const row: UnclaimedRow = { ...base, lane, mode: modeOf("loop", "input", `cron-run:${job.id}`, "turn"), payload: { ...base.payload!, ...(requestedBy ? { requested_by: requestedBy.sessionId } : {}) } };
+			stores.requests.appendIfAbsent(row);
+			try { await drainLane(parseLane(lane) as Extract<ReturnType<typeof parseLane>, { kind: "loop" }>, Date.now()); }
+			catch (error) { deps.sinks.log(`loop lane ${lane}: ${error instanceof Error ? error.message : String(error)}`); }
+			return true;
+		},
+		async stop(drainMs) {
+			stopped = true;
+			for (const run of runs.all()) if (!run.turn) run.ctrl.abort();
+			const deadline = Date.now() + drainMs;
+			while (inFlight.size && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+		},
+		async settle(ms) {
+			const deadline = Date.now() + ms;
+			while (inFlight.size && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+		},
 	};
 }

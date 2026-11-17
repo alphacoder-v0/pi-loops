@@ -1,9 +1,9 @@
 export const DEFAULT_TICK_MS = 30_000;
 
 export const HOST_RIDERS = ["still-named", "auto-leave", "conversation-sweep", "page-sweep", "page-bind", "heartbeat", "channel-heal"] as const;
-export const RUNTIME_RIDERS = ["stray-leases", "closed-conversations", "rule-checks"] as const;
-export const BACKGROUND_RIDERS_AT_M4B_2 = [...HOST_RIDERS, ...RUNTIME_RIDERS, "scheduler"] as const;
-export const WINDOW_RIDERS_AT_M4B_2 = ["lease", "finished-runs", "snapshot", "background", "scheduler"] as const;
+export const RUNTIME_RIDERS = ["stray-leases", "closed-conversations", "rule-checks", "removed-jobs", "dead-sessions", "clock", "loop-lanes", "notices"] as const;
+export const BACKGROUND_RIDERS = [...HOST_RIDERS, ...RUNTIME_RIDERS] as const;
+export const WINDOW_RIDERS = ["lease", "finished-runs", "snapshot", "background", "clock"] as const;
 
 export interface TickFacts {
 	readonly startedAt: number;

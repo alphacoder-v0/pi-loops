@@ -74,6 +74,9 @@ interface RowBase {
 		timeout_ms?: number;
 		/** MCP servers the turn needs: the row waits for a connection. */
 		requires?: string[];
+		slot?: string;
+		catch_up?: true;
+		requested_by?: string;
 	};
 	/** stop, cancel. Never "whatever runs next". */
 	target?: { id: string } | { current: true; started_before: string };

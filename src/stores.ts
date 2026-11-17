@@ -24,7 +24,8 @@ export interface Stores {
 }
 
 export function openStores(dir: string, log: (line: string) => void = () => {}): Stores {
-	convertStores(dir, log);
+	const removed = convertStores(dir, log);
+	if (removed.length) log(`removed ${removed.join(", ")}: files of an older version that nothing reads now`);
 	const jobs = new JobStore(dir);
 	const inbox = new Inbox(dir);
 	const requests = new RequestStore(dir);
@@ -53,10 +54,13 @@ export function openStores(dir: string, log: (line: string) => void = () => {}):
 	};
 }
 
+/** How long `removeJob` waits for an aborted run to write its record. */
+export const REMOVE_DRAIN_MS = 2_000;
+
 export async function removeJob(stores: Pick<Stores, "jobs">, runs: RunList | undefined, id: string, opts: { purge?: boolean } = {}): Promise<{ job: ReturnType<JobStore["load"]>[number] | undefined; aborted: number }> {
 	const runIds = runs?.all().filter((run) => run.jobId === id).map((run) => run.runId) ?? [];
 	for (const runId of runIds) runs?.get(runId)?.ctrl.abort();
-	const deadline = Date.now() + 2_000;
+	const deadline = Date.now() + REMOVE_DRAIN_MS;
 	while (runIds.some((runId) => runs?.get(runId) !== undefined) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
 	return { job: await stores.jobs.remove(id, opts), aborted: runIds.length };
 }

@@ -487,6 +487,25 @@ export class JobStore {
 		return this.mutate((jobs) => ({ jobs: [...jobs, job], result: job }));
 	}
 
+	/** Turn a job off with its reason. A job already off keeps the reason it has. */
+	async disable(id: string, disabled: Disabled): Promise<LoopJob | undefined> {
+		return this.update(id, (job) => {
+			if (!job.enabled) return;
+			job.enabled = false;
+			if (disabled.why !== "disabled by a person") job.lastError = disabled.why;
+		});
+	}
+
+	/** Turn a job on, and forget why it was off. */
+	async enable(id: string): Promise<LoopJob | undefined> {
+		return this.update(id, (job) => {
+			job.enabled = true;
+			job.lastError = undefined;
+			job.interruptions = undefined;
+			delete (job as LoopJob & { disabled?: unknown }).disabled;
+		});
+	}
+
 	/**
 	 * Remove every job matching `pred`; returns them. Its state and transcripts are kept unless
 	 * `purge` is set — the caller decides, as with `remove` — because the usual way to change a job

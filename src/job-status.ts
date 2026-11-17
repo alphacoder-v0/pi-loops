@@ -118,6 +118,13 @@ export function fromV2(job: LoopJob): { job: LoopJobV3; clock: JobClock } {
 	}
 	return {
 		job: { ...definition, enabled: job.enabled, ...(disabled ? { disabled } : {}) },
-		clock: { ...(lastDueAt ? { slot: lastDueAt } : {}), ...(lastFiredAt ? { fired: lastFiredAt } : {}), runs: runCount },
+		clock: {
+			...(lastDueAt ? { slot: lastDueAt } : {}),
+			...(lastFiredAt ? { fired: lastFiredAt } : {}),
+			runs: runCount,
+			...(job.skippedOverlap ? { collapsed: job.skippedOverlap } : {}),
+			...(job.lastError && job.enabled ? { note: { at: lastDueAt ?? job.createdAt, text: job.lastError } } : {}),
+			...("clearedAt" in job && typeof job.clearedAt === "string" ? { cleared: job.clearedAt } : {}),
+		},
 	};
 }

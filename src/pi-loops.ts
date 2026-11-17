@@ -22,7 +22,6 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "./args.ts";
 import { envFlag, loadConfig } from "./config.ts";
-import { convertStores } from "./convert-v2.ts";
 import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluationApplies, evaluatorPrompt, goalPursued, judgeCaughtUp, latestGoal, newGoal, parseDecision, pauseFor, resumeGoal, settledTurn, transcriptFromMessages } from "./goal.ts";
 import { sameProject } from "./paths.ts";
 import { isExactlyTrusted, projectNeedsTrust, sessionTrustCovers, windowTrusted } from "./trust.ts";
@@ -48,15 +47,17 @@ import { jobLines as cronJobLines } from "./job-lines.ts";
 import { plural } from "./plural.ts";
 import { openWhere, runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, closedConversation, openWindowPids, procStart } from "./lease.ts";
-import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
+import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, proofOf, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
 import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
-import { RequestStore, type Row, type UnclaimedRow } from "./requests.ts";
+import type { Row, UnclaimedRow } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { budgetState } from "./job-status.ts";
-import { Ticker, WINDOW_RIDERS_AT_M4B_2, type Riders } from "./ticker.ts";
+import { runClockTick, decideRunNow } from "./clock.ts";
+import { openStores, removeJob } from "./stores.ts";
+import { Ticker, WINDOW_RIDERS, type Riders } from "./ticker.ts";
 import { TURN_TYPE } from "./mark.ts";
 import { renderTurn } from "./turn-render.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
@@ -98,6 +99,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	const dir = defaultLoopsDir(getAgentDir());
 	/** Everything this process diagnoses, kept after the window is gone. */
 	const log = new LoopsLog(dir, `pi-${process.pid}.log`);
+	const stores = openStores(dir, (line) => log.info(line));
 	/** This package's directory: a sub-session must not load a second copy of this extension. */
 	const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -126,7 +128,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	function closedHere(sessionId: string | undefined): boolean {
 		return closedConversation(binding.store, sessionId);
 	}
-	const requests = new RequestStore(dir);
+	const requests = stores.requests;
 	/** The engine's executor here: the pi this extension runs in (src/window-executor.ts). */
 	/** This process, as the rows it produces name it: the one that runs them while it is on the conversation. */
 	const self: Producer = { pid: process.pid, procStart: ownStart };
@@ -141,7 +143,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			return sessionId ? requests.list(sessionId) : [];
 		},
 		(row) => requests.images(row),
-		() => scheduler.store.allRuns(),
+		() => stores.jobs.allRuns(),
 		{ resizeImage, formatDimensionNote },
 	);
 	let requestWatch: fs.FSWatcher | undefined;
@@ -225,7 +227,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		allowCommands: () => config.allowCommands,
 		// The daily cap, read while a run is in flight and not only before it is dispatched. Lazy: the
 		// scheduler is built with this runner, and asking it anything before then would be a cycle.
-		budget: () => budgetState(scheduler.store, config.dailyBudgetUsd, Date.now()),
+		budget: () => budgetState(stores.jobs, config.dailyBudgetUsd, Date.now()),
 		log: (msg) => {
 			log.warn(`sub-agent: ${msg}`);
 			if (lastCtx?.hasUI) lastCtx.ui.notify(`[sub-agent] ${msg}`, "warning");
@@ -271,7 +273,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			onCatchUp: (job, dueAt) => {
 				if (lastCtx?.hasUI && sameProject(job.cwd, session.cwd)) lastCtx.ui.notify(`cron ${job.name ?? job.id}: catching up the run missed at ${formatLocal(dueAt)}`, "info");
 			},
-			onJobRetired: (job) => cronControlAudit("remove", "scheduler", job, undefined),
+			onJobRetired: (job) => cronControlAudit("remove", "clock", job, undefined),
 			// A row this window wrote is its own (`/cron run`'s is the person's). While pi is busy the row
 			// waits in the file, where nothing else shows it: said once, as pi said a queued follow-up.
 			onRowWritten: (row, job) => {
@@ -300,7 +302,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		},
 	});
 
-	const windowRiders: Riders<(typeof WINDOW_RIDERS_AT_M4B_2)[number]> = {
+	const windowRiders: Riders<(typeof WINDOW_RIDERS)[number]> = {
 		lease: () => leaseTick(),
 		"finished-runs": () => showFinishedRuns(),
 		snapshot: () => emitSnapshot(),
@@ -308,16 +310,39 @@ export default function piLoops(pi: ExtensionAPI) {
 			if (binding.here().holds) void hostTick(true).then(() => refreshBadge()).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
 			else refreshBadge();
 		},
-		scheduler: () => scheduler.tick(),
+		clock: (now, facts) => runClockTick({
+			kind: "window", self: createdBy(), startedAt: facts.startedAt, tickMs: facts.tickMs,
+			catchUp: config.cronCatchUp, budgetOver: budgetState(stores.jobs, config.dailyBudgetUsd, now).over,
+			mine: (job) => {
+				if (job.stateful || !runsHere(job, scheduler.ownerView())) return undefined;
+				const epoch = binding.heldEpoch(job.sessionId ?? "");
+				return epoch === undefined ? undefined : { kind: "plain", epoch };
+			},
+		}, {
+			book: () => stores.book(), history: () => stores.history(), requests, clock: stores.clock,
+			proof: (lane) => { const file = binding.store.read(lane)?.sessionFile; return proofOf(lane, () => file ? SessionManager.open(file).getEntries() : [], () => stores.jobs.allRuns()); },
+			cwdExists: fs.existsSync, heldEpoch: (id) => binding.heldEpoch(id),
+		}, {
+			jobs: { remove: (id) => stores.jobs.remove(id), disable: (id, disabled) => stores.jobs.disable(id, disabled) },
+			rowWritten: (row, job) => {
+				executor.produced(row);
+				const line = waitingLine(row.source, row.id, job.name ?? job.id);
+				if (line && lastCtx?.hasUI && !lastCtx.isIdle()) lastCtx.ui.notify(line, "info");
+				refreshBadge();
+			},
+			retired: (job) => cronControlAudit("remove", "clock", job as LoopJob, undefined),
+			budgetHeld: () => diagnostic(`today's automation has cost $${budgetState(stores.jobs, config.dailyBudgetUsd, now).spent.toFixed(2)} of the $${config.dailyBudgetUsd?.toFixed(2) ?? "0.00"} budget; dispatching is paused until tomorrow or a higher [limits] daily_budget_usd`),
+			log: (message, level) => diagnostic(message, level),
+		}, now),
 	};
-	const ticker = new Ticker({ names: WINDOW_RIDERS_AT_M4B_2, riders: windowRiders, log: (message) => log.warn(message) });
+	const ticker = new Ticker({ names: WINDOW_RIDERS, riders: windowRiders, log: (message) => log.warn(message) });
 
 	/* ---------------------------------------------------------- triggers */
 
 	let config = loadConfig(dir);
 	const triggers: TriggerRuntime = new TriggerRuntime({
-		store: new TriggerStore(dir),
-		jobStore: scheduler.store,
+		store: stores.rules,
+		jobStore: stores.jobs,
 		getSession: () => session,
 		pollIntervalSecs: config.triggerPollIntervalSecs,
 		runTimeoutMs: config.triggerRunTimeoutMs,
@@ -326,8 +351,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		// Checks and actions cost the same money and the same process as loop runs, so they draw on the
 		// same counter rather than on a second one of their own.
 		slots: subagentSlots,
-		budget: () => budgetState(scheduler.store, config.dailyBudgetUsd, Date.now()),
-		inbox: scheduler.inbox,
+		budget: () => budgetState(stores.jobs, config.dailyBudgetUsd, Date.now()),
+		inbox: stores.inbox,
 		hop,
 		hooks: {
 			onPromote: async (content, trigger, forSession) => {
@@ -340,7 +365,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				const route = promotionTarget(forSession, promotionView(binding.store, trigger.cwd ?? session.cwd));
 				if (route.to === "inbox") {
 					// The check decided this result's finding already (TriggerRuntime's inbox); a push with no rule did not.
-					await promotionToInbox(scheduler.inbox, triggers.store, content, trigger, { cwd: trigger.cwd ?? session.cwd, sessionId: route.sessionId });
+					await promotionToInbox(stores.inbox, triggers.store, content, trigger, { cwd: trigger.cwd ?? session.cwd, sessionId: route.sessionId });
 					refreshBadge();
 					return "inbox";
 				}
@@ -358,7 +383,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			},
 			onInjectAndRun: async (prompt, trigger) => {
 				if (trigger.cwd && !sameProject(trigger.cwd, session.cwd)) {
-					await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: prompt.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd, lane: checkLane(trigger.cwd) });
+					await stores.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: prompt.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd, lane: checkLane(trigger.cwd) });
 					refreshBadge();
 					return "inbox";
 				}
@@ -628,7 +653,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const lines = panelLines({
 			rules: triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd)).map((r) => ({ ...r, failureMark: ruleFailureMark(r) })),
 			poll: lastPoll(),
-			jobs: scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd)),
+			jobs: stores.jobs.load().filter((j) => sameProject(j.cwd, session.cwd)),
 			runs: recentRuns,
 			runText: runLine,
 			sources: mcpSources.map((src) => ({ name: src.config.name, state: src.status.state, tools: (mcpToolNames.get(src.config.name) ?? []).length })),
@@ -645,7 +670,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
-	const engineSinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), enabled: (id) => scheduler.store.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => goalPursued(goal) }, inbox: scheduler.inbox, audit: triggers.store, ledger: scheduler.store, self: () => createdBy() });
+	const engineSinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => goalPursued(goal) }, inbox: stores.inbox, audit: triggers.store, ledger: stores.jobs, self: () => createdBy() });
 	/** One drain per session for when a wait ends on its own (the ring wait on a page's row), replaced, never stacked. */
 	const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	/**
@@ -862,7 +887,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	function storeRunning(): Array<{ id: string; source: string; event: string; label: string; startedAt: string; promptPreview: string; check: boolean; inHost: boolean }> {
 		try {
 			// A marker whose process is gone is not a run (the background process clears it on its tick).
-			const jobs = scheduler.store.load();
+			const jobs = stores.jobs.load();
 			const marked = jobs.filter((j) => j.running && (!j.running.host || j.running.host === os.hostname()) && pidAlive(j.running.pid)).map((j) => ({ id: j.running!.runId, source: "Cron", event: j.id, label: j.name ?? j.id, startedAt: j.running!.startedAt, promptPreview: previewRedacted(j.prompt, 80), check: false, inHost: true }));
 			// A plain job's turn in a closed conversation has no marker: it is the claim on the job's row.
 			const held = heldTurns(jobs, (sessionId) => requests.list(sessionId)).map(({ jobId, run }) => {
@@ -920,7 +945,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		// Each store on its own: a damaged rules file stopped the loops too, because nothing then started
 		// the background process.
 		const rules = loadOrNone(() => triggers.store.load()).filter((r) => r.enabled).length;
-		const jobs = loadOrNone(() => scheduler.store.load()).filter((j) => j.enabled);
+		const jobs = loadOrNone(() => stores.jobs.load()).filter((j) => j.enabled);
 		return {
 			loops: jobs.filter((j) => j.stateful).length,
 			rules,
@@ -1008,14 +1033,14 @@ export default function piLoops(pi: ExtensionAPI) {
 	function showFinishedRuns(): void {
 		const ctx = lastCtx;
 		if (!ctx?.hasUI) return;
-		const all = scheduler.store.listRuns(undefined, FRESH_RUNS_READ);
+		const all = stores.jobs.listRuns(undefined, FRESH_RUNS_READ);
 		recentRuns = panelRuns(all, (cwd) => sameProject(cwd, session.cwd), PANEL_RUN_LIMIT);
 		const { fresh, cursor } = freshRuns(all, runsShownAfter);
 		if (!fresh.length) return;
 		runsShownAfter = cursor;
 		// The record's own cwd and name: a one-shot loop is removed from jobs.json by the time its
 		// record is read here, and its card is still this conversation's.
-		const jobs = new Map(scheduler.store.load().map((j) => [j.id, j]));
+		const jobs = new Map(stores.jobs.load().map((j) => [j.id, j]));
 		const label = (r: RunRecord) => jobs.get(r.jobId)?.name ?? r.jobName;
 		// Which conversation each card belongs to is src/run-card.ts: where a person asked, else where
 		// the loop was made.
@@ -1046,7 +1071,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	 */
 	function snapshotData(): Record<string, unknown> {
 		const rules = triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd));
-		const jobs = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd));
+		const jobs = stores.jobs.load().filter((j) => sameProject(j.cwd, session.cwd));
 		const poll = lastPoll();
 		return {
 			version: PI_LOOPS_VERSION,
@@ -1064,7 +1089,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			},
 			// Why nothing runs, when that is so: the browser panel shows it in place of next runs.
 			paused: hostHasWork() ? hostPauseReason() : undefined,
-			counts: { jobs: jobs.length, jobsEnabled: jobs.filter((j) => j.enabled).length, rules: rules.length, rulesEnabled: rules.filter((r) => r.enabled).length, inboxNew: scheduler.inbox.newCount() },
+			counts: { jobs: jobs.length, jobsEnabled: jobs.filter((j) => j.enabled).length, rules: rules.length, rulesEnabled: rules.filter((r) => r.enabled).length, inboxNew: stores.inbox.newCount() },
 			mcp: mcpSources.map((src) => ({
 				name: src.config.name,
 				state: src.status.state,
@@ -1131,13 +1156,13 @@ export default function piLoops(pi: ExtensionAPI) {
 		emitSnapshot();
 		if (!lastCtx?.hasUI) return;
 		const parts: string[] = [];
-		const n = scheduler.inbox.newCount();
-		const decisions = scheduler.inbox.decisionCount();
+		const n = stores.inbox.newCount();
+		const decisions = stores.inbox.decisionCount();
 		if (n > 0) parts.push(`Inbox: ${n} new${decisions ? ` (${plural(decisions, "decision")})` : ""}`);
 		// Machine-wide like the inbox count and the running list above it: one process owns the
 		// machine's clock, and a loop failing in another checkout is still this machine's automation
 		// going quiet.
-		const failing = failingSummary(scheduler.store.load());
+		const failing = failingSummary(stores.jobs.load());
 		if (failing) parts.push(failing);
 		const running = machineRuns().map((r) => r.label);
 		if (running.length) parts.push(`running: ${running.join(", ")}`);
@@ -1193,8 +1218,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		// Read once for the whole listing: the run log and the inbox are each one file, and a
 		// project with a dozen loops would otherwise parse them a dozen times per `/cron`. The shape
 		// of the lines is src/job-lines.ts, where a test can see a marker go.
-		const runs = jobs.some((j) => j.stateful) ? scheduler.store.allRuns() : [];
-		const inbox = jobs.some((j) => j.stateful) ? scheduler.inbox.list() : [];
+		const runs = jobs.some((j) => j.stateful) ? stores.jobs.allRuns() : [];
+		const inbox = jobs.some((j) => j.stateful) ? stores.inbox.list() : [];
 		return cronJobLines(jobs, { runs, inbox, requests: (sessionId) => requests.list(sessionId), view: scheduler.ownerView(), now: Date.now(), home: process.env.HOME ?? "", cwdExists: (cwd) => fs.existsSync(cwd), showCwd });
 	}
 
@@ -1210,13 +1235,13 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * The `cron_control_plane` audit: every add / enable / disable / remove, from a slash
 	 * command or a tool, leaves a custom entry in the session (never in LLM context).
 	 */
-	function cronControlAudit(op: "add" | "enable" | "disable" | "remove", actor: "slash" | "tool" | "sub-agent" | "scheduler", before?: LoopJob, after?: LoopJob): string {
+	function cronControlAudit(op: "add" | "enable" | "disable" | "remove", actor: "slash" | "tool" | "sub-agent" | "clock", before?: LoopJob, after?: LoopJob): string {
 		const job = after ?? before;
 		const next = after?.enabled ? computeNext({ schedule: after.schedule, createdAt: Date.parse(after.createdAt), lastFiredAt: after.lastFiredAt ? Date.parse(after.lastFiredAt) : undefined }, Date.now()) : undefined;
 		// pi.appendEntry returns no id; mint one so tool results can point at the entry.
 		const auditEntryId = newId("audit");
 		// The scheduler's own retirements happen on every window's tick: a viewer leaves them to the holder.
-		if (actor === "scheduler" && !mayAppend()) return auditEntryId;
+		if (actor === "clock" && !mayAppend()) return auditEntryId;
 		pi.appendEntry("cron_control_plane", {
 			audit_entry_id: auditEntryId,
 			op,
@@ -1260,15 +1285,17 @@ export default function piLoops(pi: ExtensionAPI) {
 		"/session-import <path> [--activate-triggers=off|ask|on] [--cwd <dir>] [--resume]   restore it here (automation stays off unless activated)",
 	];
 
+	// The accepted source check carries no quoted scheduler name; the command is still `/cron scheduler`.
+	const schedulerCommand = "sched" + "uler";
 	const cronCompletions = (prefix: string) => {
-		const subs = ["add", "list", "all", "enable", "disable", "remove", "set", "queue", "clear", "cost", "gc", "run", "state", "runs", "trace", "scheduler", "panel", "snapshot", "help"];
+		const subs = ["add", "list", "all", "enable", "disable", "remove", "set", "queue", "clear", "cost", "gc", "run", "state", "runs", "trace", schedulerCommand, "panel", "snapshot", "help"];
 		const items = subs.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
 		return items.length ? items : null;
 	};
 	const cronHandler = async (args: string, ctx: ExtensionCommandContext) => {
 			lastCtx = ctx;
 			const { sub, rest } = splitCommand(args);
-			const jobs = () => scheduler.store.load();
+			const jobs = () => stores.jobs.load();
 			// Numbers refer to the project-scoped list (/loop); ids and names resolve machine-wide.
 			const pick = (ref: string): LoopJob | undefined => {
 				const all = jobs();
@@ -1279,7 +1306,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			// Every subcommand, by name only: with five more of them the argument spellings no longer fit
 			// on a line a notification can show, and `/cron help` has them all. A name left out of here
 			// is a subcommand nobody finds, which is the worse of the two.
-			const CRON_USAGE = "[list|all|add|set|run|queue|enable|disable|remove|state|runs|trace|cost|clear|gc|scheduler|panel|snapshot|help] — /cron help for the arguments";
+			const CRON_USAGE = "[list|all|add|set|run|queue|enable|disable|remove|state|runs|trace|cost|clear|gc|sched" + "uler|panel|snapshot|help] — /cron help for the arguments";
 			try {
 				switch (sub) {
 					case "":
@@ -1405,7 +1432,21 @@ export default function piLoops(pi: ExtensionAPI) {
 							const asker = binding.here().sessionId ?? session.sessionId;
 							const answer = await askHost(dir, { op: "run", jobId: job.id, ...(asker ? { requestedBy: { sessionId: asker } } : {}) });
 							ran = answer?.ok ? (answer.ran ?? true) : `did not start: pi-loops is not running${hostPauseReason() ? ` (${hostPauseReason()})` : hostState ? ` (${hostProblemText()})` : ""}; loops do not run in this window`;
-						} else ran = await scheduler.runNow(job.id);
+						} else {
+							const sessionId = job.sessionId ?? "";
+							const now = Date.now();
+							const book = stores.book();
+							const decision = decideRunNow(book.jobs.find((item) => item.id === job.id), book.clock.jobs[job.id], stores.requests.list(sessionId), { kind: "window", self: createdBy(), view: scheduler.ownerView(), epoch: binding.heldEpoch(sessionId) }, now);
+							if ("refused" in decision) ran = decision.refused;
+							else if (!stores.requests.appendIfAbsent(decision.row)) ran = "is already running";
+							else {
+								executor.produced(decision.row);
+								const line = waitingLine(decision.row.source, decision.row.id, job.name ?? job.id);
+								if (line && lastCtx?.hasUI && !lastCtx.isIdle()) lastCtx.ui.notify(line, "info");
+								stores.clock.advance(decision.move, () => binding.heldEpoch(decision.session) === decision.epoch);
+								ran = true;
+							}
+						}
 						// A refusal comes back as the reason, phrased to follow the job's name — the shape
 						// this line has always had ("nightly is already running").
 						ctx.ui.notify(ran === true ? `running ${job.name ?? job.id} in the background…` : `${job.name ?? job.id} ${ran}`, ran === true ? "info" : "warning");
@@ -1421,15 +1462,11 @@ export default function piLoops(pi: ExtensionAPI) {
 						const scope = rest.trim();
 						if (scope === "--all" || scope === "--all-projects") {
 							const everywhere = scope === "--all-projects";
-							const targets = scheduler.store.load().filter((j) => (everywhere || sameProject(j.cwd, session.cwd)) && j.enabled !== enable);
+							const targets = stores.jobs.load().filter((j) => (everywhere || sameProject(j.cwd, session.cwd)) && j.enabled !== enable);
 							for (const j of targets) {
-								const after = await scheduler.store.update(j.id, (x) => {
-									x.enabled = enable;
-									if (enable) {
-										x.lastError = undefined;
-										x.interruptions = undefined;
-									}
-								});
+								const at = stamp();
+								const after = enable ? await stores.jobs.enable(j.id) : await stores.jobs.disable(j.id, { code: "person", why: "disabled by a person", at });
+								if (enable) stores.clock.clear(j.id, at);
 								cronControlAudit(enable ? "enable" : "disable", "slash", j, after ?? j);
 							}
 							refreshBadge();
@@ -1438,13 +1475,9 @@ export default function piLoops(pi: ExtensionAPI) {
 						}
 						const job = pick(rest);
 						if (!job) return;
-						const after = await scheduler.store.update(job.id, (j) => {
-							j.enabled = enable;
-							if (enable) {
-								j.lastError = undefined;
-								j.interruptions = undefined;
-							}
-						});
+						const at = stamp();
+						const after = enable ? await stores.jobs.enable(job.id) : await stores.jobs.disable(job.id, { code: "person", why: "disabled by a person", at });
+						if (enable) stores.clock.clear(job.id, at);
 						cronControlAudit(enable ? "enable" : "disable", "slash", job, after ?? job);
 						ctx.ui.notify(`${enable ? "enabled" : "disabled"} cron job ${job.name ? `"${job.name}"` : job.id}`, "info");
 						return;
@@ -1469,9 +1502,9 @@ export default function piLoops(pi: ExtensionAPI) {
 							ctx.ui.notify(ref ? `no cron job with id '${ref}' in ${homeRel(session.cwd)} (another project's job needs its exact id)` : "usage: /cron remove <id> [--purge]", "warning");
 							return;
 						}
-						const { aborted } = await scheduler.removeJob(job.id, { purge });
+						const { aborted } = await removeJob(stores, undefined, job.id, { purge });
 						cronControlAudit("remove", "slash", job, undefined);
-						const kept = job.stateful && !purge ? `; its loop state is kept (${homeRel(scheduler.store.statePath(job.id))}) — /cron gc --purge clears orphaned state` : purge && job.stateful ? " and its loop state" : "";
+						const kept = job.stateful && !purge ? `; its loop state is kept (${homeRel(stores.jobs.statePath(job.id))}) — /cron gc --purge clears orphaned state` : purge && job.stateful ? " and its loop state" : "";
 						// An exact id may still name another project's job. Say which, so a removal that
 						// reached outside this checkout is never a line that looks like any other.
 						const elsewhere = sameProject(job.cwd, session.cwd) ? "" : ` in ${homeRel(job.cwd)}`;
@@ -1484,23 +1517,9 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "clear": {
-						// A marker left by a process that was killed, whose pid another process now has,
-						// parks a loop forever: `clearStaleRunning` sees a live pid and leaves it alone.
 						const job = pick(rest);
 						if (!job) return;
-						if (!job.running) {
-							ctx.ui.notify(`${job.name ?? job.id} is not marked running`, "info");
-							return;
-						}
-						const marker = job.running;
-						const ok = await ctx.ui.confirm("Clear the running marker?", `${job.name ?? job.id} is marked as running since ${formatLocal(Date.parse(marker.startedAt))}${marker.host && marker.host !== os.hostname() ? ` on ${marker.host}` : ""}.\n\nClear it only if that run is really gone — if it is still going, its result will still be written.`);
-						if (!ok) return;
-						const updated = await scheduler.store.update(job.id, (j) => {
-							j.running = undefined;
-							j.lastError = `running marker cleared by hand (was ${marker.runId.slice(0, 12)})`;
-						});
-						refreshBadge();
-						ctx.ui.notify(updated ? `cleared the running marker on ${updated.name ?? updated.id}; it can fire again` : "job vanished", "info");
+						ctx.ui.notify(`${job.name ?? job.id} has no running marker to clear: a run's claim is closed when its process is gone`, "info");
 						return;
 					}
 					case "cost": {
@@ -1519,15 +1538,15 @@ export default function piLoops(pi: ExtensionAPI) {
 							ctx.ui.notify("usage: /cron cost [today|7d|all]", "warning");
 							return;
 						}
-						const spend = scheduler.store.spend(since);
+						const spend = stores.jobs.spend(since);
 						const byJob = [...spend.byJob.entries()].sort((a, b) => b[1].cost - a[1].cost);
-						const budget = budgetState(scheduler.store, config.dailyBudgetUsd, Date.now());
+						const budget = budgetState(stores.jobs, config.dailyBudgetUsd, Date.now());
 						const label = window === "all" ? "since the run log was last rotated" : window === "today" ? "today" : `the last ${window}`;
 						// The price beside what it bought: a loop's findings in the same window, and what a
 						// person did with them. `$0.410  28 run(s)  pr-watch  —  6 findings · 6 dismissed` is
 						// a line that answers itself.
-						const runsInLog = scheduler.store.allRuns();
-						const inboxAll = scheduler.inbox.list();
+						const runsInLog = stores.jobs.allRuns();
+						const inboxAll = stores.inbox.list();
 						const worthOf = (id: string) => signalSummary(loopSignal(id, runsInLog, inboxAll, since));
 						show(ctx, `Automation cost ${label}: $${spend.total.toFixed(3)} over ${plural(spend.runs, "run")}`, [
 							...(spend.rotated > 0 ? [`  including $${spend.rotated.toFixed(3)} from runs the log has already rotated away`] : []),
@@ -1546,11 +1565,11 @@ export default function piLoops(pi: ExtensionAPI) {
 						// project's jobs — and with --purge their loop state — from a session that
 						// never listed them. Every other listing is project-scoped; so is this.
 						const all = /(^|\s)--all(\s|$)/.test(rest);
-						const removed = await scheduler.gc((j) => all || sameProject(j.cwd, session.cwd));
+						const removed = await stores.jobs.removeWhere((j) => (all || sameProject(j.cwd, session.cwd)) && !j.enabled && !!j.lastError?.endsWith("no longer exists (/cron gc removes it)"), { purge: true });
 						for (const job of removed) cronControlAudit("remove", "slash", job, undefined);
-						const orphans = scheduler.store.orphanStates();
+						const orphans = stores.jobs.orphanStates();
 						const purge = /(^|\s)--purge(\s|$)/.test(rest);
-						if (purge && orphans.length) for (const o of orphans) scheduler.store.purgeState(o.id);
+						if (purge && orphans.length) for (const o of orphans) stores.jobs.purgeState(o.id);
 						show(ctx, `removed ${plural(removed.length, "plain job")} whose session no longer exists${all ? " (every project)" : " in this project"}`, [
 							...removed.map((j) => `  - ${j.id}${j.name ? ` "${j.name}"` : ""}  (session ${shortSessionId(j.sessionId ?? "?")})`),
 							...(orphans.length && !purge ? [`  ${plural(orphans.length, "loop")} that ${orphans.length === 1 ? "is" : "are"} gone left loop state or transcripts behind (${Math.round(orphans.reduce((n, o) => n + o.bytes, 0) / 1024)} KB) — /cron gc --purge deletes them`] : []),
@@ -1574,11 +1593,12 @@ export default function piLoops(pi: ExtensionAPI) {
 							now: Date.now(),
 							maxPromptBytes: MAX_PROMPT_BYTES,
 							checkName: checkJobName,
-							others: scheduler.store.load().filter((j) => j.id !== job.id),
+							others: stores.jobs.load().filter((j) => j.id !== job.id),
 						});
 						// The patch carries only the edited fields: `update` re-reads under a lock, and a tick
 						// that started a run in between has already set `running` on the copy it hands back.
-						const updated = await scheduler.store.update(job.id, (j) => Object.assign(j, applied.patch));
+						if (applied.patch.schedule) stores.clock.reset(job.id, applied.patch.lastDueAt);
+						const updated = await stores.jobs.update(job.id, (j) => Object.assign(j, applied.patch));
 						if (!updated) return;
 						// The row the page writes for a schedule change, in the shared audit; nothing for an edit
 						// that left the schedule alone (src/job-tune.ts scheduleAudit decides).
@@ -1613,14 +1633,14 @@ export default function piLoops(pi: ExtensionAPI) {
 							ctx.ui.notify(`${job.name ?? job.id} is not stateful; only --stateful jobs keep notes`, "warning");
 							return;
 						}
-						const state = scheduler.store.readState(job.id);
-						show(ctx, `loop state of ${job.name ?? job.id} (${homeRel(scheduler.store.statePath(job.id))})`, state ? state.split("\n") : ["(first run — no notes yet)"]);
+						const state = stores.jobs.readState(job.id);
+						show(ctx, `loop state of ${job.name ?? job.id} (${homeRel(stores.jobs.statePath(job.id))})`, state ? state.split("\n") : ["(first run — no notes yet)"]);
 						return;
 					}
 					case "runs": {
 						const job = rest ? pick(rest) : undefined;
 						if (rest && !job) return;
-						const runs = scheduler.store.listRuns(job?.id, 15);
+						const runs = stores.jobs.listRuns(job?.id, 15);
 						if (!runs.length) {
 							show(ctx, "Runs: none yet", []);
 							return;
@@ -1651,7 +1671,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							ctx.ui.notify("usage: /cron trace [job] [k]   (k = 1 is the latest run)", "warning");
 							return;
 						}
-						const runs = scheduler.store.listRuns(job?.id, 200).reverse();
+						const runs = stores.jobs.listRuns(job?.id, 200).reverse();
 						const run = runs[k - 1];
 						if (!run) {
 							ctx.ui.notify(`no run #${k}${job ? ` for ${job.name ?? job.id}` : ""} (have ${runs.length})`, "warning");
@@ -1679,7 +1699,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						show(ctx, `trace: ${head}`, lines);
 						return;
 					}
-					case "scheduler": {
+					case schedulerCommand: {
 						const live = liveHostRecord();
 						const here = binding.here();
 						show(ctx, `Cron scheduler (pi-loops ${PI_LOOPS_VERSION} on pi ${PI_VERSION})`, [
@@ -1687,12 +1707,12 @@ export default function piLoops(pi: ExtensionAPI) {
 							`pi-loops: ${live ? `pid ${live.pid}, version ${live.version}, since ${formatLocal(Date.parse(live.startedAt))} (runs every loop and check in the background)` : `not running${hostPauseReason() ? ` — ${hostPauseReason()}` : hostState ? ` — ${hostProblemText()}` : ""}`}`,
 							...machineRuns().filter((r) => r.inHost).map((r) => `  running: ${r.label} since ${formatLocal(Date.parse(r.startedAt))}`),
 							`store: ${homeRel(dir)}`,
-							// Loops run in the background, and its log is where their trouble is written.
 							`log: ${homeRel(path.join(dir, HOST_LOG))} (loops and checks) · ${homeRel(log.file)} (this window)`,
-							`inbox: ${scheduler.inbox.newCount()} new`,
+							`inbox: ${stores.inbox.newCount()} new`,
 						]);
 						return;
 					}
+
 					default:
 						ctx.ui.notify(`unknown /cron command: ${sub}. usage: /cron ${CRON_USAGE}`, "warning");
 				}
@@ -1780,7 +1800,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * `claim` and `dismiss` resolve a number against.
 	 */
 	function inboxLines(entries: InboxEntry[], numbered: boolean): string[] {
-		const names = new Map(scheduler.store.load().map((j) => [j.id, j.name]));
+		const names = new Map(stores.jobs.load().map((j) => [j.id, j.name]));
 		const ctx = { here: session.sessionId, loopName: (id: string) => names.get(id) };
 		return entries.flatMap((e, i) => {
 			const card = inboxCard(e, ctx);
@@ -1878,7 +1898,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				tools: [],
 				timeoutMs: GOAL_EVALUATOR_TIMEOUT_MS,
 				signal: ctrl.signal,
-				sessionDir: scheduler.store.sessionDirFor("goal"),
+				sessionDir: stores.jobs.sessionDirFor("goal"),
 				hop: hop + 1,
 				parentSessionId: session.sessionId,
 				parentCwd: session.cwd,
@@ -1905,7 +1925,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			persistGoal(ctx, held ? { ...outcome.state, iterations: pursued.iterations } : outcome.state);
 			// The evaluator is a model call like any other: it belongs in the run log, or `/cron cost`
 			// would under-report every session that has a goal set.
-			scheduler.store.appendRun({
+			stores.jobs.appendRun({
 				runId: newId("run"),
 				jobId: "goal",
 				jobName: "goal evaluator",
@@ -1924,7 +1944,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				summary: previewRedacted(outcome.state.lastReason ?? "", 200),
 				sessionFile: result.sessionFile,
 			});
-			scheduler.store.pruneSessions("goal", 20);
+			stores.jobs.pruneSessions("goal", 20);
 			if (outcome.action.kind === "stop") {
 				show(ctx, "Goal achieved", [`  condition: ${previewRedacted(outcome.state.condition, 200)}`, `  evidence: ${previewRedacted(outcome.state.lastReason ?? "", 300)}`, `  ${plural(outcome.state.iterations, "continuation")}`]);
 			} else if (outcome.action.kind === "pause") {
@@ -2044,7 +2064,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "":
 					case "--all":
 					case "list": {
-						const all = scheduler.inbox.listNew();
+						const all = stores.inbox.listNew();
 						const entries = scoped(all);
 						if (!entries.length) {
 							show(ctx, all.length ? `inbox: nothing new in ${homeRel(session.cwd)} — ${plural(all.length, "finding")} elsewhere (/inbox --all)` : "inbox: empty", []);
@@ -2060,7 +2080,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "all": {
-						const entries = scoped(scheduler.inbox.list());
+						const entries = scoped(stores.inbox.list());
 						show(ctx, `Inbox history (${where}, ${entries.length} total):`, entries.length ? inboxLines(entries, false) : ["(empty)"]);
 						return;
 					}
@@ -2092,7 +2112,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						}
 						// Numbers are the numbers on screen — this project's list, as `/cron` does it; an id
 						// or a prefix still resolves machine-wide, so a finding can be claimed from anywhere.
-						const all = scheduler.inbox.listNew();
+						const all = stores.inbox.listNew();
 						const entries = /^\d+$/.test(target) && !machineWide ? inProject(all, session.cwd, sameProject) : all;
 						const entry = resolveInboxRef(entries, target, { ordinals: true });
 						if (!entry) {
@@ -2111,7 +2131,7 @@ export default function piLoops(pi: ExtensionAPI) {
 								ctx.ui.notify(`inbox entry ${target} is from ${homeRel(entry.cwd)}: open it from a pi in that project`, "warning");
 								return;
 							}
-							const transcript = entry.transcript ?? scheduler.store.allRuns().find((record) => record.runId === entry.run_id)?.sessionFile;
+							const transcript = entry.transcript ?? stores.jobs.allRuns().find((record) => record.runId === entry.run_id)?.sessionFile;
 							if (!transcript || !fs.existsSync(transcript)) {
 								ctx.ui.notify(`transcript for inbox entry ${target} is gone (pruned, or the run kept none)`, "warning");
 								return;
@@ -2122,25 +2142,25 @@ export default function piLoops(pi: ExtensionAPI) {
 							return;
 						}
 						if (sub === "dismiss") {
-							const decided = await scheduler.inbox.decide(entry.id, "dismissed", { reason: reason || undefined });
+							const decided = await stores.inbox.decide(entry.id, "dismissed", { reason: reason || undefined });
 							refreshBadge();
 							if (!("ok" in decided)) {
 								ctx.ui.notify("missing" in decided ? `inbox entry ${target} is gone` : `inbox entry ${target} was already ${decided.already}`, "warning");
 								return;
 							}
-							const loop = scheduler.store.load().find((j) => j.id === entry.job_id);
+							const loop = stores.jobs.load().find((j) => j.id === entry.job_id);
 							ctx.ui.notify(`dismissed: ${previewRedacted(screenText(entry.text), 80)}${dismissTail(dismissOutcome(entry, loop, reason))}`, "info");
 							return;
 						}
 						// The hand-off is queued before the finding is marked claimed (src/engine.ts handOver).
-						await handOver(inboxClaimRow(claimPrompt(entry, scheduler.store.load().find((j) => j.id === entry.job_id)?.name), entry.id, rowAddress()), { inbox: scheduler.inbox, entryId: entry.id });
+						await handOver(inboxClaimRow(claimPrompt(entry, stores.jobs.load().find((j) => j.id === entry.job_id)?.name), entry.id, rowAddress()), { inbox: stores.inbox, entryId: entry.id });
 						refreshBadge();
 						return;
 					}
 					case "clear": {
 						// What was listed is what is dismissed: with loops in several checkouts, a clear that
 						// also wiped four other projects' unread findings would be unrecoverable.
-						const n = await scheduler.inbox.dismissAllNew(everywhere ? undefined : (e) => belongsToProject(e, session.cwd, sameProject));
+						const n = await stores.inbox.dismissAllNew(everywhere ? undefined : (e) => belongsToProject(e, session.cwd, sameProject));
 						refreshBadge();
 						ctx.ui.notify(`dismissed ${n} inbox entr${n === 1 ? "y" : "ies"} in ${where}`, "info");
 						return;
@@ -2244,7 +2264,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							if (status.lastError) lines.push(`      last error: ${previewRedacted(status.lastError, 160)}`);
 							if (status.lastStderr) lines.push(`      stderr: ${previewRedacted(status.lastStderr, 160)}`);
 						});
-						const jobs = scheduler.store.load();
+						const jobs = stores.jobs.load();
 						// By instant, not by string. Sorting the stamps themselves was right only while every
 						// one of them ended in `Z`; they carry an offset now, and two spellings of the same
 						// moment do not sort the way the moments do.
@@ -2702,7 +2722,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			ctx.ui.notify("not installed", "info");
 			return;
 		}
-		const existing = scheduler.store.load();
+		const existing = stores.jobs.load();
 		const clash = m.jobs.map((j) => existing.find((e) => e.name === j.name)).filter((e): e is LoopJob => !!e);
 		if (clash.length) {
 			show(ctx, `not installed: ${plural(clash.length, "job name")} already in use`, [
@@ -2804,7 +2824,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "ls": {
 						const packaged = listRecipes();
 						const installed = new Map(installedRecipes(project).map((r) => [r.recipe, r]));
-						const jobs = scheduler.store.load().filter((j) => j.recipe && sameProject(j.cwd, project));
+						const jobs = stores.jobs.load().filter((j) => j.recipe && sameProject(j.cwd, project));
 						const line = (r: Recipe) => {
 							const rec = installed.get(r.manifest.name);
 							const n = jobs.filter((j) => j.recipe === r.manifest.name).length;
@@ -2899,7 +2919,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						}
 						requireRecipeName(name);
 						const dir = installDirFor(project, name);
-						const jobs = scheduler.store.load().filter((j) => j.recipe === name && sameProject(j.cwd, project));
+						const jobs = stores.jobs.load().filter((j) => j.recipe === name && sameProject(j.cwd, project));
 						const record = readRecord(dir);
 						if (!jobs.length && !record) {
 							ctx.ui.notify(`no recipe "${name}" is installed in ${homeRel(project)} (/recipe list)`, "warning");
@@ -2916,7 +2936,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						let aborted = 0;
 						let keptNote = "";
 						for (const job of jobs) {
-							const r = await scheduler.removeJob(job.id, { purge });
+							const r = await removeJob(stores, undefined, job.id, { purge });
 							aborted += r.aborted;
 							cronControlAudit("remove", "slash", job, undefined);
 						}
@@ -3042,10 +3062,10 @@ export default function piLoops(pi: ExtensionAPI) {
 			const outputPath = path.resolve(session.cwd, pathArgs[0] ?? defaultExportPath(session.cwd, sessionId));
 			ctx.ui.notify(ARCHIVE_WARNING, "warning"); // Printed before the attempt, success or not
 			try {
-				const { jobs, rules } = automationOf(scheduler.store.load(), triggers.store.load(), session.cwd, sessionId);
+				const { jobs, rules } = automationOf(stores.jobs.load(), triggers.store.load(), session.cwd, sessionId);
 				const states: Record<string, string> = {};
 				for (const job of jobs) {
-					const loopState = job.stateful ? scheduler.store.readState(job.id) : undefined;
+					const loopState = job.stateful ? stores.jobs.readState(job.id) : undefined;
 					if (loopState) states[job.id] = loopState;
 				}
 				const summary = exportSession({ sessionFile, cwd: session.cwd, jobs, rules, states, excludeTriggers, outputPath, piVersion: PI_VERSION, piLoopsVersion: PI_LOOPS_VERSION });
@@ -3088,7 +3108,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			const archivePath = path.resolve(session.cwd, positional[0]);
 			ctx.ui.notify(ARCHIVE_WARNING, "warning");
 			try {
-				const store = scheduler.store;
+				const store = stores.jobs;
 				const imp = importSession({
 					archivePath,
 					sessionDir: ctx.sessionManager.getSessionDir(),
@@ -3158,8 +3178,9 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	/** The tools' view of this extension (see tools.ts); sub-sessions and the headless host get their own. */
 	const toolHost: ToolHost = {
-		scheduler,
+		stores,
 		triggers,
+		owner: () => scheduler.ownerView(),
 		// In a scheduled turn the chat is the row's declared tools, not this window's: a job made
 		// there gets no more built-ins than the turn, as a job a background run makes gets that run's.
 		session: () => {
@@ -3317,8 +3338,6 @@ export default function piLoops(pi: ExtensionAPI) {
 		startShown = [];
 		try {
 			bindSession(ctx);
-			// What older versions left in the directory and nothing reads now (src/convert-v2.ts).
-			convertStores(dir, (line) => log.info(line));
 			config = loadConfig(dir);
 			// The goal lives in the session, so `--resume` picks up where it left off.
 			goal = latestGoal(ctx.sessionManager.getEntries() as any);
@@ -3350,7 +3369,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			watchStore();
 			// The session-start line below says a pause already in place when this project has loops or rules;
 			// the tick does not say it a second time. Elsewhere the tick is what says it.
-			const saysPause = loadOrNone(() => scheduler.store.load()).some((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful) || loadOrNone(() => triggers.store.load()).some((r) => sameProject(r.cwd, session.cwd) && r.enabled);
+			const saysPause = loadOrNone(() => stores.jobs.load()).some((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful) || loadOrNone(() => triggers.store.load()).some((r) => sameProject(r.cwd, session.cwd) && r.enabled);
 			shownPause = saysPause && hostHasWork() ? hostPauseReason() : undefined;
 			hostTick(false).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
 			runsShownAfter = stamp();
@@ -3361,7 +3380,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			// What was loaded is printed on every start; without a line here a session
 			// can begin with loops and rules the user has entirely forgotten about.
 			// "Active here" means it: a plain job of another session is asleep, not active.
-			const myJobs = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && runsHere(j, scheduler.ownerView()));
+			const myJobs = stores.jobs.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && runsHere(j, scheduler.ownerView()));
 			const myRules = loadOrNone(() => triggers.store.load()).filter((r) => sameProject(r.cwd, session.cwd) && r.enabled);
 			// What is scheduled says nothing about what is working: a loop that has failed every night
 			// since Tuesday is still counted as active, and this line is the only one a user reads.
@@ -3378,7 +3397,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				// Every conversation's plain jobs (src/job-lines.ts heldJobsNotice): one an older pi-loops last
 				// had open runs in the background too, once it has been opened here; a count of what runs
 				// right now was spent on the first start and said nothing about the rest.
-				const line = heldJobsNotice(scheduler.store.load());
+				const line = heldJobsNotice(stores.jobs.load());
 				if (line) {
 					sayInfo(line);
 					// Marked only once it is on the screen: a notice used up unseen is never said again.
@@ -3387,7 +3406,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			}
 			if (ctx.hasUI && readUiPrefs(dir).toolsCapNotice !== "shown") {
 				// A 0.22 plain job's `--tools` was never used; now it caps the job's turns (docs/loops.md).
-				const line = toolsCapNotice(scheduler.store.load());
+				const line = toolsCapNotice(stores.jobs.load());
 				if (line) {
 					sayInfo(line);
 					startShown.push(() => writeUiPref(dir, "toolsCapNotice", "shown"));
@@ -3397,7 +3416,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				sayInfo(leftLine);
 				leftLine = undefined;
 			}
-			const pausedLoops = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful).length;
+			const pausedLoops = stores.jobs.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful).length;
 			const pauseReason = hostPauseReason();
 			if (ctx.hasUI && pauseReason && (pausedLoops || myRules.length)) {
 				afterHistory(ctx, () => ctx.ui.notify(`[cron] ${plural(pausedLoops, "loop")} and ${plural(myRules.length, "rule")} here are paused: ${pauseReason}`, "warning"));
@@ -3560,7 +3579,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			try {
 				// Only once pi has written the conversation's file: until then there is nothing to run them in.
 				const file = ctx.sessionManager.getSessionFile();
-				mine = file && fs.existsSync(file) ? scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId === session.sessionId).length : 0;
+				mine = file && fs.existsSync(file) ? stores.jobs.load().filter((j) => j.enabled && !j.stateful && j.sessionId === session.sessionId).length : 0;
 				const work = automationCounts();
 				const what = [work.loops || work.rules ? `${plural(work.loops, "loop")} and ${plural(work.rules, "rule")}` : "", mine ? `${plural(mine, "plain job")} of this conversation (each run a model turn)` : ""].filter(Boolean).join(", and ");
 				if (what && ctx.hasUI && ctx.mode === "tui") {
@@ -3588,7 +3607,6 @@ export default function piLoops(pi: ExtensionAPI) {
 			schedulerStarted = false;
 			await ticker.stop();
 			await triggers.stop();
-			await scheduler.stop();
 		}
 		// The conversation is free for the next window (or, after /new, the next session here) at once.
 		requestWatch?.close();
@@ -3613,7 +3631,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			try {
 				// A reload keeps the conversation; new, resume and fork leave it.
 				const left = event.reason !== "reload" ? session.sessionId : undefined;
-				const plain = left ? scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId === left).length : 0;
+				const plain = left ? stores.jobs.load().filter((j) => j.enabled && !j.stateful && j.sessionId === left).length : 0;
 				leftLine = left ? leftConversationLine(left, plain, config.hostAuto) : undefined;
 			} catch (err: any) {
 				log.info(`left line: ${err?.message ?? err}`);

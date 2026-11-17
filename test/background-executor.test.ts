@@ -5,15 +5,18 @@ import * as path from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { tmp } from "./tmp.ts";
 import { loadConfig } from "../src/config.ts";
+import { convertStores } from "../src/convert-v2.ts";
 import { plainJobRow, plainRunId } from "../src/engine.ts";
-import { createBackgroundExecutor } from "../src/background-executor.ts";
+import { abortRemovedJobs, createBackgroundExecutor } from "../src/background-executor.ts";
 import { createHostRuntime } from "../src/host-runtime.ts";
 import { RunList } from "../src/run-list.ts";
 import { LeaseBinding, LeaseStore, procStart } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
+import { loopLane, parseLane } from "../src/lane.ts";
 import { Inbox } from "../src/inbox.ts";
 import { JobStore } from "../src/store.ts";
 import { TriggerStore } from "../src/triggers.ts";
+import { RUNTIME_RIDERS } from "../src/ticker.ts";
 
 /** A conversation nobody has open, with a file that was last written ten minutes ago. */
 function closedConversation(dir: string): { sessionId: string; file: string } {
@@ -58,6 +61,12 @@ function scene(script: (req: any, call: number) => any, over: Partial<Parameters
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: (line) => void logs.push(line), ...over });
 	const requests = new RequestStore(dir);
 	const store = host.scheduler.store;
+	// The old scheduler was ticked without start(), so these scenes judged no slot missed.
+	const kick = async () => {
+		const now = Date.now();
+		const facts = { startedAt: 0, tickMs: 30_000 };
+		for (const name of RUNTIME_RIDERS) await host.riders[name](now, facts);
+	};
 	return {
 		dir,
 		sessionId,
@@ -66,9 +75,10 @@ function scene(script: (req: any, call: number) => any, over: Partial<Parameters
 		logs,
 		host,
 		requests,
+		kick,
 		tick: async () => {
-			await host.scheduler.tick();
-			await host.scheduler.drain(5000);
+			await kick();
+			await host.drain(5000);
 		},
 		job: (id = "cron-held") => store.load().find((j) => j.id === id),
 		runs: () => store.allRuns(),
@@ -131,14 +141,14 @@ test("[turn-lease] [runs-list] [R1] [R2] while a held turn runs: its row has the
 		const lease = JSON.parse(fs.readFileSync(file, "utf8"));
 		lease.holder.busy.since = new Date(Date.now() - 120_000).toISOString();
 		fs.writeFileSync(file, JSON.stringify(lease));
-		await s.host.scheduler.tick();
+		await s.kick();
 		during.afterTick = leases.read(s.sessionId)?.holder?.busy?.runId;
 		await gate;
 		return { ok: true, exitCode: 0, timedOut: false, text: "done", usage: USAGE };
 	});
 	try {
 		await s.host.scheduler.store.add(job(s, { name: "reminder" }) as any);
-		await s.host.scheduler.tick();
+		await s.kick();
 		const began = Date.now();
 		while (during.afterTick === undefined && Date.now() - began < 5000) await new Promise((r) => setTimeout(r, 20));
 		const id = s.calls[0].runId;
@@ -152,7 +162,7 @@ test("[turn-lease] [runs-list] [R1] [R2] while a held turn runs: its row has the
 		assert.deepEqual(during.running, [id]);
 		assert.equal(during.afterTick, id, "a lease whose run is in the list is not given back, however long ago it was taken");
 		release();
-		await s.host.scheduler.drain(5000);
+		await s.host.drain(5000);
 		assert.deepEqual([s.rows(), s.host.heldTurn(s.sessionId), s.host.scheduler.runningRuns(), new LeaseStore(s.dir).read(s.sessionId)?.holder], [[], undefined, [], null]);
 		assert.equal(s.runs()[0].startedAt, during.claim.started_at, "the record is the claim's: it starts with it");
 	} finally {
@@ -376,7 +386,7 @@ test("a rule's result that is queued while a held turn runs is not written besid
 		writes(req);
 		const { ruleResultRow } = await import("../src/engine.ts");
 		s.requests.append(ruleResultRow(s.sessionId, "[Trigger t-result] the deploy finished", { traceId: "t-result", sourceLabel: "local:dynamic", cwd: s.dir }, { pid: 1, instance: "w1", version: "0" }));
-		await s.host.scheduler.tick();
+		await s.kick();
 		during.rows = s.rows().map((r) => r.id);
 		during.file = fs.readFileSync(s.file, "utf8").includes("the deploy finished");
 		await gate;
@@ -384,12 +394,12 @@ test("a rule's result that is queued while a held turn runs is not written besid
 	});
 	try {
 		await s.host.scheduler.store.add(job(s) as any);
-		await s.host.scheduler.tick();
+		await s.kick();
 		const began = Date.now();
 		while (during.file === undefined && Date.now() - began < 5000) await new Promise((r) => setTimeout(r, 20));
 		assert.deepEqual([during.rows.includes("t-result"), during.file], [true, false], "the runner has the file: the result waits in the queue");
 		release();
-		await s.host.scheduler.drain(5000);
+		await s.host.drain(5000);
 		aged(s.file);
 		await s.tick();
 		assert.deepEqual([s.rows(), fs.readFileSync(s.file, "utf8").includes("the deploy finished")], [[], true]);
@@ -557,7 +567,7 @@ test("a turn that is going when pi-loops stops is handed back, not failed: its r
 	});
 	try {
 		await s.host.scheduler.store.add(job(s) as any);
-		await s.host.scheduler.tick();
+		await s.kick();
 		// A turn that never starts fails here, and does not hold the suite.
 		await Promise.race([running, new Promise((_, reject) => setTimeout(() => reject(new Error("the turn did not start")), 10_000).unref())]);
 		const id = s.calls[0].runId;
@@ -583,6 +593,8 @@ test("pi-loops in the background does not ask again a prompt that 0.24.2 wrote a
 		await s.host.scheduler.store.add(job(s, marked("run-written")) as any);
 		const other = closedConversation(s.dir);
 		await s.host.scheduler.store.add(job({ sessionId: other.sessionId, dir: s.dir }, { id: "cron-unwritten", ...marked("run-unwritten") }) as any);
+		// The markers are what 0.24.2 left on disk at a start; the conversion reads them before a tick.
+		convertStores(s.dir);
 		for (let i = 0; i < 2; i++) await s.tick();
 		assert.deepEqual(s.calls.map((c) => c.jobId), ["cron-unwritten"], "only the turn that wrote no prompt is asked again");
 		const written = s.job()!;
@@ -709,6 +721,54 @@ test("a drain stops where a window takes the conversation: the result it wrote s
 	}
 });
 
+test("[loop-R1] a loop lane claims and starts its row once, and a second drain cannot claim it again", async () => {
+	const s = scene(() => ({ ok: true, exitCode: 0, timedOut: false, text: "done", usage: USAGE }));
+	try {
+		await s.host.scheduler.store.add(job(s, { stateful: true, catchUp: true }) as any);
+		await s.host.tick();
+		const end = Date.now() + 5_000;
+		while (!s.host.stores.jobs.allRuns().length && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 10));
+		const lane = `@${s.job()!.id}`;
+		await s.host.loops.drain(parseLane(lane) as any, Date.now());
+		assert.equal(s.host.stores.jobs.allRuns().length, 1);
+		assert.equal(s.calls.length, 1);
+	} finally {
+		await s.host.stop();
+	}
+});
+
+test("[job-removed-aborts] removed jobs abort every matching run once, including held turns", () => {
+	const runs = new RunList();
+	const ctrl = new AbortController();
+	const turnCtrl = new AbortController();
+	runs.add({ runId: "loop-run", jobId: "gone-loop", label: "loop", startedAt: new Date().toISOString(), promptPreview: "", ctrl });
+	runs.add({ runId: "held-run", jobId: "gone-plain", label: "plain", startedAt: new Date().toISOString(), promptPreview: "", ctrl: turnCtrl });
+	runs.add({ runId: "kept-run", jobId: "kept", label: "kept", startedAt: new Date().toISOString(), promptPreview: "", ctrl: new AbortController() });
+	const lines: string[] = [];
+	assert.equal(abortRemovedJobs(runs, (id) => id === "kept", (line) => lines.push(line)), 2);
+	assert.deepEqual([ctrl.signal.aborted, turnCtrl.signal.aborted], [true, true]);
+	assert.equal(abortRemovedJobs(runs, (id) => id === "kept", (line) => lines.push(line)), 0, "an already stopped run is not logged or aborted twice");
+	assert.deepEqual(lines, [
+		"cron loop: removed while it ran; stopped run loop-run",
+		"cron plain: removed while it ran; stopped run held-run",
+	]);
+});
+
+test("[job-removed-aborts] the next drain of a removed loop's lane removes its row as job-removed", async () => {
+	const s = scene(ok);
+	try {
+		const id = "cron-removed-loop";
+		const lane = loopLane(id)!;
+		await s.host.stores.jobs.add({ ...job(s, { id, stateful: true }), sessionId: undefined } as any);
+		const row = { ...plainJobRow({ ...job(s, { id, stateful: true }), sessionId: lane } as any, "removed-row", `cron:${id}`, "", { pid: process.pid, instance: "test", version: "0" }), lane };
+		s.requests.append(row as any);
+		await s.host.stores.jobs.remove(id);
+		await s.host.loops.drainAll(Date.now());
+		assert.deepEqual(s.requests.list(lane), []);
+		assert.equal(s.calls.length, 0);
+	} finally { await s.host.stop(); }
+});
+
 test("a row of the job at its second attempt, its backoff over, is started under its own id", async () => {
 	const b = bare();
 	const held = await b.jobs.add(job(b, notDue()) as any);
@@ -729,4 +789,84 @@ test("the runtime gives a held turn what pi trusts for its conversation's direct
 	} finally {
 		await s.host.stop();
 	}
+});
+
+test("[cron-run-loop-now] a loop run starts immediately despite the budget and slot cap", async () => {
+	let finish!: (value: any) => void;
+	const s = scene(() => new Promise((resolve) => { finish = resolve; }), { config: () => ({ ...loadConfig("/does-not-exist"), dailyBudgetUsd: 1, maxConcurrentRuns: 0 }) as any });
+	try {
+		const id = "cron-loop-now";
+		await s.host.stores.jobs.add({ ...job(s, { id, stateful: true, enabled: true }), sessionId: undefined } as any);
+		assert.equal(await s.host.loops.runNow(id), true);
+		const limit = Date.now() + 2_000;
+		while (!s.calls.length && Date.now() < limit) await new Promise((resolve) => setTimeout(resolve, 5));
+		assert.equal(s.calls.length, 1);
+	} finally {
+		finish?.({ ok: true, exitCode: 0, timedOut: false, text: "done", usage: USAGE });
+		await s.host.stop();
+	}
+});
+
+test("[cron-run-refused-running] a loop run is refused with main's words while its run is active", async () => {
+	let finish!: (value: any) => void;
+	const s = scene(() => new Promise((resolve) => { finish = resolve; }));
+	try {
+		const id = "cron-loop-active";
+		await s.host.stores.jobs.add({ ...job(s, { id, stateful: true }), sessionId: undefined } as any);
+		assert.equal(await s.host.loops.runNow(id), true);
+		assert.equal(await s.host.loops.runNow(id), "is already running");
+	} finally {
+		finish?.({ ok: true, exitCode: 0, timedOut: false, text: "done", usage: USAGE });
+		await s.host.stop();
+	}
+});
+
+test("[cwd-missing-30min] an old loop row spends its slot and disables a job whose cwd is still missing", async () => {
+	const s = scene(ok);
+	try {
+		const id = "cron-cwd-missing";
+		const cwd = path.join(s.dir, "not-created");
+		const lane = loopLane(id)!;
+		await s.host.stores.jobs.add({ ...job(s, { id, stateful: true, cwd }), sessionId: undefined } as any);
+		const row = { ...plainJobRow({ ...job(s, { id, stateful: true, cwd }), sessionId: lane } as any, "cwd-row", `cron:${id}`, "", { pid: process.pid, instance: "test", version: "0" }), lane, created_at: new Date(Date.now() - 10 * 60_000).toISOString() };
+		s.requests.append(row as any);
+		await s.host.loops.drain(parseLane(lane) as any, Date.now());
+		assert.equal(s.host.stores.book().jobs.find((candidate) => candidate.id === id)?.enabled, true, "the row waits inside the grace period");
+		assert.deepEqual(s.requests.list(lane).map((item) => item.id), [row.id]);
+		assert.equal(s.calls.length, 0);
+		s.requests.update(lane, row.id, { created_at: new Date(Date.now() - 31 * 60_000).toISOString() });
+		await s.host.loops.drain(parseLane(lane) as any, Date.now());
+		const disabled = s.host.stores.book().jobs.find((candidate) => candidate.id === id)?.disabled;
+		assert.equal(disabled?.code, "cwd-missing");
+		assert.match(disabled?.why ?? "", /^disabled: cwd .* has been missing since /);
+		assert.deepEqual(s.requests.list(lane), [], "the slot is spent and the stale row is gone");
+		assert.equal(s.calls.length, 0);
+	} finally { await s.host.stop(); }
+});
+
+test("[kept-catch-up-note] a caught-up loop slot says so in the background log", async () => {
+	const s = scene(ok);
+	try {
+		await s.host.stores.jobs.add({ ...job(s, { id: "cron-catch-up", schedule: { kind: "every", ms: 60_000 }, stateful: true, catchUp: true, createdAt: new Date(Date.now() - 4 * 60_000 - 40_000).toISOString() }), sessionId: undefined } as any);
+		const now = Date.now();
+		await s.host.riders.clock(now, { startedAt: now, tickMs: 30_000 });
+		assert.ok(s.logs.some((line) => line.includes("catching up a missed tick")), s.logs.join("\n"));
+	} finally { await s.host.stop(); }
+});
+
+test("[kept-notices] loop failure and daily budget notices are each said once", async () => {
+	const config = () => ({ ...loadConfig("/does-not-exist"), dailyBudgetUsd: 0.01 });
+	const s = scene(ok, { config });
+	try {
+		const id = "cron-notice-loop";
+		const loop = { ...job(s, { id, stateful: true }), sessionId: undefined } as any;
+		await s.host.stores.jobs.add(loop);
+		for (let i = 1; i <= 3; i++) s.host.stores.jobs.appendRun({ runId: `r${i}`, jobId: id, jobName: id, stateful: true, cwd: s.dir, pid: process.pid, startedAt: new Date(Date.now() - 1000 + i).toISOString(), finishedAt: new Date(Date.now() - 1000 + i).toISOString(), ok: false, error: "boom", findings: 0, droppedFindings: 0, stateUpdated: false, usage: USAGE });
+		const facts = { startedAt: Date.now() - 10_000, tickMs: 30_000 };
+		await s.host.riders.notices(Date.now(), facts);
+		await s.host.riders.notices(Date.now(), facts);
+		const notices = s.host.notices().map((item) => item.text);
+		assert.equal(notices.filter((text) => text === `${id} has failed 3 times in a row; backing off (last: boom)`).length, 1);
+		assert.equal(notices.filter((text) => text.includes("budget; dispatching is paused")).length, 1);
+	} finally { await s.host.stop(); }
 });

@@ -1,8 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { DEAD_AFTER_ATTEMPTS, failurePause } from "./backoff.ts";
-import { plainCollapseKey, plainJobRow, plainRunId } from "./engine.ts";
-import type { LaneId } from "./lane.ts";
+import { landed, plainCollapseKey, plainJobRow, plainRunId } from "./engine.ts";
+import { loopLane, type LaneId } from "./lane.ts";
+import { openWhere, ownerSession, whereRuns, type OwnerView } from "./job-owner.ts";
 import type { LockOptions } from "./lock.ts";
 import type { RequestStore, Row, UnclaimedRow } from "./requests.ts";
 
@@ -11,6 +12,7 @@ import { computeDue, formatLocal, isValidSchedule, stamp } from "./schedule.ts";
 import type { Disabled, JobStore, LoopJob, LoopJobV3, RunRecord } from "./store.ts";
 import { fromV2, jobStatus, runHistory, type JobHistory } from "./job-status.ts";
 import { oneShotDoneV3 } from "./settle.ts";
+import type { Book } from "./stores.ts";
 
 /** A clock decision that was not a run, for the job's status. */
 export interface ClockNote { at: string; text: string }
@@ -100,9 +102,6 @@ export class ClockStore implements Clock {
 			if (result.result === "moved") this.io.write(this.paths.file, JSON.stringify(result.next));
 			return result.result;
 		});
-	}
-	raiseRuns(job: string, ordinal: number): void {
-		this.closeRun(job, { ordinal });
 	}
 	closeRun(job: string, close: RunClose): void {
 		this.io.locked(this.paths.lock, () => {
@@ -196,6 +195,16 @@ export function v2Clock(jobs: Pick<JobStore, "load" | "mutateSync">): Clock {
 
 export interface SimClockSubject { readonly name: "clock.json" | "jobs.json v2"; readonly clock: Clock; read(): ClockFile; forget?(): void; newer?(): void }
 
+/** When a job last fired: a live claim's start wins over the cursor's last closed run. */
+export function firedOf(clock: JobClock | undefined, rows: readonly Row[]): string | undefined {
+	let latest = clock?.fired;
+	for (const row of rows) {
+		const at = row.run?.started_at;
+		if (at !== undefined && (latest === undefined || Date.parse(at) > Date.parse(latest))) latest = at;
+	}
+	return latest;
+}
+
 export type Mine = { readonly kind: "loop" } | { readonly kind: "plain"; readonly epoch: number };
 export interface TickProbe { readonly jobs: readonly LoopJobV3[]; readonly clock: ClockFile; readonly now: number; readonly mine: ReadonlySet<string> }
 /** Name only jobs whose lane and run history this tick must read. */
@@ -203,7 +212,7 @@ export function wanted(probe: TickProbe): ReadonlyMap<string, LaneId> {
 	const result = new Map<string, LaneId>();
 	for (const job of probe.jobs) {
 		if (!probe.mine.has(job.id)) continue;
-		const lane = job.stateful ? `@${job.id}` : job.sessionId;
+		const lane = job.stateful ? loopLane(job.id) : job.sessionId;
 		if (!lane || !isValidSchedule(job.schedule)) continue;
 		const clock = probe.clock.jobs[job.id];
 		let due: number | undefined;
@@ -217,28 +226,28 @@ export function wanted(probe: TickProbe): ReadonlyMap<string, LaneId> {
 export interface JobRead { readonly rows: readonly CountedRow[]; readonly history: JobHistory | undefined; readonly cwdMissing: boolean }
 export interface TickView {
 	readonly now: number; readonly startedAt: number; readonly tickMs: number; readonly catchUp: boolean; readonly kind: "background" | "window"; readonly self: Row["created_by"];
-	readonly mine: ReadonlyMap<string, Mine>; readonly read: ReadonlyMap<string, JobRead>;
+	readonly budgetOver: boolean; readonly mine: ReadonlyMap<string, Mine>; readonly read: ReadonlyMap<string, JobRead>;
 }
 export interface TickInput { readonly jobs: readonly LoopJobV3[]; readonly clock: ClockFile; readonly view: TickView }
 interface SlotSpend { readonly job: string; readonly lane: LaneId; readonly slot: string; readonly read: CursorRead; readonly at: string; readonly owner: { readonly kind: "loop" } | { readonly kind: "plain"; readonly session: string; readonly epoch: number } }
 export type SpendDecision =
-	| (SlotSpend & { readonly do: "row"; readonly row: UnclaimedRow; readonly replaces?: string })
-	| (SlotSpend & { readonly do: "collapse"; readonly onto: string })
+	| (SlotSpend & { readonly do: "row"; readonly row: UnclaimedRow; readonly replaces?: string; readonly missed?: string })
+	| (SlotSpend & { readonly do: "collapse"; readonly onto: string; readonly overlap: boolean })
 	| (SlotSpend & { readonly do: "cursor"; readonly why: "own-row" | "spent" })
 	| (SlotSpend & { readonly do: "skip"; readonly note: string });
-export type Pass = "not-mine" | "disabled" | "proposed" | "no-lane" | "not-due" | "unread" | "running";
+export type Pass = "not-mine" | "disabled" | "proposed" | "no-lane" | "not-due" | "unread" | "running" | "budget" | "not-a-loop-id";
 export type TickDecision = SpendDecision | { readonly do: "disable"; readonly job: string; readonly disabled: Disabled } | { readonly do: "retire"; readonly job: string } | { readonly do: "pass"; readonly job: string; readonly why: Pass };
 
 const T3_WRITES: Record<SpendDecision["do"], Record<"loop" | "plain", { readonly fired: boolean; readonly fires: boolean }>> = {
-	row: { loop: { fired: true, fires: false }, plain: { fired: true, fires: true } },
-	cursor: { loop: { fired: true, fires: false }, plain: { fired: true, fires: true } },
+	row: { loop: { fired: false, fires: false }, plain: { fired: true, fires: true } },
+	cursor: { loop: { fired: false, fires: false }, plain: { fired: true, fires: true } },
 	collapse: { loop: { fired: false, fires: false }, plain: { fired: true, fires: false } },
 	skip: { loop: { fired: false, fires: false }, plain: { fired: false, fires: false } },
 };
 /** Derive T3's cursor update from the chosen T2 arm and job kind. */
 export function cursorMove(decision: SpendDecision): CursorMove {
 	const write = T3_WRITES[decision.do][decision.owner.kind];
-	return { job: decision.job, read: decision.read, slot: decision.slot, ...(write.fired ? { fired: decision.at } : {}), fires: write.fires, ...(decision.do === "skip" ? { note: { at: decision.at, text: decision.note } } : decision.do === "row" || decision.do === "cursor" ? { note: null } : {}) };
+	return { job: decision.job, read: decision.read, slot: decision.slot, ...(write.fired ? { fired: decision.at } : {}), fires: write.fires, ...(decision.do === "collapse" && decision.overlap ? { collapsed: true } : {}), ...(decision.do === "skip" ? { note: { at: decision.at, text: decision.note } } : decision.do === "row" || decision.do === "cursor" ? { note: null } : {}) };
 }
 
 const AFTER_OWN_ROW = { loop: ["collapse", "missed"], plain: ["missed", "collapse"] } as const;
@@ -256,17 +265,20 @@ export function decideTick(input: TickInput): TickDecision[] {
 			const status = jobStatus(job, entry, data.rows, data.history, view.now);
 			if (oneShotDoneV3(job, status)) return { do: "retire", job: job.id };
 		}
+		if (job.stateful && !loopLane(job.id)) return { do: "pass", job: job.id, why: "not-a-loop-id" };
 		if (job.proposed) return { do: "pass", job: job.id, why: "proposed" };
 		if (!job.enabled) return { do: "pass", job: job.id, why: "disabled" };
 		if (!isValidSchedule(job.schedule)) return { do: "disable", job: job.id, disabled: { code: "schedule", why: "disabled: unusable schedule", at: stamp(view.now) } };
-		const lane = job.stateful ? `@${job.id}` : job.sessionId;
+		const lane = job.stateful ? loopLane(job.id) : job.sessionId;
 		if (!lane) return { do: "pass", job: job.id, why: "no-lane" };
+		if (!data) return { do: "pass", job: job.id, why: "unread" };
+		const jobRows = data.rows.filter((row) => job.stateful ? row.lane === lane : row.collapse_key === plainCollapseKey(job.id));
+		const liveFired = firedOf(entry, jobRows);
 		let slot: number | undefined;
-		try { slot = computeDue({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastDueAt: entry?.slot === undefined ? undefined : Date.parse(entry.slot), lastFiredAt: entry?.fired === undefined ? undefined : Date.parse(entry.fired) }, view.now); }
+		try { slot = computeDue({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastDueAt: entry?.slot === undefined ? undefined : Date.parse(entry.slot), lastFiredAt: liveFired === undefined ? undefined : Date.parse(liveFired) }, view.now); }
 		catch (error) { return { do: "disable", job: job.id, disabled: { code: "schedule", why: `disabled: ${error instanceof Error ? error.message : String(error)}`, at: stamp(view.now) } }; }
 		// An every schedule counts from `fired`, which a loop's collapse and a skip leave as they were: the same slot comes back, and the cursor already stands on it.
 		if (slot === undefined || (entry?.slot !== undefined && slot <= Date.parse(entry.slot))) return { do: "pass", job: job.id, why: "not-due" };
-		if (!data) return { do: "pass", job: job.id, why: "unread" };
 		const mineKind = mine.kind;
 		const owner = mineKind === "loop" ? mine : { kind: "plain" as const, session: job.sessionId!, epoch: mine.epoch };
 		const spend: SlotSpend = { job: job.id, lane, slot: stamp(slot), read: readCursor, at: stamp(view.now), owner };
@@ -277,16 +289,19 @@ export function decideTick(input: TickInput): TickDecision[] {
 		const queued = data.rows.filter((row) => row.kind === "input" && row.collapse_key === plainCollapseKey(job.id));
 		const refused = view.kind === "window" ? queued.find((row) => row.id !== id && row.attempts > 0 && row.source.startsWith("cron:")) : undefined;
 		const collapseTarget = queued.find((row) => row !== refused && !(view.kind === "background" && row.mode === "attended"));
-		const missed = slot < view.startedAt - view.tickMs && !(view.catchUp && job.catchUp);
+		const missed = slot < view.startedAt - view.tickMs ? stamp(slot) : undefined;
 		for (const rule of AFTER_OWN_ROW[mineKind]) {
-			if (rule === "missed" && missed) return { ...spend, do: "skip", note: `missed ${formatLocal(slot)} while ${view.kind === "background" ? "pi-loops was not running" : "no pi was running"} (catch-up disabled)` };
-			if (rule === "collapse" && collapseTarget) return { ...spend, do: "collapse", onto: collapseTarget.id };
+			if (rule === "missed" && missed && !(view.catchUp && job.catchUp)) return { ...spend, do: "skip", note: `missed ${formatLocal(slot)} while ${view.kind === "background" ? "pi-loops was not running" : "no pi was running"} (catch-up disabled)` };
+			if (rule === "missed" && missed && mineKind === "plain" && view.budgetOver) return { do: "pass", job: job.id, why: "budget" };
+			if (rule === "collapse" && mineKind === "plain" && view.budgetOver) return { do: "pass", job: job.id, why: "budget" };
+			if (rule === "collapse" && collapseTarget) return { ...spend, do: "collapse", onto: collapseTarget.id, overlap: mineKind === "plain" || !!collapseTarget.run };
 		}
 		const streak = data.history?.streak ?? 0;
 		const wait = job.stateful || view.kind === "background" ? failurePause(streak) : 0;
 		const not_before = wait ? stamp(Date.parse(data.history!.failed!.at) + wait) : undefined;
-		const row: UnclaimedRow = { ...plainJobRow(job, id, `cron:${job.id}`, "", view.self, view.now), lane, ...(not_before ? { not_before } : {}) };
-		return { ...spend, do: "row", row, ...(refused ? { replaces: refused.id } : {}) };
+		const base = plainJobRow(job, id, `cron:${job.id}`, missed && mineKind === "plain" ? `\n(catching up a run due ${formatLocal(slot)})` : "", view.self, view.now);
+		const row: UnclaimedRow = { ...base, lane, payload: { ...base.payload!, slot: spend.slot, ...(missed && mineKind === "loop" ? { catch_up: true } : {}) } as UnclaimedRow["payload"], ...(not_before ? { not_before } : {}) };
+		return { ...spend, do: "row", row, ...(refused ? { replaces: refused.id } : {}), ...(missed && view.catchUp && job.catchUp ? { missed } : {}) };
 	});
 }
 
@@ -326,4 +341,118 @@ export function applyTick(decisions: readonly TickDecision[], stores: TickStores
 		try { return commitSlot(writeSlot(decision, stores), stores); }
 		catch (error) { return { job: decision.job, failed: error instanceof Error ? error.message : String(error) }; }
 	});
+}
+
+export interface TickScope {
+	readonly kind: "background" | "window";
+	readonly self: Row["created_by"];
+	readonly startedAt: number;
+	readonly tickMs: number;
+	readonly catchUp: boolean;
+	readonly budgetOver: boolean;
+	mine(job: LoopJobV3): Mine | undefined;
+}
+export interface TickSources {
+	book(): Book;
+	history(): ReadonlyMap<string, JobHistory>;
+	readonly requests: Pick<RequestStore, "list" | "appendIfAbsent" | "remove" | "collapse">;
+	readonly clock: Clock;
+	proof(lane: LaneId): import("./engine.ts").Proof;
+	cwdExists(cwd: string): boolean;
+	heldEpoch(sessionId: string): number | undefined;
+}
+export interface Ticked { readonly decision: TickDecision; readonly outcome: TickOutcome }
+
+/** Read the due lanes, decide each job, then apply its row and cursor writes synchronously. */
+function clockPass(scope: TickScope, sources: TickSources, now: number): { readonly ticked: Ticked[]; readonly jobs: ReadonlyMap<string, LoopJobV3> } {
+	const { jobs, clock } = sources.book();
+	const mine = new Map<string, Mine>();
+	for (const job of jobs) {
+		const owner = scope.mine(job);
+		if (owner) mine.set(job.id, owner);
+	}
+	const byId = new Map(jobs.map((job) => [job.id, job]));
+	const lanes = wanted({ jobs, clock, now, mine: new Set(mine.keys()) });
+	if (!lanes.size) return { ticked: [], jobs: byId };
+	const rowsByLane = new Map<LaneId, readonly CountedRow[]>();
+	for (const lane of lanes.values()) {
+		if (!rowsByLane.has(lane)) {
+			const proof = sources.proof(lane);
+			rowsByLane.set(lane, sources.requests.list(lane).filter((row) => !landed(row, proof)) as CountedRow[]);
+		}
+	}
+	const history = sources.history();
+	const read = new Map<string, JobRead>();
+	for (const [id, lane] of lanes) {
+		const job = jobs.find((item) => item.id === id)!;
+		read.set(id, { rows: rowsByLane.get(lane) ?? [], history: history.get(id), cwdMissing: job.stateful && !sources.cwdExists(job.cwd) });
+	}
+	const decisions = decideTick({ jobs, clock, view: { now, startedAt: scope.startedAt, tickMs: scope.tickMs, catchUp: scope.catchUp, kind: scope.kind, self: scope.self, budgetOver: scope.budgetOver, mine, read } });
+	const outcomes = applyTick(decisions, { requests: sources.requests, clock: sources.clock, heldEpoch: sources.heldEpoch });
+	return { ticked: decisions.map((decision, i) => ({ decision, outcome: outcomes[i] })), jobs: byId };
+}
+
+export function tickClock(scope: TickScope, sources: TickSources, now: number): Ticked[] {
+	return clockPass(scope, sources, now).ticked;
+}
+
+export interface TickSinks {
+	readonly jobs: Pick<JobStore, "remove"> & { disable(id: string, disabled: Disabled): Promise<unknown> };
+	rowWritten?(row: UnclaimedRow, job: LoopJobV3): void;
+	caughtUp?(job: LoopJobV3, slot: string): void;
+	retired?(job: LoopJobV3, reason: string): void;
+	budgetHeld?(job: LoopJobV3): void;
+	log(message: string, level?: "info" | "warning", job?: Pick<LoopJobV3, "cwd">): void;
+}
+
+/** Apply the tick's non-clock side effects, continuing after each job's failure. */
+export async function runClockTick(scope: TickScope, sources: TickSources, sinks: TickSinks, now: number): Promise<void> {
+	const { ticked, jobs } = clockPass(scope, sources, now);
+	for (const { decision, outcome } of ticked) {
+		const job = jobs.get(decision.job);
+		if (!job) continue;
+		try {
+			if (decision.do === "row" && "t2" in outcome && outcome.t2 === "wrote") sinks.rowWritten?.(decision.row, job);
+			if (decision.do === "row" && decision.missed && "t3" in outcome && outcome.t3 === "moved" && scope.kind === "background") sinks.caughtUp?.(job, decision.missed);
+		} catch (error) {
+			sinks.log(`clock ${job.name ?? job.id} sink failed: ${error instanceof Error ? error.message : String(error)}`, "warning", job);
+		}
+	}
+	for (const { decision, outcome } of ticked) {
+		const job = jobs.get(decision.job);
+		if (!job) continue;
+		try {
+			if (decision.do === "retire") {
+				await sinks.jobs.remove(job.id);
+				sinks.retired?.(job, "one-shot finished");
+			} else if (decision.do === "disable") {
+				await sinks.jobs.disable(job.id, decision.disabled);
+				sinks.log(`${job.name ?? job.id}: ${decision.disabled.why}`, "warning", job);
+			} else if (decision.do === "pass" && decision.why === "budget") sinks.budgetHeld?.(job);
+			if ("failed" in outcome) sinks.log(`clock ${job.name ?? job.id}: ${outcome.failed}`, "warning", job);
+		} catch (error) {
+			sinks.log(`clock ${job.name ?? job.id} failed: ${error instanceof Error ? error.message : String(error)}`, "warning", job);
+		}
+	}
+}
+
+export type RunNow = { readonly refused: string } | { readonly row: UnclaimedRow; readonly move: CursorMove; readonly session: string; readonly epoch: number };
+
+/** Decide a plain job's immediate run without changing its scheduled slot. */
+export function decideRunNow(job: LoopJobV3 | undefined, clock: JobClock | undefined, rows: readonly Row[], scope: Pick<TickScope, "kind" | "self"> & { readonly view: OwnerView; readonly epoch: number | undefined }, now: number): RunNow {
+	if (!job) return { refused: "is no longer in the store" };
+	if (rows.some((row) => row.kind === "input" && row.collapse_key === plainCollapseKey(job.id) && row.run)) return { refused: "is already running" };
+	if (!job.enabled) return { refused: "is disabled (/cron enable it first)" };
+	const where = whereRuns(job, scope.view);
+	if (where.kind === "aside") return { refused: "belongs to this conversation, but this window shows an older copy of it — /resume this session to run it" };
+	if (where.kind === "terminal") return { refused: `belongs to session ${ownerSession(job)}, which is ${openWhere(where.page ? "page" : "terminal")} — run it there` };
+	if (where.kind === "host") return { refused: `belongs to session ${ownerSession(job)}, which is closed: it runs in the background when due — resume that session to run it now` };
+	if (where.kind !== "here") return { refused: `belongs to session ${ownerSession(job)}, which is not open here — resume it, or /cron add the job again in this chat` };
+	const session = scope.view.sessionId;
+	if (!session || scope.epoch === undefined) return { refused: "has no chat to run in (pi-loops in the background has no session)" };
+	if (rows.some((row) => row.kind === "input" && row.collapse_key === plainCollapseKey(job.id) && !row.run)) return { refused: "already has its prompt queued in this conversation" };
+	const at = stamp(now);
+	const id = plainRunId(job.id, at);
+	const row = plainJobRow(job, id, `cron-run:${job.id}`, "", scope.self, now);
+	return { row, session, epoch: scope.epoch, move: { job: job.id, read: { ...(clock?.slot === undefined ? {} : { slot: clock.slot }), ...(clock?.fired === undefined ? {} : { fired: clock.fired }) }, fired: at, fires: true, note: null } };
 }
