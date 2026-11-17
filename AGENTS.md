@@ -39,6 +39,8 @@ src/ts-entry.mjs            how an .mjs entry point imports this package's .ts: 
 
 the pipelines
 src/backoff.ts              the one table of waits after a failure: a row, a loop, a rule check
+src/job-status.ts           what a list shows for one job, folded from its clock, rows and run history
+src/clock.ts                the schedule cursor, pure tick decisions and their compare-and-set writes
 src/settle.ts               how a plain job's turn ends, as one table: what becomes of its row and of its job, for each way a run ends
 src/scheduler.ts            tick loop, due/catch-up/overlap, sub-agent runs, checker; pi-loops runs loops, a window its conversation's plain jobs; the clock that writes a plain job's row, in a window and, under the lease the background executor took, in the background
 src/trigger-runtime.ts      dynamic-rule evaluation, deliveries, promotion, audit

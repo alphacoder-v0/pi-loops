@@ -24,14 +24,13 @@ import type { LockOptions } from "./lock.ts";
 import { markOn, marksRow } from "./mark.ts";
 /** Why pi no longer has a row it was handed and did not write (the window's `settleSlots`). */
 export type Gone = "stopped" | "dropped" | "lost";
-import { backoffFor } from "./backoff.ts";
+import { backoffFor, DEAD_AFTER_ATTEMPTS } from "./backoff.ts";
+export { DEAD_AFTER_ATTEMPTS } from "./backoff.ts";
 import { stamp } from "./schedule.ts";
 import { INTERRUPTED, type RunEnd, type Settlement, runEnd, settle } from "./settle.ts";
 import { type JobStore, type LoopJob, type RunRecord, newId } from "./store.ts";
 import { type TriggerStore, checkDecidedFinding } from "./triggers.ts";
 
-/** Failures of one row before it is a dead letter. */
-export const DEAD_AFTER_ATTEMPTS = 3;
 /** How much of a dead row's text the finding carries. */
 export const DEAD_LETTER_CHARS = 400;
 

@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { INTERRUPTED, INTERRUPTIONS_BEFORE_PARKING, oneShotDone, runEnd, settle } from "../src/settle.ts";
-import type { LoopJob, RunRecord } from "../src/store.ts";
+import { INTERRUPTED, INTERRUPTIONS_BEFORE_PARKING, loopEnd, oneShotDone, oneShotDoneV3, runEnd, settle, settleLoop } from "../src/settle.ts";
+import { runHistory } from "../src/job-status.ts";
+import type { LoopJob, LoopJobV3, RunRecord } from "../src/store.ts";
+import type { ClaimedRow } from "../src/requests.ts";
 
 const at = "2026-01-02T03:04:05.000Z";
 const record = (fields: Partial<RunRecord> = {}): RunRecord => ({
@@ -18,6 +20,13 @@ const ends = [
 	runEnd(record({ aborted: true })),
 	runEnd(record({ interrupted: true })),
 ];
+
+const loopJob = (schedule: LoopJobV3["schedule"] = { kind: "every", ms: 60_000 }): LoopJobV3 => ({ id: "cron-j", schedule, stateful: true, prompt: "work", cwd: "/", enabled: true, catchUp: true, createdAt: at });
+const claimed: ClaimedRow = { v: 3, id: "row", lane: "@cron-j", kind: "input", source: "cron:cron-j", mode: "unattended", wake: "turn", created_at: at, created_by: { pid: 1, instance: "i", version: "1" }, attempts: 0, run: { id: "run", pid: 1, started_at: at } };
+const loopEnded = (fields: Partial<RunRecord> = {}) => {
+	const rec = record(fields);
+	return loopEnd(rec, runHistory([rec]).get(rec.jobId)!);
+};
 
 test("runEnd follows the record flags in order and supplies missing errors.", () => {
 	assert.deepEqual(runEnd(record({ ok: true })), { how: "succeeded", at });
@@ -51,6 +60,14 @@ for (const cell of cells) {
 		assert.deepEqual(settle(job(), end, cell.written), cell.result);
 	});
 }
+
+test("[settle-ended] A successful loop run leaves its row delivered and counts the record ordinal.", () => {
+	assert.deepEqual(settleLoop(claimed, loopJob(), loopEnded({ ok: true, ordinal: 4 }), true), { row: { do: "leave", exit: "delivered" }, runs: 4 });
+});
+
+test("[settle-failed] A repeating loop failure spends its row without retrying it.", () => {
+	assert.deepEqual(settleLoop(claimed, loopJob(), loopEnded({ error: "broken", ordinal: 2 }), true), { row: { do: "leave", exit: "delivered" }, runs: 2 });
+});
 
 test("[settle-failure] A failed turn spends its slot and counts one failure, whether or not its prompt was written.", () => {
 	assert.deepEqual(settle(job(), runEnd(record({ error: "broken" })), true), cells[2].result);
@@ -148,6 +165,45 @@ test("Every end and written state produces a recognized row decision.", () => {
 		for (const written of [true, false]) {
 			assert.ok(["leave", "owed", "retry"].includes(settle(job(), end, written).row.do));
 		}
+	}
+});
+
+test("[settle-stopped] A person stop leaves the row and a one-shot keeps main's manual rerun reason.", () => {
+	const stopped = loopEnded({ aborted: true, stoppedBy: "person" });
+	assert.deepEqual(settleLoop(claimed, loopJob(), stopped, true), { row: { do: "leave", exit: "stopped" } });
+	assert.deepEqual(settleLoop(claimed, loopJob({ kind: "once", at: 1 }), stopped, true), { row: { do: "leave", exit: "stopped" }, job: { disabled: { code: "person", why: "stopped by a person; /cron run cron-j runs it now", at } } });
+});
+
+test("[settle-interrupted] Alone interruptions retry and dead-letter on the shared third attempt.", () => {
+	const end = loopEnded({ interrupted: true });
+	assert.deepEqual(settleLoop({ ...claimed, attempts: 0 }, loopJob(), end, true).row, { do: "retry", attempts: 1, why: INTERRUPTED });
+	const dead = settleLoop({ ...claimed, attempts: 2 }, loopJob(), end, true);
+	assert.deepEqual(dead.row, { do: "dead", attempts: 3, why: INTERRUPTED });
+	assert.equal(dead.job?.disabled.code, "interrupted");
+});
+
+test("[settle-alone] A process interruption beside another run leaves the slot owed without an attempt.", () => {
+	assert.deepEqual(settleLoop({ ...claimed, attempts: 2 }, loopJob(), loopEnded({ interrupted: true }), false).row, { do: "owed" });
+});
+
+test("[settle-oneshot] The first one-shot failure asks once more; a second does not, and runs define completion.", () => {
+	const firstRecord = record({ runId: "first", error: "bad", ordinal: 1 });
+	const secondRecord = record({ runId: "second", error: "bad", ordinal: 2, finishedAt: "2026-01-02T03:05:05.000Z" });
+	const history = runHistory([firstRecord, secondRecord]).get(firstRecord.jobId)!;
+	const firstEnd = loopEnd(firstRecord, runHistory([firstRecord]).get(firstRecord.jobId)!);
+	const secondEnd = loopEnd(secondRecord, history);
+	const once = loopJob({ kind: "once", at: 1 });
+	assert.deepEqual(settleLoop(claimed, once, firstEnd, true).row, { do: "leave", exit: "delivered", successor: true });
+	assert.deepEqual(settleLoop(claimed, once, secondEnd, true).row, { do: "leave", exit: "delivered" });
+	assert.equal(oneShotDoneV3(once, { runs: 1, queued: true, error: { streak: 2 } }), true);
+	assert.equal(oneShotDoneV3(once, { runs: 0, queued: false }), false);
+});
+
+test("[settle-twice] Every loop end is an absolute, repeatable settlement.", () => {
+	const endings = [loopEnded({ ok: true, ordinal: 1 }), loopEnded({ error: "bad", ordinal: 1 }), loopEnded({ aborted: true, stoppedBy: "person" }), loopEnded({ aborted: true }), loopEnded({ interrupted: true })];
+	for (const end of endings) for (const schedule of [{ kind: "every" as const, ms: 60_000 }, { kind: "once" as const, at: 1 }]) {
+		const job = loopJob(schedule);
+		for (const alone of [false, true]) assert.deepEqual(settleLoop(claimed, job, end, alone), settleLoop(claimed, job, end, alone));
 	}
 });
 

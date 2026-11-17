@@ -7,6 +7,8 @@ export function backoffFor(n: number): number {
 }
 
 /** Failures in a row at which a loop or a rule check counts as failing, and starts to wait. */
+export const DEAD_AFTER_ATTEMPTS = 3;
+
 export const FAILING_AFTER = 3;
 
 /** How long a loop or a check with `streak` failures in a row waits after its last failure: nothing below FAILING_AFTER, then the table from its first step. */

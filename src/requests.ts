@@ -78,6 +78,10 @@ interface RowBase {
 	/** stop, cancel. Never "whatever runs next". */
 	target?: { id: string } | { current: true; started_before: string };
 	collapse_key?: string;
+	/** Slots counted onto this queued row. Absent means zero. */
+	collapsed?: number;
+	/** The latest slot counted in `collapsed`. */
+	collapsed_slot?: string;
 	created_at: string;
 	/**
 	 * For a person row, the producer that must be alive for it to be sent; for a local row (a claim, a
@@ -333,6 +337,21 @@ export class RequestStore {
 		}, lock);
 	}
 
+	/** Count slot `slot` once on row `id`, under the lane lock. The row keeps every other field, including its claim. */
+	collapse(lane: LaneId, id: string, slot: string, lock?: LockOptions): "counted" | "counted-before" | "missing" {
+		let result: "counted" | "counted-before" | "missing" = "missing";
+		this.rewrite(lane, (lines) => lines.map(({ raw, row, version }) => {
+			if (!row || row.id !== id) return { raw, row };
+			if (row.collapsed_slot !== undefined && Date.parse(row.collapsed_slot) >= Date.parse(slot)) {
+				result = "counted-before";
+				return { raw, row };
+			}
+			result = "counted";
+			return { raw: rowLine({ ...row, collapsed: (row.collapsed ?? 0) + 1, collapsed_slot: slot }, version), row };
+		}), lock);
+		return result;
+	}
+
 	private appendLocked(row: UnclaimedRow): void {
 		const file = this.file(row.lane);
 		fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -407,13 +426,13 @@ export class RequestStore {
 		return result;
 	}
 
-	private rewrite(lane: LaneId, change: (lines: Array<{ raw: string; row?: Row; version?: 2 | 3 }>) => Array<{ raw: string }>): void {
+	private rewrite(lane: LaneId, change: (lines: Array<{ raw: string; row?: Row; version?: 2 | 3 }>) => Array<{ raw: string }>, lock?: LockOptions): void {
 		const file = this.file(lane);
 		withFileLockSync(this.lockPath(lane), () => {
 			const remaining = change(this.lines(lane));
 			if (remaining.length) writeFileAtomic(file, `${remaining.map(({ raw }) => raw).join("\n")}\n`);
 			else fs.rmSync(file, { force: true });
-		});
+		}, lock);
 	}
 
 	/** The lane of every queue file, parsed. A file whose name is no lane is nobody's here, and stays. */

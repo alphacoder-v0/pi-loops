@@ -43,6 +43,19 @@ test("update says whether the row was there, and removeIf removes a row only whi
 	assert.deepEqual(store.removeIf("s", "p1", unhanded), { outcome: "missing" });
 });
 
+test("[collapse-slot] collapse counts each later slot once, keeps claims, and reports missing rows", () => {
+	const store = new RequestStore(tmp());
+	store.append(row("loop-row"));
+	assert.equal(store.collapse("s", "loop-row", "2026-01-01T00:01:00.000Z"), "counted");
+	assert.equal(store.collapse("s", "loop-row", "2026-01-01T00:01:00.000Z"), "counted-before");
+	assert.equal(store.collapse("s", "loop-row", "2026-01-01T00:00:30.000Z"), "counted-before");
+	assert.equal(store.collapse("s", "loop-row", "2026-01-01T00:02:00.000Z"), "counted");
+	assert.deepEqual([store.list("s")[0].collapsed, store.list("s")[0].collapsed_slot], [2, "2026-01-01T00:02:00.000Z"]);
+	assert.equal(store.collapse("s", "missing", "2026-01-01T00:03:00.000Z"), "missing");
+	assert.equal(store.update("s", "loop-row", { attempts: 1 }), true);
+	assert.equal(store.list("s")[0].collapsed, 2);
+});
+
 test("an append that fails leaves no image file behind", () => {
 	const store = new RequestStore(tmp());
 	const image = { type: "image" as const, data: "AAAA", mimeType: "image/png" };
