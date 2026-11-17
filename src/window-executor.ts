@@ -152,11 +152,11 @@ function userTextOf(message: unknown): string | undefined {
 	return typeof text === "string" ? text : "";
 }
 
-/** A slot pi holds for a row that is still owed: not a person's prompt the engine stopped waiting for, not a turn whose row left the file. */
 /** One generation of a row: its id and when it was queued. A row of the same id queued again is another. */
-const generation = (row: Pick<Row, "id" | "created_at">): string => `${row.id} ${row.created_at}`;
+const generation = (row: Pick<Row, "id" | "created_at">): string => JSON.stringify([row.id, row.created_at]);
 /** The generation a slot's mark names. */
 const rowOf = (mark: RowMark): Pick<Row, "id" | "created_at"> => ({ id: mark.id, created_at: mark.at });
+/** A slot pi holds for a row that is still owed: not a person's prompt the engine stopped waiting for, not a turn whose row left the file. */
 const inFlight = (slot: Slot): boolean => slot.whose === "append" || (slot.whose === "turn" && !slot.left) || (slot.whose === "person" && slot.phase.is !== "refused");
 
 export class WindowExecutor implements Executor {

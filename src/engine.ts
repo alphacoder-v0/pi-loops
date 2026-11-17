@@ -573,7 +573,7 @@ export function promotionView(leases: Pick<LeaseStore, "read" | "list">, cwd: st
 
 /** What a row's proof of delivery is read from: the conversation, as `landed` asks it. */
 export interface Proof {
-	/** Whether an entry of the session the row writes into carries the mark of this lane, this id and this generation (`created_at`, src/mark.ts). False when that session has no file. */
+	/** Whether an entry of the session the row writes into carries a mark that proves this row (src/mark.ts `marksRow`): this lane and id, and, for a message the window aborted, this `created_at`. False when that session has no file. */
 	has(row: Pick<Row, "id" | "created_at">): boolean;
 	/** The proof of a version before marks, for a row of a version 2 line only (`OlderRow`): its prefix, or its words after its hand-over stamp, in an entry with no mark. */
 	older(row: OlderRow): boolean;
@@ -595,8 +595,9 @@ export interface Proof {
 }
 
 /**
- * Whether `row`'s delivery is in the conversation: an entry carries its mark, which names its lane,
- * its id and when it was queued, so a row of the same id queued again is not proved by it. One rule for every
+ * Whether `row`'s delivery is in the conversation: an entry carries a mark that proves it
+ * (src/mark.ts `marksRow`): its lane and id, and, for a message the window aborted as it began, also
+ * when it was queued, so that such a message does not prove a row of the same id queued later. One rule for every
  * row, whoever produced it and whatever its words. Two fenced rules beside it, each reached only by
  * the row's type: a claimed row's held turn (its prefix: `Proof.heldRunWrote`), and a row of a version
  * 2 line, which an older version may have delivered unmarked (`Proof.older`). No words prove a row
