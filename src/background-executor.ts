@@ -430,6 +430,10 @@ export interface LoopLaneDeps extends LoopRunDeps {
 	cwdExists(cwd: string): boolean;
 }
 
+/** How long a loop waits for a missing checkout before its job is disabled: main's grace (a mount often comes up after pi-loops). */
+const CWD_GRACE_MS = 30 * 60_000;
+
+
 export interface LoopLanes {
 	drainAll(now: number): Promise<void>;
 	drain(lane: Extract<ReturnType<typeof parseLane>, { kind: "loop" }>, now: number): ReturnType<typeof drain>;
@@ -456,6 +460,8 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 	const inFlight = new Set<Promise<void>>();
 	const baseSinks = deps.engine;
 	const proof = (lane: LaneId): Proof => proofOf(lane, () => [], () => stores.jobs.allRuns());
+	/** When a loop's checkout was first found missing: a version 2 field until M4b.B moves it into the clock. */
+	const missingSince = (jobId: string): string | undefined => stores.jobs.load().find((job) => job.id === jobId)?.cwdMissingSince;
 	const laneJobs = (): Map<string, LoopJobV3> => {
 		const result = new Map<string, LoopJobV3>();
 		for (const job of stores.book().jobs) {
@@ -483,10 +489,7 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 					if (!job) return undefined;
 					if (!job.enabled) return "its job is disabled";
 					if (!deps.cwdExists(job.cwd)) {
-						const since = Date.parse(row.created_at);
-						if (now - since >= 30 * 60_000) {
-							void stores.jobs.disable(jobId, { code: "cwd-missing", at: stamp(now), why: `disabled: cwd ${job.cwd} has been missing since ${formatLocal(since)} (re-enable after /cron add --cwd or restoring it)` }).catch((error) => deps.sinks.log(`loop ${jobId}: ${error instanceof Error ? error.message : String(error)}`));
-						}
+						const since = Date.parse(missingSince(jobId) ?? "") || now;
 						return `waiting: cwd ${job.cwd} is not there yet (since ${formatLocal(since)}; disabled if it stays missing)`;
 					}
 					const budget = budgetState(stores.jobs, deps.budgetCap(), now);
@@ -512,13 +515,18 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 			close: (row, at) => closeLoopRun(row, deps, at),
 		};
 		if (current) {
-			const row = stores.requests.list(lane.id).find((item) => item.kind === "input" && !item.run && item.source.startsWith("cron:") && !deps.cwdExists(current.cwd));
-			if (row && now - Date.parse(row.created_at) >= 30 * 60_000) {
-				const since = Date.parse(row.created_at);
-				await stores.jobs.disable(current.id, { code: "cwd-missing", at: stamp(now), why: `disabled: cwd ${current.cwd} has been missing since ${formatLocal(since)} (re-enable after /cron add --cwd or restoring it)` });
-				stores.requests.remove(lane.id, [row.id]); // the slot is spent; a re-enabled job does not run the stale row
-				deps.sinks.log(`cron ${current.name ?? current.id}: disabled, cwd ${current.cwd} missing since ${formatLocal(since)}`, undefined, current);
-			}
+			// Main's rule: the grace counts from the first look that found the checkout missing (a mount
+			// that comes up after pi-loops is the common case), not from when the row was queued.
+			const row = stores.requests.list(lane.id).find((item) => item.kind === "input" && !item.run && item.source.startsWith("cron:"));
+			if (row && current.enabled && !deps.cwdExists(current.cwd)) {
+				const marked = missingSince(current.id);
+				const since = Date.parse(marked ?? "") || now;
+				if (now - since >= CWD_GRACE_MS) {
+					await stores.jobs.disable(current.id, { code: "cwd-missing", at: stamp(now), why: `disabled: cwd ${current.cwd} has been missing since ${formatLocal(since)} (re-enable after /cron add --cwd or restoring it)` });
+					stores.requests.remove(lane.id, [row.id]); // the slot is spent; a re-enabled job does not run the stale row
+					deps.sinks.log(`cron ${current.name ?? current.id}: disabled, cwd ${current.cwd} missing since ${formatLocal(since)}`, undefined, current);
+				} else if (!marked) await stores.jobs.update(current.id, (j) => { j.cwdMissingSince = stamp(since); });
+			} else if (missingSince(current.id) && deps.cwdExists(current.cwd)) await stores.jobs.update(current.id, (j) => { j.cwdMissingSince = undefined; });
 		}
 		return drain(lane.id, stores.requests, executor, now, sinks);
 	}

@@ -232,24 +232,47 @@ export function closeSteps(input: CloseInput): ClosePlan {
 }
 
 export async function closeLoopRun(row: ClaimedRow, deps: Pick<LoopRunDeps, "stores" | "engine" | "sinks" | "holder">, now: number, ended?: RunRecordM4b): Promise<ClosedM4b> {
-	const record = ensureRecord(row, deps, now, ended);
+	const fail = (what: string, error: unknown): void => deps.sinks.log(`loop run ${row.id}: ${what} failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+	// A run that ended here closes on what it holds, as main's end of a run does: a store that cannot be
+	// read or written now is logged, and the row is still written last, so the slot is spent once and
+	// the lane does not stay "running" until a restart.
+	let record: RunRecordM4b;
+	try {
+		record = ensureRecord(row, deps, now, ended);
+	} catch (error) {
+		if (!ended) throw error; // a closing for a process that is gone writes nothing it cannot record
+		fail("run log append", error);
+		record = ended;
+	}
 	const jobId = record.jobId;
-	const book = deps.stores.book();
-	const job = book.jobs.find((candidate) => candidate.id === jobId);
-	const history = deps.stores.history().get(jobId) ?? { ordinal: 0, streak: 0, spent: new Set<string>() };
+	let job: LoopJobV3 | undefined;
+	try { job = deps.stores.book().jobs.find((candidate) => candidate.id === jobId); }
+	catch (error) { fail("jobs read", error); }
+	let history: JobHistory = { ordinal: 0, streak: 0, spent: new Set<string>() };
+	try { history = deps.stores.history().get(jobId) ?? history; }
+	catch (error) { fail("run history read", error); }
 	let outcome: ClosedM4b["outcome"] = "waiting";
 	let closedJob = job;
 	for (const step of closeSteps({ row, job, record, history, self: deps.engine().self(), now })) {
-		switch (step.write) {
-			case "run-end": deps.sinks.finished(step.record); break;
-			case "clock": deps.stores.clock.closeRun(step.job, step.close); break;
-			case "disable": closedJob = (await deps.stores.jobs.disable(step.job, step.disabled)) as LoopJobV3 | undefined; break;
-			case "successor": deps.stores.requests.appendIfAbsent(step.row); break;
-			case "row": outcome = await applyFate(deps.stores.requests, deps.engine(), row, step.fate, now); break;
+		if (step.write === "row") {
+			outcome = await applyFate(deps.stores.requests, deps.engine(), row, step.fate, now);
+			continue;
+		}
+		try {
+			switch (step.write) {
+				case "run-end": deps.sinks.finished(step.record); break;
+				case "clock": deps.stores.clock.closeRun(step.job, step.close); break;
+				case "disable": closedJob = (await deps.stores.jobs.disable(step.job, step.disabled)) as LoopJobV3 | undefined; break;
+				case "successor": deps.stores.requests.appendIfAbsent(step.row); break;
+			}
+		} catch (error) {
+			fail(step.write, error);
 		}
 	}
 	if (job?.schedule.kind === "once") {
-		const current = deps.stores.book().jobs.find((candidate) => candidate.id === jobId);
+		let current: LoopJobV3 | undefined;
+		try { current = deps.stores.book().jobs.find((candidate) => candidate.id === jobId); }
+		catch (error) { fail("jobs read", error); }
 		if (current) {
 			const history = deps.stores.history().get(jobId) ?? { ordinal: 0, streak: 0, spent: new Set<string>() };
 			const queued = deps.stores.requests.list(row.lane).some((candidate) => candidate.source === `cron:${jobId}` || candidate.source === `cron-run:${jobId}`);

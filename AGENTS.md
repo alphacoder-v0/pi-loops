@@ -42,7 +42,7 @@ src/backoff.ts              the one table of waits after a failure: a row, a loo
 src/job-status.ts           what a list shows for one job, folded from its clock, rows and run history
 src/clock.ts                the schedule cursor, pure tick decisions and their compare-and-set writes
 src/settle.ts               how a plain job's turn ends, as one table: what becomes of its row and of its job, for each way a run ends
-src/scheduler.ts            transitional plain-job scheduler and shared run/status helpers; its tick loop is replaced by the clock rider and loop lanes
+src/scheduler.ts            no longer fires anything: the clock rider writes every slot and the lanes run them; it stays only as the store and type adapters `HostRuntime.scheduler` and `ToolHost.scheduler` read, until M4b.5 deletes it
 src/loop-run.ts              one loop run, its stop record, and its ordered closing writes
 src/ticker.ts               one process timer and its typed, ordered riders
 src/stores.ts               stores of a loops directory, opened once, and job removal

@@ -821,26 +821,42 @@ test("[cron-run-refused-running] a loop run is refused with main's words while i
 	}
 });
 
-test("[cwd-missing-30min] an old loop row spends its slot and disables a job whose cwd is still missing", async () => {
+test("[cwd-missing-30min] a loop whose cwd is missing waits 30 minutes from the first miss, as main: an old row alone disables nothing, a cwd that comes back runs the owed slot, one missing for the whole grace disables the job and spends the slot", async () => {
 	const s = scene(ok);
 	try {
 		const id = "cron-cwd-missing";
-		const cwd = path.join(s.dir, "not-created");
+		const cwd = path.join(s.dir, "mounted-late");
 		const lane = loopLane(id)!;
+		const book = () => s.host.stores.book().jobs.find((candidate) => candidate.id === id);
 		await s.host.stores.jobs.add({ ...job(s, { id, stateful: true, cwd }), sessionId: undefined } as any);
-		const row = { ...plainJobRow({ ...job(s, { id, stateful: true, cwd }), sessionId: lane } as any, "cwd-row", `cron:${id}`, "", { pid: process.pid, instance: "test", version: "0" }), lane, created_at: new Date(Date.now() - 10 * 60_000).toISOString() };
+		// A row owed from long ago (a run handed back two hours before this start): its age is not the cwd's absence.
+		const row = { ...plainJobRow({ ...job(s, { id, stateful: true, cwd }), sessionId: lane } as any, "cwd-row", `cron:${id}`, "", { pid: process.pid, instance: "test", version: "0" }), lane, created_at: new Date(Date.now() - 120 * 60_000).toISOString() };
 		s.requests.append(row as any);
-		await s.host.loops.drain(parseLane(lane) as any, Date.now());
-		assert.equal(s.host.stores.book().jobs.find((candidate) => candidate.id === id)?.enabled, true, "the row waits inside the grace period");
+		const t0 = Date.now();
+		await s.host.loops.drain(parseLane(lane) as any, t0);
+		assert.equal(book()?.enabled, true, "the first miss waits: the mount may come up after pi-loops");
 		assert.deepEqual(s.requests.list(lane).map((item) => item.id), [row.id]);
 		assert.equal(s.calls.length, 0);
-		s.requests.update(lane, row.id, { created_at: new Date(Date.now() - 31 * 60_000).toISOString() });
-		await s.host.loops.drain(parseLane(lane) as any, Date.now());
-		const disabled = s.host.stores.book().jobs.find((candidate) => candidate.id === id)?.disabled;
+		// The mount comes up inside the grace: the owed slot runs, and the marker goes.
+		fs.mkdirSync(cwd);
+		await s.host.loops.drain(parseLane(lane) as any, t0 + 60_000);
+		await s.host.loops.settle(5000);
+		assert.equal(s.calls.length, 1, "the owed slot ran");
+		assert.equal(book()?.cwdMissingSince, undefined, "the marker does not outlive the outage");
+		// Missing again: 29 minutes later it still waits; at 30 minutes the job is disabled with main's words and the slot is spent.
+		fs.rmSync(cwd, { recursive: true, force: true });
+		const again = { ...plainJobRow({ ...job(s, { id, stateful: true, cwd }), sessionId: lane } as any, "cwd-row-2", `cron:${id}`, "", { pid: process.pid, instance: "test", version: "0" }), lane };
+		s.requests.append(again as any);
+		const t1 = t0 + 2 * 60_000;
+		await s.host.loops.drain(parseLane(lane) as any, t1);
+		await s.host.loops.drain(parseLane(lane) as any, t1 + 29 * 60_000);
+		assert.equal(book()?.enabled, true);
+		await s.host.loops.drain(parseLane(lane) as any, t1 + 30 * 60_000);
+		const disabled = book()?.disabled;
 		assert.equal(disabled?.code, "cwd-missing");
 		assert.match(disabled?.why ?? "", /^disabled: cwd .* has been missing since /);
 		assert.deepEqual(s.requests.list(lane), [], "the slot is spent and the stale row is gone");
-		assert.equal(s.calls.length, 0);
+		assert.equal(s.calls.length, 1);
 	} finally { await s.host.stop(); }
 });
 
