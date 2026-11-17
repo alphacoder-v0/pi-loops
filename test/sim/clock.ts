@@ -11,14 +11,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { claimable, landed, plainRunId, proofOf } from "../../src/engine.ts";
-import { advanceClock, ClockNewer, ClockStore, decideTick, wanted, writeSlot, commitSlot, type ClockFile, type SlotWritten, type SpendDecision, type TickDecision, type TickStores } from "../../src/clock.ts";
+import { advanceClock, ClockNewer, ClockStore, decideTick, wanted, writeSlot, commitSlot, v2Clock, type Clock, type ClockFile, type SimClockSubject, type SlotWritten, type SpendDecision, type TickDecision, type TickStores } from "../../src/clock.ts";
 import { loopLane, type LaneId } from "../../src/lane.ts";
 import { withFileLockSync, writeFileAtomic } from "../../src/lock.ts";
 import { RequestStore, type ClaimedRow, type Row, type UnclaimedRow } from "../../src/requests.ts";
 import { stamp, type Schedule } from "../../src/schedule.ts";
 import { loopEnd, runEnd, settleLoop, type RunEnd } from "../../src/settle.ts";
 import { jobStatus, runHistory, type JobHistory } from "../../src/job-status.ts";
-import type { LoopJobV3, RunRecord } from "../../src/store.ts";
+import { JobStore, type LoopJob, type LoopJobV3, type RunRecord } from "../../src/store.ts";
 import { type Random, weighted } from "./prng.ts";
 
 type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
@@ -40,7 +40,7 @@ const keyOf = (job: string, slot: string): string => `${job}|${slot}`;
 /** Return the first violated I1 sentence, naming its job and slot. */
 export function checkI1(world: ClockWorld, queues: ReadonlyMap<LaneId, readonly CountedRow[]>): string | undefined {
 	const allRows = [...queues.values()].flat();
-	const internal = world as ClockWorld & { clock: ClockStore; forgotten: boolean; newer: boolean };
+	const internal = world as ClockWorld & { clock: Clock; subject: SimClockSubject; forgotten: boolean; newer: boolean };
 	for (const [key, entry] of world.ledger) {
 		const [job, slot] = key.split("|");
 		const say = (what: string): string => `${what} for job ${job}, slot ${slot}`;
@@ -72,14 +72,27 @@ export function checkI1(world: ClockWorld, queues: ReadonlyMap<LaneId, readonly 
 }
 
 // The simulator keeps an in-memory mirror only to make checkI1 inspect actual store writes.
-function readClock(world: ClockWorld & { clock: ClockStore }, job: string) { try { return world.clock.read().jobs[job]; } catch (error) { if (error instanceof ClockNewer) return undefined; throw error; } }
+export function clockJsonSubject(dir: string): SimClockSubject {
+	const file = path.join(dir, "clock.json");
+	const clock = new ClockStore({ file, lock: path.join(dir, "clock.lock") }, { locked: withFileLockSync, write: writeFileAtomic });
+	return { name: "clock.json", clock, read: () => clock.read(), forget: () => fs.rmSync(file, { force: true }), newer: () => fs.writeFileSync(file, JSON.stringify({ v: 2, jobs: {} })) };
+}
 
-export async function play(dir: string, random: Random, steps: number): Promise<ClockOutcome> {
+export function jobsV2Subject(dir: string): SimClockSubject {
+	fs.mkdirSync(dir, { recursive: true });
+	const store = new JobStore(dir);
+	writeFileAtomic(store.jobsFile, JSON.stringify({ version: 2, jobs: JOBS }));
+	const clock = v2Clock(store);
+	return { name: "jobs.json v2", clock, read: () => ({ v: 1, jobs: Object.fromEntries(store.load().map((job) => [job.id, { ...(job.lastDueAt ? { slot: job.lastDueAt } : {}), ...(job.lastFiredAt ? { fired: job.lastFiredAt } : {}), runs: job.runCount, ...(job.skippedOverlap ? { collapsed: job.skippedOverlap } : {}) }])) }) };
+}
+
+function readClock(world: ClockWorld & { subject: SimClockSubject }, job: string) { try { return world.subject.read().jobs[job]; } catch (error) { if (error instanceof ClockNewer) return undefined; throw error; } }
+
+export async function play(dir: string, random: Random, steps: number, subject: SimClockSubject = clockJsonSubject(dir)): Promise<ClockOutcome> {
 	fs.mkdirSync(dir, { recursive: true });
 	const requests = new RequestStore(dir);
-	const clockFile = path.join(dir, "clock.json");
-	const clock = new ClockStore({ file: clockFile, lock: path.join(dir, "clock.lock") }, { locked: withFileLockSync, write: writeFileAtomic });
-	const world = { now: Date.parse("2026-06-01T12:00:00Z"), jobs: JOBS, tickers: [], lease: { epoch: 1 }, records: [], entries: [], ledger: new Map(), clock, forgotten: false, newer: false } as ClockWorld & { clock: ClockStore; forgotten: boolean; newer: boolean };
+	const clock = subject.clock;
+	const world = { now: Date.parse("2026-06-01T12:00:00Z"), jobs: JOBS, tickers: [], lease: { epoch: 1 }, records: [], entries: [], ledger: new Map(), clock, subject, forgotten: false, newer: false } as ClockWorld & { clock: Clock; subject: SimClockSubject; forgotten: boolean; newer: boolean };
 	const out: ClockOutcome = { steps: [], seen: new Set() };
 	let nextPid = 100;
 	// In one world in three a second process ticks the loops too: pi-loops in the background that stalled and resumed beside the one that took its place (design, the table T1 to T3: two processes that tick at once).
@@ -102,7 +115,7 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 	const fail = (message: string): void => { out.violation ??= message; };
 	const tick = (ticker: Ticker): void => {
 		if (!ticker.alive) return;
-		const file = clock.read();
+		const file = subject.read();
 		const mine = new Map(JOBS.flatMap((job) => {
 			if (job.stateful && ticker.kind === "background") return [[job.id, { kind: "loop" as const }] as const];
 			if (!job.stateful && world.lease.holder === ticker.pid) return [[job.id, { kind: "plain" as const, epoch: world.lease.epoch }] as const];
@@ -133,7 +146,7 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 		const claimed = lanes.slice(0, 2).filter((l) => requests.list(l).some((row) => row.run));
 		const lane = busy.length && random() % 4 !== 0 ? busy[random() % busy.length] : lanes[random() % lanes.length];
 		const loop = claimed.length && random() % 4 !== 0 ? claimed[random() % claimed.length] : lanes.slice(0, 2)[random() % 2];
-		const choices: Array<readonly [ClockStep["do"], number]> = [["tick", stalls ? 0 : 5], ["write", stalls ? 1 : ticker.pending.length ? 8 : 1], ["die", !ticker.alive ? 0 : ticker.pending.some((item) => item.written) ? 6 : 2], ["start", !ticker.alive ? 3 : 0], ["drain", 3], ["end", 2], ["deliver", 2], ["lease", 2], ["cancel", 1], ["forget", 1], ["newer", 1], ["advance", 4]];
+		const choices: Array<readonly [ClockStep["do"], number]> = [["tick", stalls ? 0 : 5], ["write", stalls ? 1 : ticker.pending.length ? 8 : 1], ["die", !ticker.alive ? 0 : ticker.pending.some((item) => item.written) ? 6 : 2], ["start", !ticker.alive ? 3 : 0], ["drain", 3], ["end", 2], ["deliver", 2], ["lease", 2], ["cancel", 1], ["forget", subject.forget ? 1 : 0], ["newer", subject.newer ? 1 : 0], ["advance", 4]];
 		const action = weighted(choices, random());
 		switch (action) {
 			case "tick": return { do: "tick", ticker: world.tickers.indexOf(ticker) };
@@ -189,8 +202,8 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 				case "deliver": { const row = requests.list("clock-conversation").find((item) => item.kind === "input" && !item.run); if (row) { world.entries.push({ type: "message", timestamp: stamp(world.now), message: { role: "user", content: `[Trigger ${row.id}] go`, piLoopsRow: { lane: row.lane, id: row.id, at: row.created_at } } }); requests.remove(row.lane, [row.id]); markExit(row.id, "delivered"); out.seen.add("window delivers"); } break; }
 				case "lease": world.lease.holder = step.to; world.lease.epoch++; break;
 				case "cancel": { const row = requests.list(step.lane).find((item) => !item.run); if (row) { requests.remove(step.lane, [row.id]); markExit(row.id, "cancelled"); } break; }
-				case "forget": fs.rmSync(clockFile, { force: true }); out.steps.push("clock.json is deleted"); world.forgotten = true; world.newer = false; out.seen.add("clock forgotten"); break;
-				case "newer": fs.writeFileSync(clockFile, JSON.stringify({ v: 2, jobs: {} })); out.steps.push("clock.json is replaced by a newer version"); world.newer = true; out.seen.add("clock newer"); break;
+				case "forget": subject.forget?.(); out.steps.push("clock.json is deleted"); world.forgotten = true; world.newer = false; out.seen.add("clock forgotten"); break;
+				case "newer": subject.newer?.(); out.steps.push("clock.json is replaced by a newer version"); world.newer = true; out.seen.add("clock newer"); break;
 				case "advance": world.now += step.ms; break;
 			}
 		} catch (error) {
@@ -211,7 +224,7 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 		if (settlement.job) out.steps.push("job disabled by closing");
 		if (dies === 2) { out.seen.add("closing cut after job patch"); return; }
 		if (settlement.runs !== undefined) {
-			try { clock.raiseRuns(job.id, settlement.runs); } catch (error) { if (!(error instanceof ClockNewer)) throw error; }
+			try { clock.closeRun(job.id, { ordinal: settlement.runs }); } catch (error) { if (!(error instanceof ClockNewer)) throw error; }
 		}
 		if (dies === 3) { out.seen.add("closing cut after successor"); return; }
 		if (settlement.row.do === "leave") {

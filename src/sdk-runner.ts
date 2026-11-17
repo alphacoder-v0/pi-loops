@@ -50,7 +50,7 @@ export interface InProcessRunnerDeps {
 	/** Command prefixes the dangerous-command gate lets through (`[danger] allow`). */
 	allowCommands?: () => readonly string[];
 	/**
-	 * Today's automation spend and the cap it must stay under — `scheduler.budgetState()`, read
+	 * Today's automation spend and the cap it must stay under — `budgetState` from `job-status.ts`, read
 	 * *while* a run is in flight rather than only before it is dispatched. A callback, not the
 	 * scheduler itself: the scheduler owns the runner, and the runner must not own the scheduler
 	 * back. Omitted (a test, a caller with no scheduler) → runs are not measured against a cap.

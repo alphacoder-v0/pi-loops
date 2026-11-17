@@ -22,8 +22,10 @@ import { type BackgroundExecutor, createBackgroundExecutor } from "./background-
 import { RunList } from "./run-list.ts";
 import { DEFAULT_RUN_TIMEOUT_MS, LoopScheduler, type PlainJobLeases, type SessionSnapshot } from "./scheduler.ts";
 import { stamp } from "./schedule.ts";
+import { budgetState } from "./job-status.ts";
 import { SubagentSlots } from "./slots.ts";
 import { type LoopJob, newId } from "./store.ts";
+import { RUNTIME_RIDERS, type Riders } from "./ticker.ts";
 import { type ToolHost, automationTools, createLoopJob } from "./tools.ts";
 import { TriggerRuntime, promotionToInbox } from "./trigger-runtime.ts";
 import { auditCronFinish, auditCronStart, TriggerStore, controlPlanePreflight } from "./triggers.ts";
@@ -46,14 +48,14 @@ export interface HostRuntimeDeps {
 	log: (message: string) => void;
 	/** Does pi still have this session? Plain jobs of deleted sessions are parked by the host's sweep. */
 	sessionExists?: (sessionId: string) => boolean;
-	/** Every tick, before the rules are checked. */
-	onTick?: (now: number) => void;
 	/** Is this conversation open in the browser page? Then its pi writes the file, and this process never holds it. */
 	pageHolds?: (sessionId: string) => boolean;
 }
 
 export interface HostRuntime {
 	scheduler: LoopScheduler;
+	riders: Riders<(typeof RUNTIME_RIDERS)[number]>;
+	tick(): Promise<void>;
 	triggers: TriggerRuntime;
 	/** The tools a sub-session started by this host gets (its cwd and model, not the host's). */
 	customTools: (req: SubagentRequest) => Promise<ToolDefinition<any, any>[]>;
@@ -81,6 +83,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		noticeSeq = keepNotice(kept, noticeSeq, text, cwd, Date.now());
 	};
 	let triggers: TriggerRuntime;
+	let runtimeRidersRan = false;
 	const leases = new LeaseStore(dir);
 	const requests = new RequestStore(dir);
 	/** The host as a lease holder: it holds a closed conversation for one piece of work, then lets go. */
@@ -201,7 +204,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				void hooks.fire(runEndEvent(job, record)).then(forget, forget);
 			},
 			onTick: async (now) => {
-				deps.onTick?.(now);
+				if (runtimeRidersRan) { runtimeRidersRan = false; return; }
 				releaseStrayLeases(now);
 				await deliverToClosed();
 				await triggers.tick(now);
@@ -401,7 +404,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		runner: deps.runner,
 		dedupFile: path.join(dir, "dedup.json"),
 		slots,
-		budget: () => scheduler.budgetState(),
+		budget: () => budgetState(scheduler.store, deps.config().dailyBudgetUsd, Date.now()),
 		inbox: scheduler.inbox,
 		hooks: {
 			onPromote: promote,
@@ -438,8 +441,15 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		return host;
 	};
 
+	const riders: Riders<(typeof RUNTIME_RIDERS)[number]> = {
+		"stray-leases": (now) => releaseStrayLeases(now),
+		"closed-conversations": () => deliverToClosed(),
+		"rule-checks": async (now) => { await triggers.tick(now); runtimeRidersRan = true; },
+	};
 	return {
 		scheduler,
+		riders,
+		tick: () => { runtimeRidersRan = true; return scheduler.tick(); },
 		triggers,
 		notice,
 		notices: () => [...kept],
@@ -457,10 +467,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			const project = req.cwd ? ((await deps.projectMcpTools?.(req.cwd, taken, req.trusted)) ?? []) : [];
 			return [...shared, ...project, ...automation];
 		},
-		start: () => {
-			scheduler.start();
-			watch();
-		},
+		start: () => { watch(); },
 		stop: async () => {
 			for (const w of watchers.splice(0)) w.close();
 			await triggers.stop();

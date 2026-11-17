@@ -55,6 +55,8 @@ import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
+import { budgetState } from "./job-status.ts";
+import { Ticker, WINDOW_RIDERS_AT_M4B_2, type Riders } from "./ticker.ts";
 import { TURN_TYPE } from "./mark.ts";
 import { renderTurn } from "./turn-render.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
@@ -223,7 +225,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		allowCommands: () => config.allowCommands,
 		// The daily cap, read while a run is in flight and not only before it is dispatched. Lazy: the
 		// scheduler is built with this runner, and asking it anything before then would be a cycle.
-		budget: () => scheduler.budgetState(),
+		budget: () => budgetState(scheduler.store, config.dailyBudgetUsd, Date.now()),
 		log: (msg) => {
 			log.warn(`sub-agent: ${msg}`);
 			if (lastCtx?.hasUI) lastCtx.ui.notify(`[sub-agent] ${msg}`, "warning");
@@ -290,16 +292,6 @@ export default function piLoops(pi: ExtensionAPI) {
 			onInboxChanged: () => refreshBadge(),
 			// Rule checks run in the host. A window handles only the inject_* pushes for the
 			// conversation it holds, deduplicated machine-wide (see startMcpSources).
-			onTick: () => {
-				leaseTick();
-				showFinishedRuns();
-				// A change inside the snapshot's minimum gap is held back, not lost: the next tick writes it.
-				emitSnapshot();
-				// Runs happen in the background now, so nothing else tells the status line and the panel
-				// that one started, finished or filed a finding: redraw them after each look.
-				if (binding.here().holds) hostTick(true).then(() => refreshBadge()).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
-				else refreshBadge();
-			},
 			// These carry "job disabled", "state write failed", "cannot read jobs"; the scheduler says
 			// which of its lines are routine instead of leaving it to be guessed from the wording.
 			log: (msg, level) => diagnostic(msg, level),
@@ -307,6 +299,18 @@ export default function piLoops(pi: ExtensionAPI) {
 			onBudgetExceeded: (spent, cap) => diagnostic(`today's automation has cost $${spent.toFixed(2)} of the $${cap.toFixed(2)} budget; dispatching is paused until tomorrow or a higher [limits] daily_budget_usd`),
 		},
 	});
+
+	const windowRiders: Riders<(typeof WINDOW_RIDERS_AT_M4B_2)[number]> = {
+		lease: () => leaseTick(),
+		"finished-runs": () => showFinishedRuns(),
+		snapshot: () => emitSnapshot(),
+		background: () => {
+			if (binding.here().holds) void hostTick(true).then(() => refreshBadge()).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
+			else refreshBadge();
+		},
+		scheduler: () => scheduler.tick(),
+	};
+	const ticker = new Ticker({ names: WINDOW_RIDERS_AT_M4B_2, riders: windowRiders, log: (message) => log.warn(message) });
 
 	/* ---------------------------------------------------------- triggers */
 
@@ -322,7 +326,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		// Checks and actions cost the same money and the same process as loop runs, so they draw on the
 		// same counter rather than on a second one of their own.
 		slots: subagentSlots,
-		budget: () => scheduler.budgetState(),
+		budget: () => budgetState(scheduler.store, config.dailyBudgetUsd, Date.now()),
 		inbox: scheduler.inbox,
 		hop,
 		hooks: {
@@ -1517,7 +1521,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						}
 						const spend = scheduler.store.spend(since);
 						const byJob = [...spend.byJob.entries()].sort((a, b) => b[1].cost - a[1].cost);
-						const budget = scheduler.budgetState();
+						const budget = budgetState(scheduler.store, config.dailyBudgetUsd, Date.now());
 						const label = window === "all" ? "since the run log was last rotated" : window === "today" ? "today" : `the last ${window}`;
 						// The price beside what it bought: a loop's findings in the same window, and what a
 						// person did with them. `$0.410  28 run(s)  pr-watch  —  6 findings · 6 dismissed` is
@@ -3350,7 +3354,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			shownPause = saysPause && hostHasWork() ? hostPauseReason() : undefined;
 			hostTick(false).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
 			runsShownAfter = stamp();
-			scheduler.start();
+			ticker.start();
 			schedulerStarted = true;
 			refreshBadge();
 			pruneLogs(dir);
@@ -3582,6 +3586,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		startHandled = false;
 		if (schedulerStarted) {
 			schedulerStarted = false;
+			await ticker.stop();
 			await triggers.stop();
 			await scheduler.stop();
 		}

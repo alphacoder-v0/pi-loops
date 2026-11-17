@@ -8,14 +8,14 @@ import type { RequestStore, Row, UnclaimedRow } from "./requests.ts";
 
 type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
 import { computeDue, formatLocal, isValidSchedule, stamp } from "./schedule.ts";
-import type { Disabled, LoopJobV3, RunRecord } from "./store.ts";
+import type { Disabled, JobStore, LoopJob, LoopJobV3, RunRecord } from "./store.ts";
 import { fromV2, jobStatus, runHistory, type JobHistory } from "./job-status.ts";
 import { oneShotDoneV3 } from "./settle.ts";
 
 /** A clock decision that was not a run, for the job's status. */
 export interface ClockNote { at: string; text: string }
 /** One job's schedule cursor and run floor. */
-export interface JobClock { slot?: string; fired?: string; runs: number; note?: ClockNote }
+export interface JobClock { slot?: string; fired?: string; runs: number; note?: ClockNote; collapsed?: number; cleared?: string }
 /** The versioned clock file. Unknown job keys are preserved by writes. */
 export interface ClockFile { v: 1; jobs: Record<string, JobClock> }
 /** The cursor stamps as this ticker read them. */
@@ -23,10 +23,11 @@ export interface CursorRead { readonly slot?: string; readonly fired?: string }
 export interface CursorMove {
 	readonly job: string;
 	readonly read: CursorRead;
-	readonly slot: string;
+	readonly slot?: string;
 	readonly fired?: string;
 	readonly fires: boolean;
 	readonly note?: ClockNote | null;
+	readonly collapsed?: true;
 }
 export type Advance = "moved" | "lost" | "not-holder";
 
@@ -35,7 +36,7 @@ export function advanceClock(file: ClockFile, move: CursorMove, holds: boolean):
 	if (!holds) return { next: file, result: "not-holder" };
 	const current = file.jobs[move.job];
 	if (current?.slot !== move.read.slot || current?.fired !== move.read.fired) return { next: file, result: "lost" };
-	const entry: JobClock = { ...current, slot: move.slot, runs: (current?.runs ?? 0) + (move.fires ? 1 : 0) };
+	const entry: JobClock = { ...current, ...(move.slot === undefined ? {} : { slot: move.slot }), runs: (current?.runs ?? 0) + (move.fires ? 1 : 0), ...(move.collapsed ? { collapsed: (current?.collapsed ?? 0) + 1 } : {}) };
 	if (move.fired !== undefined) entry.fired = move.fired;
 	if (move.note === null) delete entry.note;
 	else if (move.note) entry.note = move.note;
@@ -47,11 +48,33 @@ export interface ClockIo {
 	readonly locked: <T>(lockPath: string, fn: () => T, opts?: LockOptions) => T;
 	readonly write: (file: string, data: string) => void;
 }
+export interface RunClose { readonly ordinal?: number; readonly fired?: string }
+export interface Clock {
+	advance(move: CursorMove, holds?: () => boolean): Advance;
+	closeRun(job: string, close: RunClose): void;
+	reset(job: string, slot?: string): void;
+	clear(job: string, at: string): void;
+}
 /** The file belongs to a newer version and must not be replaced. */
 export class ClockNewer extends Error {}
 
+function validStamp(value: unknown): value is string { return typeof value === "string" && Number.isFinite(Date.parse(value)); }
+
+/** Drop malformed entries while preserving the valid jobs in the clock file. */
+export function validEntry(value: unknown): JobClock | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const entry = value as Record<string, unknown>;
+	if (!Number.isInteger(entry.runs) || (entry.runs as number) < 0) return undefined;
+	if (entry.slot !== undefined && !validStamp(entry.slot)) return undefined;
+	if (entry.fired !== undefined && !validStamp(entry.fired)) return undefined;
+	if (entry.cleared !== undefined && !validStamp(entry.cleared)) return undefined;
+	if (entry.collapsed !== undefined && (!Number.isInteger(entry.collapsed) || (entry.collapsed as number) < 0)) return undefined;
+	if (entry.note !== undefined && (!entry.note || typeof entry.note !== "object" || Array.isArray(entry.note) || !validStamp((entry.note as ClockNote).at) || typeof (entry.note as ClockNote).text !== "string")) return undefined;
+	return value as JobClock;
+}
+
 /** The clock file and its lock. Scheduling and lease decisions stay outside this store. */
-export class ClockStore {
+export class ClockStore implements Clock {
 	readonly paths: ClockPaths;
 	private readonly io: ClockIo;
 	constructor(paths: ClockPaths, io: ClockIo) { this.paths = paths; this.io = io; }
@@ -63,7 +86,12 @@ export class ClockStore {
 		const file = parsed as ClockFile;
 		if (file.v > 1) throw new ClockNewer(`clock file version ${file.v} is newer than 1`);
 		if (file.v !== 1 || !file.jobs || typeof file.jobs !== "object" || Array.isArray(file.jobs)) return { v: 1, jobs: {} };
-		return file;
+		const jobs: Record<string, JobClock> = {};
+		for (const [job, value] of Object.entries(file.jobs)) {
+			const entry = validEntry(value);
+			if (entry) jobs[job] = entry;
+		}
+		return { v: 1, jobs };
 	}
 	advance(move: CursorMove, holds?: () => boolean): Advance {
 		return this.io.locked(this.paths.lock, () => {
@@ -74,14 +102,99 @@ export class ClockStore {
 		});
 	}
 	raiseRuns(job: string, ordinal: number): void {
+		this.closeRun(job, { ordinal });
+	}
+	closeRun(job: string, close: RunClose): void {
+		this.io.locked(this.paths.lock, () => {
+			const file = this.read();
+			const current = file.jobs[job] ?? { runs: 0 };
+			const next = { ...current, ...(close.ordinal === undefined ? {} : { runs: Math.max(current.runs, close.ordinal) }), ...(close.fired === undefined || (current.fired && Date.parse(current.fired) >= Date.parse(close.fired)) ? {} : { fired: close.fired }) };
+			if (JSON.stringify(next) !== JSON.stringify(current)) this.io.write(this.paths.file, JSON.stringify({ ...file, jobs: { ...file.jobs, [job]: next } }));
+		});
+	}
+	reset(job: string, slot?: string): void {
 		this.io.locked(this.paths.lock, () => {
 			const file = this.read();
 			const current = file.jobs[job];
-			if ((current?.runs ?? 0) >= ordinal) return;
-			this.io.write(this.paths.file, JSON.stringify({ ...file, jobs: { ...file.jobs, [job]: { ...current, runs: ordinal } } }));
+			if (!current && slot === undefined) return;
+			const next = { ...(current ?? { runs: 0 }), ...(slot === undefined ? {} : { slot }) };
+			if (slot === undefined) delete next.slot;
+			this.io.write(this.paths.file, JSON.stringify({ ...file, jobs: { ...file.jobs, [job]: next } }));
+		});
+	}
+	clear(job: string, at: string): void {
+		this.io.locked(this.paths.lock, () => {
+			const file = this.read();
+			const current = file.jobs[job];
+			const next = { ...(current ?? { runs: 0 }), cleared: at };
+			this.io.write(this.paths.file, JSON.stringify({ ...file, jobs: { ...file.jobs, [job]: next } }));
+		});
+	}
+	seed(entries: Readonly<Record<string, JobClock>>): void {
+		this.io.locked(this.paths.lock, () => {
+			const file = this.read();
+			this.io.write(this.paths.file, JSON.stringify({ ...file, jobs: { ...file.jobs, ...entries } }));
 		});
 	}
 }
+
+/** The version 2 jobs file as the cursor store for this transition. */
+export function v2Clock(jobs: Pick<JobStore, "load" | "mutateSync">): Clock {
+	const read = (job: LoopJob): JobClock => ({
+		...(job.lastDueAt === undefined ? {} : { slot: job.lastDueAt }),
+		...(job.lastFiredAt === undefined ? {} : { fired: job.lastFiredAt }),
+		runs: job.runCount,
+		...(job.lastError && job.enabled ? { note: { at: job.lastDueAt ?? job.createdAt, text: job.lastError } } : {}),
+		...(job.skippedOverlap ? { collapsed: job.skippedOverlap } : {}),
+		...("clearedAt" in job && typeof job.clearedAt === "string" ? { cleared: job.clearedAt } : {}),
+	});
+	return {
+		advance(move, holds) {
+			if (holds && !holds()) return "not-holder";
+			return jobs.mutateSync((all) => {
+				const job = all.find((item) => item.id === move.job);
+				if (!job) return { jobs: all, result: "lost" as const };
+				const current = read(job);
+				if (current.slot !== move.read.slot || current.fired !== move.read.fired) return { jobs: all, result: "lost" as const };
+				if (move.slot !== undefined) job.lastDueAt = move.slot;
+				job.runCount += move.fires ? 1 : 0;
+				if (move.collapsed) job.skippedOverlap++;
+				if (move.fired !== undefined) job.lastFiredAt = move.fired;
+				if (move.note === null) delete job.lastError;
+				else if (move.note) job.lastError = move.note.text;
+				return { jobs: all, result: "moved" as const };
+			});
+		},
+		closeRun(id, close) {
+			jobs.mutateSync((all) => {
+				const job = all.find((item) => item.id === id);
+				if (!job) return { jobs: all, result: undefined };
+				if (close.ordinal !== undefined) job.runCount = Math.max(job.runCount, close.ordinal);
+				if (close.fired !== undefined && (!job.lastFiredAt || Date.parse(job.lastFiredAt) < Date.parse(close.fired))) job.lastFiredAt = close.fired;
+				return { jobs: all, result: undefined };
+			});
+		},
+		reset(id, slot) {
+			jobs.mutateSync((all) => {
+				const job = all.find((item) => item.id === id);
+				if (!job) return { jobs: all, result: undefined };
+				if (slot === undefined) delete job.lastDueAt; else job.lastDueAt = slot;
+				return { jobs: all, result: undefined };
+			});
+		},
+		clear(id, at) {
+			jobs.mutateSync((all) => {
+				const job = all.find((item) => item.id === id);
+				if (!job) return { jobs: all, result: undefined };
+				(job as LoopJob & { clearedAt?: string }).clearedAt = at;
+				delete job.lastError;
+				return { jobs: all, result: undefined };
+			});
+		},
+	};
+}
+
+export interface SimClockSubject { readonly name: "clock.json" | "jobs.json v2"; readonly clock: Clock; read(): ClockFile; forget?(): void; newer?(): void }
 
 export type Mine = { readonly kind: "loop" } | { readonly kind: "plain"; readonly epoch: number };
 export interface TickProbe { readonly jobs: readonly LoopJobV3[]; readonly clock: ClockFile; readonly now: number; readonly mine: ReadonlySet<string> }
@@ -177,7 +290,7 @@ export function decideTick(input: TickInput): TickDecision[] {
 	});
 }
 
-export interface TickStores { readonly requests: Pick<RequestStore, "appendIfAbsent" | "remove"> & { collapse(lane: LaneId, id: string, slot: string): "counted" | "counted-before" | "missing" }; readonly clock: ClockStore; heldEpoch(sessionId: string): number | undefined }
+export interface TickStores { readonly requests: Pick<RequestStore, "appendIfAbsent" | "remove"> & { collapse(lane: LaneId, id: string, slot: string): "counted" | "counted-before" | "missing" }; readonly clock: Clock; heldEpoch(sessionId: string): number | undefined }
 export type T2 = "wrote" | "there" | "counted" | "counted-before" | "missing" | "nothing";
 const written: unique symbol = Symbol("written");
 export interface SlotWritten { readonly decision: SpendDecision; readonly t2: T2; readonly [written]: true }

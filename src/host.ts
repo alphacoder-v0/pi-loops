@@ -18,6 +18,7 @@ import { ModelRuntime, ProjectTrustStore, SettingsManager, VERSION as PI_VERSION
 import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig, pageBindPort } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
+import { budgetState } from "./job-status.ts";
 import { healHostChannel, hostSocketPath, recentRun, requestQueues, serveHostChannel, stopRunFrom, type HostChannelHandlers } from "./host-control-channel.ts";
 import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, leavesWithWindows, openWindows, stopWaitsForPage, waitForPageTurns, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
 import { ChildPool, piCommand } from "./page-children.ts";
@@ -31,6 +32,7 @@ import { convertStores } from "./convert-v2.ts";
 import { THINKING_LEVELS, thinkingLevelOrUndefined } from "./thinking.ts";
 import { rotateInPlace } from "./log.ts";
 import { createHostRuntime } from "./host-runtime.ts";
+import { Ticker, HOST_RIDERS, BACKGROUND_RIDERS_AT_M4B_2, type Riders } from "./ticker.ts";
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv, type McpNotification, type McpServerConfig } from "./mcp.ts";
 import { failingJobs } from "./job-health.ts";
@@ -171,7 +173,7 @@ const inProcessRunner = createInProcessRunner({
 	allowCommands: () => config.allowCommands,
 	// The daily cap, read while a run is in flight and not only before it is dispatched. Lazy: the
 	// host owns the scheduler and is built with this runner, so it can only be asked at run time.
-	budget: () => host.scheduler.budgetState(),
+	budget: () => budgetState(host.scheduler.store, config.dailyBudgetUsd, Date.now()),
 	log: (msg) => log(`sub-agent: ${msg}`),
 	notice: (text, cwd) => host.notice(text, cwd),
 });
@@ -211,7 +213,6 @@ const host = createHostRuntime({
 		if (lease?.sessionFile && fs.existsSync(lease.sessionFile)) return true;
 		return sessionExists(path.join(agentDir, "sessions"), id);
 	},
-	onTick: (now) => everyTick(now),
 	// Open in the page, its pi writes the file: a plain job's turn there would be a second writer.
 	pageHolds: (id) => pool.has(id),
 });
@@ -300,6 +301,7 @@ function startMcpSource(cfg: McpServerConfig): void {
 /* ------------------------------------------------------------ lifecycle */
 
 let stopping = false;
+let ticker: Ticker<(typeof BACKGROUND_RIDERS_AT_M4B_2)[number]> | undefined;
 async function shutdown(code: number): Promise<void> {
 	if (stopping) return;
 	stopping = true;
@@ -317,6 +319,7 @@ async function shutdown(code: number): Promise<void> {
 		process.exit(code);
 	}, 10_000).unref();
 	try {
+		await ticker?.stop();
 		// The page's pis first: each is a conversation someone has open, and it quits as /quit does.
 		await pool.stopAll();
 		await host.stop();
@@ -461,41 +464,35 @@ function sweepConversations(now: number): void {
 	if (removed || pruned) log(`swept ${removed} idle conversation lease(s) and ${pruned} since-you-looked cursor(s)`);
 }
 
-function everyTick(now: number): void {
-	if (!hostServiceNames(dir, process.pid, startedAt)) {
+const hostRiders: Riders<(typeof HOST_RIDERS)[number]> = {
+	"still-named": () => {
+		if (hostServiceNames(dir, process.pid, startedAt)) return;
 		log("host-service.json no longer names this process; leaving");
 		leave(0);
-		return;
-	}
-	// `[host] auto = false`: this process lives while a pi window does, as 0.22.8 ran loops only in
-	// an open window (src/host-control.ts leavesWithWindows). The next window starts it again. The
-	// page's pis count with their tabs: one still starting, or one a terminal took the conversation
-	// from, holds no lease.
-	if (leavesWithWindows({ auto: config.hostAuto, managed, windows: openWindows({ terminalPids: openWindowPids(leases), pageChildPids: pool.list().map((c) => c.pid), tabs: page?.clients() ?? 0 }), upForMs: now - Date.parse(startedAt), asked: process.env.PI_LOOPS_HOST_ASKED === "1" || readUiPrefs(dir).host === "started" })) {
+	},
+	"auto-leave": (now) => {
+		if (!leavesWithWindows({ auto: config.hostAuto, managed, windows: openWindows({ terminalPids: openWindowPids(leases), pageChildPids: pool.list().map((c) => c.pid), tabs: page?.clients() ?? 0 }), upForMs: now - Date.parse(startedAt), asked: process.env.PI_LOOPS_HOST_ASKED === "1" || readUiPrefs(dir).host === "started" })) return;
 		log("[host] auto = false and no pi window is open; leaving (the next window starts pi-loops again)");
 		leave(0);
-		return;
-	}
-	try {
-		sweepConversations(now);
-	} catch (err: any) {
-		log(`conversation sweep: ${err?.message ?? err}`);
-	}
-	pool.sweep(now).catch((err: any) => log(`page: idle sweep: ${err?.message ?? err}`));
-	if (!page && pageWaiting?.reason === "older-page" && !pageBinding) bindPageAndSay().catch((err: any) => log(`page: ${err?.message ?? err}`));
-	// The heartbeat windows read before they evict: a socket that does not answer while this is fresh
-	// is a broken control channel, not a wedged host (src/host-control.ts decideEviction).
-	try {
-		updateHostService(dir, process.pid, { tickAt: stamp(now) });
-	} catch (err: any) {
-		log(`heartbeat: ${err?.message ?? err}`);
-	}
-	try {
-		channel = healHostChannel(dir, channel, channelHandlers, log);
-	} catch (err: any) {
-		log(`control channel heal: ${err?.message ?? err}`);
-	}
-}
+	},
+	"conversation-sweep": (now) => {
+		try { sweepConversations(now); }
+		catch (err: any) { log(`conversation sweep: ${err?.message ?? err}`); }
+	},
+	"page-sweep": (now) => { void pool.sweep(now).catch((err: any) => log(`page: idle sweep: ${err?.message ?? err}`)); },
+	"page-bind": () => {
+		if (!page && pageWaiting?.reason === "older-page" && !pageBinding) void bindPageAndSay().catch((err: any) => log(`page: ${err?.message ?? err}`));
+	},
+	"heartbeat": (now) => {
+		try { updateHostService(dir, process.pid, { tickAt: stamp(now) }); }
+		catch (err: any) { log(`heartbeat: ${err?.message ?? err}`); }
+	},
+	"channel-heal": () => {
+		try { channel = healHostChannel(dir, channel, channelHandlers, log); }
+		catch (err: any) { log(`control channel heal: ${err?.message ?? err}`); }
+	},
+};
+ticker = new Ticker({ names: BACKGROUND_RIDERS_AT_M4B_2, riders: { ...hostRiders, ...host.riders, scheduler: () => host.tick() }, log });
 
 /**
  * A control channel that cannot be opened is a degraded host, not a dead one: `pi-loops host
@@ -563,7 +560,7 @@ function snapshot(): HostSnapshot {
 			return next ? stamp(next) : undefined;
 		})(),
 		budget: (() => {
-			const b = host.scheduler.budgetState();
+			const b = budgetState(host.scheduler.store, config.dailyBudgetUsd, Date.now());
 			return b.cap > 0 ? { spent: b.spent, cap: b.cap } : undefined;
 		})(),
 		mcp: mcpSources.map((s) => ({ name: s.config.name, state: s.status.state, lastError: s.status.lastError ? previewRedacted(s.status.lastError, 120) : undefined })),
@@ -677,7 +674,7 @@ function bindPage(): Promise<PageServer | NodeJS.ErrnoException> {
 			lastPage: () => readUiPrefs(dir).lastPage,
 			rememberPage: (id) => writeUiPref(dir, "lastPage", id),
 			background: hostStatus,
-			budget: () => host.scheduler.budgetState(),
+			budget: () => budgetState(host.scheduler.store, config.dailyBudgetUsd, Date.now()),
 			log,
 			onListenError: (err) => {
 				if (bound) log(`page: ${err?.message ?? err}`);
@@ -806,6 +803,7 @@ parentModel = await defaultModel().catch((err) => {
 log(`default model: ${parentModel ? `${parentModel.provider}/${parentModel.id}` : "none (jobs must pin one)"}`);
 startMcpSources();
 host.start();
+ticker.start();
 // As in the minute timer below: a rules file that cannot be read must cost its rules, not every loop.
 try {
 	watchProjectPushServers();

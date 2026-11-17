@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
-import { play } from "./sim/clock.ts";
+import { clockJsonSubject, jobsV2Subject, play } from "./sim/clock.ts";
 import { prng } from "./sim/prng.ts";
 
 function setting(name: string, fallback: number): number {
@@ -25,9 +25,13 @@ test("[I1] one row per job and slot through tickers, crashes and settlement", as
 	const seen = new Set<string>();
 	for (let n = 0; n < SCHEDULES; n++) {
 		const seed = FIRST_SEED + n;
-		const out = await play(tmp("pi-loops-sim-clock-"), prng(seed), STEPS);
-		for (const item of out.seen) seen.add(item);
-		if (out.violation) assert.fail(`seed ${seed}: ${out.violation}\n  the schedule (SIM_SEED=${seed} SIM_SCHEDULES=1 SIM_STEPS=${STEPS} runs it again):\n${out.steps.map((step, i) => `    ${i + 1}. ${step}`).join("\n")}`);
+		for (const subjectFactory of [clockJsonSubject, jobsV2Subject]) {
+			const dir = tmp("pi-loops-sim-clock-");
+			const subject = subjectFactory(dir);
+			const out = await play(dir, prng(seed), STEPS, subject);
+			for (const item of out.seen) seen.add(item);
+			if (out.violation) assert.fail(`${subject.name}, seed ${seed}: ${out.violation}\\n  the schedule (SIM_SEED=${seed} SIM_SCHEDULES=1 SIM_STEPS=${STEPS} runs it again):\\n${out.steps.map((step, i) => `    ${i + 1}. ${step}`).join("\\n")}`);
+		}
 	}
 	// Four events need several rare steps in a row: npm test's 400 schedules are not enough for them, the milestone's 4000 are.
 	if (SCHEDULES >= 2000) {
