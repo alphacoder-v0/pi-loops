@@ -151,7 +151,8 @@ export function decideTick(input: TickInput): TickDecision[] {
 		let slot: number | undefined;
 		try { slot = computeDue({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastDueAt: entry?.slot === undefined ? undefined : Date.parse(entry.slot), lastFiredAt: entry?.fired === undefined ? undefined : Date.parse(entry.fired) }, view.now); }
 		catch (error) { return { do: "disable", job: job.id, disabled: { code: "schedule", why: `disabled: ${error instanceof Error ? error.message : String(error)}`, at: stamp(view.now) } }; }
-		if (slot === undefined) return { do: "pass", job: job.id, why: "not-due" };
+		// An every schedule counts from `fired`, which a loop's collapse and a skip leave as they were: the same slot comes back, and the cursor already stands on it.
+		if (slot === undefined || (entry?.slot !== undefined && slot <= Date.parse(entry.slot))) return { do: "pass", job: job.id, why: "not-due" };
 		if (!data) return { do: "pass", job: job.id, why: "unread" };
 		const mineKind = mine.kind;
 		const owner = mineKind === "loop" ? mine : { kind: "plain" as const, session: job.sessionId!, epoch: mine.epoch };

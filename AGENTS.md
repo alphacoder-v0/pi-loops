@@ -132,7 +132,7 @@ examples/                   a dependency-free MCP push server, and an mcp.toml t
 test/                       node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
 test/downstream/            the contract in docs/downstream.md checked from the outside: sh + jq driving `pi-loops`, a loop run in the background against fake-model.mjs, no import of src/
 test/journey/               the journeys J1-J12 (`npm run journey -- J1 …`), `boot.mjs` and `terminal.mjs`, a sandboxed page with a stand-in model
-test/sim/                   the seeded simulation of the request engine that test/sim.test.ts runs: world.ts (the real engine and stores around a simulated pi, lease, clock and crashes, and what that leaves out), schedule.ts (the steps a seed draws), invariants.ts (what is checked after every step), prng.ts; claims.ts (a lane the background runs: rows a run claims, runs that end in every way, a process that dies at any write), which test/sim-claims.test.ts runs; held.ts (a held turn in a closed conversation: the real closing and settle table around a simulated runner, a window that takes the conversation, a process that dies at any write), which test/sim-held.test.ts runs
+test/sim/                   the seeded simulation of the request engine that test/sim.test.ts runs: world.ts (the real engine and stores around a simulated pi, lease, clock and crashes, and what that leaves out), schedule.ts (the steps a seed draws), invariants.ts (what is checked after every step), prng.ts; claims.ts (a lane the background runs: rows a run claims, runs that end in every way, a process that dies at any write), which test/sim-claims.test.ts runs; held.ts (a held turn in a closed conversation: the real closing and settle table around a simulated runner, a window that takes the conversation, a process that dies at any write), which test/sim-held.test.ts runs; clock.ts (interleaved ticker decisions and T2/T3 writes, crashes, row proofs and loop settlement; checks I1: one row per job and slot), which test/sim-clock.test.ts runs
 test/tmp.ts                 every test's temporary directory: removed when the test passes, kept and named when it fails (PI_LOOPS_KEEP_TMP=1 keeps all), strays it started ended
 scripts/                    typecheck.mjs, lint.mjs, check-docs.mjs — TypeScript comes through npx, nothing is a dependency
 ```
@@ -192,6 +192,10 @@ conversation, claimed through the real `RunList`, its prompt written or not, its
 way and closed by the real `closeRun` and `settle`, a window that takes the conversation at any
 step, and a process that dies at any write. It checks that a run has one record, that no prompt is
 answered twice, that no attempt or failure is counted twice, and that no row is stuck.
+
+A fourth simulation, `test/sim-clock.test.ts`, interleaves real clock writes from multiple tickers,
+crashes between T2 and T3, then drains rows through real proofs and loop settlement. It checks I1:
+one row per job and slot, including cursor commits, fires, collapses and spent runs.
 
 `check:docs` is there because nothing else in CI reads a README: 0.17.0 was tagged green with an
 install line that answered 404. It holds every install command in every document to what

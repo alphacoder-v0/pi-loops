@@ -161,3 +161,15 @@ test("[collapse-slot] A collapse whose target row left before T2 does not move t
 	assert.notEqual(outcome.t3, "moved", "the slot is not spent on a row that is gone");
 	assert.equal(clock.read().jobs["cron-job"], undefined, "the cursor did not move");
 });
+
+test("[T3-cursor] A slot that is not later than the cursor is not decided again: a loop's collapse leaves fired, and an every schedule then names the same slot.", () => {
+	const loop = job();
+	const tick = input([loop]);
+	const [first] = decideTick(tick);
+	assert.equal(first.do, "row");
+	if (first.do !== "row") return;
+	// The cursor stands on the slot and fired is unmoved, as after a loop's collapse.
+	const clock = file({ [loop.id]: { slot: first.slot, runs: 0 } });
+	const [again] = decideTick({ ...tick, clock });
+	assert.deepEqual(again, { do: "pass", job: loop.id, why: "not-due" });
+});
