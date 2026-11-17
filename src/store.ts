@@ -106,6 +106,23 @@ export interface LoopJob {
 	tuneKept?: string;
 }
 
+/** Why a job does not run, and who said so. `at` is a stamp. */
+export interface Disabled {
+	code: "person" | "session-gone" | "cwd-missing" | "schedule" | "interrupted";
+	/** One line for a person. It ends with what to do when there is something to do. */
+	why: string;
+	at: string;
+}
+
+/** The eleven counters stored on the version 2 job. */
+export type V2Counters = "lastDueAt" | "lastFiredAt" | "lastCompletedAt" | "lastError" | "running" | "runCount" | "skippedOverlap" | "consecutiveFailures" | "owedSlot" | "interruptions" | "cwdMissingSince";
+
+/** A version 3 job definition, without fields derived from clock, rows or run records. */
+export interface LoopJobV3 extends Omit<LoopJob, V2Counters> {
+	disabled?: Disabled;
+	proposed?: { at: string; session: string };
+}
+
 /** Who asked for a run by hand: the conversation the request came from. */
 export interface RunRequester {
 	sessionId: string;

@@ -206,7 +206,7 @@ export class WindowExecutor implements Executor {
 	private readonly alive: (row: Row) => boolean;
 	/** The bytes of a person row's images (`RequestStore.images`): read as the row is handed over, not kept with the row. */
 	private readonly images: (row: Row) => ImageContent[];
-	/** The run log, read only when a row with a claim is asked about. */
+	/** The run log, read only when a row a run can claim is asked about (src/engine.ts `proofOf`). */
 	private readonly runs: () => readonly RunRecord[];
 	private readonly resizer: ImageResizer;
 

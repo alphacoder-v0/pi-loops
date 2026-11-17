@@ -1,9 +1,12 @@
 /**
  * How the turn of a plain job ends: what becomes of its row and of its job. One table, read by
  * whoever closes a run: the process that ran it, and a later drain that finds its process gone.
- * Pure, and a leaf: it imports types only.
+ * Pure, and a leaf: it imports types, and one constant of src/backoff.ts.
  */
-import type { LoopJob, RunRecord } from "./store.ts";
+import { DEAD_AFTER_ATTEMPTS } from "./backoff.ts";
+import type { ClaimedRow } from "./requests.ts";
+import type { Disabled, LoopJob, LoopJobV3, RunRecord } from "./store.ts";
+import type { JobHistory } from "./job-status.ts";
 
 /** A job whose runs were interrupted this many times in a row is turned off: the turn may be what stops the process. */
 export const INTERRUPTIONS_BEFORE_PARKING = 3;
@@ -178,4 +181,61 @@ export function settle(job: Pick<LoopJob, "id" | "schedule" | "enabled" | "lastC
 export function oneShotDone(job: Pick<LoopJob, "stateful" | "schedule" | "runCount" | "running" | "consecutiveFailures">, queued: boolean): boolean {
 	return !job.stateful && job.schedule.kind === "once" && !job.running && job.runCount >= 1
 		&& ((job.consecutiveFailures ?? 0) >= 2 || !queued);
+}
+
+/** A loop's end and its record-derived counts. */
+export type LoopEnd = RunEnd & { readonly runs: number; readonly streak: number };
+
+export function loopEnd(record: RunRecord, history: JobHistory): LoopEnd {
+	return { ...runEnd(record), runs: history.ordinal, streak: history.streak } as LoopEnd;
+}
+
+export interface LoopSettlement {
+	readonly row:
+		| { readonly do: "leave"; readonly exit: "delivered"; readonly successor?: true }
+		| { readonly do: "leave"; readonly exit: "stopped" }
+		| { readonly do: "owed" }
+		| { readonly do: "retry"; readonly attempts: number; readonly why: string }
+		| { readonly do: "dead"; readonly attempts: number; readonly why: string };
+	readonly job?: { readonly disabled: Disabled };
+	readonly runs?: number;
+}
+
+type LoopCell =
+	| { readonly row: "spent"; readonly successor: "never" | "first-failure" }
+	| { readonly row: "stopped"; readonly job: "keep" | "disable" }
+	| { readonly row: "owed" }
+	| { readonly row: "attempt" };
+
+const LOOP_CELLS: Record<RunEnd["how"], Record<"repeating" | "one-shot", LoopCell>> = {
+	succeeded: { repeating: { row: "spent", successor: "never" }, "one-shot": { row: "spent", successor: "never" } },
+	failed: { repeating: { row: "spent", successor: "never" }, "one-shot": { row: "spent", successor: "first-failure" } },
+	stopped: { repeating: { row: "stopped", job: "keep" }, "one-shot": { row: "stopped", job: "disable" } },
+	"handed-back": { repeating: { row: "owed" }, "one-shot": { row: "owed" } },
+	interrupted: { repeating: { row: "attempt" }, "one-shot": { row: "attempt" } },
+};
+
+export function settleLoop(row: ClaimedRow, job: Pick<LoopJobV3, "id" | "name" | "schedule"> | undefined, end: LoopEnd, alone: boolean): LoopSettlement {
+	const kind = job?.schedule.kind === "once" ? "one-shot" : "repeating";
+	const cell = LOOP_CELLS[end.how][kind];
+	if (cell.row === "spent") {
+		const successor = !!job && cell.successor === "first-failure" && end.streak === 1;
+		return { row: { do: "leave", exit: "delivered", ...(successor ? { successor: true as const } : {}) }, runs: end.runs };
+	}
+	if (cell.row === "stopped") {
+		if (cell.job === "disable" && job) return { row: { do: "leave", exit: "stopped" }, job: { disabled: { code: "person", why: `stopped by a person; /cron run ${job.name ?? job.id} runs it now`, at: end.at } } };
+		return { row: { do: "leave", exit: "stopped" } };
+	}
+	if (cell.row === "owed" || !alone) return { row: { do: "owed" } };
+	const attempts = row.attempts + 1;
+	if (attempts < DEAD_AFTER_ATTEMPTS) return { row: { do: "retry", attempts, why: INTERRUPTED } };
+	if (!job) return { row: { do: "dead", attempts, why: INTERRUPTED } };
+	return {
+		row: { do: "dead", attempts, why: INTERRUPTED },
+		job: { disabled: { code: "interrupted", at: end.at, why: `parked: its last ${attempts} runs were interrupted before they finished (the process running them stopped each time, with no other loop running; see host.log) — /cron enable ${job.id} to try again` } },
+	};
+}
+
+export function oneShotDoneV3(job: Pick<LoopJobV3, "schedule">, status: { running?: unknown; queued?: unknown; runs: number; error?: { streak: number } }): boolean {
+	return job.schedule.kind === "once" && !status.running && status.runs >= 1 && ((status.error?.streak ?? 0) >= 2 || !status.queued);
 }
