@@ -589,13 +589,15 @@ export interface Proof {
 	 * is older than the claim of its second, and does not close it. Whether the run is still going is
 	 * the executor's question (`ExecutorView.claimLive`).
 	 *
-	 * A row with no claim: the newest record whose `runId` is `row.id` and whose end spent the slot
-	 * (it succeeded, it failed, or a person stopped it), for a row a run can claim (`claimable`);
-	 * undefined for any other row, and the run log is then not read. A row's id is derived from what
-	 * it asks for (a slot, a successor), so a record of that id is a run of the same request,
-	 * whenever the row in hand was appended: the clock appends a slot again after a crash between
-	 * its row and its cursor (design T2). A handed-back or interrupted run left its slot owed, so its
-	 * record proves nothing. This is the rule marks follow (src/mark.ts `marksRow`).
+	 * A row with no claim: the newest record whose `runId` is `row.id`, written for this lane, and
+	 * whose end spent the slot (it succeeded, it failed, or a person stopped it), for a row a run can
+	 * claim (`claimable`); undefined for any other row, and the run log is then not read. A row's id
+	 * is derived from what it asks for (a slot, a successor), so such a record is a run of the same
+	 * request in the same lane, whenever the row in hand was appended: the clock appends a slot again
+	 * after a crash between its row and its cursor (design T2). For a conversation the record must
+	 * name it (`sessionId`): an archive imported as another conversation keeps its job's id, and a run
+	 * in the first conversation answered nothing in the second. A loop's lane is named by its job, so
+	 * its records are its lane's. A handed-back or interrupted record proves nothing.
 	 */
 	ran(row: Row): RunEnd | undefined;
 }
@@ -707,8 +709,9 @@ export function claimAlive(row: ClaimedRow, probe: ProcessProbe = systemProbe): 
  * The one builder of a `Proof`, for the rows of `lane`: the marks of that lane among the entries of
  * the session the rows write into (a fork copies entries with their marks, so a mark names its
  * lane), the two fenced rules, and `ran` over the run records. Who builds a proof says where its
- * records come from; a window writes no run record for a turn it runs, and passes `() => []`.
- * `runs` is read only when a row with a claim is asked about.
+ * records come from: pi-loops in the background and a window both pass the run log; a window writes
+ * no record for a turn it runs. `runs` is read at most once, and only when a row a run can claim
+ * (`claimable`) is asked about.
  */
 export function proofOf(lane: LaneId, entries: () => readonly unknown[], runs: () => readonly RunRecord[]): Proof {
 	// A drain asks about several rows: the run log is parsed once for this proof, and only when a row needs it.
@@ -726,7 +729,8 @@ export function proofOf(lane: LaneId, entries: () => readonly unknown[], runs: (
 			if (!row.run) {
 				if (!claimable(row)) return undefined;
 				let spent: RunEnd | undefined;
-				for (const r of read()) if (r.runId === row.id) { const end = runEnd(r); if (spendsSlot(end)) spent = end; } // the newest one that spent it
+				const conversation = parseLane(lane)?.kind === "conversation";
+				for (const r of read()) if (r.runId === row.id && (!conversation || r.sessionId === lane)) { const end = runEnd(r); if (spendsSlot(end)) spent = end; } // the newest one that spent it
 				return spent;
 			}
 			const id = row.run.id;

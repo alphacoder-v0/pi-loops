@@ -6,9 +6,10 @@ export function backoffFor(n: number): number {
 	return BACKOFF_MS[Math.min(Math.max(n, 1), BACKOFF_MS.length) - 1];
 }
 
-/** Failures in a row at which a loop or a rule check counts as failing, and starts to wait. */
+/** Failures of one row before it is a dead letter. */
 export const DEAD_AFTER_ATTEMPTS = 3;
 
+/** Failures in a row at which a loop or a rule check counts as failing, and starts to wait. */
 export const FAILING_AFTER = 3;
 
 /** How long a loop or a check with `streak` failures in a row waits after its last failure: nothing below FAILING_AFTER, then the table from its first step. */

@@ -1,7 +1,7 @@
 /**
  * How the turn of a plain job ends: what becomes of its row and of its job. One table, read by
  * whoever closes a run: the process that ran it, and a later drain that finds its process gone.
- * Pure, and a leaf: it imports types only.
+ * Pure, and a leaf: it imports types, and one constant of src/backoff.ts.
  */
 import { DEAD_AFTER_ATTEMPTS } from "./backoff.ts";
 import type { ClaimedRow } from "./requests.ts";

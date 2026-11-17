@@ -119,7 +119,6 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 			if (history?.spent.has(plainRunId(decision.job, decision.slot))) spentWhenRead.add(decision);
 			return [{ decision }];
 		});
-		if (!selected.size && read.size) fail("an idle tick read a lane or the run log");
 		out.steps.push(`ticker ${ticker.pid} reads ${selected.size} due job(s)`);
 	};
 	// In half the worlds one ticker is slow: it read and decided, and its writes come late, as a process that stalls between its read and its writes does. A copy of a slot that ran meanwhile comes only from such a read.

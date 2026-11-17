@@ -2609,7 +2609,7 @@ test("[T2-ran] a slot appended again after its row ran and left is proved by the
 	const job = { id: "cron-d3", sessionId: "s", prompt: "go", cwd: "/p" } as Parameters<typeof plainJobRow>[0];
 	const id = plainRunId(job.id, "2026-06-01T12:00:00.000Z");
 	const again = plainJobRow(job, id, `cron:${job.id}`, "", page, Date.parse("2026-06-01T12:10:00.000Z"));
-	const record = (over: Partial<RunRecord>): RunRecord => ({ runId: id, jobId: job.id, stateful: false, cwd: "/p", pid: 1, startedAt: "2026-06-01T12:01:00.000Z", finishedAt: "2026-06-01T12:02:00.000Z", ok: true, findings: 0, droppedFindings: 0, stateUpdated: false, ...over });
+	const record = (over: Partial<RunRecord>): RunRecord => ({ runId: id, jobId: job.id, stateful: false, cwd: "/p", pid: 1, startedAt: "2026-06-01T12:01:00.000Z", finishedAt: "2026-06-01T12:02:00.000Z", ok: true, findings: 0, droppedFindings: 0, stateUpdated: false, sessionId: "s", ...over });
 	const proved = (records: RunRecord[], row: Row = again) => landed(row, proofOf("s", () => [], () => records));
 	assert.equal(proved([record({})]), true, "succeeded: the slot ran, the copy appended after it is not run again");
 	assert.equal(proved([record({ ok: false, error: "boom" })]), true, "failed: the slot ran");
@@ -2621,4 +2621,7 @@ test("[T2-ran] a slot appended again after its row ran and left is proved by the
 	const attended = { ...again, mode: "attended" as const };
 	assert.equal(landed(attended, proofOf("s", () => [], () => (read++, [record({})]))), false, "a row no run can claim is not proved by a record");
 	assert.equal(read, 0, "and the run log is not read for it");
+	// An archive imported as another conversation keeps the job's id, so the same slot id is queued there: the run in the first conversation does not prove it.
+	assert.equal(proved([record({ sessionId: "s" })]), true, "a held turn of this conversation proves it");
+	assert.equal(proved([record({ sessionId: "another-conversation" })]), false, "a run in another conversation does not");
 });
