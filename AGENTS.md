@@ -129,7 +129,7 @@ recipes/<name>/             a recipe: recipe.toml, the playbooks its jobs read, 
 examples/                   a dependency-free MCP push server, and an mcp.toml to point at it
 test/                       node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
 test/downstream/            the contract in docs/downstream.md checked from the outside: sh + jq driving `pi-loops`, a loop run in the background against fake-model.mjs, no import of src/
-test/journey/               the journeys J1-J12 (`npm run journey -- J1 …`) and `boot.mjs`, a sandboxed page with a stand-in model
+test/journey/               the journeys J1-J12 (`npm run journey -- J1 …`), `boot.mjs` and `terminal.mjs`, a sandboxed page with a stand-in model
 test/sim/                   the seeded simulation of the request engine that test/sim.test.ts runs: world.ts (the real engine and stores around a simulated pi, lease, clock and crashes, and what that leaves out), schedule.ts (the steps a seed draws), invariants.ts (what is checked after every step), prng.ts; claims.ts (a lane the background runs: rows a run claims, runs that end in every way, a process that dies at any write), which test/sim-claims.test.ts runs; held.ts (a held turn in a closed conversation: the real closing and settle table around a simulated runner, a window that takes the conversation, a process that dies at any write), which test/sim-held.test.ts runs
 test/tmp.ts                 every test's temporary directory: removed when the test passes, kept and named when it fails (PI_LOOPS_KEEP_TMP=1 keeps all), strays it started ended
 scripts/                    typecheck.mjs, lint.mjs, check-docs.mjs — TypeScript comes through npx, nothing is a dependency
@@ -244,10 +244,16 @@ built from a stale copy erases whatever a tick wrote in between.
 
 Real-terminal verification (costs a model call per loop run, ~$0.04 with gpt-5.5):
 
-```bash
-D=$(mktemp -d); tmux new-session -d -s piloops -c "$PWD" "PI_LOOPS_DIR=$D pi --no-session -e $PWD"
-tmux send-keys -t piloops '/cron add --stateful every 1m List src/*.ts; report each file as a finding' Enter
-# wait ~90s, then: tmux send-keys -t piloops '/inbox' Enter; tmux capture-pane -t piloops -p
+Run pi with the extension in any terminal by hand (`PI_LOOPS_DIR=$(mktemp -d) pi --no-session -e $PWD`), type `/cron add --stateful every 1m List src/*.ts; report each file as a finding`, wait about 90 seconds, then type `/inbox`.
+
+For a script, use `openTerminal` from `test/journey/terminal.mjs`:
+
+```js
+import { openTerminal } from "./test/journey/terminal.mjs";
+const term = openTerminal({ dir, command: ["pi", "--no-session", "-e", process.cwd()], cwd: process.cwd(), env: process.env });
+term.type("/cron add --stateful every 1m List src/*.ts; report each file as a finding");
+term.press("Enter");
+term.stop();
 ```
 
 `pi -p` in text mode waits on stdin; redirect `</dev/null` when scripting it.

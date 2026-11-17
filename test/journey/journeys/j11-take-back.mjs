@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { openTerminal } from "../terminal.mjs";
 
-export const id = "J11", title = "A terminal opens a conversation while pi-loops answers a scheduled job in it: the turn stops, and the prompt is answered once more, in the terminal", expect = "head", active = true, milestone = "M3", page = "new", tui = true, needs = ["tmux", "agent-browser"];
+export const id = "J11", title = "A terminal opens a conversation while pi-loops answers a scheduled job in it: the turn stops, and the prompt is answered once more, in the terminal", expect = "head", active = true, milestone = "M3", page = "new", tui = true, needs = ["agent-browser"];
 
 const JOB = "cron-11111111111111111111111111111111";
 const PROMPT = "wait for the build, then say so";
@@ -21,7 +22,7 @@ export async function run(ctx) {
 	const leases = () => fs.readdirSync(path.join(loops, "leases")).filter((f) => f.endsWith(".json")).flatMap((f) => { try { return [JSON.parse(fs.readFileSync(path.join(loops, "leases", f), "utf8"))]; } catch { return []; /* being rewritten */ } });
 	const session = leases().find((l) => l.holder?.kind === "terminal" && l.holder.mode === "tui" && l.sessionFile)?.sessionId;
 	if (!session) throw new Error(`no conversation is held by the terminal: ${JSON.stringify(leases().map((l) => l.holder))}`);
-	const tmux = (...args) => spawnSync("tmux", ["-L", ctx.boot.tmux.socket, ...args], { env: ctx.boot.env, encoding: "utf8", timeout: 10000 });
+	const screen = () => ctx.term.screen({ history: 200, joined: true });
 	const lease = () => { try { return JSON.parse(fs.readFileSync(path.join(loops, "leases", `${session}.json`), "utf8")); } catch { return undefined; /* being rewritten */ } };
 	const rows = () => jsonl(path.join(loops, "requests", `${session}.jsonl`)).filter((r) => r.source === `cron:${JOB}`);
 	const runs = () => jsonl(path.join(loops, "runs.jsonl")).filter((r) => r.jobId === JOB);
@@ -33,7 +34,7 @@ export async function run(ctx) {
 	const prompts = () => messages().filter((e) => e.message?.role === "user").map((e) => (typeof e.message.content === "string" ? e.message.content : (e.message.content ?? []).map((c) => c.text ?? "").join(""))).filter((t) => t.includes(PROMPT)).map((t) => /^\[Trigger ([^\]]+)\]/.exec(t)?.[1] ?? "no id");
 
 	// 1. The terminal closes: nobody holds the conversation, and pi-loops in the background knows its file.
-	tmux("kill-session", "-t", ctx.boot.tmux.session);
+	ctx.term.stop();
 	await ctx.waitFor("the terminal's process to end", () => { const holder = lease()?.holder; return { ok: !holder || spawnSync("kill", ["-0", String(holder.pid)], { stdio: "ignore" }).status !== 0, last: holder }; }, 30000);
 
 	// 2. A plain job of that conversation whose slot is due. Written as a person's `/cron add` leaves it.
@@ -51,9 +52,14 @@ export async function run(ctx) {
 	if (!status.stdout.includes("running build-watch")) throw new Error(`pi-loops status does not list the turn:\n${status.stdout}${status.stderr}`);
 
 	// 4. A person opens the conversation in a terminal while the turn runs.
-	const command = `${path.join(ctx.boot.root, "bin", "pi-loops")} --tui --no-extensions -e ${path.join(ctx.boot.root, "product")} --model fake/fake-model --session ${sessionFile}`;
-	tmux("-f", "/dev/null", "new-session", "-d", "-s", "again", "-x", "200", "-y", "50", "-c", ctx.boot.project, command);
-	const screen = () => tmux("capture-pane", "-p", "-S", "-200", "-t", "again").stdout ?? "";
+	ctx.term = openTerminal({
+		dir: path.join(ctx.dir, "terminal-again"),
+		command: [path.join(ctx.boot.root, "bin", "pi-loops"), "--tui", "--no-extensions", "-e", path.join(ctx.boot.root, "product"), "--model", "fake/fake-model", "--session", sessionFile],
+		cwd: ctx.boot.project,
+		env: ctx.boot.env,
+		rows: 50,
+		cols: 200,
+	});
 	const took = await ctx.waitFor("the terminal to hold the conversation", () => { const holder = lease()?.holder; return { ok: holder?.kind === "terminal", last: holder, value: Date.parse(holder?.acquiredAt ?? "") }; }, 60000);
 
 	// 5. The turn stops: its record says it was handed back, by no person.
@@ -96,4 +102,5 @@ export async function run(ctx) {
 	const final = path.join(ctx.dir, "terminal-after.txt");
 	fs.writeFileSync(final, screen());
 	ctx.addEvidence(final);
+	ctx.term.stop();
 }

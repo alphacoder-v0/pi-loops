@@ -4,7 +4,7 @@ import * as path from "node:path";
 
 const HELD = "Your terminal has this conversation. What you send here is answered there.";
 
-export const id = "J2", title = "A terminal holds a conversation; the page says so, and a page message is answered in the terminal (O2)", expect = "head", active = true, milestone = "M2", page = "attach", tui = true, needs = ["tmux", "agent-browser"];
+export const id = "J2", title = "A terminal holds a conversation; the page says so, and a page message is answered in the terminal (O2)", expect = "head", active = true, milestone = "M2", page = "attach", tui = true, needs = ["agent-browser"];
 export async function run(ctx) {
 	// A second conversation in the project, written by pi itself with no pi-loops in it: no lease
 	// names it, so the list finds it in pi's own files and the page opens it from there.

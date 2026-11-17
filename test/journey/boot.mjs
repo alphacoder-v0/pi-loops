@@ -5,6 +5,7 @@ import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { openTerminal } from "./terminal.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 // The sandbox PATH has no npm and its pi is a link, so pi's package is found here, outside it, the
@@ -39,8 +40,6 @@ const executable = (name) => {
 const request = (url) => new Promise((resolve) => {
 	http.get(url, (res) => { res.resume(); resolve(res.statusCode); }).on("error", () => resolve(0)); /* a page that is still binding is not a boot failure */
 });
-const sessionAlive = (tmuxBin, tmux, env) => spawnSync(tmuxBin, ["-L", tmux.socket, "has-session", "-t", tmux.session], { env, stdio: "ignore", timeout: 10000 }).status === 0;
-
 function markerPids(root, runId, browserSession) {
 	const markers = [`PI_JOURNEY_RUN=${runId}`, ...(browserSession ? [`AGENT_BROWSER_SESSION=${browserSession}`] : [])];
 	const found = new Set();
@@ -103,26 +102,15 @@ function pidAlive(pid) {
 	try { process.kill(pid, 0); return true; } catch (error) { return error?.code === "EPERM"; }
 }
 
-/** Where tmux keeps `-L` sockets for this user. */
-function tmuxSocketDir() {
-	return path.join(process.env.TMUX_TMPDIR || "/tmp", `tmux-${process.getuid?.() ?? 0}`);
-}
-
-/**
- * What journey runs whose harness process is gone left behind, named `journey-<pid>-<run>`: tmux
- * sockets, and agent-browser's per-session files. A run cut short leaves both.
- */
+/** Remove agent-browser session files left by a journey whose harness process is gone. */
 function removeStaleSessionFiles() {
-	const tmuxBin = commandPath("tmux");
-	for (const [dir, isTmux] of [[tmuxSocketDir(), true], [path.join(os.homedir(), ".agent-browser"), false]]) {
-		let names = [];
-		try { names = fs.readdirSync(dir); } catch { continue; /* the tool was never run here */ }
-		for (const name of names) {
-			const pid = Number(/^journey-(\d+)-/.exec(name)?.[1]);
-			if (!pid || pidAlive(pid)) continue; // a harness that is still running owns its files
-			if (isTmux && tmuxBin) spawnSync(tmuxBin, ["-L", name, "kill-server"], { stdio: "ignore", timeout: 10000 });
-			fs.rmSync(path.join(dir, name), { force: true });
-		}
+	const dir = path.join(os.homedir(), ".agent-browser");
+	let names = [];
+	try { names = fs.readdirSync(dir); } catch { return; /* the tool was never run here */ }
+	for (const name of names) {
+		const pid = Number(/^journey-(\d+)-/.exec(name)?.[1]);
+		if (!pid || pidAlive(pid)) continue;
+		fs.rmSync(path.join(dir, name), { force: true });
 	}
 }
 
@@ -159,7 +147,6 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 	const node = executable("node");
 	const pi = executable("pi");
 	const git = executable("git");
-	const tmuxBin = tui ? executable("tmux") : commandPath("tmux");
 	fs.mkdirSync(out, { recursive: true });
 	const root = fs.realpathSync(out);
 	const entries = fs.readdirSync(root);
@@ -189,7 +176,7 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 		const extracted = spawnSync("tar", ["-x", "-C", dirs.product], { input: archive.stdout, maxBuffer: 128 * 1024 * 1024 });
 		if (extracted.status !== 0) throw new Error("could not unpack product archive");
 	} else copyHeadProduct(git, dirs.product, repo);
-	for (const tool of [node, pi, git, ...(tmuxBin ? [tmuxBin] : []), ...["rg", "fd"].map(commandPath).filter(Boolean)]) {
+	for (const tool of [node, pi, git, ...["rg", "fd"].map(commandPath).filter(Boolean)]) {
 		const target = path.join(dirs.bin, path.basename(tool));
 		if (!fs.existsSync(target)) fs.symlinkSync(tool, target);
 	}
@@ -210,7 +197,8 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 	let modelError;
 	model.on("error", (error) => { modelError = error; });
 	const bootMs = Date.now();
-	let tmux;
+	let term;
+	let instance;
 	let pageProcess;
 	let stopPromise;
 	const stop = () => stopPromise ??= (async () => {
@@ -218,24 +206,16 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 		if (pageProcess && pageProcess.exitCode === null) {
 			try { process.kill(-pageProcess.pid, "SIGTERM"); } catch { /* launched detached, but the group may already be gone */ }
 		}
-		if (tmux) spawnSync(tmuxBin, ["-L", tmux.socket, "kill-server"], { env, stdio: "ignore", timeout: 10000 });
+		if (instance?.term) instance.term.stop();
+		else term?.stop();
 		if (pageProcess) await waitChildExit(pageProcess, 5000);
-		await sleep(300);
-		let tmuxFailed = false;
-		if (tmux) {
-			try { await until(() => !sessionAlive(tmuxBin, tmux, env), 5000, "tmux session did not stop"); }
-			catch { tmuxFailed = true; /* sweep below retries any marker-owned tmux process */ }
-		}
 		spawnSync(shim, ["stop"], { cwd: dirs.project, env, stdio: "ignore", timeout: 10000 });
 		if (model.exitCode === null) {
 			try { model.kill("SIGTERM"); } catch { /* stand-in exited before its stop signal */ }
 		}
 		await waitChildExit(model, 5000);
-		const result = await sweep(root, runId, browserSession);
-		const report = tmuxFailed ? { ...result, survivors: [...result.survivors, "tmux session"] } : result;
+		const report = await sweep(root, runId, browserSession);
 		printSurvivors(report.survivors, root);
-		// Its server is gone, but `kill-server` leaves the socket file: 180 of them had piled up.
-		if (tmux && !report.survivors.length) fs.rmSync(path.join(tmuxSocketDir(), tmux.socket), { force: true });
 		fs.writeFileSync(recordFile, JSON.stringify({ ...record, stopped: true }));
 		return report;
 	})();
@@ -244,18 +224,15 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 		fs.writeFileSync(path.join(dirs.agent, "models.json"), JSON.stringify({ providers: { fake: { baseUrl: `http://127.0.0.1:${fs.readFileSync(portFile, "utf8").trim()}/v1`, api: "openai-completions", apiKey: "fake", models: [{ id: "fake-model" }] } } }));
 		throwIfAborted(signal);
 		if (tui) {
-			const socket = `journey-${process.pid}-${runId}`;
-			const session = "main";
-			const command = `${quote(shim)} --tui --no-extensions -e ${quote(dirs.product)} --model fake/fake-model`;
-			spawnSync(tmuxBin, ["-L", socket, "-f", "/dev/null", "new-session", "-d", "-s", session, "-c", dirs.project, command], { cwd: dirs.project, env, stdio: "ignore", timeout: 10000 });
-			tmux = { socket, session };
-			await until(() => sessionAlive(tmuxBin, tmux, env), 15000, "terminal did not start", signal);
+			const command = [shim, "--tui", "--no-extensions", "-e", dirs.product, "--model", "fake/fake-model"];
+			term = openTerminal({ dir: path.join(root, "terminal"), command, cwd: dirs.project, env });
+			await until(() => term.alive(), 15000, "terminal did not start", signal);
 			await until(() => fs.existsSync(path.join(dirs.loops, "logs")) && fs.readdirSync(path.join(dirs.loops, "logs")).some((name) => fs.readFileSync(path.join(dirs.loops, "logs", name), "utf8").includes("session start:")), 15000, "terminal extension did not start", signal);
 			throwIfAborted(signal);
-			spawnSync(tmuxBin, ["-L", socket, "send-keys", "-t", session, "-l", "hello from terminal"], { env, stdio: "ignore", timeout: 10000 });
+			term.type("hello from terminal");
 			await sleep(500);
 			throwIfAborted(signal);
-			spawnSync(tmuxBin, ["-L", socket, "send-keys", "-t", session, "Enter"], { env, stdio: "ignore", timeout: 10000 });
+			term.press("Enter");
 			await until(() => fs.existsSync(path.join(dirs.loops, "leases")) && fs.readdirSync(path.join(dirs.loops, "leases")).some((name) => {
 				try { const lease = JSON.parse(fs.readFileSync(path.join(dirs.loops, "leases", name), "utf8")); return lease.holder?.kind === "terminal" && lease.sessionFile && fs.existsSync(lease.sessionFile); } catch { return false; /* lease may be rewritten while pi starts */ }
 			}), 45000, "terminal exchange did not create a session", signal);
@@ -272,7 +249,8 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 		const token = fs.readFileSync(path.join(dirs.loops, "web-token"), "utf8").trim();
 		await until(async () => await request(`${url}?token=${token}`) === 200, 45000, "page did not answer authenticated GET", signal);
 		const launcher = pageProcess;
-		return { url, pageUrl, token, tmux, loopsDir: dirs.loops, project: dirs.project, stop, closeSession: () => closeBrowser(browserSession), bootMs: Date.now() - bootMs, env, root, sessionId: sessionIdFor(dirs), product: dirs.product, browserSession, pageExitCode: () => launcher.exitCode };
+		instance = { url, pageUrl, token, term, loopsDir: dirs.loops, project: dirs.project, stop, closeSession: () => closeBrowser(browserSession), bootMs: Date.now() - bootMs, env, root, sessionId: sessionIdFor(dirs), product: dirs.product, browserSession, pageExitCode: () => launcher.exitCode };
+		return instance;
 	} catch (error) {
 		await stop();
 		throw error;
@@ -390,7 +368,6 @@ async function cli() {
 	}
 	console.log(`URL ${instance.url}`);
 	console.log(`TOKEN ${instance.token}`);
-	if (instance.tmux) console.log(`TMUX ${instance.tmux.socket} ${instance.tmux.session}`);
 	console.log(`LOOPS ${instance.loopsDir}`);
 	console.log(`PROJECT ${instance.project}`);
 	console.log(`BOOTMS ${instance.bootMs}`);
