@@ -67,5 +67,6 @@ test("a loop's run whose record cannot be appended once is spent, not run again:
 		assert.equal(prompts.length, 1, "the slot ran once");
 		assert.deepEqual(h.stores.requests.list(loopLane(ID)!), [], "its row is spent, with no claim left for a restart to close as interrupted");
 		assert.ok(logs.some((line) => line.includes("run log append failed")), logs.join("\n"));
+		assert.equal(h.stores.book().clock.jobs[ID]?.runs, 1, "the run counts, as main counts it in its own field");
 	} finally { await h.stop(); }
 });

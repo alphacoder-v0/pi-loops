@@ -237,19 +237,22 @@ export async function closeLoopRun(row: ClaimedRow, deps: Pick<LoopRunDeps, "sto
 	// read or written now is logged, and the row is still written last, so the slot is spent once and
 	// the lane does not stay "running" until a restart.
 	let record: RunRecordM4b;
+	let recorded = true;
 	try {
 		record = ensureRecord(row, deps, now, ended);
 	} catch (error) {
 		if (!ended) throw error; // a closing for a process that is gone writes nothing it cannot record
 		fail("run log append", error);
 		record = ended;
+		recorded = false;
 	}
 	const jobId = record.jobId;
 	let job: LoopJobV3 | undefined;
 	try { job = deps.stores.book().jobs.find((candidate) => candidate.id === jobId); }
 	catch (error) { fail("jobs read", error); }
 	let history: JobHistory = { ordinal: 0, streak: 0, spent: new Set<string>() };
-	try { history = deps.stores.history().get(jobId) ?? history; }
+	// A run whose record could not be written still counts, as main counts it in its own field.
+	try { history = (recorded ? deps.stores.history() : runHistory([...deps.stores.jobs.allRuns(), record])).get(jobId) ?? history; }
 	catch (error) { fail("run history read", error); }
 	let outcome: ClosedM4b["outcome"] = "waiting";
 	let closedJob = job;
