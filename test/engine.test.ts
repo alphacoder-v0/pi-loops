@@ -76,7 +76,7 @@ test("a quiet mark holds while the files and the rows are as they were, and unti
 import { WindowExecutor, producerAlive, showsTriggeredTurnLine } from "../src/window-executor.ts";
 import { LeaseStore, procStart } from "../src/lease.ts";
 import { stamp } from "../src/schedule.ts";
-import { TURN_TYPE, markFor, withMark } from "../src/mark.ts";
+import { TURN_TYPE, markDetails, markFor, withMark } from "../src/mark.ts";
 
 const row = (id: string, over: Partial<UnclaimedRow> = {}): UnclaimedRow => ({ v: 3, id, lane: "s", kind: "input", source: "rule:local:dynamic", mode: "none", wake: "append", payload: { text: `[Trigger ${id}] hello`, cwd: "/" }, created_at: "2026-01-01T00:00:00Z", created_by: { pid: 1, instance: "w", version: "0" }, attempts: 0, ...over });
 
@@ -100,7 +100,7 @@ function fakeExecutor(opts: { holds?: () => boolean; idle?: boolean; deliver?: (
 	const inFlight = new Set<string>();
 	const executor: Executor = {
 		holds: opts.holds ?? (() => true),
-		proof: () => ({ has: (id) => written.has(id), older: () => false, heldRunWrote: () => false, ran: () => undefined }),
+		proof: () => ({ has: (row) => written.has(row.id), older: () => false, heldRunWrote: () => false, ran: () => undefined }),
 		view: () => ({ kind: "window", ceiling: () => true, blocked: () => undefined, claimLive: () => false, idle: opts.idle ?? true, inFlight, connected: () => true, producerAlive: () => true, mine: () => true }),
 		append: (r) => {
 			(opts.deliver ?? ((d, w) => w.add(d.id)))(r, written);
@@ -223,10 +223,11 @@ test("a follow-up pi dropped (Esc) is offered again once pi has settled, not hel
 	assert.deepEqual(executor.settled(true), ["1"]);
 	await drain("s", store, executor, T0, sinks);
 	assert.deepEqual(sent[1], { content: "[Trigger 1] hello", options: { triggerTurn: false } }, "offered again, inserted without a turn now that pi is idle");
-	entries.push({ type: "custom_message", content: "[Trigger 1] hello", details: { piLoopsRow: { lane: "s", id: "1" } } });
+	const one = store.list("s")[0];
+	entries.push({ type: "custom_message", content: "[Trigger 1] hello", details: markDetails(markFor(one)) });
 	await drain("s", store, executor, T0, sinks);
 	assert.deepEqual(store.list("s"), [], "gone once pi wrote it");
-	assert.equal(executor.delivered("1"), true, "the marked entry proves the row");
+	assert.equal(executor.delivered(one), true, "the marked entry proves the row");
 	ctx.mode = "print";
 	assert.equal(executor.holds("s"), false, "a one-shot run is not where a result should land");
 });
@@ -534,7 +535,7 @@ function fakeWindowPi(idle: boolean, opts: { holds?: boolean; self?: Producer; a
 /** A resizer that finds every image within pi's limits. */
 const SAME_SIZE = { resizeImage: async (bytes: Uint8Array, mimeType: string) => ({ data: Buffer.from(bytes).toString("base64"), mimeType, originalWidth: 1, originalHeight: 1, width: 1, height: 1, wasResized: false }), formatDimensionNote: () => undefined };
 /** A turn row's custom message, as the window gives it to `pi.sendMessage`. */
-type CustomTurn = { customType: string; content: unknown; display: boolean; details: { piLoopsRow: { lane: string; id: string }; cap: { mode: string } } };
+type CustomTurn = { customType: string; content: unknown; display: boolean; details: { piLoopsRow: { lane: string; id: string; at: string }; cap: { mode: string } } };
 /** What every custom turn is sent with. */
 const TURN_OPTIONS = { triggerTurn: true, deliverAs: "followUp" };
 /** Pi starts, ends and persists a custom turn the window sent. */
@@ -560,7 +561,7 @@ test("nothing is handed to pi while a turn runs", async () => {
 	w.ctx.idle = true;
 	await drain("s", store, w.executor, T0, sinks);
 	assert.deepEqual(w.sent, [{ text: "[Trigger t1] hello", options: TURN_OPTIONS }], "handed over once pi is idle, as a custom message that asks for a turn");
-	assert.deepEqual(w.turns[0].details, { piLoopsRow: { lane: "s", id: "t1" }, cap: { kind: "row", id: "t1", mode: "unattended" } }, "its row and its cap in the details");
+	assert.deepEqual(w.turns[0].details, { piLoopsRow: { lane: "s", id: "t1", at: store.list("s")[0].created_at }, cap: { kind: "row", id: "t1", mode: "unattended" } }, "its row, the generation it was queued as, and its cap in the details");
 	await drain("s", store, w.executor, T0, sinks);
 	assert.equal(w.sent.length, 1, "and not again while pi has it");
 	assert.deepEqual(store.list("s").map((r) => r.id), ["t1"], "in the file until pi writes it");
@@ -662,7 +663,7 @@ test("enqueue: a second row with a queued collapse key is not written; one with 
 
 /** `handOver`'s dependencies over a store and a window: the real executor, a drain through it. */
 function handOverDeps(store: RequestStore, w: ReturnType<typeof fakeWindowPi>, sinks: EngineSinks, at = T0) {
-	return { store, delivered: (id: string) => w.executor.proof("s").has(id), produced: (row: Row) => w.executor.produced(row), drain: () => drain("s", store, w.executor, at, sinks) };
+	return { store, delivered: (row: Row) => w.executor.proof("s").has(row), produced: (row: Row) => w.executor.produced(row), drain: () => drain("s", store, w.executor, at, sinks) };
 }
 
 test("a claimed finding's hand-off is queued before the finding is marked claimed, under the inbox lock", async () => {
@@ -1043,7 +1044,7 @@ test("a window leaving a conversation removes a local row it already ran there i
 	enqueue(store, ran);
 	enqueue(store, waiting);
 	// The claim's turn started here and its message is in this window's conversation; the holder's copy need not show it yet.
-	assert.deepEqual(releaseLocalRows(store, "s", me, (id) => id === ran.id, T0), [waiting.id]);
+	assert.deepEqual(releaseLocalRows(store, "s", me, (row) => row.id === ran.id, T0), [waiting.id]);
 	assert.deepEqual(store.list("s").map((row) => [row.id, row.created_by.left !== undefined]), [[waiting.id, true]], "the claim is gone, not handed to the holder to run again");
 });
 
@@ -1081,7 +1082,7 @@ async function doorbellWorld(dropProbability: number, seed: number) {
 	const failures: unknown[] = [];
 	const executorFor = (sid: string): Executor => ({
 		holds: () => true,
-		proof: () => ({ has: (id) => written.get(sid)!.has(id), older: () => false, heldRunWrote: () => false, ran: () => undefined }),
+		proof: () => ({ has: (row) => written.get(sid)!.has(row.id), older: () => false, heldRunWrote: () => false, ran: () => undefined }),
 		view: () => ({ kind: "window", ceiling: () => true, blocked: () => undefined, claimLive: () => false, idle: true, inFlight: inFlight.get(sid)!, connected: () => true, producerAlive: () => true, mine: () => true }),
 		append: (r) => {
 			inFlight.get(sid)!.add(r.id);
@@ -1234,12 +1235,13 @@ test("a stop for a row pi has queued but not started aborts it when it starts", 
 	w.executor.agentStarted(T0 + 2_000);
 	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" });
 	assert.equal(w.ctx.aborts, 0, "a user message with its words is not it");
+	const sentDetails = w.turns[0].details;
 	w.writes("[Trigger t1] hello");
 	assert.equal(w.ctx.aborts, 1, "aborted as its turn starts");
 	w.executor.agentEnded();
 	await drain("s", store, w.executor, T0 + 4_000, sinks);
 	assert.deepEqual(store.list("s"), [], "pi wrote the turn's message, with its mark: the row is done, not offered again");
-	w.executor.messageStarted({ role: "custom", customType: TURN_TYPE, content: "[Trigger t1] hello", display: true, details: { piLoopsRow: { lane: "s", id: "t1" }, cap: { kind: "row", id: "t1", mode: "unattended" } } });
+	w.executor.messageStarted({ role: "custom", customType: TURN_TYPE, content: "[Trigger t1] hello", display: true, details: sentDetails });
 	assert.equal(w.ctx.aborts, 1, "armed once");
 });
 
@@ -1315,12 +1317,13 @@ function windowOver(opts: { hold?: () => boolean; throws?: () => boolean; mode?:
 }
 
 test("a proof reads the marks of its own lane only: a fork's entry with another lane's mark and this id proves nothing", () => {
-	const entry = (lane: string) => ({ type: "message", message: withMark({ role: "user", content: "[Trigger t1] hello" }, markFor({ lane, id: "t1" } as Pick<Row, "lane" | "id">)) });
-	assert.equal(proofOf("s", () => [entry("other")], () => []).has("t1"), false);
-	assert.equal(proofOf("s", () => [entry("s")], () => []).has("t1"), true);
+	const t1 = { id: "t1", created_at: "2026-01-01T00:00:00.000Z" };
+	const entry = (lane: string) => ({ type: "message", message: withMark({ role: "user", content: "[Trigger t1] hello" }, markFor({ lane, ...t1 } as Pick<Row, "lane" | "id" | "created_at">)) });
+	assert.equal(proofOf("s", () => [entry("other")], () => []).has(t1), false);
+	assert.equal(proofOf("s", () => [entry("s")], () => []).has(t1), true);
 });
 
-test("the person's own page message that a cancel named after its row left is aborted and gets no mark", () => {
+test("the person's own page message that a cancel named after its row left is aborted, and its mark names only that row's generation", () => {
 	const w = windowOver({ mode: "rpc" });
 	const p1 = w.rung("p1", "hello");
 	w.executor.turn(p1, T0);
@@ -1330,7 +1333,7 @@ test("the person's own page message that a cancel named after its row left is ab
 	w.executor.agentStarted(T0 + 1);
 	w.executor.messageStarted({ role: "user", content: "hello" }, T0 + 2);
 	assert.equal(w.state.aborts, 1, "aborted as it starts");
-	assert.equal(w.ends("hello"), undefined, "no mark");
+	assert.deepEqual((w.ends("hello")?.message as { piLoopsRow?: unknown } | undefined)?.piLoopsRow, { lane: "s", id: "p1", at: p1.created_at, aborted: true }, "aborted: it proves no row p1 queued later");
 });
 
 test("a settle after a drain took the row out owes it no exit: the same row queued again is not cancelled by what pi did with the old prompt", () => {
@@ -1355,7 +1358,7 @@ test("a person's page message pi was judged to have refused stays after its row 
 	w.executor.view("s");
 	w.executor.agentStarted(T0 + 1);
 	w.executor.messageStarted({ role: "user", content: "hello" }, T0 + 2);
-	assert.deepEqual((w.ends("hello")?.message as { piLoopsRow?: unknown } | undefined)?.piLoopsRow, { lane: "s", id: "p1" });
+	assert.deepEqual((w.ends("hello")?.message as { piLoopsRow?: unknown } | undefined)?.piLoopsRow, { lane: "s", id: "p1", at: p1.created_at });
 });
 
 test("a hand-over of the person's page message that pi throws at keeps the earlier one pi may still send late", () => {
@@ -1368,7 +1371,7 @@ test("a hand-over of the person's page message that pi throws at keeps the earli
 	assert.throws(() => w.executor.turn(p1, T0 + 60_000));
 	w.executor.agentStarted(T0 + 60_001);
 	w.executor.messageStarted({ role: "user", content: "hello" }, T0 + 60_002);
-	assert.deepEqual((w.ends("hello")?.message as { piLoopsRow?: unknown } | undefined)?.piLoopsRow, { lane: "s", id: "p1" }, "the late send of the first is proved");
+	assert.deepEqual((w.ends("hello")?.message as { piLoopsRow?: unknown } | undefined)?.piLoopsRow, { lane: "s", id: "p1", at: p1.created_at }, "the late send of the first is proved");
 });
 
 test("Enter during a run in a terminal is a steer, written before what waits: a rewritten message then may be the steer, and gets no mark", () => {
@@ -2064,7 +2067,8 @@ function closingWorld(job: Record<string, unknown> | null = { id: "j", sessionId
 	/** Pi wrote the prompt of row `id`: with its mark when a window gave it pi (`marked`), with none when a held turn of the background did. */
 	const written = (id: string, marked = false) => {
 		const message = { role: "user", content: `[Trigger ${id}] go` };
-		entries.push({ type: "message", timestamp: "2026-06-01T11:59:30Z", message: marked ? withMark(message, markFor({ lane: "s", id } as Pick<Row, "lane" | "id">)) : message });
+		const queued = w.store.list("s").find((r) => r.id === id);
+		entries.push({ type: "message", timestamp: "2026-06-01T11:59:30Z", message: marked && queued ? withMark(message, markFor(queued)) : message });
 	};
 	/** An executor for a queue with claimed rows: nothing is alive, and it must hand nothing over. Its proof is the real one, over this world's conversation and run log. */
 	const never = () => {
@@ -2273,7 +2277,7 @@ test("[exit-delivered] [exit-cancelled] [exit-stale] [exit-refused] [exit-job-re
 	const turn = (id: string, over: Partial<UnclaimedRow> = {}) => row(id, { wake: "turn", source: "cron:j", mode: "unattended", payload: { text: `[Trigger ${id}] go`, cwd: "/p" }, ...over });
 	const cases: Array<{ rows: UnclaimedRow[]; proof?: Partial<Proof>; jobs?: Partial<typeof jobs>; states: Array<[string, string]> }> = [
 		// A delivered input leaves no line; the cancel that did its job leaves `done`.
-		{ rows: [row("d1")], proof: { has: (id) => id === "d1" }, states: [] },
+		{ rows: [row("d1")], proof: { has: (r) => r.id === "d1" }, states: [] },
 		{ rows: [turn("q1"), cancelRow("s", { id: "q1" }, "cli", page)], states: [["cancelled", "q1"], ["done", ""]] },
 		{ rows: [cancelRow("s", { id: "nothing" }, "cli", page)], states: [["stale", ""]] },
 		{ rows: [turn("g1", { source: "goal", mode: "attended", payload: { text: "keep going", cwd: "/p" } })], jobs: { goalActive: () => false }, states: [["stale", "g1"]] },

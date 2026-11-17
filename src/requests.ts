@@ -158,7 +158,7 @@ function readLine(line: string): { row: Row; version: 2 | 3 } | undefined {
 	if (row.payload !== undefined && (!row.payload || typeof row.payload !== "object" || typeof row.payload.text !== "string")) return undefined;
 	const images = row.payload?.images as unknown;
 	if (images !== undefined && (!Array.isArray(images) || !images.every((i) => !!i && typeof i === "object" && typeof (i as ImageRef).mimeType === "string" && typeof (i as ImageRef).sha256 === "string"))) return undefined;
-	if (row.handed_at !== undefined && typeof row.handed_at !== "string") return undefined;
+	if (typeof row.created_at !== "string" || (row.handed_at !== undefined && typeof row.handed_at !== "string")) return undefined;
 	const requires = row.payload?.requires;
 	if (requires !== undefined && (!Array.isArray(requires) || !requires.every((s) => typeof s === "string"))) return undefined;
 	const target = row.target as unknown;

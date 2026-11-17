@@ -396,11 +396,13 @@ machine. Everything here follows from that, and each one has a price.
     identity. pi gives the details back unchanged at `message_start` and `message_end`, writes them
     into the entry and never sends them to the model, which reads the content as user text; no
     `input` handler sees the message, so no other extension rewrites it (probes P8, P10 to P17). The
-    window knows the message by the row it names and reads no words for it. A turn that a stop or a
-    cancel took out of the file before pi wrote it is written with no mark (a `message_end`
-    replacement, probe P18), so it proves no later row of the same id. The person's own page message
-    (a person row the page's pi was rung for) is the one row that goes as a user message, in their
-    words alone. For it the window keeps one list of what it gave pi and of the inputs of others,
+    window knows the message by the row it names and reads no words for it. A mark names its row's
+    lane, its id and when the row was queued (`at`). A message the window aborts as it starts (a
+    stop or a cancel named its row) gets `aborted` in its mark at `message_end` (probe P18): it
+    proves only the row queued at its `at`, never a row of the same id queued later, which runs
+    (#262). An answered message proves its id, so a slot the clock queues again is not
+    written twice. The person's own page message (a person row the page's pi was rung for) is the
+    one row that goes as a user message, in their words alone. For it the window keeps one list of what it gave pi and of the inputs of others,
     and decides as each user message starts whose it is (`claimOf`, `src/window-claim.ts`): an input
     of someone else with the very same words is theirs; a person row with them is that row's;
     otherwise the input or row whose words start the message, the longest, someone else's before

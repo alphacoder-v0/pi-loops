@@ -243,6 +243,10 @@ test("a row whose fields are not the shape the engine reads is skipped, not thro
 	assert.equal(parseRow(JSON.stringify(noProducer)), undefined);
 	assert.equal(parseRow(JSON.stringify({ ...row("1"), created_by: { pid: "1", instance: "w", version: "0" } })), undefined);
 	assert.equal(parseRow(JSON.stringify({ ...row("1"), created_by: { pid: 1, instance: "w", version: "0", left: 0 } })), undefined);
+	// A row's mark names when it was queued: one with no stamp could never be proved, and would run until it is a dead letter.
+	const { created_at: _at, ...noStamp } = row("1");
+	assert.equal(parseRow(JSON.stringify(noStamp)), undefined);
+	assert.equal(parseRow(JSON.stringify({ ...row("1"), created_at: 5 })), undefined);
 	assert.equal(parseRow(JSON.stringify(row("1")))?.id, "1");
 });
 

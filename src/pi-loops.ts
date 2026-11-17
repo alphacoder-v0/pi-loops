@@ -663,7 +663,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** Where a row this window produces is addressed: this conversation, in this project. */
 	const rowAddress = (): RowAddress => ({ sessionId: binding.here().sessionId ?? session.sessionId ?? "", cwd: session.cwd, createdBy: createdBy() });
 	/** Whether a row's proof is in this conversation already (src/engine.ts landed): such a row collapses nothing, and `agent_settled` no longer waits for it. */
-	const delivered = (id: string) => executor.delivered(id);
+	const delivered = (row: Row) => executor.delivered(row);
 	const handOverDeps = (): HandOverDeps => ({ store: requests, delivered, produced: (row) => executor.produced(row), drain: drainRequests });
 	/** A prompt one of this window's sources has for the chat (src/engine.ts handOver), and the line that says it waits. */
 	async function handOver(row: UnclaimedRow, claim?: { inbox: Inbox; entryId: string }): Promise<HandOverOutcome> {
@@ -733,7 +733,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	function leaveSession(): void {
 		const sessionId = binding.here().sessionId;
 		if (!sessionId) return;
-		const left = releaseLocalRows(requests, sessionId, self, (id) => executor.delivered(id));
+		const left = releaseLocalRows(requests, sessionId, self, (row) => executor.delivered(row));
 		if (left.length) log.info(`left ${left.length} queued request(s) of session ${shortSessionId(sessionId)} to its holder`);
 	}
 
@@ -3537,7 +3537,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				return false;
 			}
 		};
-		await settledTurn(sessionId ? requests.list(sessionId) : [], executor.handedOver, delivered, evaluate, () => drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`)));
+		await settledTurn(sessionId ? requests.list(sessionId) : [], executor.handedRows, (row) => executor.delivered(row), evaluate, () => drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`)));
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {

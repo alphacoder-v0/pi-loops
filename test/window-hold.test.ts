@@ -205,7 +205,7 @@ test("a cancel takes a row out while the page's pi keeps its turn; the same row 
 	assert.deepEqual([...w.view().inFlight], []);
 });
 
-test("a turn a stop named whose row left before pi wrote it is written with no mark: the same row queued again is not proved by it", () => {
+test("a turn a stop named whose row left before pi wrote it is marked aborted: the same row queued again later is not proved by it (#262)", () => {
 	const w = win("rpc");
 	const row = plainJobRow(job("j1"), "run-1", "cron:j1", "", by, T0);
 	w.rows.push(row);
@@ -217,11 +217,11 @@ test("a turn a stop named whose row left before pi wrote it is written with no m
 	w.view();
 	w.writes("run-1");
 	assert.equal(w.aborts.n, 1, "aborted as it starts");
-	assert.deepEqual((w.entries[0] as any).details, { cap: { kind: "row", id: "run-1", mode: "unattended" } }, "written with its cap and no mark");
+	assert.deepEqual((w.entries[0] as any).details, { piLoopsRow: { lane: "s", id: "run-1", at: row.created_at, aborted: true }, cap: { kind: "row", id: "run-1", mode: "unattended" } }, "written with the mark of the row it was sent for, as aborted");
 	w.ex.agentEnded();
 	w.ex.settled(true);
 	w.ctx.idle = true;
-	w.rows.push(row); // the same row, queued again
+	w.rows.push(plainJobRow(job("j1"), "run-1", "cron:j1", "", by, T0 + 60_000)); // the same row id, queued again a minute later
 	assert.deepEqual(w.decide(), ["turn run-1"], "not proved by the aborted message");
 });
 

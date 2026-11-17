@@ -194,8 +194,7 @@ function capIsTheRows(world: World, _memory: Memory, _queues: Queues, coverage: 
 
 /** A custom message of ours is written with the mark of its own row, in every world: no extension sees it to change it. */
 function customKeepsItsMark(world: World): string[] {
-	// A turn whose row a stop or a cancel took out before pi wrote it answers no row: the window takes its mark off, so that it proves no later row of the same id.
-	return world.facts.written.filter((copy) => copy.custom && copy.markedAs !== copy.rowId && !(copy.markedAs === undefined && copy.rowLeft)).map((copy) => `pi wrote ${label(world, copy.rowId)} into ${copy.sessionId} as a custom message, and its entry carries ${copy.markedAs === undefined ? "no mark" : `the mark of ${label(world, copy.markedAs)}`}`);
+	return world.facts.written.filter((copy) => copy.custom && copy.markedAs !== copy.rowId).map((copy) => `pi wrote ${label(world, copy.rowId)} into ${copy.sessionId} as a custom message, and its entry carries ${copy.markedAs === undefined ? "no mark" : `the mark of ${label(world, copy.markedAs)}`}`);
 }
 
 /**
@@ -204,10 +203,19 @@ function customKeepsItsMark(world: World): string[] {
  * queued after it (the clock's slot queued again after a stop, a goal's continuation with the same id).
  */
 function abortedProvesNoLaterRow(world: World): string[] {
-	return world.facts.removals
-		.filter((gone) => gone.delivered && gone.row.kind === "input")
-		.filter((gone) => !world.copies.some((copy) => copy.sessionId === gone.row.lane && copy.state === "written" && countsFor(world, copy) === gone.row.id && (answered(copy) || copy.handedAt >= Date.parse(gone.row.created_at))))
-		.map((gone) => `${label(world, gone.row.id)} left the queue of ${gone.row.lane} as delivered, proved only by a message the window aborted for an earlier row of the same id`);
+	const out: string[] = [];
+	// What earlier removals of the same row id left in the audit: an exit that adds a line or a dead
+	// letter of its own (a job removed, a cancel) is that exit, not a delivery, whatever pi wrote for the id before.
+	const before = new Map<string, { audited: number; dead: number }>();
+	for (const gone of world.facts.removals) {
+		const key = keyOf(gone.row.lane, gone.row.id);
+		const was = before.get(key) ?? { audited: 0, dead: 0 };
+		before.set(key, { audited: gone.audited.length, dead: gone.dead });
+		if (!gone.delivered || gone.row.kind !== "input" || gone.audited.length > was.audited || gone.dead > was.dead) continue;
+		if (world.copies.some((copy) => copy.sessionId === gone.row.lane && copy.state === "written" && countsFor(world, copy) === gone.row.id && (answered(copy) || copy.handedAt >= Date.parse(gone.row.created_at)))) continue;
+		out.push(`${label(world, gone.row.id)} left the queue of ${gone.row.lane} as delivered, proved only by a message the window aborted for an earlier row of the same id`);
+	}
+	return out;
 }
 
 /**
@@ -444,12 +452,7 @@ const handedOverAfterTheEditor = (world: World): string[] => world.facts.handOve
  * (unless `createChecker` is told to enforce it); what it finds is reported beside, and
  * test/sim.test.ts shows it under `todo` on the first seed of its run that breaks it, or on this one.
  */
-export const KNOWN: Readonly<Record<string, { defect: string; seed: number }>> = {
-	"an aborted message proves no row of the same id queued after it": {
-		defect: "a turn a stop named keeps its mark when its row is still queued as pi begins it, and the mark proves the same row id queued again later: the later row leaves as delivered and never runs (main has it too; the mark carries no enqueue time, plan M3c)",
-		seed: 836,
-	},
-};
+export const KNOWN: Readonly<Record<string, { defect: string; seed: number }>> = {};
 
 export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
 	["I2 a row leaves its queue only by a named exit", namedExit],

@@ -385,7 +385,7 @@ test("a scheduled turn this instance did not hand over takes its cap from its ro
 });
 
 test("a turn row's message runs under the cap this window gave its row, its row's in the file, or the strictest: any extension can send one, and its details lift no cap", async () => {
-	const attended = (id: string) => ({ piLoopsRow: { lane: "s", id }, cap: { kind: "row", id, mode: "attended" } });
+	const attended = (id: string, at = "2026-01-01T00:00:00.000Z") => ({ piLoopsRow: { lane: "s", id, at }, cap: { kind: "row", id, mode: "attended" } });
 	const strictest = (id: string): RowCap => ({ kind: "row", id, mode: "unattended", tools: [] });
 	const cases: Array<[string, unknown, RowCap]> = [
 		["no details", undefined, strictest("unknown")],
@@ -407,7 +407,7 @@ test("a turn row's message runs under the cap this window gave its row, its row'
 	w.queued.set(row.id, row);
 	w.executor.turn(row);
 	w.executor.agentStarted(T0);
-	w.executor.messageStarted({ role: "custom", customType: "pi-loops:turn", content: "do it", details: attended(row.id) });
+	w.executor.messageStarted({ role: "custom", customType: "pi-loops:turn", content: "do it", details: attended(row.id, row.created_at) });
 	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: row.id, mode: "unattended", tools: ["read"] }, "the slot's cap");
 	assert.equal(await w.blocked(rmrf), true);
 	w.executor.messageStarted({ role: "custom", customType: "another:turn", content: "do it", details: attended(row.id) });

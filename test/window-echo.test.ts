@@ -53,8 +53,8 @@ test("a turn row pi-loops wrote goes to pi as a custom message that asks for a t
 	assert.equal(w.ex.turn(claim, T0), "sent");
 	assert.deepEqual(w.user, []);
 	assert.deepEqual(w.custom.map((sent) => sent.options), [{ triggerTurn: true, deliverAs: "followUp" }, { triggerTurn: true, deliverAs: "followUp" }]);
-	assert.deepEqual(w.custom[0].message, { customType: "pi-loops:turn", content: cron.payload!.text, display: true, details: { piLoopsRow: { lane: "s", id: "run-1" }, cap: { kind: "row", id: "run-1", mode: "unattended", tools: ["read"] } } });
-	assert.deepEqual(w.custom[1].message.details, { piLoopsRow: { lane: "s", id: claim.id }, cap: { kind: "row", id: claim.id, mode: "attended" } });
+	assert.deepEqual(w.custom[0].message, { customType: "pi-loops:turn", content: cron.payload!.text, display: true, details: { piLoopsRow: { lane: "s", id: "run-1", at: cron.created_at }, cap: { kind: "row", id: "run-1", mode: "unattended", tools: ["read"] } } });
+	assert.deepEqual(w.custom[1].message.details, { piLoopsRow: { lane: "s", id: claim.id, at: claim.created_at }, cap: { kind: "row", id: claim.id, mode: "attended" } });
 });
 
 test("the person's own page message goes as a user message in the page's pi only: a person row nobody rang for, and one rung in a terminal, go as custom messages", () => {

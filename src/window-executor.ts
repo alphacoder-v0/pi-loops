@@ -21,7 +21,7 @@
 import type { ExtensionAPI, ExtensionContext, InputEvent, formatDimensionNote, resizeImage } from "@earendil-works/pi-coding-agent";
 import { CEILING, type Executor, type ExecutorView, type Producer, type TurnSent, proofOf, landed, modeOf, queuedTriggeredTurn, requestFingerprint, sameProducer, type Proof, claimAlive , type Gone } from "./engine.ts";
 import { type LeaseBinding, type ProcessProbe, systemProbe } from "./lease.ts";
-import { TURN_TYPE, type TurnDetails, markDetails, markFor, turnOn, withMark } from "./mark.ts";
+import { type RowMark, TURN_TYPE, type TurnDetails, markDetails, markFor, turnOn, withMark } from "./mark.ts";
 import type { ImageContent, RequestMode, Row, UnclaimedRow } from "./requests.ts";
 import type { RunRecord } from "./store.ts";
 import { stamp } from "./schedule.ts";
@@ -152,6 +152,10 @@ function userTextOf(message: unknown): string | undefined {
 	return typeof text === "string" ? text : "";
 }
 
+/** One generation of a row: its id and when it was queued. A row of the same id queued again is another. */
+const generation = (row: Pick<Row, "id" | "created_at">): string => JSON.stringify([row.id, row.created_at]);
+/** The generation a slot's mark names. */
+const rowOf = (mark: RowMark): Pick<Row, "id" | "created_at"> => ({ id: mark.id, created_at: mark.at });
 /** A slot pi holds for a row that is still owed: not a person's prompt the engine stopped waiting for, not a turn whose row left the file. */
 const inFlight = (slot: Slot): boolean => slot.whose === "append" || (slot.whose === "turn" && !slot.left) || (slot.whose === "person" && slot.phase.is !== "refused");
 
@@ -188,8 +192,8 @@ export class WindowExecutor implements Executor {
 	private foreign = false;
 	/** pi is compacting the conversation (`session_before_compact` until the compaction ends): no turn is handed over meanwhile. */
 	private compacting = false;
-	/** The row whose turn message started with its row gone from the file: the message is written with no mark (`messageEnded`). */
-	private unmark: string | undefined;
+	/** The generation of the turn whose message the window aborted as it started: its mark says so (`messageEnded`). */
+	private abortedAtStart: string | undefined;
 	/** Turn rows whose images are being resized before the send (`resizedTurn`). */
 	private readonly resizing = new Set<string>();
 	/**
@@ -223,6 +227,11 @@ export class WindowExecutor implements Executor {
 		return new Set(this.slots.flatMap((slot) => (slot.whose !== "other" && inFlight(slot) ? [slot.mark.id] : [])));
 	}
 
+	/** The generations of the rows in `handedOver`: each one's id and when it was queued. */
+	get handedRows(): ReadonlyArray<Pick<Row, "id" | "created_at">> {
+		return this.slots.flatMap((slot) => (slot.whose !== "other" && inFlight(slot) ? [rowOf(slot.mark)] : []));
+	}
+
 	/**
 	 * This window holds `sessionId`, and is a place a result should land: a one-shot `pi -p` / json
 	 * run holds its conversation but would swallow a result into a turn that is about to exit, so the
@@ -243,15 +252,17 @@ export class WindowExecutor implements Executor {
 		return proofOf(lane, () => ctx?.sessionManager.getEntries() ?? [], this.runs);
 	}
 
-	/** Whether row `id`'s delivery is in this conversation (src/engine.ts `landed`), read off the row in the request file, or by its mark alone once the row left the file. */
-	delivered(id: string): boolean {
+	/** Whether the delivery of `row` (its id, queued at its `created_at`) is in this conversation (src/engine.ts `landed`), read off that row in the request file, or by its mark alone once the row left the file. */
+	delivered(row: Pick<Row, "id" | "created_at">): boolean {
 		const proof = this.proof(this.binding.here().sessionId ?? "");
-		const row = this.rows().find((r) => r.id === id);
-		return row ? landed(row, proof) : proof.has(id);
+		const queued = this.rows().find((r) => r.id === row.id && r.created_at === row.created_at);
+		return queued ? landed(queued, proof) : proof.has(row);
 	}
 
 	view(sessionId: string): ExecutorView {
-		const queued = new Set(this.rows().map((row) => row.id));
+		const rows = this.rows();
+		const queued = new Set(rows.map((row) => row.id));
+		const queuedNow = new Set(rows.map(generation));
 		const ctx = this.ctx();
 		// pi idle, no run on, and no user message held: the user messages that were queued behind a run
 		// are gone (the page's "clear queue" empties pi and tells no extension). Only this reading of
@@ -271,13 +282,13 @@ export class WindowExecutor implements Executor {
 				// So it leaves here only by its mark in the conversation. One whose row left the file stays
 				// for the message pi may still write, which is aborted if a stop named it; a mark it did
 				// not write itself is another hand-over's of the same row, queued again.
-				if ((slot.at === "started" || !slot.left) && this.delivered(slot.mark.id)) continue;
-				next.push(queued.has(slot.mark.id) || slot.left ? slot : { ...slot, left: true });
+				if ((slot.at === "started" || !slot.left) && this.delivered(rowOf(slot.mark))) continue;
+				next.push(queuedNow.has(generation(rowOf(slot.mark))) || slot.left ? slot : { ...slot, left: true });
 				continue;
 			}
 			// What pi wrote is in the conversation, whoever wrote it. A person's prompt pi still holds
-			// behind a run stays until the run settles, with no mark (`messageEnded`).
-			if (this.delivered(slot.mark.id)) {
+			// behind a run stays until the run settles.
+			if (this.delivered(rowOf(slot.mark))) {
 				if (slot.whose === "person" && (slot.phase.is === "queued" || slot.phase.is === "opening")) next.push({ ...slot, left: true });
 				continue;
 			}
@@ -288,19 +299,18 @@ export class WindowExecutor implements Executor {
 					this.gone.set(slot.mark.id, slot.stop ? "stopped" : "dropped");
 					continue;
 				}
-				if (!queued.has(slot.mark.id)) {
+				if (!queuedNow.has(generation(rowOf(slot.mark)))) {
 					// The row left the file. A prompt a cancel or a stop named stays, to be aborted if pi
 					// writes it after all; anything else has nothing left to start.
 					if (slot.stop && slot.phase.is !== "written" && slot.phase.is !== "writing") next.push({ ...slot, left: true, ...(slot.phase.is === "opening" ? {} : { phase: { is: "refused" } as const }) });
 					// A refused one stays too: pi may still write it, and its mark then proves the row
 					// if the same row is queued again.
 					else if (slot.phase.is === "refused") next.push({ ...slot, left: true });
-					// One pi holds behind a run stays until the run settles: pi still writes it, and it
-					// gets no mark (`messageEnded`).
+					// One pi holds behind a run stays until the run settles: pi still writes it.
 					else if (slot.phase.is === "queued" || slot.phase.is === "opening") next.push({ ...slot, left: true });
 					continue;
 				}
-			} else if (!queued.has(slot.mark.id)) continue;
+			} else if (!queuedNow.has(generation(rowOf(slot.mark)))) continue;
 			next.push(slot);
 		}
 		this.slots = next;
@@ -515,9 +525,9 @@ export class WindowExecutor implements Executor {
 		this.foreign = false;
 		// A row that left the file since the last look (an exit in the drain that ran since) owes no exit:
 		// what pi did with its prompt must not reach the same row queued again.
-		const queued = new Set(this.rows().map((row) => row.id));
-		const slots = this.slots.map((slot) => ((slot.whose === "person" || slot.whose === "turn") && !slot.left && !queued.has(slot.mark.id) ? { ...slot, left: true as const } : slot));
-		const out = settleSlots(slots, { aborted, terminal: this.ctx()?.mode === "tui" }, (id) => this.delivered(id));
+		const queued = new Set(this.rows().map(generation));
+		const slots = this.slots.map((slot) => ((slot.whose === "person" || slot.whose === "turn") && !slot.left && !queued.has(generation(rowOf(slot.mark))) ? { ...slot, left: true as const } : slot));
+		const out = settleSlots(slots, { aborted, terminal: this.ctx()?.mode === "tui" }, (mark) => this.delivered(rowOf(mark)));
 		this.slots = out.slots;
 		for (const [id, why] of out.gone) this.gone.set(id, why);
 		this.letGoWhenFree();
@@ -581,19 +591,18 @@ export class WindowExecutor implements Executor {
 		if (turn) {
 			// Two hand-overs of one row carry the same message: the one no stop named takes it first, so
 			// that a stop for a request that left does not abort the message of the same row queued again.
-			const held = this.slots.filter((slot): slot is TurnSlot => slot.whose === "turn" && slot.mark.id === turn.id && slot.at !== "started");
+			const named = turn.mark;
+			const held = this.slots.filter((slot): slot is TurnSlot => slot.whose === "turn" && named !== undefined && slot.mark.id === named.id && slot.mark.at === named.at && slot.at !== "started");
 			const slot = held.find((s) => !s.stop) ?? held[0];
 			this.slots = this.slots.map((s) => (s === slot ? { ...slot, at: "started" } : s));
 			if (this.current?.kind !== "row") this.foreign = false;
 			// The message names its row; the cap is the one this window gave that row. A message of this
 			// type that no slot here sent (pi kept it over a `/reload`, or another extension sent it) runs
 			// under the cap of its row in the file, read as any row this instance did not write is.
-			const row = turn.id === undefined ? undefined : this.rows().find((r) => r.id === turn.id);
-			this.current = slot?.cap ?? (row ? this.capOf(row) : { kind: "row", id: turn.id ?? "unknown", mode: "unattended", tools: [] });
-			if (this.running && turn.id !== undefined) this.running = { ...this.running, requestId: turn.id };
-			// Its row left the file while pi held it (a stop or a cancel took it out): the message answers no
-			// row, and its mark would prove the same row queued again (a goal's continuation keeps its id).
-			this.unmark = slot?.left ? turn.id : undefined;
+			const row = named === undefined ? undefined : this.rows().find((r) => r.id === named.id && r.created_at === named.at);
+			this.current = slot?.cap ?? (row ? this.capOf(row) : { kind: "row", id: named?.id ?? "unknown", mode: "unattended", tools: [] });
+			if (this.running && named !== undefined) this.running = { ...this.running, requestId: named.id };
+			this.abortedAtStart = slot?.stop ? generation(rowOf(slot.mark)) : undefined;
 			if (slot?.stop) this.ctx()?.abort();
 			return;
 		}
@@ -618,28 +627,26 @@ export class WindowExecutor implements Executor {
 	 * At `message_end`, before pi persists the message: a person row's user message with the mark of
 	 * the row whose message started (`messageStarted` decided it), which pi persists in the same write
 	 * (probe P1), or undefined, and pi persists the message as it is. A turn row's custom message
-	 * carries its mark already, and loses it when `messageStarted` found its row gone. It decides nothing.
+	 * carries its mark already. A message `messageStarted` aborted (a stop or a cancel named its row)
+	 * gets `aborted` in its mark, which pi persists too (probe P18): it answered nothing, and proves
+	 * only its own row, not one of the same id queued later (src/mark.ts `marksRow`). It decides nothing.
 	 */
 	messageEnded<M extends { role: string }>(message: M, _now = Date.now()): { message: M } | undefined {
 		const turn = turnOn(message);
 		if (turn) {
-			const unmark = turn.id !== undefined && turn.id === this.unmark;
-			this.unmark = undefined;
-			if (!unmark) return undefined;
-			const { piLoopsRow: _mark, ...details } = (message as M & { details: TurnDetails }).details;
-			return { message: { ...message, details } };
+			const aborted = turn.mark !== undefined && generation({ id: turn.mark.id, created_at: turn.mark.at }) === this.abortedAtStart;
+			this.abortedAtStart = undefined;
+			if (!aborted) return undefined;
+			const details = (message as M & { details: TurnDetails }).details;
+			return { message: { ...message, details: { ...details, piLoopsRow: { ...details.piLoopsRow, aborted: true } } } };
 		}
 		if (message.role !== "user") return undefined;
 		const writing = this.slots.find((slot): slot is PersonSlot => slot.whose === "person" && slot.phase.is === "writing");
 		if (!writing || writing.phase.is !== "writing") return undefined;
 		const claimed = writing.phase.claim.slot;
 		this.slots = this.slots.map((slot) => (slot === writing ? { ...writing, phase: { is: "written" } } : slot));
-		// A turn a stop or a cancel named whose row has left already: its message, aborted as it
-		// starts, answers no row, and a mark would prove the same row queued again.
-		if (claimed.stop && claimed.left) return undefined;
-		// A row that left the file while pi held its prompt: its message answers no row that is queued.
-		if (claimed.left && claimed.phase.is !== "refused") return undefined;
-		return { message: withMark(message, claimed.mark) };
+		// One a stop or a cancel named was aborted as it started: its mark proves its own row only.
+		return { message: withMark(message, claimed.mark, claimed.stop === true) };
 	}
 
 	/** At `agent_end`: no run is on. The cap in force outlives the run (`settled`). */

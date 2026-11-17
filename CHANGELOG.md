@@ -73,6 +73,10 @@ All notable changes to pi-loops are documented here. The format follows
   message back to you in the input box as failed, even if pi answered it.
 - **A row written by hand into a conversation's queue as a rule's turn runs capped.** It ran with
   no cap; it now runs as unattended, and the window asks before a dangerous command.
+- **A loop's slot or a goal's continuation runs after you stopped an earlier one of the same id.**
+  When a stop or a cancel named a prompt that pi had queued, pi-loops aborted it as it started, and
+  that aborted message counted as the delivery of a prompt with the same id queued later, which
+  then never ran. A message that pi-loops aborts now proves only its own prompt (#262).
 
 - **A scheduled prompt in a closed conversation is not answered twice after pi-loops stopped in
   the middle of it.** When pi-loops in the background stopped after it wrote a job's prompt into
