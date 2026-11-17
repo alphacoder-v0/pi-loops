@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { DEFAULT_REPLY } from "../boot.mjs";
 
-export const id = "J4", title = "Five runs of a loop: the first three and every one asked for card in the conversation, with the reply; five in the strip and the panel", expect = "head", active = true, page = "new", tui = true, needs = ["tmux", "agent-browser"];
+export const id = "J4", title = "Five runs of a loop: the first three and every one asked for card in the conversation, with the reply; five in the strip and the panel", expect = "head", active = true, page = "new", tui = true, needs = ["agent-browser"];
 const JOB = "cron-journey-run-card";
 export function seed(dirs) {
 	fs.writeFileSync(path.join(dirs.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: JOB, name: "journey-card", schedule: { kind: "every", ms: 60000 }, stateful: true, prompt: "report the journey run", cwd: dirs.project, enabled: false, catchUp: true, createdAt: new Date(Date.now() + 120000).toISOString(), runCount: 0, skippedOverlap: 0 }] }));
@@ -32,7 +32,8 @@ export async function run(ctx) {
 			return { ok: runs().length >= n - 1 && !job?.running, last: { runs: runs().length, running: job?.running } };
 		}, 60000);
 		if (runs().length >= n) continue; // the clock ran it already
-		ctx.term.send("/cron run journey-card", "Enter");
+		ctx.term.type("/cron run journey-card");
+		ctx.term.press("Enter");
 		await ctx.waitFor(`run ${n}`, () => ({ ok: runs().length >= n, last: runs().length }), 60000);
 	}
 	const five = runs().slice(0, 5);

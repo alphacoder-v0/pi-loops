@@ -149,10 +149,8 @@ for (const journey of selected) {
 				const tail = detail.length > 200 ? `…${detail.slice(-200)}` : detail;
 				throw new Error(`timed out waiting for ${what}; last value: ${tail}`);
 			},
-			term: {
-				send: (...keys) => tmux(current, ["send-keys", "-t", current.tmux.session, ...keys]),
-				screen: () => tmux(current, ["capture-pane", "-p", "-t", current.tmux.session]),
-			},
+			get term() { return current.term; },
+			set term(value) { current.term = value; },
 			browser: (...browserArgs) => {
 				if (interrupting || controller.signal.aborted) throw new Error("interrupted");
 				const result = browser(browserArgs, current.browserSession);
@@ -222,12 +220,6 @@ function installLine(tool) {
 	if (tool === "agent-browser browser") return "agent-browser install (then make sure Chromium can launch)";
 	return `install ${tool}`;
 }
-function tmux(booted, args) {
-	const result = spawnSync("tmux", ["-L", booted.tmux.socket, ...args], { encoding: "utf8", env: booted.env, timeout: 10000 });
-	if (result.error) throw new Error(`${result.error.message}${result.stderr ? `: ${result.stderr}` : ""}`);
-	if (result.status !== 0) throw new Error(result.stderr || `tmux ${args[0]} failed`);
-	return result.stdout;
-}
 function browser(args, session) {
 	if (interrupting) throw new Error("interrupted");
 	const env = cleanBrowserEnv();
@@ -253,8 +245,8 @@ function captureFailure({ booted, journey, dir, evidence, pageOpen }) {
 		fs.copyFileSync(pageLog, copy);
 		addEvidence(journey.id, copy, evidence);
 	}
-	if (booted.tmux) {
-		try { const file = path.join(dir, "failure-terminal.txt"); fs.writeFileSync(file, tmux(booted, ["capture-pane", "-p", "-t", booted.tmux.session])); addEvidence(journey.id, file, evidence); } catch { /* terminal may have exited before failure capture */ }
+	if (booted.term) {
+		try { const file = path.join(dir, "failure-terminal.txt"); fs.writeFileSync(file, booted.term.screen({ history: 200 })); addEvidence(journey.id, file, evidence); } catch { /* terminal may have exited before failure capture */ }
 	}
 	if (pageOpen) {
 		try { const file = path.join(dir, "failure-page.png"); browser(["screenshot", file], booted.browserSession); addEvidence(journey.id, file, evidence); } catch { /* page may have exited before failure capture */ }

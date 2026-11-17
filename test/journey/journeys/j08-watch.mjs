@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-export const id = "J8", title = "One sentence sets up a schedule or a rule through one question: a card in the page, pi's selector in a terminal", expect = "head", active = true, milestone = "M6", page = "new", tui = true, needs = ["tmux", "agent-browser"];
+export const id = "J8", title = "One sentence sets up a schedule or a rule through one question: a card in the page, pi's selector in a terminal", expect = "head", active = true, milestone = "M6", page = "new", tui = true, needs = ["agent-browser"];
 
 /** What the stand-in model answers each example with: the tool call a real model would make (test/downstream/fake-model.mjs). */
 export const modelTools = [
@@ -176,24 +176,24 @@ export async function run(ctx) {
 	// options with the model's choice first. Enter sets it up; Esc on the next one creates nothing.
 	const term = (what) => ctx.waitFor(what.name, () => { const screen = ctx.term.screen(); return { ok: what.ok(screen), last: screen, value: screen }; }, 30000);
 	const rulesBeforeTerminal = rules().length;
-	ctx.term.send("-l", EXAMPLES.buildDone);
-	ctx.term.send("Enter");
+	ctx.term.type(EXAMPLES.buildDone);
+	ctx.term.press("Enter");
 	const selector = await term({ name: "pi's selector with the card's rows and the options", ok: (s) => s.includes("Set up this watch?") && s.includes("Waits for: ~/build.done appears") && /→ Set it up · this conversation · once/.test(s) && s.includes("Set it up · inbox · every time") && s.includes("Cancel") });
 	if (selector.includes("Control-plane approval required")) throw new Error("the terminal asked twice");
 	const selectorFile = path.join(ctx.dir, "terminal-selector.txt");
 	fs.writeFileSync(selectorFile, selector);
 	ctx.addEvidence(selectorFile);
 	if (rules().length !== rulesBeforeTerminal) throw new Error("the terminal created before it was answered");
-	ctx.term.send("Enter");
+	ctx.term.press("Enter");
 	await ctx.waitFor("the terminal's rule", () => ({ ok: rules().length === rulesBeforeTerminal + 1, last: rules().length }), 30000);
 	const termRule = rules().at(-1);
 	if (termRule.promoteToChat !== true || termRule.fireOnce !== true) throw new Error(`the terminal's first option is this conversation, once: ${JSON.stringify(termRule)}`);
 	const jobsBeforeEsc = bytes(jobsFile);
 	await term({ name: "the selector gone after the answer", ok: (s) => !s.includes("↑↓ navigate") });
-	ctx.term.send("-l", EXAMPLES.ci);
-	ctx.term.send("Enter");
+	ctx.term.type(EXAMPLES.ci);
+	ctx.term.press("Enter");
 	await term({ name: "the schedule's selector, the inbox first", ok: (s) => s.includes("Set up this watch?") && s.includes("Runs: every 30m") && /→ Set it up · inbox\b/.test(s) });
-	ctx.term.send("Escape");
+	ctx.term.press("Escape");
 	await term({ name: "the selector gone after Esc", ok: (s) => !s.includes("↑↓ navigate") });
 	await new Promise((resolve) => setTimeout(resolve, 1500));
 	if (bytes(jobsFile) !== jobsBeforeEsc) throw new Error("Esc wrote to jobs.json");

@@ -1,12 +1,13 @@
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { openTerminal } from "../terminal.mjs";
 
 const A = "cron-journey-away-a";
 const B = "cron-journey-away-b";
 const hex = (n) => n.toString(16).padStart(32, "0");
 
-export const id = "J6", title = "Leave and come back; the away card counts per project", expect = "head", active = true, milestone = "M5", page = "attach", tui = true, needs = ["tmux", "agent-browser"];
+export const id = "J6", title = "Leave and come back; the away card counts per project", expect = "head", active = true, milestone = "M5", page = "attach", tui = true, needs = ["agent-browser"];
 
 export async function run(ctx) {
 	const loops = ctx.boot.loopsDir;
@@ -21,19 +22,19 @@ export async function run(ctx) {
 		ctx.browser("screenshot", file);
 		ctx.addEvidence(file);
 	};
-	const tmux = (...args) => {
-		const r = spawnSync("tmux", ["-L", ctx.boot.tmux.socket, ...args], { env: ctx.boot.env, encoding: "utf8", timeout: 10000 });
-		if (r.status !== 0) throw new Error(`tmux ${args[0]}: ${r.stderr}`);
-		return r.stdout;
-	};
-	/** The terminal's screen with wrapped lines joined and runs of space collapsed: the line is longer than the pane. */
-	const screen = () => tmux("capture-pane", "-p", "-J", "-t", ctx.boot.tmux.session).replace(/\s+/g, " ");
+	/** The terminal's screen with wrapped lines joined and runs of space collapsed. */
+	const screen = () => ctx.term.screen({ history: 200, joined: true }).replace(/\s+/g, " ");
 	const starts = () => fs.readdirSync(path.join(loops, "logs")).reduce((n, f) => n + (fs.readFileSync(path.join(loops, "logs", f), "utf8").match(/session start:/g) ?? []).length, 0);
 	/** Start the terminal's pi again on the same conversation: its session-start line is the one to read. */
 	const restartTerminal = async () => {
 		const was = starts();
-		tmux("clear-history", "-t", ctx.boot.tmux.session);
-		tmux("respawn-pane", "-k", "-t", ctx.boot.tmux.session, `${path.join(ctx.boot.root, "bin", "pi-loops")} --tui --no-extensions -e ${ctx.boot.product} --model fake/fake-model --session ${mine}`);
+		ctx.term.stop();
+		ctx.term = openTerminal({
+			dir: path.join(ctx.dir, `terminal-${was}`),
+			command: [path.join(ctx.boot.root, "bin", "pi-loops"), "--tui", "--no-extensions", "-e", ctx.boot.product, "--model", "fake/fake-model", "--session", mine],
+			cwd: project,
+			env: ctx.boot.env,
+		});
 		await ctx.waitFor("the terminal's pi started again", () => ({ ok: starts() > was, last: starts() }), 30000);
 	};
 
@@ -104,7 +105,7 @@ export async function run(ctx) {
 	await new Promise((r) => setTimeout(r, 4000));
 	const quiet = screen();
 	if (quiet.includes("[inbox] since you last looked")) throw new Error(`the terminal still says what the page marked seen: ${quiet.slice(-600)}`);
-	fs.writeFileSync(path.join(ctx.dir, "seen-sync.txt"), `${tmux("capture-pane", "-p", "-J", "-t", ctx.boot.tmux.session)}\nseen.json ${fs.realpathSync(project)}: ${stored}\n`);
+	fs.writeFileSync(path.join(ctx.dir, "seen-sync.txt"), `${screen()}\nseen.json ${fs.realpathSync(project)}: ${stored}\n`);
 	ctx.addEvidence(path.join(ctx.dir, "seen-sync.txt"));
 
 	// A finding after the mark: one finding, and no run counted again.
@@ -127,4 +128,5 @@ export async function run(ctx) {
 	if (!phone.above) throw new Error("the away card is not above the cards on a phone");
 	if (phone.wide > phone.width) throw new Error(`the page scrolls sideways at 390 px: ${phone.wide} > ${phone.width}`);
 	shot("phone-away.png");
+	ctx.term.stop();
 }
