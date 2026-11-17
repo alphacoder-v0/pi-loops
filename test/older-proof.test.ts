@@ -8,7 +8,7 @@ import { withMark, markFor } from "../src/mark.ts";
 const T0 = Date.parse("2026-11-16T00:00:00.000Z");
 const page = { pid: 1, instance: "page", version: "x" } as any;
 const user = (text: string, at: number) => ({ type: "message", timestamp: new Date(at).toISOString(), message: { role: "user", content: [{ type: "text", text }] } });
-const marked = (text: string, at: number, lane: string, id: string) => ({ type: "message", timestamp: new Date(at).toISOString(), message: withMark({ role: "user", content: [{ type: "text", text }] }, markFor({ lane, id } as any)) });
+const marked = (text: string, at: number, lane: string, id: string) => ({ type: "message", timestamp: new Date(at).toISOString(), message: withMark({ role: "user", content: [{ type: "text", text }] }, markFor({ lane, id, created_at: stamp(T0) } as any)) });
 
 test("a v2 person row is not proved by a message of this version that carries another row's mark", () => {
 	const row = { ...personRow("p1", "look", [], { sessionId: "s", cwd: "/p", createdBy: page }, T0), line: 2 as const, handed_at: stamp(T0 + 1000) };

@@ -145,8 +145,6 @@ export interface Copy {
 	abortedAtStart?: boolean;
 	/** The row whose mark pi's entry of this copy carries, when it carries one. */
 	markedAs?: string;
-	/** The row this copy was handed for left its queue while pi held the copy (a stop, a cancel or an exit took it out), though a row of the same id may be queued again. */
-	rowLeft?: boolean;
 	/**
 	 * A person's own page message written with no mark: another extension changed its words, and the
 	 * window did not know it by them. The row goes back to the page, once.
@@ -908,8 +906,6 @@ function watchedStore(world: World, fuse: Fuse, remover?: Process, removed: () =
 				for (const item of [pi.current, ...pi.queue]) if (item?.copy && item.copy.rowId === target && item.copy.wake === "turn" && !item.copy.gaveUp) item.copy.stopNamed = true;
 			}
 			world.facts.removals.push(removal);
-			// A copy pi still holds was handed for this row: a row of the same id queued later is another one.
-			for (const copy of world.copies) if (copy.sessionId === sessionId && copy.rowId === row.id && copy.state !== "written") copy.rowLeft = true;
 			// A row queued again with the same id after this (a loop's slot) is a new request, which the clear did not name.
 			for (const copy of world.cleared) if (copy.sessionId === sessionId && copy.rowId === row.id) world.clearedLeft.add(copy);
 		}

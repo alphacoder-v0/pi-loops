@@ -31,7 +31,7 @@ test("a row the background cannot run does not cost a read of the conversation o
 		const row = inboxClaimRow(text, "f1", { sessionId, cwd: dir, createdBy: { pid: 1, instance: "w", version: "0" } });
 		// A message with another row's mark, of the same length as this row's id: swapped later, the file keeps its size.
 		const other = "x".repeat(row.id.length);
-		sm.appendMessage({ role: "user", content: "x".repeat(text.length), piLoopsRow: { lane: sessionId, id: other }, timestamp: Date.now() } as any);
+		sm.appendMessage({ role: "user", content: "x".repeat(text.length), piLoopsRow: { lane: sessionId, id: other, at: row.created_at }, timestamp: Date.now() } as any);
 		const old = new Date(Date.now() - 10 * 60_000);
 		fs.utimesSync(file, old, old);
 		fs.mkdirSync(path.join(dir, "leases"), { recursive: true });

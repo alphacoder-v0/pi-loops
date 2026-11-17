@@ -130,7 +130,7 @@ export function claimOf(text: string, slots: readonly Slot[]): Claim {
  * - A slot whose row left the file (`left`) never goes into `gone`.
  * - Other slots leave with no stop or on a stop in a terminal, and stay on a stop in the page's pi.
  */
-export function settleSlots(slots: readonly Slot[], how: { aborted: boolean; terminal: boolean }, landed: (id: string) => boolean): Settled {
+export function settleSlots(slots: readonly Slot[], how: { aborted: boolean; terminal: boolean }, landed: (mark: RowMark) => boolean): Settled {
 	const kept: Slot[] = [];
 	const goneOf = new Map<string, Gone>();
 	const keeps = how.aborted && !how.terminal;
@@ -142,13 +142,13 @@ export function settleSlots(slots: readonly Slot[], how: { aborted: boolean; ter
 		const gone = slot.whose !== "append" && slot.left ? new Map<string, Gone>() : goneOf;
 		const unwritten = slot.stop ? "stopped" : how.aborted ? "dropped" : "lost";
 		if (slot.whose === "turn") {
-			if ((slot.at === "started" || !slot.left) && landed(slot.mark.id)) continue;
+			if ((slot.at === "started" || !slot.left) && landed(slot.mark)) continue;
 			if (slot.at === "unstarted" || (slot.at === "held" && keeps)) kept.push(slot);
 			else gone.set(slot.mark.id, slot.at === "started" && !slot.stop ? "lost" : unwritten);
 			continue;
 		}
 		// Pi wrote it: the entry carries its mark, and the slot is done with.
-		if (landed(slot.mark.id)) continue;
+		if (landed(slot.mark)) continue;
 		if (slot.whose === "append") {
 			if (keeps) kept.push(slot);
 			else gone.set(slot.mark.id, unwritten);

@@ -84,7 +84,7 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 	const liveClaims = (): string[] => real.list(SESSION).flatMap((row) => (row.run && proc.alive && proc.running?.rowId === row.id ? [row.id] : []));
 	// A held turn writes its prompt with no extension of ours loaded: the prefix, no mark. A window
 	// writes the row's mark into the entry of the message pi writes for it (src/mark.ts).
-	const write = (id: string, marked = false): void => void entries.push({ type: "message", timestamp: stamp(now), message: { role: "user", content: `[Trigger ${id}] go`, ...(marked ? { piLoopsRow: { lane: SESSION, id } } : {}) } });
+	const write = (id: string, markedAt?: string): void => void entries.push({ type: "message", timestamp: stamp(now), message: { role: "user", content: `[Trigger ${id}] go`, ...(markedAt ? { piLoopsRow: { lane: SESSION, id, at: markedAt } } : {}) } });
 	const proof = () => proofOf(SESSION, () => entries, () => records);
 
 	/** Why row `id` may leave now, read before it is removed; a violation when nothing accounts for it. */
@@ -219,7 +219,7 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 			const live = liveClaims();
 			if (live.length) fail(`the window ran ${row.id} beside the run of ${live.join(", ")}`);
 			if (prompts(row.id) > 0) fail(`the window ran ${row.id} though its prompt is in the conversation`);
-			write(row.id, true);
+			write(row.id, row.created_at);
 		},
 		append: (row) => fail(`${row.id} was appended: this queue has turn rows only`),
 		abort: () => undefined,

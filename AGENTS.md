@@ -172,10 +172,7 @@ SIM_SEED=<seed> SIM_SCHEDULES=1 PI_LOOPS_HOST=off node --import ./src/register-p
 
 A check named in `KNOWN` (`test/sim/invariants.ts`) is a defect of `src/` the simulation found and
 nobody has fixed: it runs under `todo`, visible and not red. Fix the defect, then take the name out.
-`KNOWN` holds one: a turn a stop named keeps its mark when pi begins it while its row is still
-queued, and that mark proves a row of the same id queued again later (main has it too; the fix puts
-the enqueue time in the mark). Every other check holds in every world, the ones with a rewriting
-extension too.
+`KNOWN` is empty: every check holds in every world, the ones with a rewriting extension too.
 
 `test/sim-model.test.ts` holds the simulated pi to what a real pi was measured to do, in scenes
 written out step by step: what the page's Stop keeps and when pi writes it, what Esc in a terminal

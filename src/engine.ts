@@ -21,7 +21,7 @@ import { type LeaseHolder, type LeaseStore, type ProcessProbe, type SessionLease
 import { withinProject } from "./paths.ts";
 import { type ImageContent, type RequestMode, type RequestStore, type Row, imageRef, type UnclaimedRow, type ClaimedRow } from "./requests.ts";
 import type { LockOptions } from "./lock.ts";
-import { markOn } from "./mark.ts";
+import { markOn, marksRow } from "./mark.ts";
 /** Why pi no longer has a row it was handed and did not write (the window's `settleSlots`). */
 export type Gone = "stopped" | "dropped" | "lost";
 import { backoffFor } from "./backoff.ts";
@@ -352,11 +352,11 @@ export function dropContinuations(store: RequestStore, sessionId: string, self: 
  * conversation, which need not show what this window wrote, and would run it a second time.
  * Returns the ids marked.
  */
-export function releaseLocalRows(store: RequestStore, sessionId: string, self: Producer, deliveredHere: (id: string) => boolean, now = Date.now()): string[] {
+export function releaseLocalRows(store: RequestStore, sessionId: string, self: Producer, deliveredHere: (row: Row) => boolean, now = Date.now()): string[] {
 	const mine = store.list(sessionId).filter((row) => isLocal(row) && row.created_by.left === undefined && sameProducer(row.created_by, self));
-	const ran = mine.filter((row) => deliveredHere(row.id));
+	const ran = mine.filter((row) => deliveredHere(row));
 	if (ran.length) store.remove(sessionId, ran.map((row) => row.id));
-	const left = mine.filter((row) => !deliveredHere(row.id));
+	const left = mine.filter((row) => !deliveredHere(row));
 	for (const row of left) store.update(sessionId, row.id, { created_by: { ...row.created_by, left: stamp(now) } });
 	return left.map((row) => row.id);
 }
@@ -367,8 +367,8 @@ export function releaseLocalRows(store: RequestStore, sessionId: string, self: P
  * conversation is done, not queued: the goal's next continuation is written while the last one is
  * still in the file, waiting for the drain that removes it. Returns whether it was written.
  */
-export function enqueue(store: RequestStore, row: UnclaimedRow, delivered: (id: string) => boolean = () => false, lock?: LockOptions): boolean {
-	return store.appendIfAbsent(row, { collapse: true, done: (queued) => delivered(queued.id) }, lock);
+export function enqueue(store: RequestStore, row: UnclaimedRow, delivered: (row: Row) => boolean = () => false, lock?: LockOptions): boolean {
+	return store.appendIfAbsent(row, { collapse: true, done: (queued) => delivered(queued) }, lock);
 }
 
 /**
@@ -405,7 +405,7 @@ export function waitingLine(source: Row["source"], id: string, name?: string): s
 /** What a window's hand-over needs: its store, whether a row's proof is in its conversation, its executor's `produced`, and its drain. */
 export interface HandOverDeps {
 	store: RequestStore;
-	delivered(id: string): boolean;
+	delivered(row: Row): boolean;
 	produced(row: Row): void;
 	drain(): Promise<DrainResult | undefined>;
 }
@@ -573,8 +573,8 @@ export function promotionView(leases: Pick<LeaseStore, "read" | "list">, cwd: st
 
 /** What a row's proof of delivery is read from: the conversation, as `landed` asks it. */
 export interface Proof {
-	/** Whether an entry of the session the row writes into carries the mark of this lane and this id (src/mark.ts). False when that session has no file. */
-	has(id: string): boolean;
+	/** Whether an entry of the session the row writes into carries the mark of this lane, this id and this generation (`created_at`, src/mark.ts). False when that session has no file. */
+	has(row: Pick<Row, "id" | "created_at">): boolean;
 	/** The proof of a version before marks, for a row of a version 2 line only (`OlderRow`): its prefix, or its words after its hand-over stamp, in an entry with no mark. */
 	older(row: OlderRow): boolean;
 	/**
@@ -595,14 +595,15 @@ export interface Proof {
 }
 
 /**
- * Whether `row`'s delivery is in the conversation: an entry carries its mark. One rule for every
+ * Whether `row`'s delivery is in the conversation: an entry carries its mark, which names its lane,
+ * its id and when it was queued, so a row of the same id queued again is not proved by it. One rule for every
  * row, whoever produced it and whatever its words. Two fenced rules beside it, each reached only by
  * the row's type: a claimed row's held turn (its prefix: `Proof.heldRunWrote`), and a row of a version
  * 2 line, which an older version may have delivered unmarked (`Proof.older`). No words prove a row
  * of this version.
  */
 export function landed(row: Row, proof: Proof): boolean {
-	if (proof.has(row.id)) return true;
+	if (proof.has(row)) return true;
 	if (row.run) return proof.heldRunWrote(row);
 	const old = olderRow(row);
 	return old !== undefined && proof.older(old);
@@ -690,10 +691,10 @@ export function claimAlive(row: ClaimedRow, probe: ProcessProbe = systemProbe): 
  */
 export function proofOf(lane: LaneId, entries: () => readonly unknown[], runs: () => readonly RunRecord[]): Proof {
 	return {
-		has: (id) =>
+		has: (row) =>
 			entries().some((entry) => {
 				const mark = markOn(entry);
-				return mark !== undefined && mark.lane === lane && mark.id === id;
+				return mark !== undefined && marksRow(mark, lane, row);
 			}),
 		older: (row) => olderProved(row, entries()),
 		heldRunWrote: (row) => conversationHas(entries(), row.id),

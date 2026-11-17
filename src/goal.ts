@@ -186,16 +186,19 @@ export function branchMovedSince(entries: Array<{ id: string; type: string; cust
 	return entries.slice(from + 1).some((e) => (e.type === "message" && e.message?.role === "user") || (e.type === "custom_message" && e.customType === TURN_TYPE));
 }
 
+/** One generation of a row: its id and when it was queued (src/mark.ts). */
+type RowGeneration = { id: string; created_at: string };
+
 /**
  * Whether a continuation is still on its way: a `goal` row queued for the session, or handed to pi
  * and not yet in the conversation. While one is, a settled turn is not judged again: the evaluator
  * charged `iterations` when it asked for that continuation, and the drain delivers it instead. Once
  * the continuation is in the conversation the turn it started is the next one to judge, so a row
- * whose id `delivered` already holds does not count.
+ * whose generation `delivered` already holds does not count.
  */
-export function continuationPending(queued: ReadonlyArray<{ id: string; source: string }>, inFlight: Iterable<string>, delivered: (id: string) => boolean): boolean {
-	if (queued.some((row) => row.source === "goal" && !delivered(row.id))) return true;
-	for (const id of inFlight) if (id.startsWith("goal-") && !delivered(id)) return true;
+export function continuationPending(queued: ReadonlyArray<RowGeneration & { source: string }>, inFlight: Iterable<RowGeneration>, delivered: (row: RowGeneration) => boolean): boolean {
+	if (queued.some((row) => row.source === "goal" && !delivered(row))) return true;
+	for (const row of inFlight) if (row.id.startsWith("goal-") && !delivered(row)) return true;
 	return false;
 }
 
@@ -205,7 +208,7 @@ export function continuationPending(queued: ReadonlyArray<{ id: string; source: 
  * delivers that one instead; then drain, unless the evaluator just handed a continuation over, since
  * pi may not report itself busy with it yet and a second turn row would be queued behind it.
  */
-export async function settledTurn(queued: ReadonlyArray<{ id: string; source: string }>, inFlight: Iterable<string>, delivered: (id: string) => boolean, evaluate: () => Promise<boolean>, drain: () => Promise<unknown>): Promise<{ pending: boolean; continued: boolean }> {
+export async function settledTurn(queued: ReadonlyArray<RowGeneration & { source: string }>, inFlight: Iterable<RowGeneration>, delivered: (row: RowGeneration) => boolean, evaluate: () => Promise<boolean>, drain: () => Promise<unknown>): Promise<{ pending: boolean; continued: boolean }> {
 	const pending = continuationPending(queued, inFlight, delivered);
 	const continued = !pending && (await evaluate());
 	if (!continued) await drain();
