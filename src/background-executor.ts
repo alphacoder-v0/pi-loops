@@ -480,8 +480,8 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 		const gateOf = (row: UnclaimedRow): string | undefined => {
 			const job = jobs.find((item) => item.id === jobId);
 			if (!job || !job.enabled || row.source.startsWith("cron-run:")) return undefined;
-			// Main's order: the directory, the budget, a failure's backoff (which says nothing of its own,
-			// so the failure stays the reason), then the slots.
+			// Main's order: the directory, the budget, a failure's backoff, then the slots. A row in its
+			// backoff is not "deferred": the backoff writes no reason of its own.
 			const backingOff = row.not_before !== undefined && Date.parse(row.not_before) > now;
 			return loopWait({ cwd: job.cwd, cwdMissingSince: missingSince(jobId) }, {
 				cwdExists: deps.cwdExists,
