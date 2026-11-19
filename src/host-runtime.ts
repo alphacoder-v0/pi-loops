@@ -554,6 +554,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			await loops.stop(5_000);
 			for (const run of runs.all()) run.ctrl.abort();
 			await Promise.race([Promise.allSettled([...plainRuns]), new Promise((resolve) => setTimeout(resolve, 5_000).unref())]);
+			// A held turn that claimed its row while the loops stopped is in the list only now: stopped too.
+			for (const run of runs.all()) run.ctrl.abort();
 			// The runs are over; their hooks may still be in flight. Same bounded wait as the
 			// interactive path, so a "the run failed" webhook survives the host being told to quit.
 			await Promise.all([...runHooks.values()].map((h) => h.drain(3000)));

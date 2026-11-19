@@ -1,5 +1,5 @@
 /**
- * Where a job runs, as one question the scheduler, the lists and `/cron run` all ask the same way.
+ * Where a job runs, as one question the clock, the lists and `/cron run` all ask the same way.
  *
  * A stateful loop belongs to the machine: the host runs it. A plain job
  * belongs to the session that created it — its result is a message in that conversation, so it
@@ -91,7 +91,7 @@ export function whereRuns(job: Owned, view: OwnerView): Where {
 	return view.hostPaused ? { kind: "paused", reason: view.hostPaused } : { kind: "host" };
 }
 
-/** Would this instance dispatch the job? (Only the host's scheduler is given loops.) */
+/** Would this instance dispatch the job? (Only pi-loops in the background runs loops.) */
 export function runsHere(job: Owned, view: OwnerView): boolean {
 	const where = whereRuns(job, view).kind;
 	return where === "machine" || where === "here";

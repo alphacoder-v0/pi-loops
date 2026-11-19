@@ -116,6 +116,20 @@ test("[T2-row] The slot row has its derived id, collapse key and failure backoff
 	assert.equal(cursorMove(decision).fires, true);
 });
 
+test("[T2-replaces-refused] In a window, the next slot is not collapsed onto a plain job's row pi refused: that row goes, and the slot's own row takes its place.", () => {
+	const j = job({ stateful: false, sessionId: "s" });
+	const data = input([j]);
+	data.view = { ...data.view, kind: "window" };
+	const refused = { ...row("run-refused"), lane: "s", attempts: 1 };
+	data.view.read.set(j.id, { rows: [refused], cwdMissing: false, history: undefined });
+	data.view.mine.set(j.id, { kind: "plain", epoch: 1 });
+	const [decision] = decideTick(data);
+	assert.equal(decision.do, "row");
+	if (decision.do !== "row") return;
+	assert.equal(decision.replaces, "run-refused");
+	assert.equal(decision.row.id, plainRunId(j.id, decision.slot));
+});
+
 test("[collapse-own-id] A queued row for the slot moves only the cursor.", () => {
 	const j = job();
 	const slot = stamp(now);

@@ -89,7 +89,7 @@ src/open-file.ts            the 0600 file `pi-loops` opens the browser on, so th
 src/browser-open.ts         which command opens a browser on each platform (WSL included), and whether one did
 src/page-children.ts        one `pi --mode rpc` per conversation open in the page: spawn, JSONL, idle stop and cap, orphans stopped
 src/held-read.ts            how big a conversation this process parses, and whether a conversation's file is readable here
-src/host-runtime.ts         what pi-loops runs (scheduler + triggers + per-request tools), the one list of its runs, and the wiring of the background executor
+src/host-runtime.ts         what pi-loops runs (the ticker's riders, the loop lanes, triggers, per-request tools), the one list of its runs, and the wiring of the background executor
 src/background-executor.ts  what pi-loops in the background does to the queue of a closed conversation: takes its lease, delivers a rule's result, claims a plain job's row, runs its turn and closes it
 src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid, or by a terminal from the page's pi (`page`) while no turn runs (`turnSince`)
 src/requests.ts             requests/<lane>.jsonl: what is addressed to a lane (a conversation's is its session id), kept until it is in it (the row, claimed or not, append, remove, claim)
