@@ -480,10 +480,13 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 		const gateOf = (row: UnclaimedRow): string | undefined => {
 			const job = jobs.find((item) => item.id === jobId);
 			if (!job || !job.enabled || row.source.startsWith("cron-run:")) return undefined;
+			// Main's order: the directory, the budget, a failure's backoff (which says nothing of its own,
+			// so the failure stays the reason), then the slots.
+			const backingOff = row.not_before !== undefined && Date.parse(row.not_before) > now;
 			return loopWait({ cwd: job.cwd, cwdMissingSince: missingSince(jobId) }, {
 				cwdExists: deps.cwdExists,
 				budget: () => budgetState(stores.jobs, deps.budgetCap(), now),
-				slots: () => ({ inUse: slots.inUseCount, free: slots.free, limit: slots.limit }),
+				...(backingOff ? {} : { slots: () => ({ inUse: slots.inUseCount, free: slots.free, limit: slots.limit }) }),
 			}, now);
 		};
 		const executor: Executor = {
