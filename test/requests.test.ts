@@ -382,3 +382,16 @@ test("appending a row with the reader field never writes it", () => {
 	const written = JSON.parse(fs.readFileSync(store.file("s"), "utf8"));
 	assert.equal(Object.hasOwn(written, "line"), false);
 });
+
+test("[collapse-skipped] a skip is counted only on a row whose run goes, and a new claim starts with none (a retry is not skipping)", () => {
+	const store = new RequestStore(tmp());
+	store.append(row("loop-row"));
+	store.collapse("s", "loop-row", "2026-01-01T00:01:00.000Z", true);
+	assert.equal(store.list("s")[0].skipped, undefined, "a row that waits to start skips nothing");
+	assert.equal(store.claim("s", "loop-row", { id: "run-1", pid: process.pid, started_at: "2026-01-01T00:01:30.000Z" } as any), true);
+	store.collapse("s", "loop-row", "2026-01-01T00:02:00.000Z", true);
+	assert.equal(store.list("s")[0].skipped, 1);
+	store.update("s", "loop-row", { run: undefined, attempts: 1 });
+	assert.equal(store.claim("s", "loop-row", { id: "run-1", pid: process.pid, started_at: "2026-01-01T00:03:00.000Z" } as any), true);
+	assert.equal(store.list("s")[0].skipped, undefined, "the retry has skipped nothing yet");
+});

@@ -8,8 +8,9 @@ import { spawnSync } from "node:child_process";
 import { loadConfig } from "../src/config.ts";
 import { createHostRuntime } from "../src/host-runtime.ts";
 import { RUNTIME_RIDERS } from "../src/ticker.ts";
-import { loopLane } from "../src/lane.ts";
+import { loopLane, parseLane } from "../src/lane.ts";
 import { plainJobRow, plainRunId } from "../src/engine.ts";
+import { listedJobs } from "../src/job-status.ts";
 import { tmp } from "./tmp.ts";
 
 const USAGE = { input: 1, output: 1, cost: 0, turns: 1 };
@@ -183,4 +184,72 @@ test("[waiting-backoff] A row in its failure's backoff is not 'deferred' by the 
 		await tick(host, t0 + 1000);
 		assert.equal(host.stores.requests.list(waiting.lane).find((row) => row.id === waiting.row.id)?.waiting, undefined);
 	} finally { release?.(); await host.stop(); }
+});
+
+test("[run-now-spends-waiting] /cron run of an every loop whose slot waits for a free slot spends that slot, as main moved the last fire: it runs once, and the lists name no wait", async () => {
+	const dir = tmp();
+	fs.writeFileSync(path.join(dir, "config.toml"), "[cron]\nmax_concurrent_runs = 1\n");
+	const calls: string[] = [];
+	let release: (() => void) | undefined;
+	const host = start(dir, async (req: any) => { calls.push(req.runId); if (calls.length === 1) await new Promise<void>((resolve) => { release = resolve; }); return OK; });
+	const t0 = Date.now();
+	const holder = "cron-fedcba9876543210fedcba9876543210";
+	await host.stores.jobs.add({ ...loop(dir, t0, 600_000), id: holder } as any);
+	try {
+		await tick(host, t0);
+		await host.stores.jobs.add(loop(dir, t0, 600_000) as any);
+		await tick(host, t0 + 1000);
+		assert.equal(host.stores.requests.list(loopLane(ID)!).filter((row) => !row.run)[0]?.waiting, "deferred: 1 sub-agent(s) already in flight (max 1)");
+		assert.equal(await host.loops.runNow(ID), true);
+		await host.drain(2000);
+		release?.();
+		await host.drain(2000);
+		await tick(host, t0 + 2000);
+		await tick(host, t0 + 3000);
+		assert.equal(calls.length, 2, "the holder once, this loop once by /cron run");
+		assert.deepEqual(host.stores.requests.list(loopLane(ID)!), [], "no row of this loop waits");
+		assert.equal(listedJobs(host.stores).find((job) => job.id === ID)?.lastError, undefined);
+	} finally { release?.(); await host.stop(); }
+});
+
+test("[overlap-at-drain] A scheduled row that waits beside a run of the same loop that started before the drain is a skipped overlap, as main's tick skipped it: counted on the running row and spent", async () => {
+	const dir = tmp();
+	const host = start(dir, async () => OK);
+	const t0 = Date.now();
+	const job = loop(dir, t0, 600_000, { schedule: { kind: "cron", expr: "*/10 * * * *" } }) as any;
+	await host.stores.jobs.add(job);
+	const lane = loopLane(ID)!;
+	const slot = new Date(t0 - 120_000).toISOString();
+	const waiting = plainJobRow(job, plainRunId(ID, slot), `cron:${ID}`, "", { pid: process.pid, instance: "x", version: "0" } as any, t0 - 120_000);
+	host.stores.requests.appendIfAbsent({ ...waiting, lane, payload: { ...waiting.payload!, slot } } as any);
+	const asked = plainJobRow(job, "run-asked", `cron-run:${ID}`, "", { pid: process.pid, instance: "x", version: "0" } as any, t0 - 60_000);
+	host.stores.requests.appendIfAbsent({ ...asked, lane } as any);
+	host.stores.requests.update(lane, "run-asked", { run: { id: "run-asked", pid: process.pid, started_at: new Date(t0 - 60_000).toISOString() } } as any);
+	try {
+		await host.loops.drain(parseLane(lane) as any, t0);
+		const rows = host.stores.requests.list(lane) as any[];
+		assert.deepEqual(rows.map((row) => [row.id, row.collapsed, row.collapsed_slot, row.skipped]), [["run-asked", 1, slot, 1]]);
+		assert.equal(host.stores.jobs.load().find((j) => j.id === ID)?.skippedOverlap, 1);
+		assert.equal(listedJobs(host.stores, () => true).find((j) => j.id === ID)?.lastError, "skipped: previous run still active");
+	} finally { await host.stop(); }
+});
+
+test("[overlap-not-disabled] A disabled loop's waiting row is no overlap: main passed over a disabled job before its overlap check, so the slot stays owed", async () => {
+	const dir = tmp();
+	const host = start(dir, async () => OK);
+	const t0 = Date.now();
+	const job = loop(dir, t0, 600_000, { schedule: { kind: "cron", expr: "*/10 * * * *" }, enabled: false }) as any;
+	await host.stores.jobs.add(job);
+	const lane = loopLane(ID)!;
+	const slot = new Date(t0 - 120_000).toISOString();
+	const waiting = plainJobRow(job, plainRunId(ID, slot), `cron:${ID}`, "", { pid: process.pid, instance: "x", version: "0" } as any, t0 - 120_000);
+	host.stores.requests.appendIfAbsent({ ...waiting, lane, payload: { ...waiting.payload!, slot } } as any);
+	const asked = plainJobRow(job, "run-asked", `cron-run:${ID}`, "", { pid: process.pid, instance: "x", version: "0" } as any, t0 - 60_000);
+	host.stores.requests.appendIfAbsent({ ...asked, lane } as any);
+	host.stores.requests.update(lane, "run-asked", { run: { id: "run-asked", pid: process.pid, started_at: new Date(t0 - 60_000).toISOString() } } as any);
+	try {
+		await host.loops.drain(parseLane(lane) as any, t0);
+		assert.deepEqual(host.stores.requests.list(lane).map((row) => row.id).sort(), [waiting.id, "run-asked"].sort());
+		assert.equal(host.stores.jobs.load().find((j) => j.id === ID)?.skippedOverlap, 0);
+	} finally { await host.stop(); }
 });
