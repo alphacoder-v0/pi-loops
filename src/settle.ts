@@ -193,9 +193,9 @@ export function loopEnd(record: RunRecord, history: JobHistory): LoopEnd {
 export interface LoopSettlement {
 	readonly row:
 		| { readonly do: "leave"; readonly exit: "delivered"; readonly successor?: true }
-		| { readonly do: "leave"; readonly exit: "stopped" }
+		| { readonly do: "leave"; readonly exit: "stopped" | "parked" }
 		| { readonly do: "owed" }
-		| { readonly do: "retry"; readonly attempts: number; readonly why: string }
+		| { readonly do: "retry"; readonly attempts: number; readonly why: string; readonly wait: false }
 		| { readonly do: "dead"; readonly attempts: number; readonly why: string };
 	readonly job?: { readonly disabled: Disabled };
 	readonly runs?: number;
@@ -227,11 +227,13 @@ export function settleLoop(row: ClaimedRow, job: Pick<LoopJobV3, "id" | "name" |
 		return { row: { do: "leave", exit: "stopped" } };
 	}
 	if (cell.row === "owed" || !alone) return { row: { do: "owed" } };
+	// As main: the slot whose run was interrupted runs again at the next tick, with no wait, and the
+	// third interruption in a row parks the job; the row leaves with it, and nothing goes to the inbox.
 	const attempts = row.attempts + 1;
-	if (attempts < DEAD_AFTER_ATTEMPTS) return { row: { do: "retry", attempts, why: INTERRUPTED } };
+	if (attempts < DEAD_AFTER_ATTEMPTS) return { row: { do: "retry", attempts, why: INTERRUPTED, wait: false } };
 	if (!job) return { row: { do: "dead", attempts, why: INTERRUPTED } };
 	return {
-		row: { do: "dead", attempts, why: INTERRUPTED },
+		row: { do: "leave", exit: "parked" },
 		job: { disabled: { code: "interrupted", at: end.at, why: `parked: its last ${attempts} runs were interrupted before they finished (the process running them stopped each time, with no other loop running; see host.log) — /cron enable ${job.id} to try again` } },
 	};
 }

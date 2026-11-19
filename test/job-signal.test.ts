@@ -44,6 +44,12 @@ test("the streak is counted from the newest run whatever the window, and a findi
 	assert.equal(loopSignal("j", [], [], 0).quiet, 0);
 });
 
+test("a run its process took down is not part of the quiet streak: it looked at nothing", () => {
+	const down = (daysAgo: number) => run(daysAgo, 0, { ok: false, interrupted: true, error: "the process running it stopped" });
+	assert.equal(loopSignal("j", [run(5, 1), down(3), down(2), down(1)], [], now - 30 * DAY).quiet, 0);
+	assert.equal(loopSignal("j", [run(5, 0), down(3), run(2, 0), down(1)], [], now - 30 * DAY).quiet, 2);
+});
+
 test("a loop with no findings yet has no summary; one with only findings says just that", () => {
 	assert.equal(signalSummary(loopSignal("j", [run(1, 0)], [], 0)), undefined);
 	assert.equal(signalSummary(loopSignal("j", [run(1, 1)], [entry(1, "new")], 0)), "1 finding");

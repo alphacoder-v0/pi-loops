@@ -42,7 +42,10 @@ src/backoff.ts              the one table of waits after a failure: a row, a loo
 src/job-status.ts           what a list shows for one job, folded from its clock, rows and run history
 src/clock.ts                the schedule cursor, pure tick decisions and their compare-and-set writes
 src/settle.ts               how a plain job's turn ends, as one table: what becomes of its row and of its job, for each way a run ends
-src/scheduler.ts            tick loop, due/catch-up/overlap, sub-agent runs, checker; pi-loops runs loops, a window its conversation's plain jobs; the clock that writes a plain job's row, in a window and, under the lease the background executor took, in the background
+src/scheduler.ts            no longer fires anything: the clock rider writes every slot and the lanes run them. A window still builds one for `ownerView` (which plain jobs its clock fires), `runningRuns`, `runningCount` and `abortRun`; pi-loops in the background builds one too, as `HostRuntime.scheduler`, and stops it at its stop; the control channel and `src/tools.ts` fall back to it when they have no run list or stores; and `SessionSnapshot`, `PlainJobLeases` and a second `DEFAULT_RUN_TIMEOUT_MS` are still declared in it, imported by `src/loop-run.ts`, `src/tools.ts`, `src/host.ts`, `src/host-runtime.ts` and `src/pi-loops.ts`. M4b.5 moves these and deletes it
+src/loop-run.ts              one loop run, its stop record, and its ordered closing writes
+src/ticker.ts               one process timer and its typed, ordered riders
+src/stores.ts               stores of a loops directory, opened once, and job removal
 src/trigger-runtime.ts      dynamic-rule evaluation, deliveries, promotion, audit
 src/triggers.ts             rule store, parsing, prompt, dedup window
 src/goal.ts                 /goal: the stop-condition state machine, evaluator prompts, continuation budget
@@ -195,7 +198,10 @@ answered twice, that no attempt or failure is counted twice, and that no row is 
 
 A fourth simulation, `test/sim-clock.test.ts`, interleaves real clock writes from multiple tickers,
 crashes between T2 and T3, then drains rows through real proofs and loop settlement. It checks I1:
-one row per job and slot, including cursor commits, fires, collapses and spent runs.
+one row per job and slot, including cursor commits, fires, collapses and spent runs. It runs 200
+schedules by default. An interleaving that random schedules reach only rarely is not left to a larger
+count: it is a scene of its own in `test/clock-scenes.test.ts`, which drives the real code step by
+step in milliseconds.
 
 `check:docs` is there because nothing else in CI reads a README: 0.17.0 was tagged green with an
 install line that answered 404. It holds every install command in every document to what

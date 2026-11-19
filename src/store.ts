@@ -128,6 +128,12 @@ export interface RunRequester {
 	sessionId: string;
 }
 
+export interface ProcessStop {
+	readonly pid: number;
+	readonly procStart?: string;
+	readonly runs: readonly string[];
+}
+
 export interface RunRecord {
 	runId: string;
 	jobId: string;
@@ -182,6 +188,10 @@ export interface RunRecord {
 	 * this one: `ok: false`, `error: "the process running it stopped"`. Never beside `aborted`.
 	 */
 	interrupted?: true;
+	/** The request row this run claimed. */
+	row?: string;
+	/** Other loop runs stopped by the same process death. */
+	stop?: ProcessStop;
 }
 
 export interface CheckerRecord {
@@ -449,6 +459,21 @@ export class JobStore {
 		});
 	}
 
+	/** Synchronous read-modify-write for the synchronous clock port. */
+	mutateSync<T>(fn: (jobs: LoopJob[]) => { jobs: LoopJob[]; result: T }): T {
+		return withFileLockSync(this.lockPath, () => {
+			const before = this.read();
+			const { jobs, result } = fn(this.parse(before));
+			if (before === undefined && !jobs.length) return result;
+			const next = this.serialize(jobs);
+			if (next !== before) {
+				if (before !== undefined) this.backup(before);
+				writeFileAtomic(this.jobsFile, next);
+			}
+			return result;
+		});
+	}
+
 	/** Update one job in place. Returns the updated job, or undefined when it no longer exists. */
 	async update(id: string, patch: (job: LoopJob) => void): Promise<LoopJob | undefined> {
 		return this.mutate((jobs) => {
@@ -460,6 +485,25 @@ export class JobStore {
 
 	async add(job: LoopJob): Promise<LoopJob> {
 		return this.mutate((jobs) => ({ jobs: [...jobs, job], result: job }));
+	}
+
+	/** Turn a job off with its reason. A job already off keeps the reason it has. */
+	async disable(id: string, disabled: Disabled): Promise<LoopJob | undefined> {
+		return this.update(id, (job) => {
+			if (!job.enabled) return;
+			job.enabled = false;
+			if (disabled.why !== "disabled by a person") job.lastError = disabled.why;
+		});
+	}
+
+	/** Turn a job on, and forget why it was off. */
+	async enable(id: string): Promise<LoopJob | undefined> {
+		return this.update(id, (job) => {
+			job.enabled = true;
+			job.lastError = undefined;
+			job.interruptions = undefined;
+			delete (job as LoopJob & { disabled?: unknown }).disabled;
+		});
 	}
 
 	/**
@@ -604,6 +648,26 @@ export class JobStore {
 		});
 	}
 
+	appendRunOnce(make: (records: readonly RunRecord[]) => RunRecord | undefined): RunRecord | undefined {
+		fs.mkdirSync(this.dir, { recursive: true });
+		return withFileLockSync(this.runsLockPath, () => {
+			let text = "";
+			try { text = fs.readFileSync(this.runsFile, "utf8"); }
+			catch (err: any) { if (err?.code !== "ENOENT") throw err; }
+			const records = text.split("\n").flatMap((line) => {
+				try {
+					const value: unknown = JSON.parse(line);
+					return value !== null && typeof value === "object" && !Array.isArray(value) ? [value as RunRecord] : [];
+				} catch { return []; }
+			});
+			const record = make(records);
+			if (!record) return undefined;
+			fs.appendFileSync(this.runsFile, `${JSON.stringify(record)}\n`, "utf8");
+			this.rotateRuns();
+			return record;
+		});
+	}
+
 	listRuns(jobId?: string, limit = 20): RunRecord[] {
 		let text: string;
 		try {
@@ -616,7 +680,9 @@ export class JobStore {
 		for (const line of text.split("\n")) {
 			if (!line.trim()) continue;
 			try {
-				const rec = JSON.parse(line) as RunRecord;
+				const value: unknown = JSON.parse(line);
+				if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+				const rec = value as RunRecord;
 				if (!jobId || rec.jobId === jobId) out.push(rec);
 			} catch {
 				/* skip corrupt line */

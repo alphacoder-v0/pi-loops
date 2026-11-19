@@ -14,7 +14,12 @@ import { Type, type TSchema } from "typebox";
 import { previewRedacted } from "./redact.ts";
 import { computeNext, formatLocal, formatSchedule, parseSchedule, stamp } from "./schedule.ts";
 import type { LoopScheduler, SessionSnapshot } from "./scheduler.ts";
-import { MAX_PROMPT_BYTES, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
+import { removeJob } from "./stores.ts";
+import type { Stores } from "./stores.ts";
+import type { RunList } from "./run-list.ts";
+import { MAX_PROMPT_BYTES, type JobStore, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
+import type { RequestStore } from "./requests.ts";
+import type { Inbox } from "./inbox.ts";
 import { jobNameFrom } from "./job-name.ts";
 import { asleepNote, ownerSession, runsSomewhere, whereRuns, type OwnerView } from "./job-owner.ts";
 import { inProject } from "./inbox.ts";
@@ -38,9 +43,12 @@ export interface ControlPlaneRequest {
 
 /** What the tools need from whoever hosts them (the extension, a sub-session, the headless host). */
 export interface ToolHost {
-	scheduler: LoopScheduler;
+	stores?: Stores;
+	scheduler?: LoopScheduler;
+	runs?: RunList;
 	triggers: TriggerRuntime;
 	session(): SessionSnapshot;
+	owner?(): OwnerView;
 	createJob(input: CreateJobInput, scope?: JobScope): Promise<LoopJob>;
 	/** The cron_control_plane audit; returns the entry id. */
 	cronControlAudit(op: "add" | "enable" | "disable" | "remove", actor: "slash" | "tool" | "sub-agent", before?: LoopJob, after?: LoopJob): string;
@@ -56,6 +64,12 @@ export interface ToolHost {
 	 */
 	scheduledTurn?(): boolean;
 }
+
+type ToolStoresHost = Pick<ToolHost, "stores"> & { scheduler?: LoopScheduler };
+const jobsOf = (host: ToolStoresHost): JobStore => host.stores?.jobs ?? host.scheduler!.store;
+const requestsOf = (host: ToolStoresHost): RequestStore => host.stores?.requests ?? host.scheduler!.requests;
+const inboxOf = (host: ToolStoresHost): Inbox => host.stores?.inbox ?? host.scheduler!.inbox;
+const ownerOf = (host: Pick<ToolHost, "owner"> & { scheduler?: LoopScheduler }) => host.owner?.() ?? host.scheduler!.ownerView();
 
 export interface CreateJobInput {
 	schedule: LoopJob["schedule"];
@@ -158,8 +172,8 @@ export function checkJobInput(input: Pick<CreateJobInput, "schedule" | "prompt" 
 	return resolveJobCwd(session.cwd, input.cwd);
 }
 
-export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session" | "ensureHost">, input: CreateJobInput, scope?: JobScope): Promise<LoopJob> {
-	const existing = host.scheduler.store.load();
+export async function createLoopJob(host: ToolStoresHost & Pick<ToolHost, "session" | "ensureHost">, input: CreateJobInput, scope?: JobScope): Promise<LoopJob> {
+	const existing = jobsOf(host as ToolHost).load();
 	const cwd = checkJobInput(input, existing, host.session());
 	const job: LoopJob = {
 		id: newId("cron"),
@@ -190,7 +204,7 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 		runCount: 0,
 		skippedOverlap: 0,
 	};
-	await host.scheduler.store.add(job);
+	await jobsOf(host).add(job);
 	if (job.stateful) host.ensureHost?.();
 	return job;
 }
@@ -253,26 +267,26 @@ function nextRunForTool(job: LoopJob, now: number, view: OwnerView): number | un
 }
 
 /** A plain job's prompt waiting in its conversation's queue (src/engine.ts `queuedPrompt`); a loop has no queue. */
-function queuedForTool(job: LoopJob, host: Pick<ToolHost, "scheduler">, now: number): QueuedPrompt | undefined {
-	return !job.stateful && job.sessionId ? queuedPrompt(job, host.scheduler.requests.list(job.sessionId), now) : undefined;
+function queuedForTool(job: LoopJob, host: Pick<ToolHost, "stores">, now: number): QueuedPrompt | undefined {
+	return !job.stateful && job.sessionId ? queuedPrompt(job, requestsOf(host).list(job.sessionId), now) : undefined;
 }
 
 /** The run a job is in, for a tool result: a loop's marker, or the claim on a plain job's row. */
-function runningRunForTool(job: LoopJob, host: Pick<ToolHost, "scheduler">): string | undefined {
-	return runningRun(job, !job.stateful && job.sessionId ? host.scheduler.requests.list(job.sessionId) : []);
+function runningRunForTool(job: LoopJob, host: Pick<ToolHost, "stores">): string | undefined {
+	return runningRun(job, !job.stateful && job.sessionId ? requestsOf(host).list(job.sessionId) : []);
 }
 
 /** Cron jobs, rendered for a tool result. */
-function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session" | "scheduler">): string {
+function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session" | "stores" | "owner">): string {
 	if (!jobs.length) return "cron jobs: none";
 	const now = Date.now();
 	const lines = [`cron jobs: ${jobs.length}`];
 	// Read once for the listing, as `/cron` does; only loops have a signal to report.
-	const runs = jobs.some((j) => j.stateful) ? host.scheduler.store.allRuns() : [];
-	const inbox = jobs.some((j) => j.stateful) ? host.scheduler.inbox.list() : [];
+	const runs = jobs.some((j) => j.stateful) ? jobsOf(host).allRuns() : [];
+	const inbox = jobs.some((j) => j.stateful) ? inboxOf(host).list() : [];
 	for (const job of jobs) {
 		lines.push(`- ${job.id}${job.name ? ` "${job.name}"` : ""} [${job.enabled ? "enabled" : "disabled"}${job.stateful ? ", stateful" : ""}${job.verify ? ", verify" : ""}] schedule: ${formatSchedule(job.schedule)} action: ${previewRedacted(job.prompt, 120)}${job.cwd !== host.session().cwd ? ` cwd: ${job.cwd}` : ""}`);
-		const view = host.scheduler.ownerView();
+		const view = ownerOf(host);
 		const asleep = asleepNote(job, view);
 		const kind = whereRuns(job, view).kind;
 		if (asleep) lines.push(`  ${asleep}${kind === "asleep" ? " (no next run here)" : kind === "paused" ? " (no next run until pi-loops starts again)" : kind === "aside" ? "" : " (runs there, not here)"}`);
@@ -302,7 +316,7 @@ async function addRule(host: ToolHost, input: Parameters<TriggerStore["add"]>[0]
 	host.refreshBadge();
 	host.ensureHost?.();
 	return {
-		content: [{ type: "text" as const, text: `created dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}\nfire_once: ${rule.fireOnce}\npromote_to_chat: ${rule.promoteToChat}\n(checked every ${host.triggers.pollIntervalSecs}s by a sub-agent in the background)${pausedLine(host.scheduler.ownerView().hostPaused)}` }],
+		content: [{ type: "text" as const, text: `created dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}\nfire_once: ${rule.fireOnce}\npromote_to_chat: ${rule.promoteToChat}\n(checked every ${host.triggers.pollIntervalSecs}s by a sub-agent in the background)${pausedLine(ownerOf(host).hostPaused)}` }],
 		details: { id: rule.id as string | undefined, condition: rule.condition, action: rule.action, enabled: rule.enabled, fire_once: rule.fireOnce, fired_at: rule.firedAt, promote_to_chat: rule.promoteToChat },
 	};
 }
@@ -318,7 +332,7 @@ async function createCron(host: ToolHost, scope: ToolScope, input: CreateJobInpu
 	const where = job.stateful
 		? `Findings will appear in /inbox${job.verify ? " after an independent checker reviews them" : ""}. It runs in the background with ${tools}, not this window's -e extensions or flags.`
 		: `Its result will appear in this chat. While this chat is closed it still runs, in the background, and each run is a model turn. Its turns run with ${tools} under the dangerous-command guard: in an open window a dangerous command or a tool outside them asks the user first, and in the background it is refused. In the background they also run without this window's -e extensions or flags.`;
-	const runsAt = whereRuns(job, host.scheduler.ownerView());
+	const runsAt = whereRuns(job, ownerOf(host));
 	// Three lines — what was created, when it runs, what it will do — then where its output goes.
 	return {
 		content: [{ type: "text" as const, text: `created cron job ${job.id}${job.name ? ` "${job.name}"` : ""}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}\n${job.stateful ? "[stateful] " : ""}next run ${next ? stamp(next) : "—"}. ${where}${pausedLine(runsAt.kind === "paused" ? runsAt.reason : undefined)}` }],
@@ -497,7 +511,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 				const draft = { schedule, prompt: params.action, verify: params.verify ?? false, name: params.name, catchUp: params.catch_up };
 				let cwd: string;
 				try {
-					cwd = checkJobInput({ ...draft, stateful: where === "inbox", cwd: params.cwd }, host.scheduler.store.load(), host.session());
+					cwd = checkJobInput({ ...draft, stateful: where === "inbox", cwd: params.cwd }, jobsOf(host).load(), host.session());
 				} catch (err: any) {
 					return deny(err?.message ?? String(err));
 				}
@@ -523,14 +537,14 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		async execute(_id, params) {
 			const listCwd = host.session().cwd;
 			const everywhere = params.all_projects === true && scope.hop === 0;
-			const jobs = everywhere ? host.scheduler.store.load() : host.scheduler.store.load().filter((j) => sameProject(j.cwd, listCwd));
-			const newFindings = everywhere ? host.scheduler.inbox.newCount() : inProject(host.scheduler.inbox.listNew(), listCwd, sameProject).length;
+			const jobs = everywhere ? jobsOf(host).load() : jobsOf(host).load().filter((j) => sameProject(j.cwd, listCwd));
+			const newFindings = everywhere ? inboxOf(host).newCount() : inProject(inboxOf(host).listNew(), listCwd, sameProject).length;
 			const text = `${renderCronJobsForTool(jobs, host)}\ninbox: ${plural(newFindings, "new finding")}`;
 			const nowMs = Date.now();
-			const view = host.scheduler.ownerView();
+			const view = ownerOf(host);
 			const nextRun = (j: LoopJob) => nextRunForTool(j, nowMs, view);
 			const heldBy = (j: LoopJob) => { const where = whereRuns(j, view); return where.kind === "terminal" ? where.pid : undefined; };
-			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: host.scheduler.store.jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: runningRunForTool(j, host), last_due_at: j.lastDueAt, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, consecutive_failures: j.consecutiveFailures, skipped_overlap_count: j.skippedOverlap, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: whereRuns(j, view).kind === "asleep" || undefined, held_by_pid: heldBy(j), queued: queuedForTool(j, host, nowMs), created_at: j.createdAt })) } };
+			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: jobsOf(host).jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: runningRunForTool(j, host), last_due_at: j.lastDueAt, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, consecutive_failures: j.consecutiveFailures, skipped_overlap_count: j.skippedOverlap, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: whereRuns(j, view).kind === "asleep" || undefined, held_by_pid: heldBy(j), queued: queuedForTool(j, host, nowMs), created_at: j.createdAt })) } };
 		},
 	});
 
@@ -543,7 +557,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			ref: Type.String({ description: "Job id (for example cron-abc123), unique id prefix, or name." }),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const job = resolveJobRefScoped(host.scheduler.store.load(), params.ref, host.session().cwd);
+			const job = resolveJobRefScoped(jobsOf(host).load(), params.ref, host.session().cwd);
 			if (!job) return { content: [{ type: "text", text: `no cron job matching '${params.ref}' in this project; cron_list shows the ids and names` }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, audit_entry_id: undefined as string | undefined } };
 			const label = job.name ? `"${job.name}"` : job.id;
 			// The only control-plane tool that used to skip this gate, so a sub-agent (hop > 0) could
@@ -554,7 +568,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			// schedule and the action: one question, where a preview call used to make it two.
 			const denied = await host.confirmTool(ctx, { label: `remove cron job ${label}`, tool: "cron_remove", reason: "remove a scheduled job", preview: `${formatSchedule(job.schedule)} · ${previewRedacted(job.prompt, 120)}`, args: params }, scope.hop);
 			if (denied) return { content: [{ type: "text", text: denied }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, audit_entry_id: undefined as string | undefined } };
-			const { aborted } = await host.scheduler.removeJob(job.id);
+			const { aborted } = host.stores ? await removeJob(host.stores, host.runs, job.id) : await host.scheduler!.removeJob(job.id);
 			const auditEntryId = host.cronControlAudit("remove", scope.actor, job, undefined);
 			// The slash command says where a loop's notes went; a tool-driven removal has to say it too,
 			// or the person who asked the agent to delete a job is the only one left guessing. The prose
@@ -562,7 +576,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			// uses elsewhere (`cron_list` reports `storage_path` the same way).
 			const kept = job.stateful ? "\nits loop state and run transcripts are kept; /cron gc --purge clears them" : "";
 			const abortedNote = aborted > 0 ? "\naborted its running run" : "";
-			const statePath = job.stateful ? host.scheduler.store.statePath(job.id) : undefined;
+			const statePath = job.stateful ? jobsOf(host).statePath(job.id) : undefined;
 			return { content: [{ type: "text", text: `removed cron job ${label}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}${kept}${abortedNote}` }], details: { id: job.id as string | undefined, removed_count: 1, audit_entry_id: auditEntryId, state_path: statePath } };
 		},
 	});
@@ -577,19 +591,15 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const jobCwd = host.session().cwd;
-			const job = resolveJobRefScoped(host.scheduler.store.load(), params.ref, jobCwd);
+			const job = resolveJobRefScoped(jobsOf(host).load(), params.ref, jobCwd);
 			if (!job) return deny(`no cron job matching '${params.ref}' in this project; cron_list shows the ids and names`);
 			if (params.enabled || job.cwd !== jobCwd) {
 				const denied = await host.confirmTool(ctx, { label: `${params.enabled ? "enable" : "disable"} cron job ${job.name ?? job.id}`, tool: "set_cron_job_state", reason: params.enabled ? "enable a cron job from a model-facing tool (`enabled` = true)" : "disable a cron job of another project", preview: `${formatSchedule(job.schedule)}: ${previewRedacted(job.prompt, 120)}`, args: params }, scope.hop);
 				if (denied) return deny(denied);
 			}
-			const updated = (await host.scheduler.store.update(job.id, (j) => {
-				j.enabled = params.enabled;
-				if (params.enabled) {
-					j.lastError = undefined;
-					j.interruptions = undefined;
-				}
-			})) ?? job;
+			const at = stamp();
+			const updated = (params.enabled ? await jobsOf(host).enable(job.id) : await jobsOf(host).disable(job.id, { code: "person", why: "disabled by a person", at })) ?? job;
+			if (params.enabled) host.stores?.clock.clear(job.id, at);
 			const auditEntryId = host.cronControlAudit(params.enabled ? "enable" : "disable", scope.actor, job, updated);
 			return {
 				content: [{ type: "text", text: `updated cron job ${updated.id}\nstate: ${updated.enabled ? "enabled" : "disabled"}\nschedule: ${formatSchedule(updated.schedule)}\naction: ${previewRedacted(updated.prompt, 120)}` }],

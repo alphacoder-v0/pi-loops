@@ -27,10 +27,11 @@ import { RequestStore } from "./requests.ts";
 import { awayFor, pruneSeen, readSeen, sinceCounts } from "./seen.ts";
 import { LeaseStore, holderAlive, openWindowPids, procStart } from "./lease.ts";
 import { sessionTitle, shortSessionId } from "./session-head.ts";
-import { convertStores } from "./convert-v2.ts";
+import { openStores } from "./stores.ts";
 import { THINKING_LEVELS, thinkingLevelOrUndefined } from "./thinking.ts";
 import { rotateInPlace } from "./log.ts";
 import { createHostRuntime } from "./host-runtime.ts";
+import { Ticker, HOST_RIDERS, BACKGROUND_RIDERS, type Riders } from "./ticker.ts";
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv, type McpNotification, type McpServerConfig } from "./mcp.ts";
 import { failingJobs } from "./job-health.ts";
@@ -171,7 +172,7 @@ const inProcessRunner = createInProcessRunner({
 	allowCommands: () => config.allowCommands,
 	// The daily cap, read while a run is in flight and not only before it is dispatched. Lazy: the
 	// host owns the scheduler and is built with this runner, so it can only be asked at run time.
-	budget: () => host.scheduler.budgetState(),
+	budget: () => host.budget(),
 	log: (msg) => log(`sub-agent: ${msg}`),
 	notice: (text, cwd) => host.notice(text, cwd),
 });
@@ -192,8 +193,10 @@ const pool = new ChildPool({
 });
 /** Project-level MCP servers, connected on demand: the host itself has no project. */
 const mcpPool = new McpPool({ isTrusted: (cwd) => isExactlyTrusted(agentDir, cwd), resolveToken: resolveMcpToken, log: (msg) => log(`mcp pool: ${msg}`), onNotification: (cwd, cfg, n, source) => onPush(cfg, n, source, cwd) });
+const stores = openStores(dir, log);
 const host = createHostRuntime({
 	dir,
+	stores,
 	config: () => config,
 	session: () => session,
 	runner,
@@ -211,7 +214,6 @@ const host = createHostRuntime({
 		if (lease?.sessionFile && fs.existsSync(lease.sessionFile)) return true;
 		return sessionExists(path.join(agentDir, "sessions"), id);
 	},
-	onTick: (now) => everyTick(now),
 	// Open in the page, its pi writes the file: a plain job's turn there would be a second writer.
 	pageHolds: (id) => pool.has(id),
 });
@@ -300,6 +302,7 @@ function startMcpSource(cfg: McpServerConfig): void {
 /* ------------------------------------------------------------ lifecycle */
 
 let stopping = false;
+let ticker: Ticker<(typeof BACKGROUND_RIDERS)[number]> | undefined;
 async function shutdown(code: number): Promise<void> {
 	if (stopping) return;
 	stopping = true;
@@ -317,6 +320,7 @@ async function shutdown(code: number): Promise<void> {
 		process.exit(code);
 	}, 10_000).unref();
 	try {
+		await ticker?.stop();
 		// The page's pis first: each is a conversation someone has open, and it quits as /quit does.
 		await pool.stopAll();
 		await host.stop();
@@ -366,7 +370,7 @@ process.on("uncaughtException", (err) => {
 		log(`uncaught while stopping: ${redact(String(err?.stack ?? err))}`);
 		return;
 	}
-	const inFlight = [...host.scheduler.runningRuns().map((r) => `${r.label} (${r.runId.slice(0, 12)})`), ...host.triggers.runningList().map((c) => `check ${c.traceId.slice(0, 8)}`)];
+	const inFlight = [...host.runs.all().map((r) => `${r.label} (${r.runId.slice(0, 12)})`), ...host.triggers.runningList().map((c) => `check ${c.traceId.slice(0, 8)}`)];
 	log(`uncaught: ${redact(String(err?.stack ?? err))}${inFlight.length ? `\n  in flight: ${inFlight.join(", ")}` : ""}`);
 	try {
 		recordCrash(dir, `pi-loops crashed: ${previewRedacted(String(err?.message ?? err), 160)}; see ${HOST_LOG}`);
@@ -428,9 +432,6 @@ if (readUiPrefs(dir).host === "stopped") {
 	process.exit(0);
 }
 log(`pi-loops ${PI_LOOPS_VERSION} started (pid ${process.pid}, dir ${dir})`);
-// What older versions left in the directory and nothing reads now (src/convert-v2.ts).
-const retired = convertStores(dir, log);
-if (retired.length) log(`removed ${retired.join(", ")}: files of an older version that nothing reads now`);
 // The status page's token, from before the page moved here: `web-token` is the one token now.
 try {
 	fs.unlinkSync(path.join(dir, "host-page-token"));
@@ -450,7 +451,7 @@ function sweepConversations(now: number): void {
 	if (now - sweptAt < 10 * 60_000) return;
 	sweptAt = now;
 	// A loop's runs count for the conversation that created it (since-you-looked), so that one stays too.
-	const working = new Set<string>([...host.scheduler.store.load().flatMap((j) => [j.sessionId, j.createdBy?.sessionId].filter((id): id is string => !!id)), ...host.triggers.store.load().flatMap((r) => (r.createdBy?.sessionId ? [r.createdBy.sessionId] : [])), ...requests.sessions()]);
+	const working = new Set<string>([...host.stores.jobs.load().flatMap((j) => [j.sessionId, j.createdBy?.sessionId].filter((id): id is string => !!id)), ...host.triggers.store.load().flatMap((r) => (r.createdBy?.sessionId ? [r.createdBy.sessionId] : [])), ...requests.sessions()]);
 	// The page's last conversation keeps its lease, which names its project: `GET /` opens a new
 	// conversation there when that one was never saved (src/page-server.ts rootPage).
 	const lastPage = readUiPrefs(dir).lastPage;
@@ -461,41 +462,35 @@ function sweepConversations(now: number): void {
 	if (removed || pruned) log(`swept ${removed} idle conversation lease(s) and ${pruned} since-you-looked cursor(s)`);
 }
 
-function everyTick(now: number): void {
-	if (!hostServiceNames(dir, process.pid, startedAt)) {
+const hostRiders: Riders<(typeof HOST_RIDERS)[number]> = {
+	"still-named": () => {
+		if (hostServiceNames(dir, process.pid, startedAt)) return;
 		log("host-service.json no longer names this process; leaving");
 		leave(0);
-		return;
-	}
-	// `[host] auto = false`: this process lives while a pi window does, as 0.22.8 ran loops only in
-	// an open window (src/host-control.ts leavesWithWindows). The next window starts it again. The
-	// page's pis count with their tabs: one still starting, or one a terminal took the conversation
-	// from, holds no lease.
-	if (leavesWithWindows({ auto: config.hostAuto, managed, windows: openWindows({ terminalPids: openWindowPids(leases), pageChildPids: pool.list().map((c) => c.pid), tabs: page?.clients() ?? 0 }), upForMs: now - Date.parse(startedAt), asked: process.env.PI_LOOPS_HOST_ASKED === "1" || readUiPrefs(dir).host === "started" })) {
+	},
+	"auto-leave": (now) => {
+		if (!leavesWithWindows({ auto: config.hostAuto, managed, windows: openWindows({ terminalPids: openWindowPids(leases), pageChildPids: pool.list().map((c) => c.pid), tabs: page?.clients() ?? 0 }), upForMs: now - Date.parse(startedAt), asked: process.env.PI_LOOPS_HOST_ASKED === "1" || readUiPrefs(dir).host === "started" })) return;
 		log("[host] auto = false and no pi window is open; leaving (the next window starts pi-loops again)");
 		leave(0);
-		return;
-	}
-	try {
-		sweepConversations(now);
-	} catch (err: any) {
-		log(`conversation sweep: ${err?.message ?? err}`);
-	}
-	pool.sweep(now).catch((err: any) => log(`page: idle sweep: ${err?.message ?? err}`));
-	if (!page && pageWaiting?.reason === "older-page" && !pageBinding) bindPageAndSay().catch((err: any) => log(`page: ${err?.message ?? err}`));
-	// The heartbeat windows read before they evict: a socket that does not answer while this is fresh
-	// is a broken control channel, not a wedged host (src/host-control.ts decideEviction).
-	try {
-		updateHostService(dir, process.pid, { tickAt: stamp(now) });
-	} catch (err: any) {
-		log(`heartbeat: ${err?.message ?? err}`);
-	}
-	try {
-		channel = healHostChannel(dir, channel, channelHandlers, log);
-	} catch (err: any) {
-		log(`control channel heal: ${err?.message ?? err}`);
-	}
-}
+	},
+	"conversation-sweep": (now) => {
+		try { sweepConversations(now); }
+		catch (err: any) { log(`conversation sweep: ${err?.message ?? err}`); }
+	},
+	"page-sweep": (now) => { void pool.sweep(now).catch((err: any) => log(`page: idle sweep: ${err?.message ?? err}`)); },
+	"page-bind": () => {
+		if (!page && pageWaiting?.reason === "older-page" && !pageBinding) void bindPageAndSay().catch((err: any) => log(`page: ${err?.message ?? err}`));
+	},
+	"heartbeat": (now) => {
+		try { updateHostService(dir, process.pid, { tickAt: stamp(now) }); }
+		catch (err: any) { log(`heartbeat: ${err?.message ?? err}`); }
+	},
+	"channel-heal": () => {
+		try { channel = healHostChannel(dir, channel, channelHandlers, log); }
+		catch (err: any) { log(`control channel heal: ${err?.message ?? err}`); }
+	},
+};
+ticker = new Ticker({ names: BACKGROUND_RIDERS, riders: { ...hostRiders, ...host.riders }, log });
 
 /**
  * A control channel that cannot be opened is a degraded host, not a dead one: `pi-loops host
@@ -521,11 +516,11 @@ function rulesOrNone(): ReturnType<typeof host.triggers.store.load> {
 	}
 }
 
-function snapshot(): HostSnapshot {
+function snapshot(): HostSnapshot & { slots: { inUse: number; limit: number } } {
 	// One read of each store for the whole snapshot. jobs.json was read four times and
 	// triggers.json twice, so a tick landing in between could have `enabled` counted against
 	// one version of the file and `total` against another — a status line contradicting itself.
-	const jobs = host.scheduler.store.load();
+	const jobs = host.stores.jobs.load();
 	const rules = rulesOrNone();
 	return {
 		pid: process.pid,
@@ -541,14 +536,15 @@ function snapshot(): HostSnapshot {
 			const title = l.sessionFile ? sessionTitle(l.sessionFile) : undefined;
 			return [{ sessionId: l.sessionId, pid, mode: l.holder.mode, ...(child ? { page: { tabs: child.clients.size, idleMs: Date.now() - child.lastClientAt } } : {}), ...(title ? { title } : {}) }];
 		}),
-		runs: host.scheduler.runningRuns(),
+		runs: host.runs.all().map(({ runId, label, jobId, startedAt, promptPreview, sessionFile }) => ({ runId, label, jobId, startedAt, promptPreview, sessionFile })),
 		checks: host.triggers.runningList().map((r) => ({ traceId: r.traceId, sourceLabel: r.sourceLabel, eventLabel: r.eventLabel, startedAt: r.startedAt, cwd: r.cwd })),
+		slots: host.slotCount(),
 		jobs: { enabled: jobs.filter((j) => j.enabled).length, total: jobs.length },
 		rules: { enabled: rules.filter((r) => r.enabled).length, total: rules.length },
-		inboxNew: host.scheduler.inbox.newCount(),
+		inboxNew: host.stores.inbox.newCount(),
 		// Without these a host that has failed every run for six hours reads exactly like one
 		// that succeeded an hour ago: "nothing running right now".
-		recent: host.scheduler.store
+		recent: host.stores.jobs
 			.listRuns(undefined, 5)
 			.reverse()
 			.map(recentRun),
@@ -563,7 +559,7 @@ function snapshot(): HostSnapshot {
 			return next ? stamp(next) : undefined;
 		})(),
 		budget: (() => {
-			const b = host.scheduler.budgetState();
+			const b = host.budget();
 			return b.cap > 0 ? { spent: b.spent, cap: b.cap } : undefined;
 		})(),
 		mcp: mcpSources.map((s) => ({ name: s.config.name, state: s.status.state, lastError: s.status.lastError ? previewRedacted(s.status.lastError, 120) : undefined })),
@@ -582,7 +578,7 @@ function snapshot(): HostSnapshot {
  * rule or a queued request, with who holds it. Built per request; the page refreshes every 15 s.
  */
 function hostStatus(): HostStatus {
-	const allJobs = host.scheduler.store.load();
+	const allJobs = host.stores.jobs.load();
 	const jobs = allJobs.filter((j) => j.enabled && !j.stateful && j.sessionId);
 	const rules = rulesOrNone().filter((r) => r.enabled && r.createdBy?.sessionId);
 	// Only conversations someone holds or that have work: one lease per conversation ever opened
@@ -596,8 +592,8 @@ function hostStatus(): HostStatus {
 		if (n) queued.set(id, n);
 	}
 	const seen = readSeen(dir);
-	const runs = host.scheduler.store.allRuns();
-	const findings = host.scheduler.inbox.list();
+	const runs = host.stores.jobs.allRuns();
+	const findings = host.stores.inbox.list();
 	const cwdOf = new Map(leaseList.flatMap((l) => (l.cwd ? [[l.sessionId, l.cwd] as const] : [])));
 	const now = Date.now();
 	// Each conversation's project, counted as its away card and session-start line count it.
@@ -623,13 +619,13 @@ function hostStatus(): HostStatus {
 
 /** The control channel's `abort`, and Stop it on the page's waiting page. The status lines show shortened ids, so that is what a watcher types back. */
 function abortRun(runId: string): boolean {
-	const match = host.scheduler.runningRuns().find((r) => r.runId === runId || r.runId.startsWith(runId));
-	return match ? host.scheduler.abortRun(match.runId) : false;
+	const match = host.runs.all().find((r) => r.runId === runId || r.runId.startsWith(runId));
+	return match ? host.runs.stop(match.runId) : false;
 }
 
 /** What src/host-control-channel.ts stopRunFrom needs of this process. */
 const stopHost = {
-	scheduler: { runningRuns: () => host.scheduler.runningRuns(), abortRun: (id: string, from: "page" | "cli") => host.scheduler.abortRun(id, from), noteStopFrom: (id: string, from: "page" | "cli") => host.scheduler.noteStopFrom(id, from) },
+	runs: host.runs,
 	heldTurn: (sessionId: string) => host.heldTurn(sessionId),
 	ring: (sessionId: string) => host.ring(sessionId),
 	leases: () => leases.list(),
@@ -677,7 +673,7 @@ function bindPage(): Promise<PageServer | NodeJS.ErrnoException> {
 			lastPage: () => readUiPrefs(dir).lastPage,
 			rememberPage: (id) => writeUiPref(dir, "lastPage", id),
 			background: hostStatus,
-			budget: () => host.scheduler.budgetState(),
+			budget: () => host.budget(),
 			log,
 			onListenError: (err) => {
 				if (bound) log(`page: ${err?.message ?? err}`);
@@ -787,7 +783,7 @@ const channelHandlers: HostChannelHandlers = {
 			.finally(() => leave(0))
 			.catch((err: any) => log(`leaving: ${err?.message ?? err}`));
 	},
-	run: (jobId, requestedBy) => host.scheduler.runNow(jobId, requestedBy),
+	run: (jobId, requestedBy) => host.loops.runNow(jobId, requestedBy),
 	ring: (sessionId) => host.ring(sessionId),
 	pageOpen,
 	pageKey: (sessionId) => {
@@ -806,6 +802,7 @@ parentModel = await defaultModel().catch((err) => {
 log(`default model: ${parentModel ? `${parentModel.provider}/${parentModel.id}` : "none (jobs must pin one)"}`);
 startMcpSources();
 host.start();
+ticker.start();
 // As in the minute timer below: a rules file that cannot be read must cost its rules, not every loop.
 try {
 	watchProjectPushServers();

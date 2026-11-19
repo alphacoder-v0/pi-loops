@@ -4,6 +4,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { RETIRED_FILES, convertStores } from "../src/convert-v2.ts";
+import { JobStore } from "../src/store.ts";
+import { RequestStore } from "../src/requests.ts";
 
 /** A loops directory as an older version left it: the retired files, and files that stay. */
 function seeded(): { dir: string; kept: Record<string, string> } {
@@ -74,18 +76,49 @@ test("convertStores does not throw when the loops directory cannot be read: it r
 	assert.equal(fs.existsSync(path.join(dir, "scheduler.json")), true);
 });
 
-test("pi-loops in the background and a window each run the conversion when they start.", () => {
-	// Neither entry module can be imported by a test (AGENTS.md, "Where a decision goes"), so this
-	// reads them: the call is there, after the claim in one and inside the session start in the other.
+test("the host and window open stores through openStores, which runs conversion first.", () => {
 	const here = path.dirname(new URL(import.meta.url).pathname);
-	const host = fs.readFileSync(path.join(here, "..", "src", "host.ts"), "utf8");
-	const started = host.indexOf("log(`pi-loops ${PI_LOOPS_VERSION} started");
-	assert.ok(started > host.indexOf("claimHostService(dir,"), "the start line comes after the claim");
-	assert.match(host.slice(started, started + 400), /\n(?:const retired = )?convertStores\(dir, log\);/, "the background process converts as soon as it has its claim");
+	const stores = fs.readFileSync(path.join(here, "..", "src", "stores.ts"), "utf8");
+	assert.match(stores, /export function openStores[\s\S]*?convertStores\(dir, log\)/);
+	const host = fs.readFileSync(path.join(here, "..", "src", "host-runtime.ts"), "utf8");
+	assert.match(host, /const stores = deps\.stores \?\? openStores\(dir, log\)/);
+	const background = fs.readFileSync(path.join(here, "..", "src", "host.ts"), "utf8");
+	assert.match(background, /const stores = openStores\(dir, log\)/);
 	const window = fs.readFileSync(path.join(here, "..", "src", "pi-loops.ts"), "utf8");
-	const start = window.indexOf('pi.on("session_start"');
-	assert.ok(start > 0);
-	assert.match(window.slice(start, start + 900), /bindSession\(ctx\);\n(?:\t*\/\/[^\n]*\n)*\t*convertStores\(dir, /, "a window converts at each session start, before it reads the stores");
+	assert.match(window, /const stores = openStores\(dir,/);
+});
+
+test("M4b.3 step 2 turns an owed loop marker into one conversion row before clearing its markers.", async () => {
+	const dir = tmp("pi-loops-convert-");
+	const jobs = new JobStore(dir);
+	const slot = new Date(Date.now() - 60_000).toISOString();
+	await jobs.add({ id: "cron-convert", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "work", cwd: dir, enabled: true, catchUp: true, createdAt: slot, runCount: 0, skippedOverlap: 0, lastDueAt: slot, owedSlot: slot, interruptions: 2, running: { runId: "old-run", pid: 2_000_000_000, startedAt: slot } });
+	convertStores(dir);
+	const row = new RequestStore(dir).list("@cron-convert")[0];
+	assert.equal(row?.created_by.instance, "convert");
+	assert.equal(row?.attempts, 2);
+	assert.equal(row?.payload?.slot, slot);
+	const saved = jobs.load()[0];
+	assert.equal(saved.running, undefined);
+	assert.equal(saved.owedSlot, undefined);
+	convertStores(dir);
+	assert.equal(new RequestStore(dir).list("@cron-convert").length, 1);
+});
+
+test("A second conversion, which another job's live marker causes, keeps the row the first one wrote.", async () => {
+	const dir = tmp("pi-loops-convert-");
+	const jobs = new JobStore(dir);
+	const slot = new Date(Date.now() - 60_000).toISOString();
+	const base = { schedule: { kind: "every" as const, ms: 60_000 }, stateful: true, prompt: "work", cwd: dir, enabled: true, catchUp: true, createdAt: slot, runCount: 0, skippedOverlap: 0, lastDueAt: slot };
+	await jobs.add({ ...base, id: "cron-dead", running: { runId: "dead-run", pid: 2_000_000_000, startedAt: slot } });
+	// A pid that is alive: this process's parent, which is not this process.
+	await jobs.add({ ...base, id: "cron-live", running: { runId: "live-run", pid: process.ppid, startedAt: new Date().toISOString() } });
+	convertStores(dir);
+	assert.equal(new RequestStore(dir).list("@cron-dead").length, 1, "the first conversion writes the dead marker's slot as a row");
+	assert.ok(jobs.load().find((job) => job.id === "cron-live")?.running, "the live marker stays, so the next start converts again");
+	convertStores(dir);
+	assert.equal(new RequestStore(dir).list("@cron-dead").length, 1, "the second conversion keeps that row");
+	assert.equal(new RequestStore(dir).list("@cron-live").length, 0);
 });
 
 test("convertStores removes a retired name that is a link, and leaves what the link points to.", () => {

@@ -8,6 +8,7 @@ import { FINDING_FIELDS, Inbox, inProject, resolveInboxRef } from "../src/inbox.
 import { withFileLock } from "../src/lock.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { withinProject } from "../src/paths.ts";
+import { budgetState } from "../src/job-status.ts";
 import { JOBS_FILE_VERSION, JobStore, type LoopJob, type RunRecord, newId, owningSessionId, piAgentDir, resolveJobRef, sessionExists } from "../src/store.ts";
 
 
@@ -494,4 +495,24 @@ test("piAgentDir gives pi's own answer, so the CLI need not load pi's SDK to fin
 		if (before === undefined) delete process.env.PI_CODING_AGENT_DIR;
 		else process.env.PI_CODING_AGENT_DIR = before;
 	}
+});
+
+test("appendRunOnce serializes the check with the append and returns the one stored record.", () => {
+	const store = new JobStore(tmp("pi-loops-runlog-"));
+	const record: RunRecord = { runId: "once", jobId: "j", stateful: true, cwd: "/", pid: 1, startedAt: "2026-01-01T00:00:00Z", finishedAt: "2026-01-01T00:00:01Z", ok: true, findings: 0, droppedFindings: 0, stateUpdated: false };
+	const append = () => store.appendRunOnce((records) => records.some((item) => item.runId === record.runId) ? undefined : record);
+	assert.deepEqual(append(), record);
+	assert.equal(append(), undefined);
+	assert.deepEqual(store.allRuns(), [record]);
+});
+
+test("[null-run-line] listRuns drops non-object JSON and budgetState still counts valid daily spend.", () => {
+	const dir = tmp("pi-loops-runlog-");
+	const store = new JobStore(dir);
+	fs.mkdirSync(dir, { recursive: true });
+	fs.writeFileSync(store.runsFile, `null\n7\n"x"\n[]\n`);
+	const record: RunRecord = { runId: "r", jobId: "j", stateful: true, cwd: "/", pid: 1, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), ok: true, findings: 0, droppedFindings: 0, stateUpdated: false, usage: { input: 0, output: 0, cost: 0.75, turns: 1 } };
+	store.appendRun(record);
+	assert.deepEqual(store.listRuns(), [record]);
+	assert.deepEqual(budgetState(store, 0.5, Date.now()), { spent: 0.75, cap: 0.5, over: true });
 });

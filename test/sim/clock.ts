@@ -10,15 +10,18 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { claimable, landed, plainRunId, proofOf } from "../../src/engine.ts";
-import { advanceClock, ClockNewer, ClockStore, decideTick, wanted, writeSlot, commitSlot, type ClockFile, type SlotWritten, type SpendDecision, type TickDecision, type TickStores } from "../../src/clock.ts";
+import { claimable, landed, plainRunId, proofOf, type EngineSinks } from "../../src/engine.ts";
+import { advanceClock, ClockNewer, ClockStore, decideTick, wanted, writeSlot, commitSlot, v2Clock, type Clock, type ClockFile, type SimClockSubject, type SlotWritten, type SpendDecision, type TickDecision, type TickStores } from "../../src/clock.ts";
 import { loopLane, type LaneId } from "../../src/lane.ts";
 import { withFileLockSync, writeFileAtomic } from "../../src/lock.ts";
 import { RequestStore, type ClaimedRow, type Row, type UnclaimedRow } from "../../src/requests.ts";
+import { Inbox } from "../../src/inbox.ts";
+import { TriggerStore } from "../../src/triggers.ts";
 import { stamp, type Schedule } from "../../src/schedule.ts";
-import { loopEnd, runEnd, settleLoop, type RunEnd } from "../../src/settle.ts";
-import { jobStatus, runHistory, type JobHistory } from "../../src/job-status.ts";
-import type { LoopJobV3, RunRecord } from "../../src/store.ts";
+import { runEnd, type RunEnd } from "../../src/settle.ts";
+import { closeLoopRun, closeSteps, type LoopRunDeps, type RunRecordM4b } from "../../src/loop-run.ts";
+import { fromV2, jobStatus, runHistory, type JobHistory } from "../../src/job-status.ts";
+import { JobStore, type LoopJob, type LoopJobV3, type RunRecord } from "../../src/store.ts";
 import { type Random, weighted } from "./prng.ts";
 
 type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
@@ -40,7 +43,7 @@ const keyOf = (job: string, slot: string): string => `${job}|${slot}`;
 /** Return the first violated I1 sentence, naming its job and slot. */
 export function checkI1(world: ClockWorld, queues: ReadonlyMap<LaneId, readonly CountedRow[]>): string | undefined {
 	const allRows = [...queues.values()].flat();
-	const internal = world as ClockWorld & { clock: ClockStore; forgotten: boolean; newer: boolean };
+	const internal = world as ClockWorld & { clock: Clock; subject: SimClockSubject; forgotten: boolean; newer: boolean };
 	for (const [key, entry] of world.ledger) {
 		const [job, slot] = key.split("|");
 		const say = (what: string): string => `${what} for job ${job}, slot ${slot}`;
@@ -72,14 +75,39 @@ export function checkI1(world: ClockWorld, queues: ReadonlyMap<LaneId, readonly 
 }
 
 // The simulator keeps an in-memory mirror only to make checkI1 inspect actual store writes.
-function readClock(world: ClockWorld & { clock: ClockStore }, job: string) { try { return world.clock.read().jobs[job]; } catch (error) { if (error instanceof ClockNewer) return undefined; throw error; } }
+export function clockJsonSubject(dir: string): SimClockSubject {
+	const file = path.join(dir, "clock.json");
+	const clock = new ClockStore({ file, lock: path.join(dir, "clock.lock") }, { locked: withFileLockSync, write: writeFileAtomic });
+	return { name: "clock.json", clock, read: () => clock.read(), forget: () => fs.rmSync(file, { force: true }), newer: () => fs.writeFileSync(file, JSON.stringify({ v: 2, jobs: {} })) };
+}
 
-export async function play(dir: string, random: Random, steps: number): Promise<ClockOutcome> {
+export function jobsV2Subject(dir: string): SimClockSubject {
+	fs.mkdirSync(dir, { recursive: true });
+	const store = new JobStore(dir);
+	writeFileAtomic(store.jobsFile, JSON.stringify({ version: 2, jobs: JOBS }));
+	const clock = v2Clock(store);
+	return { name: "jobs.json v2", clock, read: () => ({ v: 1, jobs: Object.fromEntries(store.load().map((job) => [job.id, { ...(job.lastDueAt ? { slot: job.lastDueAt } : {}), ...(job.lastFiredAt ? { fired: job.lastFiredAt } : {}), runs: job.runCount, ...(job.skippedOverlap ? { collapsed: job.skippedOverlap } : {}) }])) }) };
+}
+
+function readClock(world: ClockWorld & { subject: SimClockSubject }, job: string) { try { return world.subject.read().jobs[job]; } catch (error) { if (error instanceof ClockNewer) return undefined; throw error; } }
+
+export async function play(dir: string, random: Random, steps: number, subject: SimClockSubject = clockJsonSubject(dir)): Promise<ClockOutcome> {
 	fs.mkdirSync(dir, { recursive: true });
 	const requests = new RequestStore(dir);
-	const clockFile = path.join(dir, "clock.json");
-	const clock = new ClockStore({ file: clockFile, lock: path.join(dir, "clock.lock") }, { locked: withFileLockSync, write: writeFileAtomic });
-	const world = { now: Date.parse("2026-06-01T12:00:00Z"), jobs: JOBS, tickers: [], lease: { epoch: 1 }, records: [], entries: [], ledger: new Map(), clock, forgotten: false, newer: false } as ClockWorld & { clock: ClockStore; forgotten: boolean; newer: boolean };
+	const clock = subject.clock;
+	const simJobs = new JobStore(dir);
+	if (!fs.existsSync(simJobs.jobsFile)) writeFileAtomic(simJobs.jobsFile, JSON.stringify({ version: 2, jobs: JOBS }));
+	const inbox = new Inbox(dir);
+	const rules = new TriggerStore(dir);
+	const createdBy = { pid: process.pid, instance: "sim", version: "test" };
+	const engine = (): EngineSinks => ({ jobs: { exists: (id) => simJobs.load().some((job) => job.id === id), enabled: (id) => simJobs.load().find((job) => job.id === id)?.enabled ?? false, goalActive: () => false }, inbox, audit: rules, ledger: simJobs, self: () => createdBy });
+	const closeDeps: Pick<LoopRunDeps, "stores" | "engine" | "sinks" | "holder"> = {
+		stores: { jobs: simJobs, clock, inbox, requests, book: () => { const converted = simJobs.load().map(fromV2); let clockFile: ClockFile; try { clockFile = subject.read(); } catch (error) { if (!(error instanceof ClockNewer)) throw error; clockFile = { v: 1, jobs: {} }; } return { jobs: converted.map((entry) => entry.job), clock: clockFile }; }, history: () => runHistory(simJobs.allRuns()) },
+		engine,
+		sinks: { started: () => undefined, finished: () => undefined, log: () => undefined },
+		holder: () => ({ pid: process.pid, procStart: undefined }),
+	};
+	const world = { now: Date.parse("2026-06-01T12:00:00Z"), jobs: JOBS, tickers: [], lease: { epoch: 1 }, records: [], entries: [], ledger: new Map(), clock, subject, forgotten: false, newer: false } as ClockWorld & { clock: Clock; subject: SimClockSubject; forgotten: boolean; newer: boolean };
 	const out: ClockOutcome = { steps: [], seen: new Set() };
 	let nextPid = 100;
 	// In one world in three a second process ticks the loops too: pi-loops in the background that stalled and resumed beside the one that took its place (design, the table T1 to T3: two processes that tick at once).
@@ -102,7 +130,7 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 	const fail = (message: string): void => { out.violation ??= message; };
 	const tick = (ticker: Ticker): void => {
 		if (!ticker.alive) return;
-		const file = clock.read();
+		const file = subject.read();
 		const mine = new Map(JOBS.flatMap((job) => {
 			if (job.stateful && ticker.kind === "background") return [[job.id, { kind: "loop" as const }] as const];
 			if (!job.stateful && world.lease.holder === ticker.pid) return [[job.id, { kind: "plain" as const, epoch: world.lease.epoch }] as const];
@@ -133,7 +161,7 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 		const claimed = lanes.slice(0, 2).filter((l) => requests.list(l).some((row) => row.run));
 		const lane = busy.length && random() % 4 !== 0 ? busy[random() % busy.length] : lanes[random() % lanes.length];
 		const loop = claimed.length && random() % 4 !== 0 ? claimed[random() % claimed.length] : lanes.slice(0, 2)[random() % 2];
-		const choices: Array<readonly [ClockStep["do"], number]> = [["tick", stalls ? 0 : 5], ["write", stalls ? 1 : ticker.pending.length ? 8 : 1], ["die", !ticker.alive ? 0 : ticker.pending.some((item) => item.written) ? 6 : 2], ["start", !ticker.alive ? 3 : 0], ["drain", 3], ["end", 2], ["deliver", 2], ["lease", 2], ["cancel", 1], ["forget", 1], ["newer", 1], ["advance", 4]];
+		const choices: Array<readonly [ClockStep["do"], number]> = [["tick", stalls ? 0 : 5], ["write", stalls ? 1 : ticker.pending.length ? 8 : 1], ["die", !ticker.alive ? 0 : ticker.pending.some((item) => item.written) ? 6 : 2], ["start", !ticker.alive ? 3 : 0], ["drain", 3], ["end", 2], ["deliver", 2], ["lease", 2], ["cancel", 1], ["forget", subject.forget ? 1 : 0], ["newer", subject.newer ? 1 : 0], ["advance", 4]];
 		const action = weighted(choices, random());
 		switch (action) {
 			case "tick": return { do: "tick", ticker: world.tickers.indexOf(ticker) };
@@ -150,7 +178,7 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 			default: return { do: "advance", ms: [60_000, 5 * 60_000, 30 * 60_000][random() % 3] };
 		}
 	};
-	const applyStep = (step: ClockStep): void => {
+	const applyStep = async (step: ClockStep): Promise<void> => {
 		try {
 			switch (step.do) {
 				case "tick": tick(world.tickers[step.ticker]); break;
@@ -185,12 +213,12 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 				case "die": { const ticker = world.tickers[step.ticker]; if (ticker.alive) { if (ticker.pending.some((item) => item.written)) out.seen.add("dies between T2 and T3"); ticker.alive = false; ticker.pending = []; out.steps.push(`ticker ${ticker.pid} dies`); } break; }
 				case "start": { const ticker = world.tickers[step.ticker]; world.tickers[step.ticker] = { ...ticker, pid: ++nextPid, alive: true, startedAt: world.now, pending: [] }; out.steps.push(`ticker restarts as ${world.tickers[step.ticker].pid}`); break; }
 				case "drain": { if (!step.lane.startsWith("@cron-")) break; const row = requests.list(step.lane).find((item): item is UnclaimedRow => item.kind === "input" && !item.run); if (!row) break; if (landed(row, prove(step.lane))) { const proofRun = world.records.filter((record) => record.runId === row.id).at(-1); if (proofRun && !["succeeded", "failed", "stopped"].includes(runEnd(proofRun).how)) fail(`job ${JOBS.find((job) => loopLane(job.id) === row.lane)?.id}, slot ${slotFromId(row.id)}: an owed copy left without a run`); requests.remove(step.lane, [row.id]); markExit(row.id, "delivered"); if (proofRun) out.seen.add("spent copy leaves without a run"); out.steps.push(`proved ${row.id} leaves`); break; } const run = { id: row.id, pid: 900, started_at: stamp(world.now) } as ClaimedRow["run"] & { [key: string]: unknown }; if (requests.claim(step.lane, row.id, run as never)) { if (orphans.has(row.id)) { out.seen.add("orphan runs once"); orphans.delete(row.id); } const abandoned = world.records.find((record) => record.runId === row.id && !["succeeded", "failed", "stopped"].includes(runEnd(record).how)); if (abandoned) out.seen.add("owed copy runs"); out.steps.push(`claims ${row.id}`); } break; }
-				case "end": { const claimed = requests.list(step.lane).find((row): row is ClaimedRow => !!row.run); if (!claimed) break; out.steps.push(`end action ${step.how} for ${claimed.id} at ${claimed.run.started_at}`); close(claimed, step.how, step.dies); break; }
+				case "end": { const claimed = requests.list(step.lane).find((row): row is ClaimedRow => !!row.run); if (!claimed) break; out.steps.push(`end action ${step.how} for ${claimed.id} at ${claimed.run.started_at}`); await close(claimed, step.how, step.dies); break; }
 				case "deliver": { const row = requests.list("clock-conversation").find((item) => item.kind === "input" && !item.run); if (row) { world.entries.push({ type: "message", timestamp: stamp(world.now), message: { role: "user", content: `[Trigger ${row.id}] go`, piLoopsRow: { lane: row.lane, id: row.id, at: row.created_at } } }); requests.remove(row.lane, [row.id]); markExit(row.id, "delivered"); out.seen.add("window delivers"); } break; }
 				case "lease": world.lease.holder = step.to; world.lease.epoch++; break;
 				case "cancel": { const row = requests.list(step.lane).find((item) => !item.run); if (row) { requests.remove(step.lane, [row.id]); markExit(row.id, "cancelled"); } break; }
-				case "forget": fs.rmSync(clockFile, { force: true }); out.steps.push("clock.json is deleted"); world.forgotten = true; world.newer = false; out.seen.add("clock forgotten"); break;
-				case "newer": fs.writeFileSync(clockFile, JSON.stringify({ v: 2, jobs: {} })); out.steps.push("clock.json is replaced by a newer version"); world.newer = true; out.seen.add("clock newer"); break;
+				case "forget": subject.forget?.(); out.steps.push("clock.json is deleted"); world.forgotten = true; world.newer = false; out.seen.add("clock forgotten"); break;
+				case "newer": subject.newer?.(); out.steps.push("clock.json is replaced by a newer version"); world.newer = true; out.seen.add("clock newer"); break;
 				case "advance": world.now += step.ms; break;
 			}
 		} catch (error) {
@@ -198,27 +226,55 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 		}
 	};
 	function markExit(id: string, exit: NonNullable<SlotLedger["exit"]>): void { for (const entry of world.ledger.values()) if (entry.ids.has(id)) entry.exit = exit; }
-	function close(row: ClaimedRow, how: RunEnd["how"], dies?: number): void {
-		const job = JOBS.find((item) => item.id === row.id.split("-")[0]) ?? JOBS.find((item) => loopLane(item.id) === row.lane)!;
+	async function close(row: ClaimedRow, how: RunEnd["how"], dies?: number): Promise<void> {
+		const job = JOBS.find((item) => loopLane(item.id) === row.lane)!;
 		const previous = world.records.find((record) => record.runId === row.id && record.startedAt === row.run.started_at);
-		const record: RunRecord = previous ?? { runId: row.id, jobId: job.id, stateful: job.stateful, cwd: job.cwd, pid: row.run.pid, startedAt: row.run.started_at, finishedAt: stamp(world.now), ok: how === "succeeded", ...(how === "failed" ? { error: "failed" } : {}), ...(how === "stopped" ? { aborted: true as const, stoppedBy: "person" as const } : how === "handed-back" ? { aborted: true as const } : how === "interrupted" ? { interrupted: true as const } : {}), findings: 0, droppedFindings: 0, stateUpdated: false, ordinal: world.records.filter((r) => r.jobId === job.id && (r.ok || !!r.error)).length + 1 };
+		const record: RunRecordM4b = previous as RunRecordM4b ?? { runId: row.id, row: row.id, jobId: job.id, stateful: job.stateful, cwd: job.cwd, pid: row.run.pid, startedAt: row.run.started_at, finishedAt: stamp(world.now), ok: how === "succeeded", ...(how === "failed" ? { error: "failed" } : {}), ...(how === "stopped" ? { aborted: true as const, stoppedBy: "person" as const } : how === "handed-back" ? { aborted: true as const } : how === "interrupted" ? { interrupted: true as const } : {}), findings: 0, droppedFindings: 0, stateUpdated: false, ordinal: world.records.filter((entry) => entry.jobId === job.id && (entry.ok || !!entry.error)).length + 1 };
 		const item = ledger(job.id, slotFromId(row.id));
-		const closeWrites = 4;
-		if (!previous) { world.records.push(record); item.spent += ["succeeded", "failed", "stopped"].includes(runEnd(record).how) ? 1 : 0; }
-		const history = runHistory(world.records).get(job.id)!;
-		const settlement = settleLoop(row, job, loopEnd(record, history), true);
-		if (dies === 1) { out.seen.add("closing cut after record"); return; }
-		if (settlement.job) out.steps.push("job disabled by closing");
-		if (dies === 2) { out.seen.add("closing cut after job patch"); return; }
-		if (settlement.runs !== undefined) {
-			try { clock.raiseRuns(job.id, settlement.runs); } catch (error) { if (!(error instanceof ClockNewer)) throw error; }
+		if (!previous) {
+			world.records.push(record);
+			item.spent += ["succeeded", "failed", "stopped"].includes(runEnd(record).how) ? 1 : 0;
+			simJobs.appendRunOnce((records) => records.some((entry) => entry.runId === record.runId && entry.startedAt === record.startedAt) ? undefined : record);
 		}
-		if (dies === 3) { out.seen.add("closing cut after successor"); return; }
-		if (settlement.row.do === "leave") {
-			requests.remove(row.lane, [row.id]); markExit(row.id, settlement.row.exit);
-			if (settlement.row.successor) { const id = plainRunId(job.id, `after ${row.id}`); requests.appendIfAbsent({ ...row, id, run: undefined, created_at: stamp(world.now), attempts: 0 }); out.seen.add("successor queued"); }
-		} else requests.update(row.lane, row.id, { run: undefined });
-		if (dies === closeWrites) out.seen.add("closing cut after row");
+		const history = runHistory(world.records).get(job.id)!;
+		const plan = closeSteps({ row, job, record, history, self: row.created_by, now: world.now });
+		if (dies === undefined) {
+			try { await closeLoopRun(row, closeDeps, world.now, record); }
+			catch (error) { if (!(error instanceof ClockNewer)) throw error; }
+			out.seen.add(`end ${how}`);
+			out.steps.push(`closing ${row.id} as ${how}`);
+			return;
+		}
+		let completed = 0;
+		for (const step of plan) {
+			switch (step.write) {
+				case "run-end": break;
+				case "clock":
+					try { clock.closeRun(step.job, step.close); } catch (error) { if (!(error instanceof ClockNewer)) throw error; }
+					break;
+				case "disable": out.steps.push("job disabled by closing"); break;
+				case "successor":
+					requests.appendIfAbsent(step.row);
+					out.seen.add("successor queued");
+					break;
+				case "row": {
+					const fate = step.fate;
+					if (fate.do === "leave") { requests.remove(row.lane, [row.id]); markExit(row.id, fate.exit); }
+					else if (fate.do === "owed") requests.update(row.lane, row.id, { run: undefined });
+					else if (fate.do === "retry") requests.update(row.lane, row.id, { run: undefined, attempts: fate.attempts, last_error: fate.why });
+					else { requests.remove(row.lane, [row.id]); markExit(row.id, "dead"); }
+					break;
+				}
+			}
+			completed++;
+			if (dies === completed || (dies === 3 && step.write !== "row" && !plan.some((candidate) => candidate.write === "successor") && completed >= 2)) {
+				if (step.write === "run-end") out.seen.add("closing cut after record");
+				else if (step.write === "disable" || step.write === "clock") out.seen.add(dies === 3 ? "closing cut after successor" : "closing cut after job patch");
+				else if (step.write === "successor") out.seen.add("closing cut after successor");
+				else out.seen.add("closing cut after row");
+				return;
+			}
+		}
 		out.seen.add(`end ${how}`);
 		out.steps.push(`closing ${row.id} as ${how}`);
 	}
@@ -226,10 +282,24 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 	for (let i = 0; i < steps && !out.violation; i++) {
 		world.now += 1_000;
 		const step = draw();
-		applyStep(step);
+		await applyStep(step);
 		const violation = checkI1(world, queuesNow());
 		if (violation) fail(violation);
 	}
+	const spentJob = JOBS.find((job) => job.id === "cron-repeat-loop")!;
+	const spentSlot = stamp(world.now);
+	const completedCopy = decideTick({
+		jobs: [spentJob],
+		clock: { v: 1, jobs: { [spentJob.id]: { slot: stamp(world.now - 60_000), fired: stamp(world.now - 60_000), runs: 0 } } },
+		view: {
+			now: world.now, startedAt: world.now, tickMs: 60_000, catchUp: true, kind: "background", self: { pid: 1, instance: "sim", version: "sim" }, budgetOver: false,
+			mine: new Map([[spentJob.id, { kind: "loop" as const }]]),
+			read: new Map([[spentJob.id, { rows: [], cwdMissing: false, history: { ordinal: 1, streak: 0, spent: new Set([plainRunId(spentJob.id, spentSlot)]) } }]]),
+		},
+	})[0];
+	if (completedCopy.do !== "cursor" || completedCopy.why !== "spent") throw new Error("a recorded slot copy must be decided as spent");
+	out.seen.add("cursor spent");
+	out.steps.push(`recorded copy ${plainRunId(spentJob.id, spentSlot)} is cursor-spent`);
 	for (const item of world.ledger.values()) if (item.exit) out.seen.add(`exit ${item.exit}`);
 	return out;
 }

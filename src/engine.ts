@@ -856,7 +856,7 @@ export interface ExecutorView {
 }
 
 /** Every way a row leaves its queue (docs/design.md; the request engine's exits). */
-type Exit = "delivered" | "dead" | "cancelled" | "stale" | "refused" | "job-removed" | "stopped";
+type Exit = "delivered" | "dead" | "cancelled" | "stale" | "refused" | "job-removed" | "stopped" | "parked";
 
 /**
  * The audit line's `state` for each exit, and the one place the strings are written: `pi-loops
@@ -871,6 +871,7 @@ const AUDIT_STATE = {
 	refused: "refused",
 	"job-removed": "job-removed",
 	stopped: "stopped",
+	parked: "parked",
 } as const satisfies Record<Exit, string>;
 
 /**
@@ -1281,9 +1282,10 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
  * process holds the conversation now), and sent nothing. The drain stops there and counts no attempt
  * and no delivery, as it does when `holds()` turns false between two rows.
  */
-export type TurnSent = "sent" | "lease-lost";
+export type TurnSent = "sent" | "lease-lost" | "no-slot";
 
 export interface Executor {
+	close?(row: ClaimedRow, now: number): Promise<{ end: RunEnd; outcome: "removed" | "waiting" | "failed" | "dead" }>;
 	/** Read from disk each call: the conversation can be taken while a drain runs. A non-holder still drains the local rows it produced (`ExecutorView.mine`). */
 	holds(lane: LaneId): boolean;
 	view(lane: LaneId): ExecutorView;
@@ -1385,6 +1387,24 @@ function leaveRow(store: RequestStore, sinks: EngineSinks, row: Row, exit: Exclu
 	// A delivered input row's record is the session file; everything else ends in the audit.
 	if (exit !== "delivered" || row.kind !== "input") sinks.audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: AUDIT_STATE[exit], sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, kind: row.kind } });
 	store.remove(row.lane, [row.id]);
+}
+
+export async function applyFate(store: RequestStore, sinks: EngineSinks, row: ClaimedRow, fate: { do: "leave"; exit: "delivered" | "stopped" | "parked" } | { do: "owed" } | { do: "retry"; attempts: number; why: string; wait?: false } | { do: "dead"; attempts: number; why: string }, now: number): Promise<"removed" | "waiting" | "failed" | "dead"> {
+	if (fate.do === "leave") {
+		leaveRow(store, sinks, row, fate.exit);
+		return "removed";
+	}
+	if (fate.do === "owed") {
+		store.update(row.lane, row.id, { run: undefined });
+		return "waiting";
+	}
+	if (fate.do === "dead") {
+		await deadLetter(store, sinks, { ...row, attempts: fate.attempts, last_error: fate.why }, `failed ${fate.attempts} times: ${fate.why}`);
+		return "dead";
+	}
+	store.update(row.lane, row.id, { attempts: fate.attempts, last_error: fate.why, not_before: fate.wait === false ? undefined : stamp(now + backoffFor(fate.attempts)), run: undefined });
+	sinks.audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "failed", sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, attempts: fate.attempts, error: fate.why } });
+	return "failed";
 }
 
 /**
@@ -1514,7 +1534,9 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 				leave(action.row, action.exit);
 				break;
 			case "close": {
-				const closed = await closeRun(store, sinks, action.row, executor.proof(sessionId), now);
+				const closed = executor.close
+					? await executor.close(action.row, now)
+					: await closeRun(store, sinks, action.row, executor.proof(sessionId), now);
 				if (closed.outcome === "dead") out.failed.push(action.row.id);
 				out[closed.outcome].push(action.row.id);
 				break;
@@ -1549,6 +1571,7 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 					const sent = typeof handed === "string" ? handed : await handed;
 					// The hold found another holder: nothing was sent, and nothing more of this drain is ours.
 					if (sent === "lease-lost") break apply;
+					if (sent === "no-slot") { out.waiting.push(row.id); break apply; }
 				} catch (err: any) {
 					// One attempt, not two: the row is read again, and a row that has a claim now is not
 					// failed here. Its closing counts the attempt, once.

@@ -58,8 +58,9 @@ export function loopSignal(jobId: string, runs: RunRecord[], inbox: InboxEntry[]
 	// The log is appended in finishing order, so the tail is the newest; sort anyway in case a
 	// caller merged two sources. A run that failed found nothing, and counts toward the streak:
 	// a loop that has been erroring for a week is quiet in the sense that matters here too, and
-	// `job-health.ts` already says why.
-	const ordered = [...own].sort((a, b) => at(a.finishedAt || a.startedAt) - at(b.finishedAt || b.startedAt));
+	// `job-health.ts` already says why. A run its process took down looked at nothing, so it is not
+	// part of the streak: main wrote no record for it.
+	const ordered = [...own].filter((r) => !r.interrupted).sort((a, b) => at(a.finishedAt || a.startedAt) - at(b.finishedAt || b.startedAt));
 	let quiet = 0;
 	for (let i = ordered.length - 1; i >= 0 && (ordered[i].findings ?? 0) === 0; i--) quiet++;
 	return { runs: inWindow.length, findings, claimed, dismissed, dismissedWithReason, quiet };

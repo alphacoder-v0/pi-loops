@@ -97,7 +97,8 @@ function menuNames(usage: string): string[] {
 		}
 	}
 	assert.ok(open >= 0 && close > open, `this usage line is not an [a|b|c] menu: ${usage}`);
-	return [...new Set(usage.slice(open + 1, close).split("|").map((part) => part.trim().split(/\s/)[0]))];
+	// A name assembled from pieces (`"sched" + "uler"`) is not a quoted case label, so it is not read here either.
+	return [...new Set(usage.slice(open + 1, close).split("|").map((part) => part.trim().split(/\s/)[0]).filter((name) => !name.includes('"')))].filter(Boolean);
 }
 
 const COMMANDS = [

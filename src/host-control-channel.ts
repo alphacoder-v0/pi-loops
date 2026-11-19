@@ -24,6 +24,7 @@ import { previewRedacted, redact } from "./redact.ts";
 import type { RequestStore, Row, UnclaimedRow } from "./requests.ts";
 import { formatLocal, stamp } from "./schedule.ts";
 import type { RunRecord, RunRequester } from "./store.ts";
+import type { RunList } from "./run-list.ts";
 
 /** A new name on purpose: a 0.22 pi-loops talks to `host.sock`, and only to its own kind of host. */
 export const HOST_SOCKET = "host-service.sock";
@@ -149,6 +150,7 @@ export interface HostSnapshot {
 	runs: Array<{ runId: string; label: string; jobId: string; startedAt: string; promptPreview: string; sessionFile?: string }>;
 	checks: Array<{ traceId: string; sourceLabel: string; eventLabel: string; startedAt: string; cwd: string }>;
 	jobs: { enabled: number; total: number };
+	slots?: { inUse: number; limit: number };
 	rules: { enabled: number; total: number };
 	inboxNew: number;
 	mcp: Array<{ name: string; state: string; lastError?: string }>;
@@ -384,7 +386,10 @@ export function stopRun(ref: string, deps: StopDeps, opts: { prefix: boolean }):
 
 /** What `stopRunFrom` needs of the background process: its scheduler, its held turns, its leases and its queue. */
 export interface StopHost {
-	scheduler: { runningRuns(): ReadonlyArray<{ runId: string }>; abortRun(runId: string, from: "page" | "cli"): boolean; noteStopFrom(runId: string, from: "page" | "cli"): void };
+	/** The process-wide runs, which also owns person-requested stop metadata. */
+	runs?: Pick<RunList, "all" | "stop" | "noteStopFrom">;
+	/** Transitional adapter for callers not yet moved off LoopScheduler. */
+	scheduler?: { runningRuns(): ReadonlyArray<{ runId: string }>; abortRun(runId: string, from: "page" | "cli"): boolean; noteStopFrom(runId: string, from: "page" | "cli"): void };
 	heldTurn(sessionId: string): { runId: string } | undefined;
 	ring(sessionId: string): void;
 	leases: () => Parameters<typeof heldTurnFor>[0];
@@ -402,14 +407,15 @@ export function stopRunFrom(source: "cli" | "person", prefix: boolean, host: Sto
 	const from = source === "person" ? "page" : "cli";
 	return (runId) =>
 		stopRun(runId, {
-			runs: () => host.scheduler.runningRuns(),
+			runs: () => host.runs?.all() ?? host.scheduler?.runningRuns() ?? [],
 			heldSession: (id) => {
 				const turn = heldTurnFor(host.leases(), id);
 				return turn?.kind === "turn" && turn.runId === id && host.heldTurn(turn.sessionId)?.runId === id ? turn.sessionId : undefined;
 			},
-			abortRun: (id) => host.scheduler.abortRun(id, from),
+			abortRun: (id) => host.runs ? host.runs.stop(id, from) : host.scheduler?.abortRun(id, from) ?? false,
 			stopThroughRow: (sessionId, id) => {
-				host.scheduler.noteStopFrom(id, from);
+				if (host.runs) host.runs.noteStopFrom(id, from);
+				else host.scheduler?.noteStopFrom(id, from);
 				host.append(stopRow(sessionId, { id }, source, host.createdBy()));
 				host.ring(sessionId);
 			},

@@ -49,6 +49,17 @@ All notable changes to pi-loops are documented here. The format follows
   `message_kind: "pi-loops:turn"` for them, where they reported `user`. Undo in the page goes back
   to your own last message, past the prompts of pi-loops after it. In the page and in the
   `pi-loops` list, a conversation that a claim starts is titled by the claim's words.
+- **A loop whose run takes longer than its interval counts each slot it missed once, and does not
+  run again as soon as the long run ends.** "Skipped overlaps" in `/cron` and
+  `skipped_overlap_count` in `cron_list` rose at every tick of pi-loops (30 seconds) while the run
+  went on, so the number grew with the length of the run, not with the slots it missed. Now they
+  rise once for each slot. The run
+  after a long run is the one at the next slot of the schedule; before, a loop with an `every`
+  schedule ran again at the first tick after the long run ended.
+- **`/triggers audit` says more about a loop's runs.** It also lists a run that is stopped, removed
+  with its job, failed because the process running it stopped, or parked, and the removal of a
+  one-shot that has finished. The second try of a failed one-shot is listed with the time it runs,
+  not the time it was first due.
 
 ### Fixed
 

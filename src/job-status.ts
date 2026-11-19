@@ -6,7 +6,23 @@ import type { JobClock } from "./clock.ts";
 import type { Row } from "./requests.ts";
 type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
 import { computeNext } from "./schedule.ts";
-import type { Disabled, LoopJob, LoopJobV3, RunRecord } from "./store.ts";
+import type { Disabled, JobStore, LoopJob, LoopJobV3, RunRecord } from "./store.ts";
+
+export interface BudgetState { readonly spent: number; readonly cap: number; readonly over: boolean }
+
+/** Automation cost since local midnight. An unreadable run log does not stop the clock. */
+export function budgetState(ledger: Pick<JobStore, "spend">, capValue: number | undefined, now: number): BudgetState {
+	const cap = capValue ?? 0;
+	if (cap <= 0) return { spent: 0, cap: 0, over: false };
+	const midnight = new Date(now);
+	midnight.setHours(0, 0, 0, 0);
+	try {
+		const spent = ledger.spend(midnight.getTime()).total;
+		return { spent, cap, over: spent >= cap };
+	} catch {
+		return { spent: 0, cap, over: false }; // an unreadable run log must not stop the clock
+	}
+}
 
 /** What the run log says about one job, folded in file order. */
 export interface JobHistory {
@@ -102,6 +118,13 @@ export function fromV2(job: LoopJob): { job: LoopJobV3; clock: JobClock } {
 	}
 	return {
 		job: { ...definition, enabled: job.enabled, ...(disabled ? { disabled } : {}) },
-		clock: { ...(lastDueAt ? { slot: lastDueAt } : {}), ...(lastFiredAt ? { fired: lastFiredAt } : {}), runs: runCount },
+		clock: {
+			...(lastDueAt ? { slot: lastDueAt } : {}),
+			...(lastFiredAt ? { fired: lastFiredAt } : {}),
+			runs: runCount,
+			...(job.skippedOverlap ? { collapsed: job.skippedOverlap } : {}),
+			...(job.lastError && job.enabled ? { note: { at: lastDueAt ?? job.createdAt, text: job.lastError } } : {}),
+			...("clearedAt" in job && typeof job.clearedAt === "string" ? { cleared: job.clearedAt } : {}),
+		},
 	};
 }
