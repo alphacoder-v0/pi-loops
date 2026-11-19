@@ -28,8 +28,9 @@ export async function run(ctx) {
 	// Four more, asked from the terminal as a person would (`/cron run`), one after another.
 	for (let n = 2; n <= 5; n++) {
 		await ctx.waitFor(`run ${n - 1} finished and nothing running`, () => {
-			const job = JSON.parse(fs.readFileSync(jobsFile, "utf8")).jobs.find((j) => j.id === JOB);
-			return { ok: runs().length >= n - 1 && !job?.running, last: { runs: runs().length, running: job?.running } };
+			// A loop's run is the claim on the row of its lane (src/requests.ts: one row per line).
+			const claim = jsonl(path.join(loops, "requests", `@${JOB}.jsonl`)).find((r) => r.run)?.run;
+			return { ok: runs().length >= n - 1 && !claim, last: { runs: runs().length, running: claim } };
 		}, 60000);
 		if (runs().length >= n) continue; // the clock ran it already
 		ctx.term.type("/cron run journey-card");

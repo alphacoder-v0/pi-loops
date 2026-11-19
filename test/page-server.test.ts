@@ -2262,13 +2262,18 @@ test("a loop that counts as failing carries its streak on its row and is listed 
 		fs.mkdirSync(page.loops, { recursive: true });
 		const [project, other] = ["proj", "other"].map((name) => path.join(dir, name));
 		for (const d of [project, other]) fs.mkdirSync(d);
-		const failing = { consecutiveFailures: 5, lastError: "401 Unauthorized" };
+		// A loop's streak is the failed runs at the end of its run log, not a field of jobs.json.
 		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [
-			loopJob(project, failing),
-			loopJob(project, { id: "cron-bbbbbbbb", name: "twice", consecutiveFailures: 2, lastError: "boom" }),
-			loopJob(project, { id: "cron-cccccccc", name: "off", enabled: false, ...failing }),
-			loopJob(other, { id: "cron-dddddddd", name: "elsewhere", ...failing }),
+			loopJob(project),
+			loopJob(project, { id: "cron-bbbbbbbb", name: "twice" }),
+			loopJob(project, { id: "cron-cccccccc", name: "off", enabled: false }),
+			loopJob(other, { id: "cron-dddddddd", name: "elsewhere" }),
 		] }));
+		const failed = (jobId: string, cwd: string, n: number, error: string) => Array.from({ length: n }, (_, i) => {
+			const at = new Date(Date.now() - 3_600_000 + i * 60_000).toISOString();
+			return JSON.stringify({ runId: `run-${jobId}-${i}`, jobId, stateful: true, cwd, pid: 1, startedAt: at, finishedAt: at, ok: false, error, findings: 0, droppedFindings: 0, stateUpdated: false });
+		});
+		fs.writeFileSync(path.join(page.loops, "runs.jsonl"), [...failed("cron-aaaaaaaa", project, 5, "401 Unauthorized"), ...failed("cron-bbbbbbbb", project, 2, "boom"), ...failed("cron-cccccccc", project, 5, "401 Unauthorized"), ...failed("cron-dddddddd", other, 5, "401 Unauthorized")].join("\n") + "\n");
 		await page.pool.open({ sessionId: "s1", cwd: project, piArgs: [] });
 		const rows = (await page.get("c/s1/state")).body.automation.jobs;
 		assert.deepEqual(rows.map((j: any) => [j.name, j.failing]), [["pr-watch", 5], ["twice", undefined], ["off", undefined]]);

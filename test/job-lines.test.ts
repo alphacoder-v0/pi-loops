@@ -263,3 +263,15 @@ test("a path is written with ~ only when it is inside the home directory, not wh
 	assert.match(linesFor([job({ cwd: "/home/alice/x" })], { home: "/home/al", showCwd: true })[2], / · \/home\/alice\/x$/, "never ~ice/x");
 	assert.match(linesFor([job({ cwd: "/home/al/x" })], { home: "/home/al", showCwd: true })[2], / · ~\/x$/);
 });
+
+test("[listed-cron] /cron shows a loop's run from the claim on its row and its last error from the run log, not from jobs.json fields nothing writes", () => {
+	const id = "cron-0123456789abcdef0123456789abcdef";
+	const started = new Date(NOW - 60_000).toISOString();
+	const claim = { ...plainJobRow(job({ id }), "run-claimed", `cron:${id}`, "", { pid: 1, instance: "x", version: "0" }, NOW - 60_000), lane: `@${id}`, run: { id: "run-claimed", pid: process.pid, started_at: started } };
+	const running = linesFor([job({ id, lastError: "stale words" })], { requests: (lane) => (lane === `@${id}` ? [claim as any] : []), live: () => true });
+	assert.match(running[0], /running run-claimed/);
+	assert.equal(running.some((line) => line.includes("stale words")), false, "the launch cleared the error, as main's did");
+	const failed: RunRecord = { runId: "run-failed", jobId: id, stateful: true, cwd: "/", pid: 1, startedAt: started, finishedAt: started, ok: false, error: "provider 500", findings: 0, droppedFindings: 0, stateUpdated: false };
+	const after = linesFor([job({ id })], { runs: [failed] });
+	assert.ok(after.some((line) => line === "    last error: provider 500"), after.join("\n"));
+});

@@ -23,6 +23,8 @@ import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom, machineWide } from "./
 import { formatSchedule, nextRunStamp, scheduleWords, stamp } from "./schedule.ts";
 import { type Look, lookLine, watchOf } from "./path-precheck.ts";
 import { failingJobs } from "./job-health.ts";
+import { type JobHistory, listedJob, listingFacts, runHistory } from "./job-status.ts";
+import { loopLane } from "./lane.ts";
 import { loopSignal, type LoopSignal, SIGNAL_WINDOW_MS } from "./job-signal.ts";
 import { applyTune, rowSignal, scheduleAudit, suggestTune } from "./job-tune.ts";
 import { HELD_READ_MAX_BYTES } from "./held-read.ts";
@@ -1212,7 +1214,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		 * list that silently drops things is worse than a longer list.
 		 */
 		const inThisProject = (j: any) => sameProject(j.cwd, cwd);
-		const allJobs = jobsFile.jobs ?? [];
+		const allJobs = listedRaw(Array.isArray(jobsFile.jobs) ? jobsFile.jobs : []);
 		const now = Date.now();
 		const hostPid = liveHostPid(LOOPS_DIR);
 		const hostUp = hostPid !== undefined;
@@ -1312,6 +1314,30 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const leases = new LeaseStore(LOOPS_DIR);
 	const audit = new TriggerStore(LOOPS_DIR);
 	const jobStore = new JobStore(LOOPS_DIR);
+	let histories: { stamp: string; byJob: ReadonlyMap<string, JobHistory> } | undefined;
+	/** The entries of jobs.json as the lists show them: a loop's run, failures and last error come from its rows and run log (src/job-status.ts `listedJob`). */
+	const listedRaw = (raw: any[]): any[] => {
+		if (!raw.some((j) => j?.stateful && typeof j.id === "string")) return raw;
+		try {
+			let stamp = "-";
+			try { const s = fs.statSync(jobStore.runsFile); stamp = `${s.size}:${s.mtimeMs}`; }
+			catch { /* no run log yet */ }
+			if (histories?.stamp !== stamp) histories = { stamp, byJob: runHistory(jobStore.allRuns()) };
+			const byJob = histories.byJob;
+			const facts = listingFacts(opts.budget);
+			const now = Date.now();
+			return raw.map((j) => {
+				if (!j?.stateful || typeof j.id !== "string") return j;
+				let rows: Row[] = [];
+				try { const lane = loopLane(j.id); if (lane) rows = requests.list(lane); }
+				catch { /* an unreadable lane lists as one with no rows */ }
+				return listedJob(j, rows, byJob.get(j.id), now, undefined, facts);
+			});
+		} catch (err: any) {
+			opts.log(`pi-loops web: loop state: ${err?.message ?? err}`);
+			return raw;
+		}
+	};
 	const pool = opts.pool;
 	const signed = (child: PageChild) => createdBy(child, VERSION);
 	/** pi's session files, read for the list and for a conversation no lease names. Nothing is read until asked. */
@@ -1817,7 +1843,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		if (cwdAsked && !knownProject(cwdAsked)) return { status: 404, body: { error: "no such project" } };
 		const here = sessionAsked ? idFrom(sessionAsked) : undefined;
 		const cwd = cwdAsked || (here ? (leaseOf(here)?.cwd ?? conversationThere(here)?.cwd) : undefined) || undefined;
-		const jobList = objectsIn(readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs);
+		const jobList = listedRaw(objectsIn(readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs));
 		const findings = inbox.list();
 		const attentionNow = (inCwd: string | undefined) => attentionFrom({ findings, jobs: jobList, cwd: inCwd, inProject: sameProject, budget: opts.budget?.(), day: stamp().slice(0, 10) });
 		// A conversation asked about that is in no project known: no project's items or counts, not the whole machine's.
@@ -1893,7 +1919,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			opts.log(`pi-loops web: away summary: ${err?.message ?? err}`);
 		}
 		// The loops of this project that count as failing: listed with the decisions, under Needs you.
-		const failing = failingJobs(objectsIn(readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs).filter((j) => !cwd || sameAsked(String(j.cwd ?? ""), cwd))).map((j) => ({ id: j.id, label: loopLabel({ id: j.id, name: typeof j.name === "string" ? j.name : undefined }), streak: j.consecutiveFailures }));
+		const failing = failingJobs(listedRaw(objectsIn(readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs)).filter((j) => !cwd || sameAsked(String(j.cwd ?? ""), cwd))).map((j) => ({ id: j.id, label: loopLabel({ id: j.id, name: typeof j.name === "string" ? j.name : undefined }), streak: j.consecutiveFailures }));
 		const offer = cwd && here ? startersFor(cwd, leaseOf(here)?.cwd ?? conversationThere(here)?.cwd) : undefined;
 		return { status: 200, body: { cwd: cwd ?? null, cards: shown, more: cards.length - shown.length, handled, elsewhere: fresh.length - scoped(fresh).length, chips: DISMISS_CHIPS, away, failing, ...(offer ? { starters: offer } : {}) } };
 	}
@@ -2123,8 +2149,9 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		// Only a loop of a project the page lists, as the conversation list would show it.
 		if (!job || typeof job.cwd !== "string" || !job.cwd || !knownProject(job.cwd)) return { status: 404, body: { error: "no such loop" } };
 		const now = Date.now();
-		const suggestion = suggestTune(job, signalOf(job.id, now), now);
-		const changed = { status: 409, body: { error: "the suggestion changed" } };
+		// As the page listed it: no suggestion for a loop whose run is going (its claim, `listedJob`).
+		const suggestion = suggestTune(listedRaw([job])[0], signalOf(job.id, now), now);
+		const changed ={ status: 409, body: { error: "the suggestion changed" } };
 		if (!suggestion || suggestion.key !== key) return changed;
 		// Re-checked under the lock: the loop as the key was computed for it, and not kept meanwhile
 		// (Keep in one tab and Apply in another: only the first lands).
