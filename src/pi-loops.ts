@@ -54,7 +54,7 @@ import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
-import { budgetState } from "./job-status.ts";
+import { budgetState, listedJobs } from "./job-status.ts";
 import { runClockTick, decideRunNow } from "./clock.ts";
 import { openStores, removeJob } from "./stores.ts";
 import { Ticker, WINDOW_RIDERS, type Riders } from "./ticker.ts";
@@ -886,8 +886,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** Runs the store has a `running` marker for (src/store.ts RunningMarker), and the held turns that have a claim, in machineRuns' shape. */
 	function storeRunning(): Array<{ id: string; source: string; event: string; label: string; startedAt: string; promptPreview: string; check: boolean; inHost: boolean }> {
 		try {
-			// A marker whose process is gone is not a run (the background process clears it on its tick).
-			const jobs = stores.jobs.load();
+			// A marker whose process is gone is not a run. A loop's run is the live claim on its row (`listedJob`).
+			const jobs = listedNow();
 			const marked = jobs.filter((j) => j.running && (!j.running.host || j.running.host === os.hostname()) && pidAlive(j.running.pid)).map((j) => ({ id: j.running!.runId, source: "Cron", event: j.id, label: j.name ?? j.id, startedAt: j.running!.startedAt, promptPreview: previewRedacted(j.prompt, 80), check: false, inHost: true }));
 			// A plain job's turn in a closed conversation has no marker: it is the claim on the job's row.
 			const held = heldTurns(jobs, (sessionId) => requests.list(sessionId)).map(({ jobId, run }) => {
@@ -1050,6 +1050,10 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (placed.more) ctx.ui.notify(burstLine(placed), placed.failed ? "warning" : "info");
 	}
 
+	/** Every job as the lists show it: a loop's run, failures and last error come from its rows and run log (src/job-status.ts `listedJob`). */
+	function listedNow(): LoopJob[] {
+		return listedJobs(stores);
+	}
 	/**
 	 * A corrupt or truncated store must not take the session down with it. Both of these read the
 	 * stores, and both are reached from the tick (`onTick` → `refreshBadge`) which runs as
@@ -1162,7 +1166,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		// Machine-wide like the inbox count and the running list above it: one process owns the
 		// machine's clock, and a loop failing in another checkout is still this machine's automation
 		// going quiet.
-		const failing = failingSummary(stores.jobs.load());
+		const failing = failingSummary(listedNow());
 		if (failing) parts.push(failing);
 		const running = machineRuns().map((r) => r.label);
 		if (running.length) parts.push(`running: ${running.join(", ")}`);
@@ -3394,7 +3398,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			// What was loaded is printed on every start; without a line here a session
 			// can begin with loops and rules the user has entirely forgotten about.
 			// "Active here" means it: a plain job of another session is asleep, not active.
-			const myJobs = stores.jobs.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && runsHere(j, scheduler.ownerView()));
+			const myJobs = listedNow().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && runsHere(j, scheduler.ownerView()));
 			const myRules = loadOrNone(() => triggers.store.load()).filter((r) => sameProject(r.cwd, session.cwd) && r.enabled);
 			// What is scheduled says nothing about what is working: a loop that has failed every night
 			// since Tuesday is still counted as active, and this line is the only one a user reads.

@@ -35,6 +35,7 @@ import { Ticker, HOST_RIDERS, BACKGROUND_RIDERS, type Riders } from "./ticker.ts
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv, type McpNotification, type McpServerConfig } from "./mcp.ts";
 import { failingJobs } from "./job-health.ts";
+import { listedJobs } from "./job-status.ts";
 import { loopLabel } from "./job-lines.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { parentRuntimeFlags, type RunnerResult, type SubagentRunner } from "./runner.ts";
@@ -520,7 +521,7 @@ function snapshot(): HostSnapshot & { slots: { inUse: number; limit: number } } 
 	// One read of each store for the whole snapshot. jobs.json was read four times and
 	// triggers.json twice, so a tick landing in between could have `enabled` counted against
 	// one version of the file and `total` against another — a status line contradicting itself.
-	const jobs = host.stores.jobs.load();
+	const jobs = listedJobs(host.stores);
 	const rules = rulesOrNone();
 	return {
 		pid: process.pid,

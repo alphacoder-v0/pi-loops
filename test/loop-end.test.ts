@@ -141,3 +141,46 @@ test("a loop's run has its job's time limit, not one that a row in its lane name
 		assert.deepEqual(limits, [60_000]);
 	} finally { await host.stop(); }
 });
+
+test("[waiting-written] The background writes why a loop's row waits on the row, for the lists: the slots, then the start clears it", async () => {
+	const dir = tmp();
+	fs.writeFileSync(path.join(dir, "config.toml"), "[cron]\nmax_concurrent_runs = 1\n");
+	let release: (() => void) | undefined;
+	const host = start(dir, async () => { await new Promise<void>((resolve) => { release = resolve; }); return OK; });
+	const t0 = Date.now();
+	const other = "cron-fedcba9876543210fedcba9876543210";
+	await host.stores.jobs.add(loop(dir, t0, 600_000) as any);
+	await host.stores.jobs.add({ ...loop(dir, t0, 600_000), id: other } as any);
+	try {
+		await tick(host, t0);
+		const rows = [loopLane(ID)!, loopLane(other)!].flatMap((lane) => host.stores.requests.list(lane));
+		const waiting = rows.filter((row) => !row.run);
+		assert.equal(rows.filter((row) => row.run).length, 1, "one runs");
+		assert.deepEqual(waiting.map((row) => row.waiting), ["deferred: 1 sub-agent(s) already in flight (max 1)"]);
+		release?.();
+		await host.drain(2000);
+		await tick(host, t0 + 1000);
+		const after = [loopLane(ID)!, loopLane(other)!].flatMap((lane) => host.stores.requests.list(lane));
+		assert.deepEqual(after.filter((row) => !row.run).map((row) => row.waiting), [], "the second started, and no row waits");
+	} finally { release?.(); await host.stop(); }
+});
+
+test("[waiting-backoff] A row in its failure's backoff is not 'deferred' by the slots: main's backoff came first and kept the failure as the reason", async () => {
+	const dir = tmp();
+	fs.writeFileSync(path.join(dir, "config.toml"), "[cron]\nmax_concurrent_runs = 1\n");
+	let release: (() => void) | undefined;
+	const host = start(dir, async () => { await new Promise<void>((resolve) => { release = resolve; }); return OK; });
+	const t0 = Date.now();
+	const other = "cron-fedcba9876543210fedcba9876543210";
+	await host.stores.jobs.add(loop(dir, t0, 600_000) as any);
+	await host.stores.jobs.add({ ...loop(dir, t0, 600_000), id: other } as any);
+	try {
+		await tick(host, t0);
+		const lanes = [loopLane(ID)!, loopLane(other)!];
+		const waiting = lanes.flatMap((lane) => host.stores.requests.list(lane).filter((row) => !row.run).map((row) => ({ lane, row })))[0];
+		assert.equal(waiting?.row.waiting, "deferred: 1 sub-agent(s) already in flight (max 1)");
+		host.stores.requests.update(waiting.lane, waiting.row.id, { not_before: new Date(t0 + 3_600_000).toISOString() });
+		await tick(host, t0 + 1000);
+		assert.equal(host.stores.requests.list(waiting.lane).find((row) => row.id === waiting.row.id)?.waiting, undefined);
+	} finally { release?.(); await host.stop(); }
+});

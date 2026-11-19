@@ -39,7 +39,7 @@ src/ts-entry.mjs            how an .mjs entry point imports this package's .ts: 
 
 the pipelines
 src/backoff.ts              the one table of waits after a failure: a row, a loop, a rule check
-src/job-status.ts           what a list shows for one job, folded from its clock, rows and run history
+src/job-status.ts           what a list shows for one job, folded from its clock, rows and run history; `listedJob`, a loop's run, failures and last error as every list reads them
 src/clock.ts                the schedule cursor, pure tick decisions and their compare-and-set writes
 src/settle.ts               how a plain job's turn ends, as one table: what becomes of its row and of its job, for each way a run ends
 src/scheduler.ts            no longer fires anything: the clock rider writes every slot and the lanes run them. A window still builds one for `ownerView` (which plain jobs its clock fires), `runningRuns`, `runningCount` and `abortRun`; pi-loops in the background builds one too, as `HostRuntime.scheduler`, and stops it at its stop; the control channel and `src/tools.ts` fall back to it when they have no run list or stores; and `SessionSnapshot`, `PlainJobLeases` and a second `DEFAULT_RUN_TIMEOUT_MS` are still declared in it, imported by `src/loop-run.ts`, `src/tools.ts`, `src/host.ts`, `src/host-runtime.ts` and `src/pi-loops.ts`. M4b.5 moves these and deletes it

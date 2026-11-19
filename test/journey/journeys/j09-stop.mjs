@@ -18,7 +18,8 @@ const jsonl = (file) => { try { return fs.readFileSync(file, "utf8").split("\n")
 export async function run(ctx) {
 	const loops = ctx.boot.loopsDir;
 	const jobs = () => { try { return JSON.parse(fs.readFileSync(path.join(loops, "jobs.json"), "utf8")).jobs; } catch { return []; /* being rewritten */ } };
-	const marker = (id) => jobs().find((j) => j.id === id)?.running;
+	// A loop's run is the claim on the row of its lane (src/requests.ts: one row per line).
+	const marker = (id) => { const run = jsonl(path.join(loops, "requests", `@${id}.jsonl`)).find((r) => r.run)?.run; return run ? { runId: run.id, startedAt: run.started_at } : undefined; };
 	const runs = (id) => jsonl(path.join(loops, "runs.jsonl")).filter((r) => r.jobId === id);
 	const page = (expr) => JSON.parse(JSON.parse(ctx.browser("eval", `JSON.stringify(${expr})`).trim()));
 	const row = (id) => `#auto [data-loopx="${id}"]`;
@@ -30,7 +31,7 @@ export async function run(ctx) {
 	};
 
 	// 1. Both loops are running in the background, each held by its sleep.
-	const running = await ctx.waitFor("the loop's running marker", () => ({ ok: !!marker(LOOP)?.runId && !!marker(SPARE)?.runId, last: jobs().map((j) => [j.id, j.running]), value: marker(LOOP) }), 90000);
+	const running = await ctx.waitFor("the loop's running marker", () => ({ ok: !!marker(LOOP)?.runId && !!marker(SPARE)?.runId, last: [marker(LOOP), marker(SPARE)], value: marker(LOOP) }), 90000);
 	ctx.browser("set", "viewport", "1280", "800");
 	ctx.browser("open", `${ctx.boot.url}?token=${ctx.boot.token}`);
 	await ctx.waitFor("Stop this run on the loop's row", () => page(`!!document.querySelector(${JSON.stringify(`${row(LOOP)} button[data-act=stop]`)})`), 30000);

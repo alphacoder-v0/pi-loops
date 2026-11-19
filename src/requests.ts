@@ -97,6 +97,12 @@ interface RowBase {
 	attempts: number;
 	last_error?: string;
 	/**
+	 * A loop's row only: why it does not start yet (`waiting: cwd …`, `paused: …`, `deferred: …`), in
+	 * the words main wrote into `lastError`. Written by pi-loops in the background, which decides it,
+	 * when it changes; every list reads it (src/job-status.ts `listedJob`).
+	 */
+	waiting?: string;
+	/**
 	 * Rows with no `[Trigger <id>] ` (a person's message, a claim, a recipe hand-off, `/new-trigger`, a
 	 * goal continuation: src/engine.ts `carriesPrefix`): when the holder last handed the row to pi,
 	 * written under the lock just before the call. The page reads it; for a row of a version 2 line it
@@ -380,7 +386,7 @@ export class RequestStore {
 	 * the result says so: false when no row `id` was in the file, so a hand-over whose stamp did not
 	 * land knows the row is gone (cancelled, or sent from the page) and hands nothing over.
 	 */
-	update(lane: LaneId, id: string, patch: Partial<Pick<Row, "attempts" | "not_before" | "last_error" | "created_by" | "handed_at">> & { run?: undefined }): boolean {
+	update(lane: LaneId, id: string, patch: Partial<Pick<Row, "attempts" | "not_before" | "last_error" | "created_by" | "handed_at" | "waiting">> & { run?: undefined }): boolean {
 		let found = false;
 		this.rewrite(lane, (lines) =>
 			lines.map(({ raw, row, version }) => {
