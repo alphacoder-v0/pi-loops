@@ -352,7 +352,7 @@ export class RequestStore {
 		}, lock);
 	}
 
-	/** Count slot `slot` once on row `id`, under the lane lock, and as a skip when `overlap` (its run is going). The row keeps every other field, including its claim. */
+	/** Count slot `slot` once on row `id`, under the lane lock, and as a skip when `overlap` and the row has a run. The row keeps every other field, including its claim. */
 	collapse(lane: LaneId, id: string, slot: string, overlap = false, lock?: LockOptions): "counted" | "counted-before" | "missing" {
 		let result: "counted" | "counted-before" | "missing" = "missing";
 		this.rewrite(lane, (lines) => lines.map(({ raw, row, version }) => {
@@ -362,7 +362,7 @@ export class RequestStore {
 				return { raw, row };
 			}
 			result = "counted";
-			return { raw: rowLine({ ...row, collapsed: (row.collapsed ?? 0) + 1, collapsed_slot: slot, ...(overlap ? { skipped: (row.skipped ?? 0) + 1 } : {}) }, version), row };
+			return { raw: rowLine({ ...row, collapsed: (row.collapsed ?? 0) + 1, collapsed_slot: slot, ...(overlap && row.run ? { skipped: (row.skipped ?? 0) + 1 } : {}) }, version), row };
 		}), lock);
 		return result;
 	}
@@ -415,7 +415,9 @@ export class RequestStore {
 			lines.map(({ raw, row }) => {
 				if (!row || row.id !== id || row.run || row.kind !== "input") return { raw, row };
 				claimed = true;
-				return { raw: rowLine({ ...row, kind: "input", run }), row };
+				// A new run starts with no skips of its own: those of a run before it (a retry after a crash) are not this run's.
+				const { skipped: _skipped, ...fresh } = row;
+				return { raw: rowLine({ ...fresh, kind: "input", run }), row };
 			}),
 		);
 		return claimed;
