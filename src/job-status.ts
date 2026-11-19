@@ -200,8 +200,9 @@ export function listedJob(job: LoopJob, rows: readonly Row[], history: JobHistor
 			if (typeof waiting.waiting === "string" && waiting.waiting) return waiting.waiting;
 			if (waiting.attempts > 0) return "cleared stale running state (previous pi process ended mid-run); the run will be retried";
 		}
-		// A slot counted onto the row before it started (it waited for its directory, say) was no skip of this run.
-		if (claim) return claim.collapsed && claim.collapsed_slot && Date.parse(claim.collapsed_slot) >= Date.parse(claim.run.started_at) ? "skipped: previous run still active" : undefined;
+		// A slot counted onto a scheduled row before it started (it waited for its directory, say) was no
+		// skip of this run. A /cron run row starts at once, so whatever is counted on it was a skip.
+		if (claim) return claim.collapsed && (claim.source.startsWith("cron-run:") || (claim.collapsed_slot && Date.parse(claim.collapsed_slot) >= Date.parse(claim.run.started_at))) ? "skipped: previous run still active" : undefined;
 		if (failed && !(note && job.lastDueAt && Date.parse(job.lastDueAt) > Date.parse(failed.at))) return oneShotRetry ? `${failed.error} (one-shot: retrying once)` : failed.error;
 		return note;
 	})();

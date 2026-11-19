@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { loadConfig } from "../src/config.ts";
 import { createHostRuntime } from "../src/host-runtime.ts";
 import { RUNTIME_RIDERS } from "../src/ticker.ts";
-import { loopLane } from "../src/lane.ts";
+import { loopLane, parseLane } from "../src/lane.ts";
 import { plainJobRow, plainRunId } from "../src/engine.ts";
 import { listedJobs } from "../src/job-status.ts";
 import { tmp } from "./tmp.ts";
@@ -210,4 +210,26 @@ test("[run-now-spends-waiting] /cron run of an every loop whose slot waits for a
 		assert.deepEqual(host.stores.requests.list(loopLane(ID)!), [], "no row of this loop waits");
 		assert.equal(listedJobs(host.stores).find((job) => job.id === ID)?.lastError, undefined);
 	} finally { release?.(); await host.stop(); }
+});
+
+test("[overlap-at-drain] A scheduled row that waits beside a run of the same loop that started before the drain is a skipped overlap, as main's tick skipped it: counted on the running row and spent", async () => {
+	const dir = tmp();
+	const host = start(dir, async () => OK);
+	const t0 = Date.now();
+	const job = loop(dir, t0, 600_000, { schedule: { kind: "cron", expr: "*/10 * * * *" } }) as any;
+	await host.stores.jobs.add(job);
+	const lane = loopLane(ID)!;
+	const slot = new Date(t0 - 120_000).toISOString();
+	const waiting = plainJobRow(job, plainRunId(ID, slot), `cron:${ID}`, "", { pid: process.pid, instance: "x", version: "0" } as any, t0 - 120_000);
+	host.stores.requests.appendIfAbsent({ ...waiting, lane, payload: { ...waiting.payload!, slot } } as any);
+	const asked = plainJobRow(job, "run-asked", `cron-run:${ID}`, "", { pid: process.pid, instance: "x", version: "0" } as any, t0 - 60_000);
+	host.stores.requests.appendIfAbsent({ ...asked, lane } as any);
+	host.stores.requests.update(lane, "run-asked", { run: { id: "run-asked", pid: process.pid, started_at: new Date(t0 - 60_000).toISOString() } } as any);
+	try {
+		await host.loops.drain(parseLane(lane) as any, t0);
+		const rows = host.stores.requests.list(lane) as any[];
+		assert.deepEqual(rows.map((row) => [row.id, row.collapsed, row.collapsed_slot]), [["run-asked", 1, slot]]);
+		assert.equal(host.stores.jobs.load().find((j) => j.id === ID)?.skippedOverlap, 1);
+		assert.equal(listedJobs(host.stores, () => true).find((j) => j.id === ID)?.lastError, "skipped: previous run still active");
+	} finally { await host.stop(); }
 });
