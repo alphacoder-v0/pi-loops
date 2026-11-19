@@ -15,7 +15,7 @@ import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal, signalSummary } from ".
 import { plural } from "./plural.ts";
 import { previewRedacted } from "./redact.ts";
 import type { ClaimedRow, Row } from "./requests.ts";
-import { type BudgetState, listedJob, runHistory } from "./job-status.ts";
+import { listedJob, runHistory } from "./job-status.ts";
 import { loopLane } from "./lane.ts";
 import { computeNext, formatLocal, formatSchedule } from "./schedule.ts";
 import type { LoopJob, RunRecord } from "./store.ts";
@@ -37,8 +37,6 @@ export interface JobLinesInput {
 	cwdExists: (cwd: string) => boolean;
 	/** Whether each job's path is printed: only `/cron all` lists more than one project. */
 	showCwd: boolean;
-	/** Today's spend against the budget, for why a loop's row waits; absent, the budget holds nothing. */
-	budget?: () => BudgetState;
 	/** Whether a claim's process is alive; absent, `claimAlive` asks the system. */
 	live?: (row: ClaimedRow) => boolean;
 }
@@ -160,14 +158,13 @@ export function jobLines(stored: LoopJob[], opts: JobLinesInput): string[] {
 	const { runs, inbox, requests, view, now, home, cwdExists, showCwd } = opts;
 	// A loop's run, failures and last error, from its rows and the run log (src/job-status.ts `listedJob`).
 	const histories = stored.some((job) => job.stateful) ? runHistory(runs) : undefined;
-	const facts = { cwdExists, budget: opts.budget ?? (() => ({ spent: 0, cap: 0, over: false })) };
 	const jobs = stored.map((job) => {
 		if (!job.stateful) return job;
 		const lane = loopLane(job.id);
 		let rows: Row[] = [];
 		try { if (lane) rows = requests(lane); }
 		catch { /* an unreadable lane lists as one with no rows */ }
-		return listedJob(job, rows, histories?.get(job.id), now, opts.live, facts);
+		return listedJob(job, rows, histories?.get(job.id), opts.live);
 	});
 	return jobs
 		.map((job, i) => {

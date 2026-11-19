@@ -54,7 +54,7 @@ import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
-import { budgetState, listedJobs, listingFacts } from "./job-status.ts";
+import { budgetState, listedJobs } from "./job-status.ts";
 import { runClockTick, decideRunNow } from "./clock.ts";
 import { openStores, removeJob } from "./stores.ts";
 import { Ticker, WINDOW_RIDERS, type Riders } from "./ticker.ts";
@@ -1052,7 +1052,7 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	/** Every job as the lists show it: a loop's run, failures and last error come from its rows and run log (src/job-status.ts `listedJob`). */
 	function listedNow(): LoopJob[] {
-		return listedJobs(stores, Date.now(), listingFacts(() => budgetState(stores.jobs, config.dailyBudgetUsd, Date.now())));
+		return listedJobs(stores);
 	}
 	/**
 	 * A corrupt or truncated store must not take the session down with it. Both of these read the
@@ -1224,7 +1224,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		// of the lines is src/job-lines.ts, where a test can see a marker go.
 		const runs = jobs.some((j) => j.stateful) ? stores.jobs.allRuns() : [];
 		const inbox = jobs.some((j) => j.stateful) ? stores.inbox.list() : [];
-		return cronJobLines(jobs, { runs, inbox, requests: (sessionId) => requests.list(sessionId), view: scheduler.ownerView(), now: Date.now(), home: process.env.HOME ?? "", cwdExists: (cwd) => fs.existsSync(cwd), showCwd, budget: () => budgetState(stores.jobs, config.dailyBudgetUsd, Date.now()) });
+		return cronJobLines(jobs, { runs, inbox, requests: (sessionId) => requests.list(sessionId), view: scheduler.ownerView(), now: Date.now(), home: process.env.HOME ?? "", cwdExists: (cwd) => fs.existsSync(cwd), showCwd });
 	}
 
 	/* --------------------------------------------------------- creation */

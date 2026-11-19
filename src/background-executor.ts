@@ -476,6 +476,16 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 		const current = laneJobs().get(lane.id);
 		const jobs = stores.book().jobs;
 		const sinks = baseSinks();
+		/** Why a scheduled row of this loop waits for its gates: a missing directory, the budget, the slots. */
+		const gateOf = (row: UnclaimedRow): string | undefined => {
+			const job = jobs.find((item) => item.id === jobId);
+			if (!job || !job.enabled || row.source.startsWith("cron-run:")) return undefined;
+			return loopWait({ cwd: job.cwd, cwdMissingSince: missingSince(jobId) }, {
+				cwdExists: deps.cwdExists,
+				budget: () => budgetState(stores.jobs, deps.budgetCap(), now),
+				slots: () => ({ inUse: slots.inUseCount, free: slots.free, limit: slots.limit }),
+			}, now);
+		};
 		const executor: Executor = {
 			holds: () => true,
 			proof: () => proof(lane.id),
@@ -488,11 +498,7 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 					const job = jobs.find((item) => item.id === jobId);
 					if (!job) return undefined;
 					if (!job.enabled) return "its job is disabled";
-					return loopWait({ cwd: job.cwd, cwdMissingSince: missingSince(jobId) }, {
-						cwdExists: deps.cwdExists,
-						budget: () => budgetState(stores.jobs, deps.budgetCap(), now),
-						slots: () => ({ inUse: slots.inUseCount, free: slots.free, limit: slots.limit }),
-					}, now);
+					return gateOf(row);
 				},
 			}),
 			turn: (row) => {
@@ -534,7 +540,19 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 				} else if (!marked) await stores.jobs.update(current.id, (j) => { j.cwdMissingSince = stamp(since); });
 			} else if (missingSince(current.id) && deps.cwdExists(current.cwd)) await stores.jobs.update(current.id, (j) => { j.cwdMissingSince = undefined; });
 		}
-		return drain(lane.id, stores.requests, executor, now, sinks);
+		const result = await drain(lane.id, stores.requests, executor, now, sinks);
+		// The lists cannot ask the gates (a window does not know the slots or the budget): the reason
+		// this drain saw is written on each row that still waits, when it changed, as main wrote lastError.
+		try {
+			for (const row of stores.requests.list(lane.id)) {
+				if (row.run || row.kind !== "input") continue;
+				const why = gateOf(row);
+				if (why !== row.waiting) stores.requests.update(lane.id, row.id, { waiting: why });
+			}
+		} catch (error) {
+			deps.sinks.log(`loop ${jobId}: could not note why its row waits: ${error instanceof Error ? error.message : String(error)}`, undefined, current);
+		}
+		return result;
 	}
 
 	return {

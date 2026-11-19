@@ -53,7 +53,7 @@ const T = (minutes: number) => new Date(Date.parse(at) + minutes * 60_000).toISO
 const v2 = (over: Partial<LoopJob> = {}): LoopJob => ({ id: "cron-job", schedule: { kind: "every", ms: 600_000 }, stateful: true, prompt: "work", cwd: "/", enabled: true, catchUp: true, createdAt: at, runCount: 0, skippedOverlap: 0, ...over });
 const claimed = (startedAt: string, over: Partial<CountedRow> = {}): CountedRow => ({ ...row(over), run: { id: "run-1", pid: 7, started_at: startedAt } } as CountedRow);
 const shown = (job: LoopJob, rows: CountedRow[], records: RunRecord[], opts: { live?: boolean; cwd?: boolean; now?: number } = {}) =>
-	listedJob(job, rows, runHistory(records).get(job.id), opts.now ?? Date.parse(T(30)), () => opts.live ?? true, { cwdExists: () => opts.cwd ?? true, budget: () => ({ spent: 0, cap: 0, over: false }) });
+	listedJob(job, rows, runHistory(records).get(job.id), () => opts.live ?? true);
 
 test("[listed-running] A loop runs while a live claim is on its row: the claim is the marker, and its start is the last fire.", () => {
 	const job = v2({ lastDueAt: T(0), lastFiredAt: T(0) });
@@ -62,7 +62,8 @@ test("[listed-running] A loop runs while a live claim is on its row: the claim i
 	const dead = shown(job, [claimed(T(10))], [], { live: false });
 	assert.deepEqual([dead.running, dead.lastFiredAt], [undefined, T(0)], "a claim whose process is gone is no run");
 	assert.equal(shown(v2({ running: { runId: "old", pid: 9, startedAt: T(1) } }), [], []).running?.runId, "old", "an older version's marker that conversion kept is still a run");
-	assert.equal(shown(job, [claimed(T(10), { collapsed: 2 } as Partial<CountedRow>)], []).lastError, "skipped: previous run still active");
+	assert.equal(shown(job, [claimed(T(10), { collapsed: 2, collapsed_slot: T(20) })], []).lastError, "skipped: previous run still active");
+	assert.equal(shown(job, [claimed(T(12), { collapsed: 1, collapsed_slot: T(10) })], []).lastError, undefined, "a slot counted onto the row while it waited to start is no skip of this run");
 });
 
 test("[listed-failure] The last failure is the error while it is the newest run that ended; a stop, a success or an enable clears it.", () => {
@@ -79,11 +80,12 @@ test("[listed-failure] The last failure is the error while it is the newest run 
 	assert.equal(shown(job, [], [failed, interrupted]).lastCompletedAt, T(1), "an interrupted run wrote no record of its own");
 });
 
-test("[listed-waiting] A row that waits shows why, and no due slot: main wrote that at the launch.", () => {
-	const job = v2({ lastDueAt: T(20), cwd: "/gone", cwdMissingSince: T(0) });
-	const waiting = shown(job, [row({ payload: { text: "x", cwd: "/gone", slot: T(0) } })], [], { cwd: false });
-	assert.match(waiting.lastError ?? "", /^waiting: cwd \/gone is not there yet \(since .*; disabled if it stays missing\)$/);
-	assert.equal(waiting.lastDueAt, undefined);
+test("[listed-waiting] A row that waits shows the reason the background wrote on it, and no due slot: main wrote that at the launch.", () => {
+	const job = v2({ lastDueAt: T(20), lastError: "a note of the clock" });
+	const deferred = "deferred: 1 sub-agent(s) already in flight (max 1)";
+	const waiting = shown(job, [row({ payload: { text: "x", cwd: "/", slot: T(0) }, waiting: deferred })], []);
+	assert.deepEqual([waiting.lastError, waiting.lastDueAt], [deferred, undefined]);
+	assert.equal(shown(job, [row()], []).lastError, "a note of the clock", "a row with no reason written says nothing of its own");
 	const retry = shown(v2({ lastDueAt: T(0), lastFiredAt: T(0) }), [row({ attempts: 1 })], []);
 	assert.deepEqual([retry.lastError, retry.lastDueAt, retry.lastFiredAt], ["cleared stale running state (previous pi process ended mid-run); the run will be retried", undefined, undefined], "an interrupted run is owed again: main rolled both stamps back");
 });

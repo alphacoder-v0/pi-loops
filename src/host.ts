@@ -521,7 +521,7 @@ function snapshot(): HostSnapshot & { slots: { inUse: number; limit: number } } 
 	// One read of each store for the whole snapshot. jobs.json was read four times and
 	// triggers.json twice, so a tick landing in between could have `enabled` counted against
 	// one version of the file and `total` against another — a status line contradicting itself.
-	const jobs = listedJobs(host.stores, Date.now());
+	const jobs = listedJobs(host.stores);
 	const rules = rulesOrNone();
 	return {
 		pid: process.pid,

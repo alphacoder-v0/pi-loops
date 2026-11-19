@@ -7,7 +7,7 @@
  */
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal } from "./job-signal.ts";
 import { formatWait, queuedPrompt, type QueuedPrompt, runningRun } from "./engine.ts";
-import { listedJobs, listingFacts } from "./job-status.ts";
+import { listedJobs } from "./job-status.ts";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -538,7 +538,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		async execute(_id, params) {
 			const listCwd = host.session().cwd;
 			const everywhere = params.all_projects === true && scope.hop === 0;
-			const all = host.stores ? listedJobs(host.stores, Date.now(), listingFacts()) : jobsOf(host).load();
+			const all = host.stores ? listedJobs(host.stores) : jobsOf(host).load();
 			const jobs = everywhere ? all : all.filter((j) => sameProject(j.cwd, listCwd));
 			const newFindings = everywhere ? inboxOf(host).newCount() : inProject(inboxOf(host).listNew(), listCwd, sameProject).length;
 			const text = `${renderCronJobsForTool(jobs, host)}\ninbox: ${plural(newFindings, "new finding")}`;

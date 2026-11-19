@@ -296,7 +296,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		cwdExists: fs.existsSync,
 		sinks: {
 			started: (job, row) => {
-				auditCronStart(triggers.store, job, row.run.id, row.payload?.slot);
+				// The latest slot the row owes, as main named the slot it fired: a slot counted onto a waiting row is the one that runs.
+				auditCronStart(triggers.store, job, row.run.id, row.collapsed_slot ?? row.payload?.slot);
 				log(`loop ${job.name ?? job.id}: run ${row.run.id.slice(0, 12)} started`);
 				const hooks = hookRunnerFor(job as LoopJob, row.run.id);
 				if (hooks) void hooks.fire(runStartEvent(job as LoopJob, row.run.id)).catch((err: any) => log(`hooks: ${redact(err?.message ?? String(err))}`));

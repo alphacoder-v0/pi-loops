@@ -23,7 +23,7 @@ import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom, machineWide } from "./
 import { formatSchedule, nextRunStamp, scheduleWords, stamp } from "./schedule.ts";
 import { type Look, lookLine, watchOf } from "./path-precheck.ts";
 import { failingJobs } from "./job-health.ts";
-import { type JobHistory, listedJob, listingFacts, runHistory } from "./job-status.ts";
+import { type JobHistory, listedJob, runHistory } from "./job-status.ts";
 import { loopLane } from "./lane.ts";
 import { loopSignal, type LoopSignal, SIGNAL_WINDOW_MS } from "./job-signal.ts";
 import { applyTune, rowSignal, scheduleAudit, suggestTune } from "./job-tune.ts";
@@ -1324,14 +1324,12 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			catch { /* no run log yet */ }
 			if (histories?.stamp !== stamp) histories = { stamp, byJob: runHistory(jobStore.allRuns()) };
 			const byJob = histories.byJob;
-			const facts = listingFacts(opts.budget);
-			const now = Date.now();
 			return raw.map((j) => {
 				if (!j?.stateful || typeof j.id !== "string") return j;
 				let rows: Row[] = [];
 				try { const lane = loopLane(j.id); if (lane) rows = requests.list(lane); }
 				catch { /* an unreadable lane lists as one with no rows */ }
-				return listedJob(j, rows, byJob.get(j.id), now, undefined, facts);
+				return listedJob(j, rows, byJob.get(j.id));
 			});
 		} catch (err: any) {
 			opts.log(`pi-loops web: loop state: ${err?.message ?? err}`);

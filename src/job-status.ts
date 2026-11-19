@@ -1,4 +1,3 @@
-import * as fs from "node:fs";
 import { failurePause } from "./backoff.ts";
 import { claimAlive, plainCollapseKey } from "./engine.ts";
 import { loopLane } from "./lane.ts";
@@ -133,17 +132,12 @@ export function fromV2(job: LoopJob): { job: LoopJobV3; clock: JobClock } {
 	};
 }
 
-/** What says why a loop's queued row does not start yet. The background's drain and the lists ask the same. */
+/** What says why a loop's queued row does not start yet: the background's drain asks it, and writes the answer on the row (`Row.waiting`). */
 export interface GateFacts {
 	readonly cwdExists: (cwd: string) => boolean;
 	readonly budget: () => BudgetState;
 	/** The sub-agent slots of the process that runs loops; a window does not know them. */
 	readonly slots?: () => { readonly inUse: number; readonly free: number; readonly limit: number };
-}
-
-/** The facts a list has: the file system, and the budget when it is given. A window does not know the background's slots. */
-export function listingFacts(budget?: () => BudgetState): GateFacts {
-	return { cwdExists: (cwd) => fs.existsSync(cwd), budget: budget ?? (() => ({ spent: 0, cap: 0, over: false })) };
 }
 
 /** Why a loop's queued row waits, in the words main wrote into `lastError`, or undefined when it can start. */
@@ -174,18 +168,19 @@ export function loopWait(job: Pick<LoopJob, "cwd" | "cwdMissingSince">, facts: G
  *                        back so that the slot fires again
  *   lastCompletedAt      the end of the newest run that wrote its own record
  *   consecutiveFailures  the failed records at the end of the run log
- *   lastError            the first that applies: a disabled job's reason; why a waiting row waits;
- *                        an interrupted run's retry; a skip while the run goes; nothing else while
+ *   lastError            the first that applies: a disabled job's reason; why a waiting row waits
+ *                        (`Row.waiting`, which the background writes); an interrupted run's retry;
+ *                        a slot skipped since the run started; nothing else while
  *                        it goes (the launch cleared it); then the later of the last failure (while
  *                        it is the newest run that ended, and not one before an enable) and the
  *                        clock's note
  *
  * A plain job is returned as it is: its turns still write these fields (until M4b.B).
  */
-export function listedJob(job: LoopJob, rows: readonly Row[], history: JobHistory | undefined, now: number, live: (row: ClaimedRow) => boolean = claimAlive, facts?: GateFacts): LoopJob {
+export function listedJob(job: LoopJob, rows: readonly Row[], history: JobHistory | undefined, live: (row: ClaimedRow) => boolean = claimAlive): LoopJob {
 	if (!job.stateful) return job;
-	const mine = rows.filter((row) => row.kind === "input") as Array<Row & { collapsed?: number }>;
-	const claim = mine.find((row): row is ClaimedRow & { collapsed?: number } => row.run !== undefined && live(row as ClaimedRow));
+	const mine = rows.filter((row) => row.kind === "input") as CountedRow[];
+	const claim = mine.find((row): row is ClaimedRow & CountedRow => row.run !== undefined && live(row as ClaimedRow));
 	const waiting = mine.filter((row) => !row.run).sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))[0];
 	const cleared = (job as LoopJob & { clearedAt?: string }).clearedAt;
 	// Main cleared the error at every launch: a failure shows while it is the newest run that ended with a record of its own.
@@ -202,11 +197,11 @@ export function listedJob(job: LoopJob, rows: readonly Row[], history: JobHistor
 	const lastError = ((): string | undefined => {
 		if (!job.enabled) return job.lastError ?? failed?.error;
 		if (waiting && !claim) {
-			const why = facts ? loopWait(job, facts, now) : undefined;
-			if (why) return why;
+			if (typeof waiting.waiting === "string" && waiting.waiting) return waiting.waiting;
 			if (waiting.attempts > 0) return "cleared stale running state (previous pi process ended mid-run); the run will be retried";
 		}
-		if (claim) return claim.collapsed ? "skipped: previous run still active" : undefined;
+		// A slot counted onto the row before it started (it waited for its directory, say) was no skip of this run.
+		if (claim) return claim.collapsed && claim.collapsed_slot && Date.parse(claim.collapsed_slot) >= Date.parse(claim.run.started_at) ? "skipped: previous run still active" : undefined;
 		if (failed && !(note && job.lastDueAt && Date.parse(job.lastDueAt) > Date.parse(failed.at))) return oneShotRetry ? `${failed.error} (one-shot: retrying once)` : failed.error;
 		return note;
 	})();
@@ -224,7 +219,7 @@ export function listedJob(job: LoopJob, rows: readonly Row[], history: JobHistor
 }
 
 /** Every job of `jobs.json` as the lists show it (`listedJob`): one read of the jobs, of each loop's lane, and of the folded run log. */
-export function listedJobs(stores: { readonly jobs: Pick<JobStore, "load">; readonly requests: Pick<RequestStore, "list">; history(): ReadonlyMap<string, JobHistory> }, now: number, facts?: GateFacts, live?: (row: ClaimedRow) => boolean): LoopJob[] {
+export function listedJobs(stores: { readonly jobs: Pick<JobStore, "load">; readonly requests: Pick<RequestStore, "list">; history(): ReadonlyMap<string, JobHistory> }, live?: (row: ClaimedRow) => boolean): LoopJob[] {
 	const jobs = stores.jobs.load();
 	if (!jobs.some((job) => job.stateful)) return jobs;
 	const histories = stores.history();
@@ -234,6 +229,6 @@ export function listedJobs(stores: { readonly jobs: Pick<JobStore, "load">; read
 		let rows: Row[] = [];
 		try { if (lane) rows = stores.requests.list(lane); }
 		catch { /* an unreadable lane lists as one with no rows */ }
-		return listedJob(job, rows, histories.get(job.id), now, live, facts);
+		return listedJob(job, rows, histories.get(job.id), live);
 	});
 }
