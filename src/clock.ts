@@ -305,7 +305,7 @@ export function decideTick(input: TickInput): TickDecision[] {
 	});
 }
 
-export interface TickStores { readonly requests: Pick<RequestStore, "appendIfAbsent" | "remove"> & { collapse(lane: LaneId, id: string, slot: string): "counted" | "counted-before" | "missing" }; readonly clock: Clock; heldEpoch(sessionId: string): number | undefined }
+export interface TickStores { readonly requests: Pick<RequestStore, "appendIfAbsent" | "remove"> & { collapse(lane: LaneId, id: string, slot: string, overlap?: boolean): "counted" | "counted-before" | "missing" }; readonly clock: Clock; heldEpoch(sessionId: string): number | undefined }
 export type T2 = "wrote" | "there" | "counted" | "counted-before" | "missing" | "nothing";
 const written: unique symbol = Symbol("written");
 export interface SlotWritten { readonly decision: SpendDecision; readonly t2: T2; readonly [written]: true }
@@ -321,7 +321,7 @@ export function writeSlot(decision: SpendDecision, stores: Pick<TickStores, "req
 		if (decision.replaces) stores.requests.remove(decision.lane, [decision.replaces]);
 		t2 = stores.requests.appendIfAbsent(decision.row) ? "wrote" : "there";
 	}
-	else if (decision.do === "collapse") t2 = stores.requests.collapse(decision.lane, decision.onto, decision.slot);
+	else if (decision.do === "collapse") t2 = stores.requests.collapse(decision.lane, decision.onto, decision.slot, decision.overlap);
 	return { decision, t2, [written]: true };
 }
 /** Apply T3 after T2. A lost move leaves every T2 row in place. */

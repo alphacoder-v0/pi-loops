@@ -62,8 +62,8 @@ test("[listed-running] A loop runs while a live claim is on its row: the claim i
 	const dead = shown(job, [claimed(T(10))], [], { live: false });
 	assert.deepEqual([dead.running, dead.lastFiredAt], [undefined, T(0)], "a claim whose process is gone is no run");
 	assert.equal(shown(v2({ running: { runId: "old", pid: 9, startedAt: T(1) } }), [], []).running?.runId, "old", "an older version's marker that conversion kept is still a run");
-	assert.equal(shown(job, [claimed(T(10), { collapsed: 2, collapsed_slot: T(20) })], []).lastError, "skipped: previous run still active");
-	assert.equal(shown(job, [claimed(T(12), { collapsed: 1, collapsed_slot: T(10) })], []).lastError, undefined, "a slot counted onto the row while it waited to start is no skip of this run");
+	assert.equal(shown(job, [claimed(T(10), { collapsed: 2, collapsed_slot: T(20), skipped: 1 })], []).lastError, "skipped: previous run still active");
+	assert.equal(shown(job, [claimed(T(12), { collapsed: 1, collapsed_slot: T(20) })], []).lastError, undefined, "a slot counted while the row waited, or while its process was gone, is no skip of this run");
 });
 
 test("[listed-failure] The last failure is the error while it is the newest run that ended; a stop, a success or an enable clears it.", () => {

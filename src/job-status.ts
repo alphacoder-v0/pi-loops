@@ -170,7 +170,7 @@ export function loopWait(job: Pick<LoopJob, "cwd" | "cwdMissingSince">, facts: G
  *   consecutiveFailures  the failed records at the end of the run log
  *   lastError            the first that applies: a disabled job's reason; why a waiting row waits
  *                        (`Row.waiting`, which the background writes); an interrupted run's retry;
- *                        a slot skipped since the run started; nothing else while
+ *                        a slot skipped while the run goes (`Row.skipped`); nothing else while
  *                        it goes (the launch cleared it); then the later of the last failure (while
  *                        it is the newest run that ended, and not one before an enable) and the
  *                        clock's note
@@ -200,9 +200,8 @@ export function listedJob(job: LoopJob, rows: readonly Row[], history: JobHistor
 			if (typeof waiting.waiting === "string" && waiting.waiting) return waiting.waiting;
 			if (waiting.attempts > 0) return "cleared stale running state (previous pi process ended mid-run); the run will be retried";
 		}
-		// A slot counted onto a scheduled row before it started (it waited for its directory, say) was no
-		// skip of this run. A /cron run row starts at once, so whatever is counted on it was a skip.
-		if (claim) return claim.collapsed && (claim.source.startsWith("cron-run:") || (claim.collapsed_slot && Date.parse(claim.collapsed_slot) >= Date.parse(claim.run.started_at))) ? "skipped: previous run still active" : undefined;
+		// Only a slot counted while this run went is a skip (`Row.skipped`): not one counted while the row waited or its process was gone.
+		if (claim) return claim.skipped ? "skipped: previous run still active" : undefined;
 		if (failed && !(note && job.lastDueAt && Date.parse(job.lastDueAt) > Date.parse(failed.at))) return oneShotRetry ? `${failed.error} (one-shot: retrying once)` : failed.error;
 		return note;
 	})();

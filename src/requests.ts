@@ -85,6 +85,12 @@ interface RowBase {
 	collapsed?: number;
 	/** The latest slot counted in `collapsed`. */
 	collapsed_slot?: string;
+	/**
+	 * Of the slots in `collapsed`, those counted while this row's run was going: main's skipped
+	 * overlaps. A slot counted while the row waited to start, or while its claim's process was gone,
+	 * is no skip. Written by the writer that decides the overlap (the clock's collapse, the drain).
+	 */
+	skipped?: number;
 	created_at: string;
 	/**
 	 * For a person row, the producer that must be alive for it to be sent; for a local row (a claim, a
@@ -346,8 +352,8 @@ export class RequestStore {
 		}, lock);
 	}
 
-	/** Count slot `slot` once on row `id`, under the lane lock. The row keeps every other field, including its claim. */
-	collapse(lane: LaneId, id: string, slot: string, lock?: LockOptions): "counted" | "counted-before" | "missing" {
+	/** Count slot `slot` once on row `id`, under the lane lock, and as a skip when `overlap` (its run is going). The row keeps every other field, including its claim. */
+	collapse(lane: LaneId, id: string, slot: string, overlap = false, lock?: LockOptions): "counted" | "counted-before" | "missing" {
 		let result: "counted" | "counted-before" | "missing" = "missing";
 		this.rewrite(lane, (lines) => lines.map(({ raw, row, version }) => {
 			if (!row || row.id !== id) return { raw, row };
@@ -356,7 +362,7 @@ export class RequestStore {
 				return { raw, row };
 			}
 			result = "counted";
-			return { raw: rowLine({ ...row, collapsed: (row.collapsed ?? 0) + 1, collapsed_slot: slot }, version), row };
+			return { raw: rowLine({ ...row, collapsed: (row.collapsed ?? 0) + 1, collapsed_slot: slot, ...(overlap ? { skipped: (row.skipped ?? 0) + 1 } : {}) }, version), row };
 		}), lock);
 		return result;
 	}

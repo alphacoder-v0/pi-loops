@@ -544,16 +544,17 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 			} else if (missingSince(current.id) && deps.cwdExists(current.cwd)) await stores.jobs.update(current.id, (j) => { j.cwdMissingSince = undefined; });
 		}
 		const result = await drain(lane.id, stores.requests, executor, now, sinks);
-		// Main's overlap rule, at each tick: a slot due while the loop's run goes is skipped. A scheduled
-		// row that waited (for a slot, the budget, a backoff) while another run of the same loop started
-		// before this drain (a person's /cron run) is that skip: it is counted on the running row and spent.
+		// Main's overlap rule, at each tick of an enabled job (a disabled one was passed over before it): a
+		// slot due while the loop's run goes is skipped. A scheduled row that waited (for a slot, the
+		// budget, a backoff) while another run of the same loop started before this drain (a person's
+		// /cron run) is that skip: it is counted on the running row and spent.
 		try {
 			const rows = stores.requests.list(lane.id);
 			const going = rows.find((row): row is ClaimedRow => row.run !== undefined && claimAlive(row) && Date.parse(row.run.started_at) < now);
-			const overlapped = going ? rows.filter((row) => !row.run && row.kind === "input" && row.source === `cron:${jobId}`) : [];
+			const overlapped = going && current?.enabled ? rows.filter((row) => !row.run && row.kind === "input" && row.source === `cron:${jobId}`) : [];
 			for (const row of overlapped) {
 				const slot = row.collapsed_slot ?? row.payload?.slot ?? row.created_at;
-				if (stores.requests.collapse(lane.id, going!.id, slot) === "counted") await stores.jobs.update(jobId, (j) => { j.skippedOverlap += 1; });
+				if (stores.requests.collapse(lane.id, going!.id, slot, true) === "counted") await stores.jobs.update(jobId, (j) => { j.skippedOverlap += 1; });
 				stores.requests.remove(lane.id, [row.id]);
 				deps.sinks.log(`cron ${current?.name ?? jobId}: skipped: previous run still active (its ${slot} slot)`, "info", current);
 			}
