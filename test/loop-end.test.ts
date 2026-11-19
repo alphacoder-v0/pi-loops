@@ -10,6 +10,7 @@ import { createHostRuntime } from "../src/host-runtime.ts";
 import { RUNTIME_RIDERS } from "../src/ticker.ts";
 import { loopLane } from "../src/lane.ts";
 import { plainJobRow, plainRunId } from "../src/engine.ts";
+import { listedJobs } from "../src/job-status.ts";
 import { tmp } from "./tmp.ts";
 
 const USAGE = { input: 1, output: 1, cost: 0, turns: 1 };
@@ -182,5 +183,31 @@ test("[waiting-backoff] A row in its failure's backoff is not 'deferred' by the 
 		host.stores.requests.update(waiting.lane, waiting.row.id, { not_before: new Date(t0 + 3_600_000).toISOString() });
 		await tick(host, t0 + 1000);
 		assert.equal(host.stores.requests.list(waiting.lane).find((row) => row.id === waiting.row.id)?.waiting, undefined);
+	} finally { release?.(); await host.stop(); }
+});
+
+test("[run-now-spends-waiting] /cron run of an every loop whose slot waits for a free slot spends that slot, as main moved the last fire: it runs once, and the lists name no wait", async () => {
+	const dir = tmp();
+	fs.writeFileSync(path.join(dir, "config.toml"), "[cron]\nmax_concurrent_runs = 1\n");
+	const calls: string[] = [];
+	let release: (() => void) | undefined;
+	const host = start(dir, async (req: any) => { calls.push(req.runId); if (calls.length === 1) await new Promise<void>((resolve) => { release = resolve; }); return OK; });
+	const t0 = Date.now();
+	const holder = "cron-fedcba9876543210fedcba9876543210";
+	await host.stores.jobs.add({ ...loop(dir, t0, 600_000), id: holder } as any);
+	try {
+		await tick(host, t0);
+		await host.stores.jobs.add(loop(dir, t0, 600_000) as any);
+		await tick(host, t0 + 1000);
+		assert.equal(host.stores.requests.list(loopLane(ID)!).filter((row) => !row.run)[0]?.waiting, "deferred: 1 sub-agent(s) already in flight (max 1)");
+		assert.equal(await host.loops.runNow(ID), true);
+		await host.drain(2000);
+		release?.();
+		await host.drain(2000);
+		await tick(host, t0 + 2000);
+		await tick(host, t0 + 3000);
+		assert.equal(calls.length, 2, "the holder once, this loop once by /cron run");
+		assert.deepEqual(host.stores.requests.list(loopLane(ID)!), [], "no row of this loop waits");
+		assert.equal(listedJobs(host.stores).find((job) => job.id === ID)?.lastError, undefined);
 	} finally { release?.(); await host.stop(); }
 });

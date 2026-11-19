@@ -584,6 +584,15 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 			const base = plainJobRow({ ...job, sessionId: lane }, id, `cron-run:${job.id}`, "", deps.engine().self(), Date.now());
 			const row: UnclaimedRow = { ...base, lane, mode: modeOf("loop", "input", `cron-run:${job.id}`, "turn"), payload: { ...base.payload!, ...(requestedBy ? { requested_by: requestedBy.sessionId } : {}) } };
 			stores.requests.appendIfAbsent(row);
+			// Main's run moved an every schedule's last fire to now, so a slot that waited (for a slot, the
+			// budget, a backoff) was not run after it. That slot's row is spent by this run.
+			if (job.schedule.kind === "every") {
+				const owed = stores.requests.list(lane).filter((item) => !item.run && item.kind === "input" && item.source === `cron:${job.id}`);
+				if (owed.length) {
+					stores.requests.remove(lane, owed.map((item) => item.id));
+					deps.sinks.log(`cron ${job.name ?? job.id}: /cron run spends its waiting slot${owed.length === 1 ? "" : "s"} (${owed.map((item) => item.payload?.slot ?? item.created_at).join(", ")})`, "info", job as LoopJob);
+				}
+			}
 			try { await drainLane(parseLane(lane) as Extract<ReturnType<typeof parseLane>, { kind: "loop" }>, Date.now()); }
 			catch (error) { deps.sinks.log(`loop lane ${lane}: ${error instanceof Error ? error.message : String(error)}`); }
 			return true;
