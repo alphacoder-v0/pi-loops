@@ -39,7 +39,7 @@ import { listedJobs } from "./job-status.ts";
 import { loopLabel } from "./job-lines.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { parentRuntimeFlags, type RunnerResult, type SubagentRunner } from "./runner.ts";
-import type { SessionSnapshot } from "./scheduler.ts";
+import type { SessionSnapshot } from "./job-owner.ts";
 import type { HostSnapshot, PageOpened, PageOpenRequest } from "./host-control-channel.ts";
 import { createInProcessRunner, releaseHeldResources } from "./sdk-runner.ts";
 import { defaultLoopsDir, homeLoopsDir, sessionExists } from "./store.ts";

@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { LoopScheduler } from "../src/scheduler.ts";
+import { loadConfig } from "../src/config.ts";
+import { createHostRuntime } from "../src/host-runtime.ts";
+import { RUNTIME_RIDERS } from "../src/ticker.ts";
 import { SubagentSlots } from "../src/slots.ts";
 import { TriggerRuntime } from "../src/trigger-runtime.ts";
 import { type Trigger, TriggerStore, buildPeriodicCheckTrigger } from "../src/triggers.ts";
@@ -61,61 +63,47 @@ function pushTrigger(cwd: string, over: Partial<Trigger> = {}): Trigger {
 test("a loop run and a trigger check share one limit: together they exhaust max_concurrent_runs = 2", async () => {
 	const dir = fs.realpathSync(tmp("pi-loops-slots-"));
 	// What the user configured: two sub-agents at once, of whatever kind.
-	const slots = new SubagentSlots(() => 2);
-	const checks = gatedRunner();
-	const finished: unknown[] = [];
-	const sched = new LoopScheduler({
-		dir,
-		slots,
-		runner: fakeRunner(),
-		getSession: () => ({ cwd: dir }),
-		getSettings: () => ({ maxConcurrentRuns: 2, catchUp: true }),
-	});
-	const rt = new TriggerRuntime({
-		store: new TriggerStore(dir),
-		jobStore: sched.store,
-		getSession: () => ({ sessionId: "s", cwd: dir }),
-		runner: checks,
-		pollIntervalSecs: 3600,
-		slots,
-		hooks: { onFinished: (o) => void finished.push(o) },
-	});
-	process.env.FAKE_PI_SLEEP = "30";
+	fs.writeFileSync(path.join(dir, "config.toml"), "[cron]\nmax_concurrent_runs = 2\n");
+	// Every sub-agent, a loop's run or a rule's check, is held until the end of the test.
+	const calls: SubagentRequest[] = [];
+	const held: Array<() => void> = [];
+	const runner = async (req: SubagentRequest): Promise<RunnerResult> => {
+		calls.push(req);
+		await new Promise<void>((resolve) => held.push(resolve));
+		return { ok: true, exitCode: 0, timedOut: false, text: "no match", usage: { input: 1, output: 1, cost: 0, turns: 1 } };
+	};
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: dir }), runner, mcpTools: () => [], log: () => undefined });
+	const tick = async () => { for (const name of RUNTIME_RIDERS) await host.riders[name](Date.now(), { startedAt: 0, tickMs: 30_000 }); };
 	try {
-		await sched.store.add(makeJob(dir, { name: "hog" }));
-		await sched.tick();
-		await until(() => sched.runningCount === 1, "the loop run took the first slot");
+		await host.stores.jobs.add(makeJob(dir, { id: "cron-0123456789abcdef0123456789abcd01", name: "hog" }));
+		await tick();
+		await until(() => calls.length === 1 && host.slotCount().inUse === 1, "the loop run took the first slot");
 
-		await rt.store.add({ condition: "c", action: "a", cwd: dir, fireOnce: false });
-		await rt.tick(Date.now(), true);
-		await until(() => checks.calls.length === 1, "the periodic check took the second slot");
-		assert.equal(slots.inUseCount, 2, "one run and one check are two sub-agents, not one of each kind");
+		await host.triggers.store.add({ condition: "c", action: "a", cwd: dir, fireOnce: false });
+		await host.triggers.tick(Date.now(), true);
+		await until(() => calls.length === 2 && host.slotCount().inUse === 2, "the periodic check took the second slot");
 
-		// The scheduler's refusal: the tick is still owed, so the next one tries again.
-		const starved = await sched.store.add(makeJob(dir, { name: "starved" }));
-		await sched.tick();
-		const after = sched.store.load().find((j) => j.id === starved.id)!;
-		assert.match(after.lastError ?? "", /deferred: 2 sub-agent\(s\) already in flight \(max 2\)/);
-		assert.equal(after.lastDueAt, undefined, "the slot is still owed, so the next tick tries again");
-		assert.equal(after.runCount, 0);
+		// The loop's refusal: its row waits, and says why, until a slot is free.
+		const starved = await host.stores.jobs.add(makeJob(dir, { id: "cron-0123456789abcdef0123456789abcd02", name: "starved" }));
+		await tick();
+		const waiting = host.stores.requests.list(`@${starved.id}`).filter((row) => !row.run);
+		assert.deepEqual(waiting.map((row) => row.waiting), ["deferred: 2 sub-agent(s) already in flight (max 2)"]);
+		assert.equal(calls.length, 2, "and no third sub-agent started");
 
 		// The trigger runtime's refusal, which is deliberately a different one: a push is held,
 		// a periodic check is dropped because the next poll re-asks the same question.
-		assert.equal(await rt.handle(pushTrigger(dir, { traceId: "push-1" }), "sub_agent"), undefined, "no slot free: nothing is delivered now");
-		assert.equal(rt.pendingPushCount, 1, "the event is kept: no server sends it twice");
-		assert.equal(await rt.handle(buildPeriodicCheckTrigger(dir, 1, new Date(), "other"), "sub_agent"), undefined);
-		assert.equal(rt.pendingPushCount, 1, "only pushes are held");
-		assert.equal(checks.calls.length, 1, "and neither started a sub-agent");
+		assert.equal(await host.triggers.handle(pushTrigger(dir, { traceId: "push-1" }), "sub_agent"), undefined, "no slot free: nothing is delivered now");
+		assert.equal(host.triggers.pendingPushCount, 1, "the event is kept: no server sends it twice");
+		assert.equal(await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1, new Date(), "other"), "sub_agent"), undefined);
+		assert.equal(host.triggers.pendingPushCount, 1, "only pushes are held");
+		assert.equal(calls.length, 2, "and neither started a sub-agent");
 
 		// Both sides hand their slot back when their sub-agent returns.
-		checks.open();
-		await until(() => finished.length === 1, "the blocking check finished");
-		await until(() => slots.inUseCount === 1, "the check released its slot, leaving the loop run's");
+		for (const release of held.splice(0)) release();
+		await until(() => host.slotCount().inUse === 0, "the run and the check released their slots");
 	} finally {
-		delete process.env.FAKE_PI_SLEEP;
-		checks.open();
-		await rt.stop();
-		await sched.stop();
+		for (const release of held.splice(0)) release();
+		await host.stop();
 	}
 });
 

@@ -7,7 +7,7 @@ import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { formatLocalZoned, stamp } from "./schedule.ts";
 import { type JobHistory, runHistory } from "./job-status.ts";
 import { type LoopSettlement, INTERRUPTED, loopEnd, oneShotDoneV3, runEnd, settleLoop } from "./settle.ts";
-import type { SessionSnapshot } from "./scheduler.ts";
+import type { SessionSnapshot } from "./job-owner.ts";
 import type { Stores } from "./stores.ts";
 import { type Disabled, type LoopJobV3, type ProcessStop, type RunRecord } from "./store.ts";
 

@@ -559,7 +559,9 @@ src/ts-entry.mjs            .mjs 入口怎么加载本包的 .ts：Node 自己�
 
 流水线
 src/backoff.ts              失败后的等待时间表：排队的请求、loop、规则检查共用一张
-src/scheduler.ts            tick 循环、到期判定、错过补发、并发/重叠控制、子会话执行、写回；pi-loops 在后台运行 loops，窗口跑其会话的普通任务
+src/clock.ts                调度游标：每个 tick 的到期判定与比较后写入；每个时段写成一行请求
+src/ticker.ts               每个进程一个定时器，按固定顺序调用各个 rider
+src/loop-run.ts             一次 loop 运行：子会话执行、记录、按顺序收尾写入
 src/trigger-runtime.ts      动态规则运行时：admit、投递（sub_agent / inject_summary / inject_and_run）、fire-once、promote、audit
 src/triggers.ts             规则本身：解析、prompt、id 提取、存储、dedup 窗口
 src/goal.ts                 /goal：停止条件状态机、评估器 prompt、续跑预算

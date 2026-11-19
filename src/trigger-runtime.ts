@@ -119,7 +119,7 @@ export interface TriggerRuntimeOptions {
 
 export const DEFAULT_MAX_CONCURRENT_CHECKS = 3;
 
-/** The scheduler's tick, which `tick` here runs on (`DEFAULT_TICK_MS` in scheduler.ts): no poll comes sooner. */
+/** The ticker's interval, which `tick` here runs on (src/ticker.ts, 30 s): no poll comes sooner. */
 const POLL_TICK_MS = 30_000;
 
 /**

@@ -1,6 +1,6 @@
 /**
- * What the always-on host runs (see host.ts for the process shell): the same LoopScheduler and
- * TriggerRuntime as the extension, wired for a process that has no chat. It runs every loop and
+ * What the always-on host runs (see host.ts for the process shell): the ticker's riders, the loop
+ * lanes and the TriggerRuntime, wired for a process that has no chat. It runs every loop and
  * checks every rule; a promotion is a request addressed to the conversation that created the rule
  * (src/requests.ts): its holder delivers it, and this process does when it is closed. Control-plane
  * operations by sub-agents are audited into `triggers-audit.jsonl`. Injected so it can be unit-tested.
@@ -14,14 +14,14 @@ import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { redact } from "./redact.ts";
 import { keepNotice, parseRingNote, type Notice } from "./host-control-channel.ts";
 import type { SubagentRequest, SubagentRunner } from "./runner.ts";
-import { type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart, sameHolder } from "./lease.ts";
+import { type LeaseHolder, LeaseStore, closedConversation, procStart, sameHolder } from "./lease.ts";
 import { type EngineSinks, claimAlive, promotionTarget, promotionView, ruleResultRow, proofOf, sessionFileEntries } from "./engine.ts";
 import type { Row } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
-import type { OwnerView } from "./job-owner.ts";
 import { type BackgroundExecutor, createBackgroundExecutor } from "./background-executor.ts";
 import { RunList } from "./run-list.ts";
-import { DEFAULT_RUN_TIMEOUT_MS, LoopScheduler, type PlainJobLeases, type SessionSnapshot } from "./scheduler.ts";
+import type { OwnerView, SessionSnapshot } from "./job-owner.ts";
+import { DEFAULT_RUN_TIMEOUT_MS } from "./loop-run.ts";
 import { stamp } from "./schedule.ts";
 import { budgetState } from "./job-status.ts";
 import { SubagentSlots } from "./slots.ts";
@@ -61,8 +61,6 @@ export interface HostRuntimeDeps {
 }
 
 export interface HostRuntime {
-	/** Transitional command adapter; host execution is driven by typed riders and `loops`. */
-	scheduler: LoopScheduler;
 	stores: ReturnType<typeof openStores>;
 	runs: RunList;
 	loops: LoopLanes;
@@ -116,14 +114,9 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			return undefined; // gone: nothing for the quiet guard to remember
 		}
 	};
-	const heldLeases: PlainJobLeases = {
-		heldEpoch: (sessionId) => (leases.holds(sessionId, me()) ? leases.read(sessionId)?.epoch : undefined),
-		sessionFile: (sessionId) => leases.read(sessionId)?.sessionFile,
-		holderOf: (sessionId) => liveHolderPid(leases, sessionId),
-	};
 	/** The runs that are going in this process: the loops' runs and the held turns, one list. */
 	const runs = new RunList();
-	/** What this process does to the queue of a closed conversation (src/background-executor.ts). Made below, once the scheduler's stores are there. */
+	/** What this process does to the queue of a closed conversation (src/background-executor.ts). Made below, once the stores are there. */
 	let background: BackgroundExecutor;
 	/** A plain job the host may fire: a conversation pi-loops knows the file of, that nobody holds and the page does not have open. */
 	const canHold = (sessionId: string | undefined): boolean => !(sessionId !== undefined && deps.pageHolds?.(sessionId)) && closedConversation(leases, sessionId);
@@ -182,71 +175,6 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	 * the host has no conversation to hold to a condition.
 	 */
 	const slots = new SubagentSlots(() => deps.config().maxConcurrentRuns);
-
-	const scheduler = new LoopScheduler({
-		dir,
-		kind: "host",
-		slots,
-		getSession: deps.session,
-		getSettings: () => ({ maxConcurrentRuns: deps.config().maxConcurrentRuns, catchUp: deps.config().cronCatchUp, dailyBudgetUsd: deps.config().dailyBudgetUsd }),
-		runner: deps.runner,
-		// Every loop, and the plain jobs of closed conversations: a plain job's result is a message in
-		// its conversation, so the host fires one only where no window holds it.
-		owns: (job) => job.stateful || canHold(job.sessionId),
-		leases: heldLeases,
-		runs,
-		background: { fire: (...args) => background.fire(...args), owes: (...args) => background.owes(...args) },
-		sessionExists: deps.sessionExists,
-		hooks: {
-			onRunStart: (job, runId) => {
-				// The same rows the interactive extension writes: without them `/triggers audit` is
-				// blank for every hour the host had the clock.
-				auditCronStart(triggers.store, job, runId);
-				log(`loop ${job.name ?? job.id}: run ${runId.slice(0, 12)} started`);
-				// Never awaited: a webhook that hangs must not hold up the run it is announcing (the
-				// scheduler calls this synchronously). `.catch` because a rejection nobody owns takes
-				// the host down — hooks warn per rule, so there is nothing else to do with one.
-				const hooks = hookRunnerFor(job, runId);
-				if (hooks) void hooks.fire(runStartEvent(job, runId)).catch((err: any) => log(`hooks: ${redact(err?.message ?? String(err))}`));
-			},
-			onCatchUp: (job) => log(`loop ${job.name ?? job.id}: catching up a missed tick`),
-			onRunFinished: ({ job, record, result }) => {
-				auditCronFinish(triggers.store, job, record, result.stopReason === "aborted");
-				log(`loop ${job.name ?? job.id}: ${record.ok ? "ok" : record.stoppedBy === "person" ? `stopped by you (from ${record.stoppedFrom === "page" ? "the page" : "a terminal"})` : `FAILED (${redact(record.error ?? "")})`} · ${record.findings} finding(s)${record.usage?.cost ? ` · $${record.usage.cost.toFixed(3)}` : ""}`);
-				const hooks = runHooks.get(record.runId);
-				if (!hooks) return;
-				// `$PI_RUN_OK` alone answers "did last night's loop fail" — the thing the host exists to
-				// be able to tell someone.
-				// Its own hooks are the last thing a run does; the runner is dropped once they have run
-				// (until then `stop()` still has to drain it).
-				const forget = () => void runHooks.delete(record.runId);
-				void hooks.fire(runEndEvent(job, record)).then(forget, forget);
-			},
-			onTick: async (now) => {
-				releaseStrayLeases(now);
-				await deliverToClosed();
-				await triggers.tick(now);
-			},
-			log: (msg, level, job) => {
-				log(redact(msg));
-				if (level !== "info") notice(msg, job?.cwd);
-			},
-			// A loop failing night after night: said in its project's windows, as it was when loops ran in one.
-			onSchedulerError: (msg, job) => {
-				log(redact(msg));
-				notice(msg, job?.cwd);
-			},
-			onBudgetExceeded: (spent, cap) => {
-				// Each due job reports it; a person needs it once a day.
-				const day = stamp().slice(0, 10);
-				if (budgetSaid === day) return;
-				budgetSaid = day;
-				const message = `today's automation has cost $${spent.toFixed(2)} of the $${cap.toFixed(2)} budget; dispatching is paused until tomorrow or a higher [limits] daily_budget_usd`;
-				log(message);
-				notice(message);
-			},
-		},
-	});
 
 	const toInbox = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string) => {
 		// The check decided this result's finding already (TriggerRuntime's inbox); a push with no rule did not.
@@ -583,7 +511,6 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		},
 	};
 	return {
-		scheduler,
 		stores,
 		runs,
 		loops,
@@ -627,7 +554,6 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			await loops.stop(5_000);
 			for (const run of runs.all()) run.ctrl.abort();
 			await Promise.race([Promise.allSettled([...plainRuns]), new Promise((resolve) => setTimeout(resolve, 5_000).unref())]);
-			await scheduler.stop();
 			// The runs are over; their hooks may still be in flight. Same bounded wait as the
 			// interactive path, so a "the run failed" webhook survives the host being told to quit.
 			await Promise.all([...runHooks.values()].map((h) => h.drain(3000)));

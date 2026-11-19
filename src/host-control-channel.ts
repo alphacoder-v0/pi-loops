@@ -356,11 +356,11 @@ function isDirectory(p: string): boolean {
 export type StopAnswer = { stopping: "run" | "row" } | { finished: true };
 
 export interface StopDeps {
-	/** The runs in flight here (`scheduler.runningRuns()`). */
+	/** The runs in flight here (`RunList.all()`). */
 	runs: () => ReadonlyArray<{ runId: string }>;
 	/** The closed conversation this process holds for `runId`'s turn, when the run is a held turn. */
 	heldSession: (runId: string) => string | undefined;
-	/** Abort a loop run as a person asked (`scheduler.abortRun`, STOPPED_BY_PERSON). */
+	/** Abort a loop run as a person asked (`RunList.stop`, STOPPED_BY_PERSON). */
 	abortRun: (runId: string) => boolean;
 	/** Append a stop row for `runId` to the conversation's queue and ring it. */
 	stopThroughRow: (sessionId: string, runId: string) => void;
@@ -384,12 +384,10 @@ export function stopRun(ref: string, deps: StopDeps, opts: { prefix: boolean }):
 	return deps.abortRun(match.runId) ? { stopping: "run" } : { finished: true };
 }
 
-/** What `stopRunFrom` needs of the background process: its scheduler, its held turns, its leases and its queue. */
+/** What `stopRunFrom` needs of the background process: its runs, its held turns, its leases and its queue. */
 export interface StopHost {
 	/** The process-wide runs, which also owns person-requested stop metadata. */
-	runs?: Pick<RunList, "all" | "stop" | "noteStopFrom">;
-	/** Transitional adapter for callers not yet moved off LoopScheduler. */
-	scheduler?: { runningRuns(): ReadonlyArray<{ runId: string }>; abortRun(runId: string, from: "page" | "cli"): boolean; noteStopFrom(runId: string, from: "page" | "cli"): void };
+	runs: Pick<RunList, "all" | "stop" | "noteStopFrom">;
 	heldTurn(sessionId: string): { runId: string } | undefined;
 	ring(sessionId: string): void;
 	leases: () => Parameters<typeof heldTurnFor>[0];
@@ -407,15 +405,14 @@ export function stopRunFrom(source: "cli" | "person", prefix: boolean, host: Sto
 	const from = source === "person" ? "page" : "cli";
 	return (runId) =>
 		stopRun(runId, {
-			runs: () => host.runs?.all() ?? host.scheduler?.runningRuns() ?? [],
+			runs: () => host.runs.all(),
 			heldSession: (id) => {
 				const turn = heldTurnFor(host.leases(), id);
 				return turn?.kind === "turn" && turn.runId === id && host.heldTurn(turn.sessionId)?.runId === id ? turn.sessionId : undefined;
 			},
-			abortRun: (id) => host.runs ? host.runs.stop(id, from) : host.scheduler?.abortRun(id, from) ?? false,
+			abortRun: (id) => host.runs.stop(id, from),
 			stopThroughRow: (sessionId, id) => {
-				if (host.runs) host.runs.noteStopFrom(id, from);
-				else host.scheduler?.noteStopFrom(id, from);
+				host.runs.noteStopFrom(id, from);
 				host.append(stopRow(sessionId, { id }, source, host.createdBy()));
 				host.ring(sessionId);
 			},

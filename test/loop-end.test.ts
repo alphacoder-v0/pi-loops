@@ -253,3 +253,65 @@ test("[overlap-not-disabled] A disabled loop's waiting row is no overlap: main p
 		assert.equal(host.stores.jobs.load().find((j) => j.id === ID)?.skippedOverlap, 0);
 	} finally { await host.stop(); }
 });
+
+test("[loop-checker] a loop with verify has its findings checked: what the checker drops does not reach the inbox, and the record says what it did", async () => {
+	const dir = tmp();
+	const kinds: string[] = [];
+	const host = start(dir, async (req: any) => {
+		kinds.push(req.kind);
+		if (req.kind === "checker") return { ...OK, text: '<verdict n="1">keep — real</verdict><verdict n="2">drop — stale</verdict>' };
+		return { ...OK, text: "<loop-state>seen</loop-state><inbox>the build is red</inbox><inbox>an old warning</inbox>" };
+	});
+	const t0 = Date.now();
+	await host.stores.jobs.add(loop(dir, t0, 600_000, { verify: true }) as any);
+	try {
+		await tick(host, t0);
+		assert.deepEqual(kinds, ["loop", "checker"]);
+		assert.deepEqual(host.stores.inbox.list().map((entry) => entry.text), ["the build is red"]);
+		const record = host.stores.jobs.listRuns(ID)[0];
+		assert.ok(record.checker, "the record carries the checker's part");
+		assert.equal(record.checker!.dropped?.length, 1);
+	} finally { await host.stop(); }
+});
+
+test("[loop-record-fields] a run's record keeps its summary, and the conversation a person asked for it from", async () => {
+	const dir = tmp();
+	const host = start(dir, async () => ({ ...OK, text: "<loop-state>seen</loop-state><inbox>the build is red</inbox>" }));
+	const t0 = Date.now();
+	await host.stores.jobs.add(loop(dir, t0, 3_600_000, { createdAt: new Date(t0 - 60_000).toISOString() }) as any);
+	try {
+		assert.equal(await host.loops.runNow(ID, { sessionId: "s-asking" } as any), true);
+		await host.drain(2000);
+		const record = host.stores.jobs.listRuns(ID)[0];
+		assert.deepEqual([record.summary, record.requestedBy?.sessionId], ["the build is red", "s-asking"]);
+	} finally { await host.stop(); }
+});
+
+test("[budget-holds-loop] a spent daily budget holds a loop's due slot back: no run, and the lists say why", async () => {
+	const dir = tmp();
+	fs.writeFileSync(path.join(dir, "config.toml"), "[limits]\ndaily_budget_usd = 0.01\n");
+	const calls: string[] = [];
+	const host = start(dir, async (req: any) => (calls.push(req.runId), OK));
+	const t0 = Date.now();
+	host.stores.jobs.appendRun({ runId: "run-spent", jobId: "cron-other", stateful: true, cwd: dir, pid: 1, startedAt: new Date(t0 - 1000).toISOString(), finishedAt: new Date(t0 - 500).toISOString(), ok: true, findings: 0, droppedFindings: 0, stateUpdated: true, usage: { input: 1, output: 1, cost: 0.02, turns: 1 } });
+	await host.stores.jobs.add(loop(dir, t0, 600_000) as any);
+	try {
+		await tick(host, t0);
+		assert.deepEqual(calls, []);
+		assert.equal(host.stores.requests.list(loopLane(ID)!).filter((row) => row.run).length, 0, "no row of it is running");
+		assert.match(listedJobs(host.stores).find((j) => j.id === ID)?.lastError ?? "", /^paused: today's automation has cost \$0\.02 of the \$0\.01 budget/);
+	} finally { await host.stop(); }
+});
+
+test("[dead-session-sweep] a plain job whose conversation is gone is disabled with the words /cron gc looks for", async () => {
+	const dir = tmp();
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: (async () => OK) as any, mcpTools: () => [], log: () => undefined, sessionExists: (id) => id !== "gone-session" });
+	const t0 = Date.now();
+	await host.stores.jobs.add({ ...loop(dir, t0, 600_000), id: "cron-plain", stateful: false, sessionId: "gone-session" } as any);
+	try {
+		await host.riders["dead-sessions"](t0, { startedAt: 0, tickMs: 30_000 });
+		const job = host.stores.jobs.load().find((j) => j.id === "cron-plain")!;
+		assert.equal(job.enabled, false);
+		assert.match(job.lastError ?? "", /^disabled: session .* no longer exists \(\/cron gc removes it\)$/);
+	} finally { await host.stop(); }
+});

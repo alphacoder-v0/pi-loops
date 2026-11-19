@@ -11,6 +11,46 @@
 import { shortSessionId } from "./session-head.ts";
 import type { LoopJob } from "./store.ts";
 
+/** What a process knows of the pi session it runs beside: a window's conversation, or none in the background. */
+export interface SessionSnapshot {
+	sessionId?: string;
+	cwd: string;
+	model?: string;
+	thinking?: string;
+	/** The interactive pi trusted this project (`pi --approve` / trust prompt); children in the same cwd inherit it. */
+	trusted?: boolean;
+	/** The built-in tools active in this chat (`--tools`, `--exclude-tools`); a loop made here keeps them. */
+	builtinTools?: string[];
+}
+
+/**
+ * The lease side of plain-job ownership (src/lease.ts): a plain job fires only in the instance that
+ * holds its session's lease, and its claim re-checks that the lease has not moved since.
+ */
+export interface PlainJobLeases {
+	/** The epoch of this instance's lease on `sessionId`, when it holds it. */
+	heldEpoch(sessionId: string): number | undefined;
+	/** The pid of the live holder of `sessionId`'s lease, when there is one. */
+	holderOf(sessionId: string): number | undefined;
+	/** The kind of the live holder, when there is one. */
+	holderKind?(sessionId: string): "terminal" | "page" | "host" | undefined;
+	/** Windows: whether this one holds its conversation's lease but stands aside (OwnerView.standsAside). */
+	standsAside?(): boolean;
+	/** Windows: whether the host fires this closed conversation's plain jobs (it runs, and knows the file). */
+	hostRuns?(sessionId: string): boolean;
+	/** Why no host runs anything right now, when that is so (see OwnerView.hostPaused). */
+	hostPaused?(): string | undefined;
+	/** The file of a conversation pi-loops knows, when it knows one: read to see whether a prompt is in it. */
+	sessionFile?(sessionId: string): string | undefined;
+}
+
+/** What this instance knows about who holds which session: the lists and the clock ask it the same way. */
+export function ownerViewOf(session: SessionSnapshot, leases: PlainJobLeases | undefined): OwnerView {
+	const sessionId = session.sessionId;
+	if (!leases) return { sessionId, holdsOwn: !!sessionId };
+	return { sessionId, holdsOwn: !!sessionId && leases.heldEpoch(sessionId) !== undefined, holderOf: (id) => leases.holderOf(id), standsAside: leases.standsAside?.(), holderKind: leases.holderKind ? (id) => leases.holderKind!(id) : undefined, hostRuns: leases.hostRuns ? (id) => leases.hostRuns!(id) : undefined, hostPaused: leases.hostPaused?.() };
+}
+
 /** What the instance asking knows about sessions. */
 export interface OwnerView {
 	/** The session this instance has open. */
