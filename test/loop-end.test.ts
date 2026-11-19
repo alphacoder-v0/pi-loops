@@ -125,3 +125,19 @@ test("a loop parked after its third interrupted run files nothing in the inbox, 
 		assert.ok(logs.some((line) => line.includes("parked after 3 interrupted runs")), logs.join("\n"));
 	} finally { await host.stop(); }
 });
+
+test("a loop's run has its job's time limit, not one that a row in its lane names: a row can be written by hand", async () => {
+	const dir = tmp();
+	const limits: number[] = [];
+	const host = start(dir, async (req: any) => (limits.push(req.timeoutMs), OK));
+	const t0 = Date.now();
+	const job = loop(dir, t0, 3_600_000, { timeoutMs: 60_000, createdAt: new Date(t0 - 600_000).toISOString(), lastDueAt: new Date(t0 - 300_000).toISOString() }) as any;
+	await host.stores.jobs.add(job);
+	const slot = new Date(t0 - 300_000).toISOString();
+	const base = plainJobRow(job, plainRunId(ID, slot), `cron:${ID}`, "", { pid: process.pid, instance: "x", version: "0" } as any, t0 - 300_000);
+	host.stores.requests.appendIfAbsent({ ...base, lane: loopLane(ID)!, payload: { ...base.payload!, slot, timeout_ms: 86_400_000 } } as any);
+	try {
+		await tick(host, t0);
+		assert.deepEqual(limits, [60_000]);
+	} finally { await host.stop(); }
+});

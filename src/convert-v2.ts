@@ -10,7 +10,12 @@ import { JobStore, type LoopJob } from "./store.ts";
 /** Private files of older versions that nothing reads now. */
 export const RETIRED_FILES: readonly string[] = ["next-runs.json", "scheduler.json", "presence"];
 
-/** Remove retired files and convert version 2 claims to request rows once. */
+/**
+ * Remove retired files and convert version 2 claims to request rows. Every start does it, and a
+ * window and pi-loops can both do it on the same directory: a marker whose pid is alive stays, and
+ * so does its job's turn to be converted. A row of a converted slot has an id derived from the job and
+ * the slot, so a second conversion appends nothing and removes no row the first one wrote.
+ */
 export function convertStores(dir: string, log: (line: string) => void = () => {}): string[] {
 	const removed: string[] = [];
 	for (const name of RETIRED_FILES) {
@@ -35,10 +40,6 @@ function convertV2Rows(dir: string, log: (line: string) => void): void {
 	const requests = new RequestStore(dir);
 	const records = jobs.allRuns();
 	const booted = Date.now() - os.uptime() * 1000;
-	for (const lane of [...requests.sessions(), ...requests.lanes().map((item) => item.id)]) {
-		const stale = requests.list(lane).filter((row) => row.created_by.instance === "convert" && !row.run);
-		if (stale.length) requests.remove(lane, stale.map((row) => row.id));
-	}
 	jobs.mutateSync((all) => {
 		for (const job of all) {
 			const marker = job.running;

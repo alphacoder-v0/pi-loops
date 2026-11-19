@@ -58,7 +58,8 @@ export async function runLoop(row: ClaimedRow, job: LoopJobV3, deps: LoopRunDeps
 		let dismissed: Array<{ text: string; reason: string }> = [];
 		try { dismissed = deps.stores.inbox.feedbackFor(job.id, deps.stores.book().clock.jobs[job.id]?.fired).map((entry) => ({ text: entry.text, reason: entry.dismiss_reason ?? "" })); }
 		catch (error) { deps.sinks.log(`loop ${job.id}: feedback read failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
-		const timeoutMs = payload?.timeout_ms ?? job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
+		// From jobs.json only, as tools and cwd are: a row in the lane file can be written by hand.
+		const timeoutMs = job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
 		const prompt = composeLoopPrompt(job.prompt, previousState, {
 			name: job.name,
 			dismissed,

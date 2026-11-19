@@ -105,6 +105,22 @@ test("M4b.3 step 2 turns an owed loop marker into one conversion row before clea
 	assert.equal(new RequestStore(dir).list("@cron-convert").length, 1);
 });
 
+test("A second conversion, which another job's live marker causes, keeps the row the first one wrote.", async () => {
+	const dir = tmp("pi-loops-convert-");
+	const jobs = new JobStore(dir);
+	const slot = new Date(Date.now() - 60_000).toISOString();
+	const base = { schedule: { kind: "every" as const, ms: 60_000 }, stateful: true, prompt: "work", cwd: dir, enabled: true, catchUp: true, createdAt: slot, runCount: 0, skippedOverlap: 0, lastDueAt: slot };
+	await jobs.add({ ...base, id: "cron-dead", running: { runId: "dead-run", pid: 2_000_000_000, startedAt: slot } });
+	// A pid that is alive: this process's parent, which is not this process.
+	await jobs.add({ ...base, id: "cron-live", running: { runId: "live-run", pid: process.ppid, startedAt: new Date().toISOString() } });
+	convertStores(dir);
+	assert.equal(new RequestStore(dir).list("@cron-dead").length, 1, "the first conversion writes the dead marker's slot as a row");
+	assert.ok(jobs.load().find((job) => job.id === "cron-live")?.running, "the live marker stays, so the next start converts again");
+	convertStores(dir);
+	assert.equal(new RequestStore(dir).list("@cron-dead").length, 1, "the second conversion keeps that row");
+	assert.equal(new RequestStore(dir).list("@cron-live").length, 0);
+});
+
 test("convertStores removes a retired name that is a link, and leaves what the link points to.", () => {
 	const dir = tmp("pi-loops-convert-");
 	const elsewhere = tmp("pi-loops-elsewhere-");

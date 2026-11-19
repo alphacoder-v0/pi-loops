@@ -1517,9 +1517,23 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "clear": {
+						// An older version's marker whose pid another process now has is kept by every
+						// start (convert-v2.ts), and the lists show the job as running until it is cleared.
 						const job = pick(rest);
 						if (!job) return;
-						ctx.ui.notify(`${job.name ?? job.id} has no running marker to clear: a run's claim is closed when its process is gone`, "info");
+						const marker = job.running;
+						if (!marker) {
+							ctx.ui.notify(`${job.name ?? job.id} has no running marker to clear: a run's claim is closed when its process is gone`, "info");
+							return;
+						}
+						const ok = await ctx.ui.confirm("Clear the running marker?", `${job.name ?? job.id} is marked as running since ${formatLocal(Date.parse(marker.startedAt))}${marker.host && marker.host !== os.hostname() ? ` on ${marker.host}` : ""}.\n\nClear it only if that run is really gone — if it is still going, its result will still be written.`);
+						if (!ok) return;
+						const updated = await stores.jobs.update(job.id, (j) => {
+							j.running = undefined;
+							j.lastError = `running marker cleared by hand (was ${marker.runId.slice(0, 12)})`;
+						});
+						refreshBadge();
+						ctx.ui.notify(updated ? `cleared the running marker on ${updated.name ?? updated.id}; it can fire again` : "job vanished", "info");
 						return;
 					}
 					case "cost": {
