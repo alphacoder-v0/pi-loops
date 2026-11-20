@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { RETIRED_FILES, convertStores } from "../src/convert-v2.ts";
+import { type ClaimRowStores, RETIRED_FILES, convertClaimRows, convertStores } from "../src/convert-v2.ts";
+import { type ProtocolWrite, PROTOCOL } from "../src/ask.ts";
+import { Inbox } from "../src/inbox.ts";
+import { TriggerStore } from "../src/triggers.ts";
 import { JobStore, JobsNotConverted } from "../src/store.ts";
 import { RequestStore } from "../src/requests.ts";
 import { clockStore } from "../src/stores.ts";
@@ -252,4 +255,156 @@ test("convertStores reports a file it cannot remove, goes on to the next, and do
 	}
 	assert.equal(said.length, 1);
 	assert.match(said[0], /^could not remove presence, which an older version left: /);
+});
+
+/* A row that 0.24.2 queued for a claim (source `inbox:<finding>`), converted at start: K1 and K2 of PROTOCOL (src/ask.ts). */
+
+const CONV = "01a1dce4-8ad1-77c0-89b0-475ccfeaf683";
+const HANDED = `inb-${"a".repeat(32)}`;
+const OPEN = `inb-${"b".repeat(32)}`;
+const LOST = `inb-${"c".repeat(32)}`;
+
+/** A finding that 0.24.2 claimed: `claimed` with `claimed_by`, and no answer. */
+function oldClaimedFinding(id: string, cwd: string): Record<string, unknown> {
+	return { id, created_at: "2026-11-01T09:00:00.000+00:00", status: "claimed", kind: "checkpoint", source: "cron:watch", run_id: `run-${id.slice(4)}`, cwd, text: "decide this", verified: null, dismiss_reason: null, job_id: "cron-watch", claimed_by: "terminal" };
+}
+
+/** The version 2 line of the row 0.24.2's `/inbox claim` queued in a conversation. */
+function oldClaimRow(finding: string, cwd: string, handed: boolean): Record<string, unknown> {
+	return { v: 2, session_id: CONV, id: `claim-${finding.slice(4, 12)}`, kind: "input", source: `inbox:${finding}`, mode: "attended", wake: "turn", payload: { text: `[Trigger claim] ${finding}`, cwd }, created_by: { pid: 2_000_000_000, instance: "w", version: "0.24.2" }, created_at: "2026-11-01T09:01:00.000+00:00", attempts: 0, ...(handed ? { handed_at: "2026-11-01T09:01:01.000+00:00" } : {}) };
+}
+
+/** A loops directory 0.24.2 left with one claim row per finding of `rows`, and `findings` in its inbox. */
+function claimDir(rows: Array<{ finding: string; handed: boolean }>, findings: string[]): string {
+	const dir = tmp("pi-loops-convert-");
+	fs.writeFileSync(path.join(dir, "inbox.jsonl"), findings.map((id) => `${JSON.stringify(oldClaimedFinding(id, dir))}\n`).join(""));
+	const file = new RequestStore(dir).file(CONV);
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(file, rows.map(({ finding, handed }) => `${JSON.stringify(oldClaimRow(finding, dir, handed))}\n`).join(""));
+	return dir;
+}
+
+class Stopped extends Error {}
+
+/**
+ * The stores of `dir` for `convertClaimRows`, each durable write logged with the locks held at it
+ * (as test/ask.test.ts logs them), and a process that stops just after write `stopAfter`: from then on
+ * every write throws before it is made.
+ */
+function loggedStores(dir: string, stopAfter = Infinity): { stores: ClaimRowStores; log: Array<{ write: ProtocolWrite["write"]; lock: ProtocolWrite["lock"] }> } {
+	const inbox = new Inbox(dir);
+	const requests = new RequestStore(dir);
+	const audit = new TriggerStore(dir);
+	const log: Array<{ write: ProtocolWrite["write"]; lock: ProtocolWrite["lock"] }> = [];
+	let inboxHeld = false;
+	let laneHeld = false;
+	let dead = false;
+	const durable = <T>(write: ProtocolWrite["write"], lock: ProtocolWrite["lock"], make: () => T, wrote: (result: T) => boolean): T => {
+		if (dead) throw new Stopped();
+		const result = make();
+		if (wrote(result)) {
+			log.push({ write, lock });
+			if (log.length >= stopAfter) {
+				dead = true;
+				throw new Stopped();
+			}
+		}
+		return result;
+	};
+	const stores: ClaimRowStores = {
+		inbox: {
+			sectionSync: (fn) =>
+				inbox.sectionSync((tx) => {
+					inboxHeld = true;
+					try {
+						return fn({ list: () => tx.list(), find: (id) => tx.find(id), fileOnce: (entry, id) => tx.fileOnce(entry, id), write: (c, ...more) => durable("finding", laneHeld ? "inbox+lane" : "inbox", () => tx.write(c, ...more), () => true) });
+					} finally {
+						inboxHeld = false;
+					}
+				}),
+		},
+		requests: {
+			sessions: () => requests.sessions(),
+			list: (lane) => requests.list(lane),
+			removeIf: (lane, id, when, lock) => {
+				const held = inboxHeld ? "inbox+lane" : "lane";
+				return durable("row-", held, () => {
+					laneHeld = true;
+					try {
+						return requests.removeIf(lane, id, when, lock);
+					} finally {
+						laneHeld = false;
+					}
+				}, (r) => r.outcome === "removed");
+			},
+		},
+		audit: { appendAudit: (record) => durable("audit", "none", () => audit.appendAudit(record), () => true) },
+	};
+	return { stores, log };
+}
+
+const want = (writes: readonly ProtocolWrite[]) => writes.map(({ write, lock }) => ({ write, lock }));
+const findingOf = (dir: string, id: string) => new Inbox(dir).list().find((f) => f.id === id);
+const convertedAudit = (dir: string) => new TriggerStore(dir).listAudit(100, (r) => r.type === "request" && r.state === "converted").reverse().map((r) => [r.traceId, r.details?.finding, r.details?.reason]);
+const snapshot = (dir: string) => [fs.readFileSync(path.join(dir, "inbox.jsonl"), "utf8"), fs.existsSync(new RequestStore(dir).file(CONV)) ? fs.readFileSync(new RequestStore(dir).file(CONV), "utf8") : null];
+
+test("[K1] A claim row 0.24.2 handed over leaves at start, its finding stays claimed, and a second start changes nothing; a stop after each write converges", () => {
+	const dir = claimDir([{ finding: HANDED, handed: true }], [HANDED]);
+	const { stores, log } = loggedStores(dir);
+	assert.deepEqual(convertClaimRows(stores, () => {}), { handed: 1, reopened: 0 });
+	assert.deepEqual(log, want(PROTOCOL.K1), "the writes and their locks are PROTOCOL's");
+	assert.deepEqual(new RequestStore(dir).list(CONV), []);
+	assert.equal(findingOf(dir, HANDED)?.status, "claimed", "it was handed to pi before the upgrade: nothing to open again");
+	assert.deepEqual(convertedAudit(dir), [[`claim-${HANDED.slice(4, 12)}`, HANDED, "handed over before the upgrade"]]);
+	const before = snapshot(dir);
+	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, rows: 0 });
+	assert.deepEqual(snapshot(dir), before, "the second start writes nothing");
+	for (let stop = 1; stop <= PROTOCOL.K1.length; stop++) {
+		const v = claimDir([{ finding: HANDED, handed: true }], [HANDED]);
+		const crashed = loggedStores(v, stop);
+		convertClaimRows(crashed.stores, () => {});
+		assert.deepEqual(crashed.log, want(PROTOCOL.K1).slice(0, stop), `stopped after write ${stop}`);
+		convertStores(v);
+		assert.deepEqual(new RequestStore(v).list(CONV), [], `stop ${stop}: the row is gone`);
+		assert.equal(findingOf(v, HANDED)?.status, "claimed", `stop ${stop}: the finding stays claimed`);
+	}
+});
+
+test("[K2] A claim row 0.24.2 had not handed over opens its finding again and leaves; a row whose finding is gone just leaves; a second start changes nothing; a stop after each write converges", () => {
+	const dir = claimDir([{ finding: OPEN, handed: false }, { finding: LOST, handed: false }], [OPEN]);
+	const { stores, log } = loggedStores(dir);
+	const said: string[] = [];
+	assert.deepEqual(convertClaimRows(stores, (line) => void said.push(line)), { handed: 0, reopened: 1 });
+	assert.deepEqual(log, [...want(PROTOCOL.K2), { write: "row-", lock: "inbox+lane" }, { write: "audit", lock: "none" }], "K2's writes, then the lost one's row and audit");
+	assert.deepEqual(new RequestStore(dir).list(CONV), []);
+	const open = findingOf(dir, OPEN);
+	assert.equal(open?.status, "new");
+	for (const field of ["claimed_by", "answered_by", "answer"] as const) assert.equal(open?.[field], undefined, `no ${field}`);
+	assert.equal(new Inbox(dir).list().length, 1, "no finding is filed for the one that is gone");
+	assert.deepEqual(convertedAudit(dir), [[`claim-${OPEN.slice(4, 12)}`, OPEN, "open again after the upgrade"], [`claim-${LOST.slice(4, 12)}`, LOST, "its finding is not in the inbox"]]);
+	assert.ok(said.some((line) => /1 claim\(s\) queued before the upgrade are open again/.test(line)), said.join("\n"));
+	const before = snapshot(dir);
+	convertStores(dir);
+	assert.deepEqual(snapshot(dir), before, "the second start writes nothing");
+	for (let stop = 1; stop <= PROTOCOL.K2.length; stop++) {
+		const v = claimDir([{ finding: OPEN, handed: false }], [OPEN]);
+		const crashed = loggedStores(v, stop);
+		convertClaimRows(crashed.stores, () => {});
+		assert.deepEqual(crashed.log, want(PROTOCOL.K2).slice(0, stop), `stopped after write ${stop}`);
+		if (stop === 1) assert.equal(new RequestStore(v).list(CONV).length, 1, "a stop after the finding leaves the row, which finds it at the next start");
+		convertStores(v);
+		assert.deepEqual(new RequestStore(v).list(CONV), [], `stop ${stop}: the row is gone`);
+		assert.equal(findingOf(v, OPEN)?.status, "new", `stop ${stop}: the finding is open again`);
+		assert.equal(findingOf(v, OPEN)?.claimed_by, undefined);
+	}
+});
+
+test("[K2] A finding a person answered after the row's finding was opened again is not opened a second time", () => {
+	const dir = claimDir([{ finding: OPEN, handed: false }], []);
+	// A stop after K2 left the row; then a person said yes from this version before the next start.
+	const yes = { ...oldClaimedFinding(OPEN, dir), answered_by: "terminal", answer: { state: "pending", at: "2026-11-01T09:05:00.000+00:00" } };
+	fs.writeFileSync(path.join(dir, "inbox.jsonl"), `${JSON.stringify(yes)}\n`);
+	assert.deepEqual(convertClaimRows(loggedStores(dir).stores, () => {}), { handed: 0, reopened: 0 });
+	assert.deepEqual(new RequestStore(dir).list(CONV), []);
+	assert.deepEqual([findingOf(dir, OPEN)?.status, findingOf(dir, OPEN)?.answered_by, findingOf(dir, OPEN)?.answer?.state], ["claimed", "terminal", "pending"]);
 });

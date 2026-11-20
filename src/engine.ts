@@ -1019,10 +1019,12 @@ export const ANSWER_ROW_WAITS = "an answer: it runs outside this drain";
 
 /**
  * Why a row that 0.24.2 queued for a claim (source `inbox:<finding>`) waits in every drain. A claim
- * is an answer now (src/answers.ts). The conversion at start that turns such a row into one (design
- * section 5) is M5a.8b and is not in this version yet. Until it is, such a row is nobody's turn: no
- * executor hands it to pi, counts an attempt on it or lets it hold the lane, and a person can still
- * take it out of the queue.
+ * is an answer now (src/answers.ts), and each start removes such rows (`convertClaimRows` in
+ * src/convert-v2.ts, K1 and K2). One can still be in a queue between two starts: a 0.24.2 process
+ * that still runs can write one, and a start that stopped between K2's two writes leaves the row
+ * beside a finding that is new again. Such a row is nobody's turn: no executor hands it to pi,
+ * counts an attempt on it or lets it hold the lane, so the claim never runs beside a new answer to
+ * its finding. A person can still take it out of the queue, and the next start converts it.
  */
 export const OLD_CLAIM_WAITS = "a claim queued before the upgrade: it waits for the conversion";
 

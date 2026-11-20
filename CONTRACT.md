@@ -39,7 +39,7 @@ talks to it only through a recipe directory, `hooks.toml`, and the `pi-loops inb
 
 - **Recipe**: `recipe.toml` is TOML. Required: `name` (a lowercase letter, then lowercase letters, digits and hyphens), `summary`, `levels` (non-empty, from the three levels), at least one `[[job]]`. Each `[[job]]` requires `name`, `schedule` (a recurring schedule) and `playbook` (a file in the same directory). Optional keys: `line`, `needs_tracker`, `setup`, `files`, `tier`, `useful_when`, `needs`, `needs_propose`, `budget_hint_usd`; per job `verify`, `timeout`, `thinking`, `tools`, `prompt`.
 - **Playbook**: Markdown with pi's skill frontmatter (`name`, `description`), one level line, and one `## Never` section.
-- **Finding**: one JSON object with the fields `id`, `created_at` (RFC 3339), `status`, `kind` (`checkpoint` | `news`), `source`, `run_id`, `cwd`, `text`, `verified` (`true` | `false` | `null`), `dismiss_reason` (string | `null`). Fields are only added at the end; none is renamed, removed or changed in type.
+- **Finding**: one JSON object with the fields `id` (`inb-` and 32 lowercase hex digits; a line whose `id` has another shape is not a finding, and is kept as it is), `created_at` (RFC 3339), `status`, `kind` (`checkpoint` | `news`), `source`, `run_id`, `cwd`, `text`, `verified` (`true` | `false` | `null`), `dismiss_reason` (string | `null`). Fields are only added at the end; none is renamed, removed or changed in type. A line can also have fields that are not in this list (the job, the lane, a question and its answer); a reader must accept them, and a rewrite of the line keeps every field it does not read.
 - **Event**: `run_start` and `run_end`. The payload has `run_job` and `run_id`; on `run_end` also `run_ok`, `run_findings`, `run_error`, `run_cost_usd`. Each field also enters the command's environment as `PI_<FIELD IN UPPER CASE>`, unset when the payload has `null`.
 - **Rule**: a `[[hook]]` in `hooks.toml` with `event` and either `command` or `webhook`.
 
@@ -47,15 +47,15 @@ talks to it only through a recipe directory, `hooks.toml`, and the `pi-loops inb
 
 - **Install a recipe**: copy the playbooks into the project with the level line written, and create the jobs the manifest declares. A manifest that breaks a rule is refused whole; no file is copied.
 - **Run**: emit one `run_start` and one `run_end` with the same `run_id`. The run's findings enter the queue with `status = new` and `run_id` = that run.
-- **Claim** and **dismiss**: take a finding's `id` or a unique prefix of it, and succeed once each, only on a `new` finding. Dismiss can carry a `reason`, written to `dismiss_reason`.
+- **Claim** and **dismiss**: take a finding's `id` or a unique prefix of it, and succeed once each, only on a `new` finding. Dismiss can carry a `reason`, written to `dismiss_reason`. **Cancel** takes a claimed finding whose answer has not started back to `new`.
 
 ### 2.4 Ledger
 
-The events are the ledger of runs: each run has exactly one `run_start` / `run_end` pair. A finding's `status` is its own ledger: `new → claimed` or `new → dismissed`, never back.
+The events are the ledger of runs: each run has exactly one `run_start` / `run_end` pair. A finding's `status` is its own ledger: `new → claimed` or `new → dismissed`. The one way back is `claimed → new`, by a cancel before the answer starts.
 
 ### 2.5 Write conditions
 
-A finding is written only by a run, and its `text` is what the run said. `status` changes only through claim or dismiss. A rule that fails or hangs does not change the run's result. An install is complete or does not happen.
+A finding is written only by a run, and its `text` is what the run said. `status` changes only through claim, dismiss or cancel. A rule that fails or hangs does not change the run's result. An install is complete or does not happen.
 
 ### 2.6 Deterministic rules
 
@@ -80,7 +80,7 @@ That is all. This section fits on one screen.
 Three sentences each: what it is, what it depends on, and why the contract does not move when it is replaced.
 
 - **Findings are stored in `inbox.jsonl`, one object of 2.2 per line.** Depends on line-atomic appends. Another container keeps the object; `inbox` returns it as before.
-- **An id is `inb-` and 32 hex characters; a run_id is `run-` and the same.** Depends on `randomBytes(16)`. The contract asks only that ids be unique and resolvable by prefix.
+- **An id's 32 hex digits come from `randomBytes(16)`, or from a hash of what the finding is about when it must be filed once; a run_id is `run-` and 32 hex characters.** Depends on `newId` and `findingId`. The contract asks only for the shape of 2.2, and that ids be unique and resolvable by prefix.
 - **`created_at` carries the local UTC offset.** Depends on `stamp()` in `schedule.ts`. The contract asks only for RFC 3339.
 - **`source` is `cron:<job name or id>`.** Depends on the scheduler. The contract asks only for a string.
 - **`inbox list` puts checkpoints first, then news, each oldest first.** Depends on the sort in `inbox.ts`. The contract asks only for the right set.
@@ -121,7 +121,8 @@ The scripts are in `test/contract/`. `sh test/contract/run.sh` runs all five; ea
 | `docs/downstream.md` §1, the recipe directory | Contract 2.2 / 2.7.1 |
 | `docs/downstream.md` §2, the hook events | Contract 2.2 / 2.7.2 |
 | `docs/downstream.md` §3, the inbox command and the finding object | Contract 2.2 / 2.3 / 2.7.3 |
-| `inb-<32 hex>`, 500 characters and the list order in `docs/downstream.md` | Mechanism |
+| `inb-<32 hex>` in `docs/downstream.md` | Contract 2.2 |
+| 500 characters and the list order in `docs/downstream.md` | Mechanism |
 | `docs/recipes.md`, "Writing a recipe" | Contract 2.2; `.orig/`, `.recipe.json`, exclude, preflight names → mechanism |
 | Timeouts, truncation and log paths in `docs/hooks.md` | Mechanism |
 | The on-disk line shape (`trace_id`) that `docs/loops.md` used to document | Removed, unreleased: a line is the object of 2.2 (CHANGELOG, "One shape for a finding") |

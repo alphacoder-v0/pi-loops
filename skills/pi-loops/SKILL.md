@@ -42,12 +42,24 @@ reported in your notes; report only new or newly closed issues". Findings should
 
 ## Triage
 
-`/inbox` lists findings; `/inbox claim <n>` hands one to you as a real turn; `/inbox dismiss <n> [reason]`
-(a reason is shown to the loop's next run, so a finding the user calls noise can say why).
+`/inbox` lists findings; `/inbox claim <n>` is the user's yes: the loop's run that reported the
+finding picks it up in the background, not in this chat; `/inbox cancel <n>` takes back a yes that
+has not started; `/inbox dismiss <n> [reason]` (a reason is shown to the loop's next run, so a
+finding the user calls noise can say why).
 `/cron` lists jobs, `/cron runs`, `/cron trace <job> [k]` shows what a run did. `/triggers rules`,
 `/triggers audit` for dynamic triggers.
 From a shell: `pi-loops inbox list --json`, `pi-loops inbox claim <id> --json`,
 `pi-loops inbox dismiss <id> --reason <text> --json`.
+
+## When a call is asked about
+
+In a loop's or a rule check's run in the background, a dangerous call (or one that reads or writes
+pi-loops' own files, or runs `pi-loops inbox claim` and the like) does not run. The result starts
+with `asked a person:` and the question goes to the user's inbox. Do not wait for the answer, and do
+not try another way to do the same thing. Finish what does not need the call, and say in the report
+what is waiting on the user. If the user says yes, pi-loops resumes this run later and lets that one
+call through once. A result that starts with `refused by pi-loops:` asked nobody: report what you
+would need a person for.
 
 ## Confirmations
 

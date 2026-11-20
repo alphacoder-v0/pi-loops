@@ -487,10 +487,13 @@ const LABEL_MAX_CHARS = 80;
 
 /**
  * A finding as every consumer reads it: each field a surface shows, as the card shows it. The text,
- * the source, the job, the reasons, the call and the answer are screened, redacted, on one line and
- * capped. The cwd is an identity, not words: it is as stored, so it matches its project and its lane
- * exactly; a surface that shows it screens it there. Ids, stamps, the lane, the transcript and the cap are as stored. Only
- * the steps inside a section and a rewrite read the stored words.
+ * the source, the reasons, the call and the answer are screened, redacted, on one line and capped.
+ * `job_id` is an id, not words: readers match it against a job's or a rule's id. It goes through the
+ * same screen only because a hand-edited line can put anything there; an id pi-loops wrote passes
+ * through it unchanged, so it still matches. The cwd is an identity too: it is as stored, so it
+ * matches its project and its lane exactly; a surface that shows it screens it there. Other ids,
+ * stamps, the lane, the transcript and the cap are as stored. Only the steps inside a section and a
+ * rewrite read the stored words.
  */
 export function screenFinding(stored: InboxEntry): InboxEntry {
 	const words = (text: string, max: number): string => capChars(cardText(text), max);

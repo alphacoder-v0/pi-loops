@@ -75,7 +75,7 @@ it` focused and `Yes, run it once` under it, so Enter refuses. The yes answer ru
 anything else, Escape or no answer refuses it and tells the model why, so it does the safe part and reports:
 your No is reported as your refusal, no answer as nobody being there. A
 message you send into that turn makes the rest of it yours and nothing asks again. Your own turns, a
-`/goal` continuation, a claimed finding, a recipe hand-off, `/new-trigger` and `/cron run` never ask.
+`/goal` continuation, a recipe hand-off, `/new-trigger` and `/cron run` never ask.
 pi-loops' own tools are not asked about a second time: `cron_create` in such a turn makes a job
 capped to the turn's tools, as a job a background run makes is capped to that run's, and
 `new_trigger`, the trigger tools, `cron_remove` and `set_cron_job_state` ask through their own
@@ -185,14 +185,26 @@ Global JSONL, shared by every session and project. Each line is one finding in t
                        "       if you don't: <what happens if nobody acts>"   (left out when the loop left it out)
 /inbox --all           the same, every project on this machine
 /inbox all [--all]     history including claimed and dismissed
-/inbox claim <n|id>    mark claimed and queue a real agent turn, run once the agent is idle:
-                       "<finding>\n\n(from loop <label> in <project>; investigate and address it)"
-                       (the finding comes first, so a conversation the claim starts is titled by it;
-                       <label> is the loop's name, else its 13-character id, and <project> the last
-                       part of its cwd; a checker-kept finding adds a line saying so)
-/inbox dismiss <n|id> [reason]   mark dismissed; the reason, if you give one, is shown to the loop's next run
-/inbox clear [--all]
+/inbox claim <n|id>    say yes: the run that reported the finding picks it up in the background
+                       "claimed: <loop> picks this up in the run that reported it, in the background. A card comes here when it ends."
+                       (on a question: "approved: <loop> resumes the run that asked, with this one command allowed. …")
+/inbox dismiss <n|id> [reason]   say no: mark dismissed; the reason, if you give one, is shown to the loop's next run
+/inbox cancel [<n|id>] take back a yes that has not started: the finding is new again, under the same id
+                       (with no argument: the answers that wait or run, numbered)
+/inbox clear [--all]   dismiss every new finding listed; a finding with an answer is not touched
 ```
+
+A yes is an answer to the finding, and it runs where the finding came from. pi-loops resumes the
+transcript of the loop's or the rule check's run that filed it, in the background, and tells that
+run that a person read the finding and said yes. On a checkpoint, the yes is the person's approval
+of the decision the finding recommends; on news, it asks the run to investigate and address it.
+The finding's text is given to the run as a quote of what it reported, not as your words. When the
+run's transcript is gone, the run starts from the finding's text. A card comes to your
+conversation when the run ends. A yes does not run, and says why, when the loop was removed or the
+finding has nowhere to run (no loop and no lane). A yes to a finding of a conversation, such as a
+request that could not be delivered there, waits in that conversation's queue, and this version
+does not run it yet. `/inbox cancel` takes back a yes while it waits; a yes that has
+started or ended cannot be cancelled.
 
 A dismiss with words after the number — `/inbox dismiss 2 that file is generated, ignore it` — is
 the one way a person talks back to a loop. The reason is stored on the entry and put in front of
@@ -223,8 +235,8 @@ this conversation) — /inbox`. Every loop of the project counts, a recipe's inc
 conversation created it; `from this conversation` counts the findings whose loop or rule was made
 in this one, and is said only when that is not every finding. A loop that belongs to its project rather than a conversation (a recipe installed in
 a conversation pi had not saved yet, [recipes.md](recipes.md)) is counted in the project and is
-from no conversation; its finding runs in the conversation you claim it from (**Yes, do it here**), and
-`pi-loops inbox claim` marks it claimed with no conversation to act on it, so the caller handles it
+from no conversation; a yes to its finding runs in the background, in the run that reported it, as
+for any loop, and `pi-loops inbox claim` marks it claimed and runs nothing, so the caller handles it
 ([cli.md](cli.md#inbox)). Such a loop is stored with `owner:
 "project"` and no `createdBy`, and a `.pisession` archive keeps it the project's on import. A
 rule check that filed a finding for two conversations is one finding. A stopped run
@@ -257,32 +269,34 @@ the ` · waits: … · if not: …` clauses every packaged playbook writes
 appended, and the entry carries `kind: "checkpoint"` from then on; news carries nothing. `/inbox`
 lists checkpoints first, marked `⚑`, and says how many there are in its header (`3 new, 1 needs a
 decision`); the numbers on screen are the numbers `claim` and `dismiss` take, so the order is
-decided in one place. Claiming a checkpoint tells the turn that the claim is the person's approval
-of the decision the finding recommends, and to carry it out rather than investigate it again.
+decided in one place. A yes to a checkpoint tells the run that it is the person's approval of the
+decision the finding recommends, and to carry it out rather than investigate it again.
 `/inbox`, `pi-loops inbox list` and the page read a finding through one parser
 (`src/inbox-card.ts`): a checkpoint's headline is the text before `· waits:`, and its two clauses
 are shown apart as **waiting on** and **if you don't**; a clause the loop left out is not shown.
 The stored line does not change. `pi-loops inbox list --json` prints the stored fields, unsplit.
 
 The browser page shows this project's findings as cards above its conversations, decisions first.
-**Yes, do it** (on news, **Look into it**) queues the claim in the conversation that created the
-loop, as the same `inbox:<id>` row `/inbox claim` writes: a terminal that holds that conversation
-answers it under the danger check, a conversation open in the page runs it as your turn, and one
-nobody holds is started. When that conversation is gone, the claim goes to the conversation open
-on the page, if it is in the finding's project. **No…** (on news, **Dismiss…**) takes a reason
+**Yes, do it** (on news, **Look into it**) is the yes of `/inbox claim`: the run that reported the
+finding picks it up in the background, and the card says "Running in the background, in the run
+that reported it." While that yes waits, the card has **Cancel**, which is `/inbox cancel`.
+**No…** (on news, **Dismiss…**) takes a reason
 chip or a typed reason of up to 500 characters, which goes to the loop's next run as the terminal's
 reason does; with none it is a silent dismiss. **See the run**, on a finding that names its run,
 shows the run's transcript, read-only. A card names its loop only when the list holds more than one
-loop's findings, and says where a claim runs only when that is not the conversation on screen.
+loop's findings.
 
 Claim and dismiss each succeed once, and only on a finding that is still new: two windows, a
 window and a shell, or two pages that both listed it get one success between them, and the other
-is told the finding was already claimed or dismissed. A claim queues its hand-off under the inbox's
-lock, only once it has found the finding still new, so a claim that loses queues nothing and the
-finding's turn runs once, also while another process holds the lock.
+is told the finding was already claimed or dismissed. A yes marks the finding under the inbox's
+lock, only once it has found the finding still new, and then queues its answer, so a yes that loses
+queues nothing and the answer runs once. If the answer could not be queued, pi-loops queues it on
+its next tick. A cancel succeeds only while the answer waits: the answer leaves the queue, then the
+finding is `new` again.
 
 Corrupt lines are skipped on read and never deleted: a claim, a dismiss, `/inbox clear` and
-rotation write them back as they were, in their place. The footer shows `Inbox: N new`, with
+rotation write them back as they were, in their place. A line whose id is not `inb-` and 32 hex
+digits is one of them. A field that this version does not read is written back as it was, too. The footer shows `Inbox: N new`, with
 `(K decisions)` after it when any are checkpoints (the whole machine, as the badge always has), and `N loops failing (<worst> ×<count>)` once a loop has failed
 often enough for the scheduler to start backing off; the same clause is on the `[cron] … active
 here` line at session start, for this project. Until then a job that has failed forty nights in a
@@ -298,7 +312,7 @@ findings and is told to assume each may be wrong, stale, duplicated or trivial, 
 and answer with one `<verdict n="i">keep|drop — reason</verdict>` per finding (plus an optional
 `<rewrite n="i">…</rewrite>`).
 
-- Kept findings enter the inbox marked verified; the checker's reason travels with the claim.
+- Kept findings enter the inbox marked verified, with the checker's reason when it gave one.
 - Dropped findings and their reasons go to the run log; `/cron trace <job> <k> checker` shows the checker's transcript.
 - Findings without a verdict enter unverified.
 - **Fail-open:** if the checker fails or times out, every finding enters the inbox marked unverified. A broken checker must not silence the loop.
@@ -582,6 +596,26 @@ device, `mkfs`, `chmod 777 /`, shutdown/reboot/halt/poweroff anywhere in the com
 expands, `pi-loops $V`; `git add -A && git commit -m "pi-loops: stop retrying"` only mentions it). The model is told
 why and can do the safe part. A plain job's turn in an open window meets the same corpus, and asks
 you instead of refusing outright (see "Plain cron jobs" above).
+
+A loop's run and a rule check's run in the background ask you in the inbox instead. The call does
+not run, and the inbox gets one question about it, with the command, the reason and **Yes** and
+**No**. The run is told `asked a person: <reason>`, and not to wait or to try another way: it
+finishes what does not need the call. The loop's next runs see the open questions of their lane in
+an `[asked]` block of their prompt. A yes resumes the run that asked, from its transcript, and
+lets that one call through once, when its input is the same as the input that was asked about.
+A no is told to the loop or the rule on its next run, and the same command is refused for 14 days.
+A plain job's turn in the background, the checker and a `/goal` continuation have nobody to ask,
+and refuse as before.
+
+A run cannot answer for a person, because a yes in the inbox lets a dangerous call through. In an
+unattended run, a built-in file tool (`read`, `write`, `edit`, `grep`, `find`, `ls`) whose path is
+in the loops directory is refused, and nobody is asked: the question could not show what the tool
+would read or write. A shell command that reaches the loops directory is a question, "reads or
+writes pi-loops' own files". So is `pi-loops` with a verb that answers or changes state (`inbox
+claim`, `dismiss`, `cancel` or `clear`, `recipe add`, `import`, `start`, `pair`), "answers for a
+person", also behind `env`, `timeout`, `nohup`, `sudo`, `npx` and the like. This is a guard, not a
+sandbox: a path that the shell builds at run time, or a program that reaches the file another way,
+is not caught.
 
 A search for one of the words shutdown, reboot, halt and poweroff is not refused, when the command
 is no more than a search: `grep -rn shutdown src/`, `rg -n "halt" src | wc -l`,

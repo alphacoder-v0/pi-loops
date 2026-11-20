@@ -5,7 +5,10 @@ import { DEAD_AFTER_ATTEMPTS } from "./backoff.ts";
 import { plainJobRow, plainRunId } from "./engine.ts";
 import { loopLane, parseLane } from "./lane.ts";
 import { pidAlive, withFileLockSync, writeFileAtomic } from "./lock.ts";
+import { answerStep } from "./ask.ts";
+import { Inbox, UNDER_INBOX_LOCK } from "./inbox.ts";
 import { RequestStore } from "./requests.ts";
+import { TriggerStore } from "./triggers.ts";
 import { type JobClock, type RunClose, validStamp } from "./clock.ts";
 import { stamp } from "./schedule.ts";
 import { clockStore } from "./stores.ts";
@@ -130,13 +133,15 @@ export interface Conversion {
  * `jobs.lock`, for a `version: 2` `jobs.json`: (1) each job's cursor into `clock.json`, (2) one row
  * for each owed slot and each dead run marker whose prompt was not written (a plain job's whose
  * prompt is in its conversation is counted as a run, not asked again), (5) `jobs.json.v2.bak`, then `jobs.json` as version 3
- * with the counters dropped and `disabled` from the reason; then (6) the retired files go. No mark
+ * with the counters dropped and `disabled` from the reason; then each claim row of 0.24.2 leaves its
+ * queue (`convertClaimRows`), and (6) the retired files go. No mark
  * says "converted": each step reads its own store, so a crash after any step leaves stores that the
  * next start finishes, and a window and pi-loops can both run it on one directory. A row of a
  * converted slot has an id derived from the job and the slot, so a second attempt appends nothing.
  */
 export function convertStores(dir: string, log: (line: string) => void = () => {}): Conversion {
 	const converted = convertJobs(dir, log);
+	convertClaimRows({ inbox: new Inbox(dir), requests: new RequestStore(dir), audit: new TriggerStore(dir) }, log);
 	const removed: string[] = [];
 	for (const name of RETIRED_FILES) {
 		const file = path.join(dir, name);
@@ -225,4 +230,66 @@ function promptWritten(requests: RequestStore, session: string, runId: string): 
 	try {
 		return fs.readFileSync(file, "utf8").split("\n").some((line) => line.includes(`[Trigger ${runId}] `));
 	} catch { return false; }
+}
+
+/** The stores `convertClaimRows` reads and writes: a test logs each write and stops the process after any of them. */
+export interface ClaimRowStores {
+	inbox: Pick<Inbox, "sectionSync">;
+	requests: Pick<RequestStore, "sessions" | "list" | "removeIf">;
+	audit: Pick<TriggerStore, "appendAudit">;
+}
+
+/** The source of a row that 0.24.2's `/inbox claim` queued: `inbox:` and the finding's id. No source of this version starts so. */
+const OLD_CLAIM = "inbox:";
+
+/**
+ * The third step of `convertStores` (design section 5; K1 and K2 of `PROTOCOL` in src/ask.ts): each
+ * row of a conversation that 0.24.2 queued for a claim leaves its lane. For each, one
+ * `inbox.sectionSync`, and inside it one `removeIf` that decides on the row as it is under the lane's lock:
+ *   - K1, `handed_at` is set: pi had the claim before the upgrade, so the row leaves and its finding stays claimed.
+ *   - K2, no `handed_at`: `answerStep("K2")` opens its finding again if it is still 0.24.2's claim, then the row leaves.
+ *     A finding that is gone, or that a person answered since, is left as it is.
+ * Each row's audit comes after both locks. A stop at any write leaves the row or nothing: the next
+ * start finds the row again, and a finding that is `new` already is not written twice.
+ */
+export function convertClaimRows(stores: ClaimRowStores, log: (line: string) => void): { handed: number; reopened: number } {
+	const out = { handed: 0, reopened: 0 };
+	for (const lane of stores.requests.sessions()) {
+		for (const row of stores.requests.list(lane)) {
+			const source = row.source as string;
+			if (row.kind !== "input" || !source.startsWith(OLD_CLAIM)) continue;
+			const finding = source.slice(OLD_CLAIM.length);
+			try {
+				let reason: string | undefined;
+				let cwd = row.payload?.cwd ?? "";
+				const taken = stores.inbox.sectionSync((tx) =>
+					stores.requests.removeIf(lane, row.id, (now) => {
+						if (now.handed_at !== undefined) {
+							reason = "handed over before the upgrade";
+							return true;
+						}
+						const there = tx.find(finding);
+						if (!there) reason = "its finding is not in the inbox";
+						else {
+							cwd = there.cwd;
+							const reopen = answerStep("K2", there, { to: "none" }, { at: stamp(), lane: undefined });
+							if (!("refused" in reopen)) {
+								tx.write(reopen);
+								out.reopened++;
+							}
+							reason = !("refused" in reopen) || there.status === "new" ? "open again after the upgrade" : "its finding was answered since";
+						}
+						return true;
+					}, UNDER_INBOX_LOCK),
+				);
+				if (taken.outcome !== "removed" || reason === undefined) continue;
+				if (taken.row.handed_at !== undefined) out.handed++;
+				stores.audit.appendAudit({ cwd, type: "request", traceId: row.id, state: "converted", sourceLabel: source, eventLabel: lane, details: { session_id: lane, kind: row.kind, finding, reason } });
+			} catch (err: unknown) {
+				log(`the claim ${row.id} queued before the upgrade was not converted; the next start tries again: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
+	}
+	if (out.handed || out.reopened) log(`${out.handed} claim(s) handed over before the upgrade left their queue; ${out.reopened} claim(s) queued before the upgrade are open again in the inbox`);
+	return out;
 }

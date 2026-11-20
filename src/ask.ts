@@ -313,16 +313,28 @@ export interface AnswerMoves {
 }
 export type AnswerFrom = keyof AnswerMoves;
 
-/** A row of the table. A step from `none` is a person's: it needs a `new` finding and sets its status. Every other step needs a real yes. */
-type StepRule = {
-	[F in AnswerFrom]: { readonly from: F; readonly to: readonly AnswerMoves[F][] } & (F extends "none" ? { readonly sets: "claimed" | "dismissed" } : { readonly sets?: never });
-}[AnswerFrom];
+/**
+ * The shape of a finding that 0.24.2 claimed: `claimed`, with no `answered_by` and no `answer`. No
+ * step of this version writes it, and only K2 starts from it.
+ */
+export const CLAIM_0242 = "claim-0.24.2";
+
+/**
+ * A row of the table. A step from `none` is a person's: it needs a `new` finding and sets its status.
+ * A step from `CLAIM_0242` is the conversion's, and sets `new`. Every other step needs a real yes.
+ */
+type StepRule =
+	| {
+			[F in AnswerFrom]: { readonly from: F; readonly to: readonly AnswerMoves[F][] } & (F extends "none" ? { readonly sets: "claimed" | "dismissed" } : { readonly sets?: never });
+	  }[AnswerFrom]
+	| { readonly from: typeof CLAIM_0242; readonly to: readonly ["none"]; readonly sets: "new" };
 
 /**
  * Every rewrite of `inbox.jsonl` in the protocol, by its transition id. `GONE` is the deleted
  * conversation. `F1` is F1 at the third attempt. Q1 is not here: it files a finding and changes
- * none. V1 is the only step that moves a finding back: a cancel takes off what the yes wrote, and
- * the finding is `new` again, with its own id, for a person to answer again. Every other step
+ * none. V1 and K2 are the only steps that move a finding back: a cancel takes off what the yes wrote,
+ * and the conversion at start (src/convert-v2.ts) takes off what a claim of 0.24.2 wrote that pi never
+ * had. The finding is `new` again, with its own id, for a person to answer again. Every other step
  * moves forward.
  */
 export const ANSWER_STEPS = {
@@ -337,6 +349,7 @@ export const ANSWER_STEPS = {
 	F1: { from: "pending", to: ["not_run"] },
 	C3: { from: "started", to: ["done", "unfinished"] },
 	V1: { from: "pending", to: ["none"] },
+	K2: { from: CLAIM_0242, to: ["none"], sets: "new" },
 } as const satisfies Record<string, StepRule>;
 export type AnswerStepId = keyof typeof ANSWER_STEPS;
 
@@ -366,12 +379,13 @@ export interface StepInput {
 	F1: { to: "not_run" };
 	C3: { to: "done" } | { to: "unfinished"; why: string; ending?: Ending };
 	V1: { to: "none" };
+	K2: { to: "none" };
 }
 type StepOffTable = { [K in AnswerStepId]: StepInput[K]["to"] extends (typeof ANSWER_STEPS)[K]["to"][number] ? never : K }[AnswerStepId];
 const everyInputIsOnTheTable: [StepOffTable] extends [never] ? true : false = true;
 void everyInputIsOnTheTable;
 
-/** What a yes wrote on a finding, which V1 takes off. `lane` stays: it is the finding's lane. */
+/** What a yes wrote on a finding, which V1 takes off, and what a claim of 0.24.2 wrote, which K2 takes off. `lane` stays: it is the finding's lane. */
 const REOPENED = ["answer", "answered_by", "claimed_by"] as const;
 
 declare const answerWrite: unique symbol;
@@ -386,7 +400,7 @@ export interface AnswerWrite {
 	readonly id: string;
 	/** `answer` is always an arm of `Answer`: no step writes an `UnreadableAnswer`. `lane` only at Y1, on a finding that has none. */
 	readonly set: Partial<Pick<Finding, "status" | "claimed_by" | "answered_by" | "dismissed_at" | "dismiss_reason" | "lane">> & { readonly answer?: Answer };
-	/** Only V1: the fields taken off, after `set`. */
+	/** Only V1 and K2: the fields taken off, after `set`. */
 	readonly unset?: typeof REOPENED;
 	/** Filed in the same rewrite, unless a finding has its id already. */
 	readonly beside?: { readonly id: string; readonly entry: NewFinding };
@@ -397,6 +411,7 @@ export type StepRefusal =
 	| { refused: "missing" }
 	| { refused: "already"; status: InboxStatus; by?: string }
 	| { refused: "not-a-real-yes" }
+	| { refused: "not-a-0.24.2-claim" }
 	| { refused: "state"; state: AnswerFrom | UnreadableAnswer["state"] };
 
 type AnyStep = { [K in AnswerStepId]: { step: K; input: StepInput[K] } }[AnswerStepId];
@@ -413,17 +428,22 @@ function defined<T extends object>(value: T): T {
  * It refuses, and writes nothing:
  *   - a missing finding;
  *   - a step from `none` on a finding that is not `new` (CONTRACT 2.3: a claim and a dismiss each succeed once);
+ *   - K2 on a finding that is not in `CLAIM_0242`'s shape;
  *   - any other step on a finding that is not `claimed` with `answered_by` `terminal` or `page` (only a real yes);
  *   - a step whose `from` is not the finding's state, an unreadable answer among them.
  */
 export function answerStep<K extends AnswerStepId>(step: K, finding: Finding | undefined, input: StepInput[K], ctx: { at: string; lane: LaneId | undefined }): AnswerWrite | StepRefusal {
 	if (!finding) return { refused: "missing" };
-	const from: AnswerFrom = ANSWER_STEPS[step].from;
-	if (from === "none") {
-		if (finding.status !== "new") return finding.claimed_by === undefined ? { refused: "already", status: finding.status } : { refused: "already", status: finding.status, by: finding.claimed_by };
-	} else if (!realYes(finding)) return { refused: "not-a-real-yes" };
-	const state = stateOf(finding);
-	if (state !== from) return { refused: "state", state };
+	const rule: StepRule = ANSWER_STEPS[step];
+	if (rule.from === CLAIM_0242) {
+		if (!claimOf0242(finding)) return { refused: "not-a-0.24.2-claim" };
+	} else {
+		if (rule.from === "none") {
+			if (finding.status !== "new") return finding.claimed_by === undefined ? { refused: "already", status: finding.status } : { refused: "already", status: finding.status, by: finding.claimed_by };
+		} else if (!realYes(finding)) return { refused: "not-a-real-yes" };
+		const state = stateOf(finding);
+		if (state !== rule.from) return { refused: "state", state };
+	}
 
 	const write = (set: AnswerWrite["set"], beside?: Beside, text?: string): AnswerWrite =>
 		({ step, id: finding.id, set: defined(set), ...(beside ? { beside: { id: besideId(finding.id, beside), entry: newsEntry(finding, text ?? "", ctx.lane) } } : {}) }) as AnswerWrite;
@@ -457,6 +477,7 @@ export function answerStep<K extends AnswerStepId>(step: K, finding: Finding | u
 			return write({ answer }, "outcome", outcomeNews(finding, s.input.why, s.input.ending));
 		}
 		case "V1":
+		case "K2":
 			return { step, id: finding.id, set: { status: "new" }, unset: REOPENED } as AnswerWrite;
 	}
 }
@@ -472,6 +493,11 @@ function newsEntry(finding: Finding, text: string, lane: LaneId | undefined): Ne
 
 /** The state `ANSWER_STEPS` reads: `none` for a finding with no answer. `unreadable` is in no row of the table. */
 const stateOf = (finding: Finding): AnswerFrom | UnreadableAnswer["state"] => finding.answer?.state ?? "none";
+
+/** K2's guard: the shape `CLAIM_0242` names. */
+function claimOf0242(finding: Finding): boolean {
+	return finding.status === "claimed" && finding.answered_by === undefined && finding.answer === undefined;
+}
 
 /** E1's test, and the guard of every step after a yes: `claimed`, from a terminal or the page. */
 function realYes(finding: Finding): boolean {

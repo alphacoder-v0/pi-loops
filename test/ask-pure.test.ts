@@ -197,6 +197,24 @@ test("[V1] a cancel reopens the finding: new again, with what the yes wrote take
 	assert.deepEqual(answerStep("V1", question(), { to: "none" }, ctx), { refused: "not-a-real-yes" }, "a finding open again has no queued answer");
 });
 
+test("[K2] the conversion opens a claim 0.24.2 queued again: only from 0.24.2's claim shape, new with what the claim wrote taken off", () => {
+	const k2 = (finding: Finding | undefined) => answerStep("K2", finding, { to: "none" }, ctx);
+	const write = k2(base({ status: "claimed", claimed_by: CONV }));
+	assert.ok(isWrite(write), "0.24.2's claim: claimed, no answered_by, no answer");
+	assert.deepEqual([write.step, write.id, write.set, write.unset, write.beside], ["K2", ID, { status: "new" }, ["answer", "answered_by", "claimed_by"], undefined]);
+	const refused = { refused: "not-a-0.24.2-claim" };
+	assert.deepEqual(k2(at("none")), refused, "new");
+	assert.deepEqual(k2(base({ status: "dismissed", answered_by: "terminal" })), refused, "dismissed");
+	assert.deepEqual(k2(base({ status: "claimed", claimed_by: CONV, answered_by: "cli" })), refused, "claimed from the command line of this version");
+	assert.deepEqual(k2(at("pending")), refused, "pending");
+	assert.deepEqual(k2(at("started")), refused, "started");
+	assert.deepEqual(k2(at("done")), refused, "done");
+	assert.deepEqual(k2(at("unfinished")), refused, "unfinished");
+	assert.deepEqual(k2(at("not_run")), refused, "not_run");
+	assert.deepEqual(k2(at("unreadable")), refused, "unreadable");
+	assert.deepEqual(k2(undefined), { refused: "missing" }, "missing");
+});
+
 test("[E1] a row that names another sayer than the finding's is an earlier yes's row", () => {
 	const late = { ...queued(), payload: { ...queued().payload!, requested_by: "another" } };
 	assert.deepEqual(meetAnswerRow(late, at("pending"), facts()), { case: "E1", why: "the row is an earlier yes's" });

@@ -361,7 +361,7 @@ pi-loops export [--session <id>] [--cwd <dir>] [--output <file>] [--exclude-trig
 pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]
 pi-loops start [--foreground] | stop | restart | status [--url] | abort <run-id|trace-id|session-id>
 pi-loops recipe list | show <name|path> | add <name|path> [--cwd <dir>] [--level report|propose|act] [--overwrite]
-pi-loops inbox list [--all] [--cwd <dir>] | claim <id> | dismiss <id> [--reason <text>]   [--json]
+pi-loops inbox list [--all] [--cwd <dir>] | claim <id> | dismiss <id> [--reason <text>] | cancel <id>   [--json]
 ```
 
 `-h` or `--help` anywhere in a subcommand's arguments before a `--` prints that subcommand's usage
@@ -573,13 +573,16 @@ copy is kept unless `--overwrite` says otherwise.
 pi-loops inbox list --json                    # this project's new findings, checkpoints first
 pi-loops inbox claim inb-3f2a… --json         # mark it claimed; acting on it is yours
 pi-loops inbox dismiss inb-3f2a… --reason "that file is generated" --json
+pi-loops inbox cancel inb-3f2a… --json        # take back a yes that has not started
 ```
 
 `/inbox` with no pi open ([loops.md](loops.md#the-inbox)). `claim` and `dismiss` take an id or a
-unique prefix of one and change the entry the way the slash command does; a claim here cannot start
-a turn, so it marks the finding and leaves the acting to whoever asked. A finding of a loop that
-belongs to its project, not a conversation ([loops.md](loops.md)), is marked claimed the same way,
-and no conversation acts on it: the caller handles it. Without `--json`, every line is for a
+unique prefix of one. `dismiss` changes the entry the way the slash command does. `claim` only marks
+the finding claimed: unlike `/inbox claim`, it runs nothing, and the acting is left to whoever
+asked. On a question about a dangerous call, it allows no command: the loop asks again when it next
+needs the command, and a yes in pi or on the page answers that. `cancel` takes back a yes from pi or
+the page while it waits, as `/inbox cancel` does: the finding is new again, under the same id. A yes
+that has started or ended cannot be cancelled. Without `--json`, every line is for a
 person: one per finding, the full id first, then the finding, with a decision's clauses on the same
 line as `· waiting on: …` and `· if you don't: …` (the words the page uses). A plain `claim` or
 `dismiss` prints that same line prefixed with `claimed` or `dismissed`, since the caller is the one
