@@ -19,9 +19,6 @@ import { laneTranscripts } from "./session-head.ts";
 
 export type InboxStatus = "new" | "claimed" | "dismissed";
 
-/** What `Inbox.decide` did: changed the finding, found none with that id, or found it already decided (and by whom, for a claim). */
-export type Decision = { ok: InboxEntry } | { missing: true } | { already: InboxStatus; by?: string };
-
 /** Past this the inbox drops its oldest triaged entries (docs/configuration.md). */
 export const INBOX_ROTATE_BYTES = 1_000_000;
 
@@ -132,9 +129,6 @@ interface Line {
 export function findingId(seed: string): string {
 	return `inb-${createHash("sha256").update(seed).digest("hex").slice(0, 32)}`;
 }
-
-/** Reasons longer than a finding are a paragraph, and the prompt they go into is capped. */
-const DISMISS_REASON_MAX_CHARS = INBOX_TEXT_MAX_CHARS;
 
 export class Inbox {
 	readonly file: string;
@@ -396,56 +390,6 @@ export class Inbox {
 		} catch {
 			return 0;
 		}
-	}
-
-	/**
-	 * Claim or dismiss one finding, only while it is `new` (CONTRACT.md 2.3: each succeeds once).
-	 * The check and the write are one critical section under the inbox lock, against the file as it
-	 * is then: two pages, a page and a terminal, or two `pi-loops inbox claim` processes that all
-	 * listed the finding as new get one `ok` between them. `by` is who claimed it; `reason` is only
-	 * read for a dismiss — what the person said, kept for the loop's next run.
-	 *
-	 * `before` runs inside the same critical section, after the check and before the write: a claim
-	 * queues its hand-off there, so only the winner ever queues one, and a crash between the two leaves
-	 * the finding new with its hand-off queued (which the page's sweep finishes). Queued before the
-	 * check, a loser's row could be run by its holder at once, or be the row the winner collapsed onto
-	 * and then taken back. A `before` that throws leaves the finding as it was.
-	 */
-	async decide(id: string, to: "claimed" | "dismissed", opts: { by?: string; reason?: string; before?: () => void } = {}): Promise<Decision> {
-		return withFileLock(this.lockPath, (): Decision => {
-			const lines = this.lines();
-			const entry = lines.find((l) => l.entry?.id === id)?.entry;
-			if (!entry) return { missing: true };
-			if (entry.status !== "new") return entry.claimed_by === undefined ? { already: entry.status } : { already: entry.status, by: entry.claimed_by };
-			opts.before?.();
-			entry.status = to;
-			if (opts.by) entry.claimed_by = opts.by;
-			if (to === "dismissed") {
-				entry.dismissed_at = stamp();
-				const why = opts.reason?.replace(/\s+/g, " ").trim();
-				if (why) entry.dismiss_reason = capChars(why, DISMISS_REASON_MAX_CHARS);
-			}
-			this.rewrite(lines);
-			return { ok: entry };
-		});
-	}
-
-	/** `match` limits it to what the caller listed — `/inbox clear` must not dismiss findings it did not show. */
-	async dismissAllNew(match?: (entry: InboxEntry) => boolean): Promise<number> {
-		return withFileLock(this.lockPath, () => {
-			const lines = this.lines();
-			const at = stamp();
-			let changed = 0;
-			for (const { entry: e } of lines) {
-				if (e && e.status === "new" && (!match || match(e))) {
-					e.status = "dismissed";
-					e.dismissed_at = at;
-					changed++;
-				}
-			}
-			if (changed) this.rewrite(lines);
-			return changed;
-		});
 	}
 
 	/**

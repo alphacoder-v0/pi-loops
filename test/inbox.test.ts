@@ -7,7 +7,16 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { FINDING_FIELDS, Inbox, type InboxEntry, findingId, resolveInboxRef, UNDER_INBOX_LOCK } from "../src/inbox.ts";
 import { type AnswerWrite, answerStep } from "../src/ask.ts";
-import { CLAIM_QUEUE_LOCK } from "../src/engine.ts";
+import { type PersonAnswers, personAnswers } from "../src/answers.ts";
+import { RequestStore } from "../src/requests.ts";
+import { JobStore } from "../src/store.ts";
+import { TriggerStore } from "../src/triggers.ts";
+
+/** A person's word over the inbox of `dir`: the one writer every surface claims and dismisses through. */
+function answersOver(inbox: Inbox): PersonAnswers {
+	const dir = path.dirname(inbox.file);
+	return personAnswers({ inbox, requests: new RequestStore(dir), jobs: new JobStore(dir), audit: new TriggerStore(dir), sessionFile: () => undefined, self: () => ({ pid: process.pid, instance: "test", version: "0" }), now: Date.now, log: () => undefined });
+}
 
 test("listNew puts checkpoints first and keeps file order inside each group; list() is the file order", async () => {
 	const inbox = new Inbox(tmp("pi-loops-inbox-"));
@@ -22,7 +31,7 @@ test("listNew puts checkpoints first and keeps file order inside each group; lis
 	assert.equal(inbox.newCount(), 4);
 	assert.equal(inbox.decisionCount(), 2);
 	// Claimed and dismissed entries leave the triage order but keep their kind in the history.
-	await inbox.decide(inbox.listNew()[0].id, "claimed", { by: "s1" });
+	await answersOver(inbox).say(inbox.listNew()[0].id, "yes", { by: "cli" });
 	assert.equal(inbox.decisionCount(), 1);
 	assert.equal(inbox.list().find((e) => e.status === "claimed")?.kind, "checkpoint");
 });
@@ -60,7 +69,7 @@ test("newFor filters by status, session and time", async () => {
 	target.created_at = new Date(Date.parse(oldAt) + 1000).toISOString();
 	fs.writeFileSync(inbox.file, inbox.list().map((entry, i) => JSON.stringify(i === 1 ? { ...entry, created_at: target.created_at } : entry)).join("\n") + "\n");
 	const other = await inbox.append({ ...base, session_id: "other", text: "other" });
-	await inbox.decide(other.id, "claimed");
+	await answersOver(inbox).say(other.id, "yes", { by: "cli" });
 	assert.deepEqual(inbox.newFor("s", target.created_at).map((e) => e.text), []);
 	assert.deepEqual(inbox.newFor("s", old.created_at).map((e) => e.text), ["target"]);
 	assert.deepEqual(inbox.newFor("s").map((e) => e.text), ["old", "target"]);
@@ -82,29 +91,43 @@ test("resolveInboxRef takes a number only from a caller that printed a numbered 
 	assert.equal(resolveInboxRef(entries, "inb-aa", { ordinals: true }), undefined);
 });
 
-test("decide changes a new finding once and refuses one already decided", async () => {
+test("a yes or a no changes a new finding once and refuses one already answered", async () => {
 	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	const answers = answersOver(inbox);
 	const base = { source: "cron:demo", run_id: "r", job_id: "j", cwd: "/p" };
 	const a = await inbox.append({ ...base, text: "a" });
 	const b = await inbox.append({ ...base, text: "b" });
-	const claimed = await inbox.decide(a.id, "claimed", { by: "session-1", reason: "a claim carries no reason" });
-	assert.ok("ok" in claimed);
-	assert.equal(claimed.ok.status, "claimed");
-	assert.equal(claimed.ok.claimed_by, "session-1");
-	assert.equal(claimed.ok.dismiss_reason, null, "only a dismiss records a reason");
-	assert.deepEqual(await inbox.decide(a.id, "claimed", { by: "session-2" }), { already: "claimed", by: "session-1" }, "a second claim is refused, and told who won");
-	assert.deepEqual(await inbox.decide(a.id, "dismissed"), { already: "claimed", by: "session-1" }, "and so is a dismiss of a claimed finding");
-	let ran = false;
-	await inbox.decide(a.id, "claimed", { before: () => void (ran = true) });
-	assert.equal(ran, false, "a claim that loses runs nothing under the lock");
-	assert.equal(inbox.list().find((e) => e.id === a.id)?.claimed_by, "session-1", "the first claim stands");
+	const claimed = await answers.say(a.id, "yes", { by: "terminal", session: "session-1" }, { reason: "a claim carries no reason" });
+	assert.equal(claimed.said, "Y2", "no lane for job j: nothing runs, and the finding says so");
+	const stored = inbox.list().find((e) => e.id === a.id)!;
+	assert.deepEqual([stored.status, stored.claimed_by, stored.dismiss_reason], ["claimed", "session-1", null], "only a no records a reason");
+	assert.deepEqual(await answers.say(a.id, "yes", { by: "page", session: "session-2" }), { said: "nothing", refusal: { refused: "already", status: "claimed", by: "session-1" } }, "a second yes is refused, and told who won");
+	assert.deepEqual(await answers.say(a.id, "no", { by: "cli" }), { said: "nothing", refusal: { refused: "already", status: "claimed", by: "session-1" } }, "and so is a no of a claimed finding");
 
-	const dismissed = await inbox.decide(b.id, "dismissed", { reason: "  not\n a bug " });
-	assert.ok("ok" in dismissed);
-	assert.equal(dismissed.ok.dismiss_reason, "not a bug");
-	assert.ok(dismissed.ok.dismissed_at);
-	assert.deepEqual(await inbox.decide(b.id, "claimed", { by: "s" }), { already: "dismissed" });
-	assert.deepEqual(await inbox.decide("inb-0000", "claimed"), { missing: true });
+	const dismissed = await answers.say(b.id, "no", { by: "cli" }, { reason: "  not\n a bug " });
+	assert.equal(dismissed.said, "N1");
+	const no = inbox.list().find((e) => e.id === b.id)!;
+	assert.equal(no.dismiss_reason, "not a bug");
+	assert.ok(no.dismissed_at);
+	assert.deepEqual(await answers.say(b.id, "yes", { by: "cli" }), { said: "nothing", refusal: { refused: "already", status: "dismissed" } });
+	assert.deepEqual(await answers.say("inb-0000", "yes", { by: "cli" }), { said: "nothing", refusal: { refused: "missing" } });
+});
+
+test("/inbox clear dismisses the new findings it is given and leaves one with an open answer as it is", async () => {
+	const dir = tmp("pi-loops-inbox-");
+	const inbox = new Inbox(dir);
+	await new JobStore(dir).add({ id: "cron-1", name: "nightly", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: "/p", enabled: true, catchUp: true, createdAt: new Date().toISOString() });
+	const base = { source: "cron:nightly", run_id: "r", job_id: "cron-1", cwd: "/p", lane: "@cron-1" as const };
+	const waiting = await inbox.append({ ...base, text: "the yes waits" });
+	const fresh = await inbox.append({ ...base, text: "nobody answered" });
+	const answers = answersOver(inbox);
+	assert.equal((await answers.say(waiting.id, "yes", { by: "terminal", session: "s1" })).said, "Y1");
+	const cleared = await answers.clear(undefined, { by: "terminal", session: "s1" });
+	assert.deepEqual(cleared.map((f) => f.id), [fresh.id]);
+	const kept = inbox.list().find((e) => e.id === waiting.id)!;
+	assert.deepEqual([kept.status, kept.answer?.state], ["claimed", "pending"], "the open answer is not dismissed");
+	assert.deepEqual(new RequestStore(dir).list("@cron-1").map((r) => r.payload?.finding), [waiting.id], "and its row still waits in the loop's lane");
+	assert.equal(inbox.list().find((e) => e.id === fresh.id)?.answered_by, "terminal");
 });
 
 test("a line the inbox cannot read survives every rewrite, byte for byte, in its place", async () => {
@@ -115,24 +138,30 @@ test("a line the inbox cannot read survives every rewrite, byte for byte, in its
 	const torn = '{"id":"inb-torn","text":"cut sho';
 	fs.appendFileSync(inbox.file, `${torn}\n`);
 	const b = await inbox.append({ ...base, text: "b" });
-	await inbox.decide(a.id, "dismissed", { reason: "noise" });
-	await inbox.decide(b.id, "claimed", { by: "s" });
+	await answersOver(inbox).say(a.id, "no", { by: "cli" }, { reason: "noise" });
+	await answersOver(inbox).say(b.id, "yes", { by: "cli" });
 	const lines = () => fs.readFileSync(inbox.file, "utf8").split("\n");
 	assert.equal(lines()[1], torn, "kept verbatim, between the two lines it was between");
 	assert.deepEqual(inbox.list().map((e) => e.status), ["dismissed", "claimed"]);
 	await inbox.append({ ...base, text: "c" });
-	await inbox.dismissAllNew();
+	await answersOver(inbox).clear(undefined, { by: "terminal", session: "s" });
 	assert.equal(lines()[1], torn, "a clear keeps it too");
 });
 
-test("two processes deciding one finding: exactly one succeeds", async () => {
+test("two processes answering one finding: exactly one succeeds", async () => {
 	const dir = tmp("pi-loops-inbox-race-");
 	const inbox = new Inbox(dir);
 	const entry = await inbox.append({ source: "cron:demo", text: "one finding", run_id: "r", job_id: "j", cwd: dir });
 	const script = `
 	import { Inbox } from ${JSON.stringify(path.resolve("src/inbox.ts"))};
-	const outcome = await new Inbox(${JSON.stringify(dir)}).decide(process.argv[2], process.argv[3], { by: "child" });
-	process.stdout.write("ok" in outcome ? "ok" : JSON.stringify(outcome));
+	import { personAnswers } from ${JSON.stringify(path.resolve("src/answers.ts"))};
+	import { RequestStore } from ${JSON.stringify(path.resolve("src/requests.ts"))};
+	import { JobStore } from ${JSON.stringify(path.resolve("src/store.ts"))};
+	import { TriggerStore } from ${JSON.stringify(path.resolve("src/triggers.ts"))};
+	const dir = ${JSON.stringify(dir)};
+	const answers = personAnswers({ inbox: new Inbox(dir), requests: new RequestStore(dir), jobs: new JobStore(dir), audit: new TriggerStore(dir), sessionFile: () => undefined, self: () => ({ pid: process.pid, instance: "child", version: "0" }), now: Date.now, log: () => undefined });
+	const outcome = await answers.say(process.argv[2], process.argv[3] === "claimed" ? "yes" : "no", { by: "cli" });
+	process.stdout.write(outcome.said === "nothing" ? JSON.stringify({ already: outcome.refusal }) : "ok");
 	`;
 	const file = path.join(dir, "child.ts");
 	fs.writeFileSync(file, script);
@@ -216,9 +245,9 @@ test("[fileOnce] a finding that was claimed is returned as it is and is not file
 	const inbox = new Inbox(tmp("pi-loops-inbox-"));
 	const id = findingId("dead | r3");
 	await inbox.fileOnce(once, id);
-	await inbox.decide(id, "claimed", { by: "s1" });
+	await answersOver(inbox).say(id, "yes", { by: "cli" });
 	const again = await inbox.fileOnce(once, id);
-	assert.deepEqual([again.status, again.claimed_by], ["claimed", "s1"]);
+	assert.deepEqual([again.status, again.answered_by], ["claimed", "cli"]);
 	assert.equal(inbox.list().length, 1);
 	assert.equal(inbox.newCount(), 0, "a repeat does not open the question again");
 });
@@ -253,7 +282,7 @@ test("a finding keeps its lane through a rewrite, and a lane that is not a strin
 	const other = await inbox.append({ ...once, text: "another" });
 	assert.equal(Object.keys(withLane).at(-1), "lane", "written last");
 	assert.equal("lane" in other, false, "and only when it is set");
-	await inbox.decide(other.id, "dismissed");
+	await answersOver(inbox).say(other.id, "no", { by: "cli" });
 	assert.equal(inbox.list().find((e) => e.id === withLane.id)?.lane, "@cron-abc", "the rewrite of the file kept it");
 	assert.match(fs.readFileSync(inbox.file, "utf8").split("\n")[0], /"lane":"@cron-abc"\}$/);
 	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-x", created_at: "2026-11-01T00:00:00.000+00:00", status: "new", source: "s", run_id: "r", cwd: "/p", text: "t", lane: 5 })}\n`);
@@ -291,16 +320,16 @@ function assertKept(inbox: Inbox, after: string): void {
 	}
 }
 
-test("[keep-fields] decide, dismissAllNew and section.write keep ask, answered_by, answer and an unknown field of another finding as they were", async () => {
+test("[keep-fields] a no, a clear and section.write keep ask, answered_by, answer and an unknown field of another finding as they were", async () => {
 	const inbox = new Inbox(tmp("pi-loops-inbox-"));
 	seedKept(inbox);
 	const base = { source: "cron:demo", run_id: "r", job_id: "j", cwd: "/p" };
 	const a = await inbox.append({ ...base, text: "a" });
-	await inbox.decide(a.id, "dismissed", { reason: "noise" });
-	assertKept(inbox, "decide");
+	await answersOver(inbox).say(a.id, "no", { by: "cli" }, { reason: "noise" });
+	assertKept(inbox, "a no");
 	await inbox.append({ ...base, text: "b" });
-	assert.equal(await inbox.dismissAllNew(), 1);
-	assertKept(inbox, "dismissAllNew");
+	assert.equal((await answersOver(inbox).clear(undefined, { by: "terminal", session: "s" })).length, 1);
+	assertKept(inbox, "a clear");
 	const c = await inbox.append({ ...base, text: "c" });
 	const write = answerStep("N1", inbox.list().find((e) => e.id === c.id), { to: "none", by: "terminal" }, { at: AT, lane: undefined }) as AnswerWrite;
 	await inbox.section((tx) => tx.write(write));
@@ -413,7 +442,6 @@ test("[pins-by-id] pinnedTranscripts finds a finding's transcript in the lane's 
 	assert.deepEqual([...inbox.pinnedTranscripts({ job: "j" }, lane)].sort(), [asked, runs].sort(), "the files whose headers name the ids; not a named path, and not a symlink");
 });
 
-test("[lock] UNDER_INBOX_LOCK is five seconds, and the claim lock is that value", () => {
+test("[lock] UNDER_INBOX_LOCK is five seconds", () => {
 	assert.deepEqual(UNDER_INBOX_LOCK, { timeoutMs: 5_000 });
-	assert.equal(CLAIM_QUEUE_LOCK, UNDER_INBOX_LOCK);
 });

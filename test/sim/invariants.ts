@@ -255,13 +255,6 @@ function decidedOnce(world: World, memory: Memory, queues: Queues, coverage: Cov
 		const expected = decided.was === "new" ? 1 : 0;
 		if (decided.ok !== expected) out.push(`two decisions at once on a ${decided.was} finding gave ${decided.ok} ok, not ${expected}`);
 	}
-	for (const rows of queues.values()) {
-		for (const row of rows) {
-			if (!row.source.startsWith("inbox:")) continue;
-			const status = memory.findings.get(row.source.slice("inbox:".length));
-			if (status !== "claimed") out.push(`${label(world, row.id)}, the hand-off of a claim, is queued and its finding is ${status ?? "not in the inbox"}`);
-		}
-	}
 	return out;
 }
 

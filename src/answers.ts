@@ -120,13 +120,29 @@ export type MeetOutcome =
 	| { met: "F2" | "F3"; state: FinalState | "none" }
 	| { met: "nothing" };
 
-export interface Answers {
+/** What a person's surface does with an answer: a yes, a no, a clear, a cancel. A window, the page and the CLI each make one (`personAnswers`). */
+export interface PersonAnswers {
 	/** A person's yes or no (Y1, Y2, YC, N1). The row of Y1 and N1 is appended after `inbox.lock`; an append that throws is `queued: false` or `told: false`, and H1 appends the row of a yes at the next tick. */
 	say(id: string, word: "yes" | "no", from: Answerer, opts?: { reason?: string }): Promise<SayOutcome>;
 	/** `/inbox clear`: N1 for every `new` finding `match` takes, in one section and one rewrite; then the `no-` rows. Returns the findings dismissed. */
 	clear(match: ((finding: Finding) => boolean) | undefined, from: Answerer): Promise<Finding[]>;
 	/** A person cancels a queued yes (V1, V2). `ref` is the finding's id or its `ans-` row's id. */
 	cancel(ref: string): Promise<{ cancelled: Finding; again: string } | { refusal: StepRefusal }>;
+}
+
+/** What `personAnswers` reads and writes: no transcript, no hook and no check lane, since a surface starts no run. */
+export interface PersonAnswersDeps {
+	inbox: Pick<Inbox, "section" | "list">;
+	requests: Pick<RequestStore, "appendIfAbsent" | "remove">;
+	jobs: Pick<JobStore, "load">;
+	audit: Pick<TriggerStore, "appendAudit">;
+	sessionFile(id: ConversationId): string | undefined;
+	self(): Row["created_by"];
+	now(): number;
+	log(message: string): void;
+}
+
+export interface Answers extends PersonAnswers {
 	/** The executor meets one `ans-` row: section E, W1, F1 to F3, the deleted conversation. */
 	meet(lane: Lane, rowId: string, executor: AnswerExecutor, now: number): Promise<MeetOutcome>;
 	/** The closing of a run of an answer row (C1 to C4): by the process that ran it, with `ended`, and by `meet` for F2. Each write is safe to repeat. */
@@ -156,13 +172,105 @@ const finalOf = (finding: Finding | undefined): FinalState | "none" => {
 /** No lane can be read for a row whose finding is missing: `meetAnswerRow` gives E1 before it reads this. */
 const NO_LANE: LaneFact = { there: false, why: WHY.nowhere };
 
-export function createAnswers(deps: AnswersDeps): Answers {
-	const { inbox, requests, jobs } = deps;
-
-	const sessionFileThere = (id: ConversationId): boolean => {
+/** A conversation's lane is there while its session file is. */
+function sessionFileThereOf(deps: Pick<PersonAnswersDeps, "sessionFile">): (id: ConversationId) => boolean {
+	return (id) => {
 		const file = deps.sessionFile(id);
 		return file !== undefined && fs.existsSync(file);
 	};
+}
+
+/** The audit line of an answer row's exit: after the locks, as the engine writes a row's. */
+function auditExit(deps: Pick<PersonAnswersDeps, "audit">, rowId: string, lane: LaneId, finding: string, exit: AnswerExit, cwd: string, why?: string): void {
+	deps.audit.appendAudit({ cwd, type: "request", traceId: rowId, state: exit, sourceLabel: "answer", eventLabel: lane, details: { session_id: lane, kind: "input", finding, ...(why ? { reason: why } : {}) } });
+}
+
+/** A row appended after `inbox.lock`: one that throws is logged, and H1 appends a yes's row at the next tick. */
+function appendAfterLock(deps: Pick<PersonAnswersDeps, "requests" | "log">, row: UnclaimedRow): boolean {
+	try {
+		deps.requests.appendIfAbsent(row);
+		return true;
+	} catch (err: unknown) {
+		deps.log(`answers: the row ${row.id} could not be appended to ${row.lane}: ${err instanceof Error ? err.message : String(err)}`);
+		return false;
+	}
+}
+
+/** A person's yes, no, clear and cancel over a directory's stores. `createAnswers` has these too. */
+export function personAnswers(deps: PersonAnswersDeps): PersonAnswers {
+	const { inbox, requests, jobs } = deps;
+	const sessionFileThere = sessionFileThereOf(deps);
+	return {
+		async say(id, word, from, opts = {}) {
+			const all = jobs.load();
+			const seen = inbox.list().find((f) => f.id === id);
+			if (!seen) return { said: "nothing", refusal: { refused: "missing" } };
+			const lane = laneFact(seen, all, sessionFileThere);
+			const at = stamp(deps.now());
+			const done = await inbox.section((tx) => {
+				const said = decideSay(tx.find(id), word, from, lane, { at, self: deps.self(), ...(opts.reason === undefined ? {} : { reason: opts.reason }) });
+				return { said, finding: said.step === "none" ? undefined : tx.write(said.write) };
+			});
+			const { said } = done;
+			if (said.step === "none" || !done.finding) return { said: "nothing", refusal: said.step === "none" ? said.refusal : { refused: "missing" } };
+			switch (said.step) {
+				case "Y1":
+					return { said: "Y1", finding: done.finding, lane: said.row.lane, queued: appendAfterLock(deps, said.row) };
+				case "Y2":
+					return { said: "Y2", finding: done.finding, why: said.why };
+				case "YC":
+					return { said: "YC", finding: done.finding };
+				case "N1":
+					return { said: "N1", finding: done.finding, told: said.row ? appendAfterLock(deps, said.row) : false };
+			}
+		},
+
+		async clear(match, from) {
+			const at = stamp(deps.now());
+			const dismissed = await inbox.section((tx) => {
+				const writes = tx.list().flatMap((finding) => {
+					if (finding.status !== "new" || (match && !match(finding))) return [];
+					const step = answerStep("N1", finding, { to: "none", by: from.by }, { at, lane: undefined });
+					return "refused" in step ? [] : [step];
+				});
+				if (!writes.length) return [];
+				tx.write(writes[0], ...writes.slice(1));
+				return writes.flatMap((w) => tx.find(w.id) ?? []);
+			});
+			for (const finding of dismissed) {
+				const row = noRow(finding, at, deps.self());
+				if (row) appendAfterLock(deps, row);
+			}
+			return dismissed;
+		},
+
+		async cancel(ref) {
+			const all = jobs.load();
+			const seen = inbox.list().find((f) => f.id === ref || answerRowId(f.id) === ref);
+			if (!seen) return { refusal: { refused: "missing" } };
+			const id = seen.id;
+			const lane = laneOf(seen, all);
+			const at = stamp(deps.now());
+			const out = await inbox.section((tx) => {
+				const step = answerStep("V1", tx.find(id), { to: "cancelled" }, { at, lane });
+				if ("refused" in step) return { refusal: step };
+				const cancelled = tx.write(step);
+				// V2, still under inbox.lock: the row of the yes leaves its lane.
+				const rowLane = cancelled.lane ?? lane;
+				if (rowLane !== undefined && parseLane(rowLane)) requests.remove(rowLane, [answerRowId(id)], UNDER_INBOX_LOCK);
+				return { cancelled, rowLane };
+			});
+			if (out.refusal) return { refusal: out.refusal };
+			if (out.rowLane !== undefined) auditExit(deps, answerRowId(id), out.rowLane, id, "cancelled", out.cancelled.cwd);
+			return { cancelled: out.cancelled, again: besideId(id, "again") };
+		},
+	};
+}
+
+export function createAnswers(deps: AnswersDeps): Answers {
+	const { inbox, requests, jobs } = deps;
+	const person = personAnswers(deps);
+	const sessionFileThere = sessionFileThereOf(deps);
 
 	/**
 	 * The transcript of `lane` whose header names `sessionId`, in the lane's own directory as pi-loops
@@ -194,21 +302,6 @@ export function createAnswers(deps: AnswersDeps): Answers {
 	};
 
 	const jobIdOf = (lane: Lane, finding: Finding | undefined): string => (lane.kind === "loop" ? lane.id.slice(1) : lane.kind === "check" ? lane.id : (finding?.job_id ?? ""));
-
-	/** The audit line of an answer row's exit: after the locks, as the engine writes a row's. */
-	const auditExit = (rowId: string, lane: LaneId, finding: string, exit: AnswerExit, cwd: string, why?: string): void => {
-		deps.audit.appendAudit({ cwd, type: "request", traceId: rowId, state: exit, sourceLabel: "answer", eventLabel: lane, details: { session_id: lane, kind: "input", finding, ...(why ? { reason: why } : {}) } });
-	};
-
-	const appendAfterLock = (row: UnclaimedRow): boolean => {
-		try {
-			requests.appendIfAbsent(row);
-			return true;
-		} catch (err: unknown) {
-			deps.log(`answers: the row ${row.id} could not be appended to ${row.lane}: ${err instanceof Error ? err.message : String(err)}`);
-			return false;
-		}
-	};
 
 	const close: Answers["close"] = async (row, now, ended) => {
 		const lane = parseLane(row.lane);
@@ -268,69 +361,7 @@ export function createAnswers(deps: AnswersDeps): Answers {
 	};
 
 	return {
-		async say(id, word, from, opts = {}) {
-			const all = jobs.load();
-			const seen = inbox.list().find((f) => f.id === id);
-			if (!seen) return { said: "nothing", refusal: { refused: "missing" } };
-			const lane = laneFact(seen, all, sessionFileThere);
-			const at = stamp(deps.now());
-			const done = await inbox.section((tx) => {
-				const said = decideSay(tx.find(id), word, from, lane, { at, self: deps.self(), ...(opts.reason === undefined ? {} : { reason: opts.reason }) });
-				return { said, finding: said.step === "none" ? undefined : tx.write(said.write) };
-			});
-			const { said } = done;
-			if (said.step === "none" || !done.finding) return { said: "nothing", refusal: said.step === "none" ? said.refusal : { refused: "missing" } };
-			switch (said.step) {
-				case "Y1":
-					return { said: "Y1", finding: done.finding, lane: said.row.lane, queued: appendAfterLock(said.row) };
-				case "Y2":
-					return { said: "Y2", finding: done.finding, why: said.why };
-				case "YC":
-					return { said: "YC", finding: done.finding };
-				case "N1":
-					return { said: "N1", finding: done.finding, told: said.row ? appendAfterLock(said.row) : false };
-			}
-		},
-
-		async clear(match, from) {
-			const at = stamp(deps.now());
-			const dismissed = await inbox.section((tx) => {
-				const writes = tx.list().flatMap((finding) => {
-					if (finding.status !== "new" || (match && !match(finding))) return [];
-					const step = answerStep("N1", finding, { to: "none", by: from.by }, { at, lane: undefined });
-					return "refused" in step ? [] : [step];
-				});
-				if (!writes.length) return [];
-				tx.write(writes[0], ...writes.slice(1));
-				return writes.flatMap((w) => tx.find(w.id) ?? []);
-			});
-			for (const finding of dismissed) {
-				const row = noRow(finding, at, deps.self());
-				if (row) appendAfterLock(row);
-			}
-			return dismissed;
-		},
-
-		async cancel(ref) {
-			const all = jobs.load();
-			const seen = inbox.list().find((f) => f.id === ref || answerRowId(f.id) === ref);
-			if (!seen) return { refusal: { refused: "missing" } };
-			const id = seen.id;
-			const lane = laneOf(seen, all);
-			const at = stamp(deps.now());
-			const out = await inbox.section((tx) => {
-				const step = answerStep("V1", tx.find(id), { to: "cancelled" }, { at, lane });
-				if ("refused" in step) return { refusal: step };
-				const cancelled = tx.write(step);
-				// V2, still under inbox.lock: the row of the yes leaves its lane.
-				const rowLane = cancelled.lane ?? lane;
-				if (rowLane !== undefined && parseLane(rowLane)) requests.remove(rowLane, [answerRowId(id)], UNDER_INBOX_LOCK);
-				return { cancelled, rowLane };
-			});
-			if (out.refusal) return { refusal: out.refusal };
-			if (out.rowLane !== undefined) auditExit(answerRowId(id), out.rowLane, id, "cancelled", out.cancelled.cwd);
-			return { cancelled: out.cancelled, again: besideId(id, "again") };
-		},
+		...person,
 
 		async meet(lane, rowId, executor, now) {
 			// Before the locks: jobs.json, the finding as it is now, the transcript, and what blocks the lane.
@@ -419,7 +450,7 @@ export function createAnswers(deps: AnswersDeps): Answers {
 				return { met: "F3", state: inner.state };
 			}
 			const { out, row } = inner;
-			if ((out.met === "E1" || out.met === "E2" || out.met === "E3" || out.met === "GONE" || out.met === "F1-dead") && row) auditExit(row.id, lane.id, findingId, out.exit, inner.cwd ?? "", inner.why);
+			if ((out.met === "E1" || out.met === "E2" || out.met === "E3" || out.met === "GONE" || out.met === "F1-dead") && row) auditExit(deps, row.id, lane.id, findingId, out.exit, inner.cwd ?? "", inner.why);
 			if (out.met === "hold" && row && row.waiting !== out.why) {
 				try {
 					requests.update(lane.id, row.id, { waiting: out.why });

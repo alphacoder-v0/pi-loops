@@ -973,7 +973,7 @@ export async function drainAs(world: World, proc: Process, tick: boolean, fault:
 		crash.write();
 		const turns = held(proc).filter((copy) => copy.wake === "turn" && !copy.gaveUp);
 		const stillQueued = new Set(world.store.list(conversation.id).map((queued) => queued.id));
-		const local = row.source === "goal" || row.source.startsWith("inbox:");
+		const local = row.source === "goal";
 		world.facts.handOvers.push({ drain: number, process: proc, row, wake, holds: conversation.holder === proc, queued: world.store.list(conversation.id).some((queued) => queued.id === row.id), producerRunsIt: local && row.created_by.left === undefined && pidAlive(world, row.created_by.pid), piRunning: proc.pi.running, turnsHeld: turns.length, textTurnsHeld: turns.filter((copy) => copy.provedByText && world.clock - copy.handedAt < GRACE_MS).length, pendingTurnsHeld: proc.pi.running ? 0 : proc.pi.queue.filter((item) => item.copy && item.copy.wake === "turn" && !item.copy.gaveUp && !item.copy.stopNamed && (item.custom ? stillQueued.has(item.copy.rowId) : world.clock - item.copy.handedAt < GRACE_MS)).length, written: world.copies.some((copy) => copy.sessionId === conversation.id && countsFor(world, copy) === row.id && answered(copy) && !copy.fromTheEditor && !copy.markLess), sentFromTheEditor: world.copies.some((copy) => copy.sessionId === conversation.id && copy.rowId === row.id && copy.state === "written" && copy.fromTheEditor === true) });
 		world.sending = { row, wake };
 		world.handOverThrows = fault.handOverThrows === true;

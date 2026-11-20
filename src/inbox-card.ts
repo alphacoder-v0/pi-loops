@@ -5,15 +5,18 @@
  *
  * A checkpoint is `<the decision> · waits: <what waits on it> · if not: <what happens if nobody
  * acts>` (docs/recipes.md); a card shows the three parts apart, under the page's words "Waiting on"
- * and "If you don't". News is one finding with a headline. What a claim says to the agent and what a
- * dismiss tells the loop are decided here too, so every surface says the same thing.
+ * and "If you don't". News is one finding with a headline. What a yes, a no and a cancel say, and
+ * what an answer's state reads as, are decided here too, so every surface says the same thing.
  */
 import * as path from "node:path";
 import { deadLetterParts } from "./engine.ts";
 import { loopLabel } from "./job-lines.ts";
+import { type StepRefusal, answerStatus } from "./ask.ts";
 import type { InboxEntry, InboxStatus } from "./inbox.ts";
+import { type LaneId, parseLane } from "./lane.ts";
 import { INBOX_TEXT_MAX_CHARS, capChars } from "./protocol.ts";
 import { cardText, redact, screenText } from "./redact.ts";
+import type { Row } from "./requests.ts";
 
 export interface InboxCard {
 	/** `inb-…`: the only thing a button sends. */
@@ -48,8 +51,6 @@ export interface InboxCard {
 	hasTranscript: boolean;
 	/** `sessionId` is the conversation the card is shown in. */
 	fromThisConversation: boolean;
-	/** A claim from the page is queued for it and has not marked it claimed yet: Yes is not offered again. */
-	claiming: boolean;
 }
 
 export interface CardContext {
@@ -57,8 +58,6 @@ export interface CardContext {
 	here?: string;
 	/** A loop's name from jobs.json, or undefined when the loop is gone or has none. */
 	loopName(jobId: string): string | undefined;
-	/** Whether a page claim row for this finding is queued. */
-	claiming?(id: string): boolean;
 	/** A rule's condition from triggers.json, or undefined when the rule is gone. */
 	ruleCondition?(ruleId: string): string | undefined;
 }
@@ -142,7 +141,6 @@ export function inboxCard(entry: InboxEntry, ctx: CardContext): InboxCard | unde
 		...(entry.session_id ? { sessionId: entry.session_id } : {}),
 		hasTranscript: origin !== "rule" && !!entry.transcript,
 		fromThisConversation: !!entry.session_id && entry.session_id === ctx.here,
-		claiming: entry.status === "new" && (ctx.claiming?.(entry.id) ?? false),
 	};
 }
 
@@ -216,33 +214,6 @@ export function dismissLine(outcome: DismissOutcome): string {
 }
 
 /**
- * The turn a claim runs: the finding, where it came from, and what a claim of a checkpoint means.
- * The finding is the first line, because a conversation the claim starts is titled by its first
- * message. `loopName` is the name of the loop that filed it, when that loop has one.
- */
-export function claimPrompt(e: InboxEntry, loopName?: string): string {
-	// The words the card showed, redacted and capped as it does, so the turn is asked about what the
-	// person read and said yes to, and a secret masked on the card is not sent to the model; the
-	// source, the loop's name and the cwd are screened too, since the turn's message is drawn in a
-	// terminal when one holds the conversation.
-	const one = (s: string) => screenText(s).replace(/\s+/g, " ").trim();
-	const text = capChars(redact(screenText(e.text)).replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS);
-	const source = one(e.source);
-	const cwd = one(e.cwd);
-	const verified = e.verified ? `\n(An independent checker reviewed and kept this finding${e.verified_reason ? `: ${redact(screenText(e.verified_reason))}` : ""}.)` : "";
-	// A checkpoint is a decision the loop prepared and left to a person; the claim is that
-	// person's yes, so the turn carries the decision out rather than re-investigating it.
-	const checkpoint = e.kind === "checkpoint" ? "\nThis finding is a checkpoint: claiming it is the person's approval of the decision it recommends — carry that decision out, and stop where the finding says a person acts." : "";
-	// A prompt that never reached the chat: claiming it is asking for it now, not investigating why it was late.
-	const late = deadLetterParts(e, text);
-	if (late) return `This prompt (${source}, for ${cwd}) could not be delivered earlier (${late.why}). Do what it asks now:\n${late.prompt}`;
-	// Named as the card names it (cardOrigin): a loop by its label, a rule by its source.
-	const from = e.job_id && !e.source.startsWith("trigger:") ? `loop ${loopLabel({ id: one(e.job_id), name: loopName && one(loopName) })}` : source;
-	const project = cwd ? ` in ${path.basename(cwd) || cwd}` : "";
-	return `${text}\n\n(from ${from}${project}; investigate and address it)${verified}${checkpoint}`;
-}
-
-/**
  * Where a claim from the page runs, as the page server finds the conversation that created the
  * loop: open in the page (rung, so it runs as the person's turn), a terminal that answers what is
  * queued, a terminal that does not (`pi -p`, a window behind the file), pi-loops in the middle of a
@@ -264,4 +235,93 @@ export function claimLine(delivery: ClaimDelivery, title?: string): string {
 	if (delivery === "no-pi-loops") return "Queued; the pi of that conversation has no pi-loops, so nothing runs it here. Open it in a terminal with pi-loops.";
 	if (delivery === "stopped") return "Queued; pi stopped too often in that conversation to be started again on its own.";
 	return "Queued; its conversation is gone.";
+}
+
+/**
+ * Who picks up a yes to a finding, as a person reads it: the loop the lane names, by its name; the
+ * check of the finding's project; for a conversation's finding, the job that filed it, else the
+ * conversation. `loopName` reads jobs.json; a name is screened, since it is drawn in a terminal.
+ */
+export function answerWho(finding: Pick<InboxEntry, "cwd" | "job_id">, lane: LaneId | undefined, loopName: (jobId: string) => string | undefined): string {
+	const parsed = lane === undefined ? undefined : parseLane(lane);
+	const jobId = parsed?.kind === "loop" ? parsed.id.slice(1) : parsed?.kind === "check" ? undefined : finding.job_id;
+	if (parsed?.kind === "check") return `the check of ${screenText(path.basename(finding.cwd) || finding.cwd)}`;
+	if (jobId) return screenText(loopName(jobId) ?? jobId);
+	return "its conversation";
+}
+
+/** The sentence a question's unfinished answer ends with when it names none: the cautious one (C3). */
+const MAY_HAVE_RUN = "The command may or may not have run.";
+
+/**
+ * What a card, `/inbox all` and the CLI say of a finding's answer (design 6.1), or undefined when
+ * there is nothing to say: a finding that is not claimed, or an answer this version cannot read.
+ * `row` is the answer's `ans-` row, for why a pending one waits; `summary` is the run's summary
+ * while the run log has its record. What came from a run is redacted and screened.
+ */
+export function answerLine(finding: InboxEntry, row?: Row, summary?: string): string | undefined {
+	if (finding.status === "claimed" && finding.answer === undefined && finding.answered_by === undefined) return "Claimed before the upgrade.";
+	const status = answerStatus(finding, row);
+	if (!status) return undefined;
+	const why = cardText(status.why ?? "");
+	switch (status.status) {
+		case "pending":
+			return why ? `Waiting to run: ${why}` : "Waiting to run";
+		case "started":
+			return "Running";
+		case "done": {
+			const first = cardText(summary?.split("\n").find((line) => line.trim()) ?? "").trim();
+			return first ? `Done · ${first}` : "Done";
+		}
+		case "unfinished":
+			return `Started and did not finish (${why}).${finding.ask ? ` ${status.ending ?? MAY_HAVE_RUN}` : ""}`;
+		case "not_run":
+			return `Not run (${why})`;
+		case "cancelled":
+			return CANCELLED_LINE;
+		case "cli":
+			return "Claimed from the command line. Nothing ran";
+	}
+}
+
+/** What a card says once its queued answer is cancelled (V1), and what a successful cancel prints. */
+export const CANCELLED_LINE = "Cancelled. The question is open again";
+
+/** Why a cancel was refused, in a person's words (design 6.2). `missing` is the caller's to say: a page answers 404. */
+export function cancelRefusal(refusal: StepRefusal): string {
+	if (refusal.refused === "missing") return "there is no such finding";
+	if (refusal.refused === "state" && refusal.state === "started") return "it has already started: stop it instead";
+	if (refusal.refused === "state" && (refusal.state === "done" || refusal.state === "unfinished" || refusal.state === "not_run" || refusal.state === "cancelled")) return "it has already ended";
+	return "it has no queued answer to cancel";
+}
+
+/**
+ * What a terminal prints after a yes (design 6.1, 6.2). Y1 on a question: the run that asked
+ * resumes with the one call allowed. Y1 on any other finding: the run that reported it picks it up.
+ * Y2: why nothing runs.
+ */
+export function yesTerminalLine(said: { said: "Y1"; finding: InboxEntry } | { said: "Y2"; finding: InboxEntry; why: string }, who: string): string {
+	if (said.said === "Y2") return `${said.why}; nothing runs`;
+	if (said.finding.ask) return `approved: ${who} resumes the run that asked, with this one command allowed. A card comes here when it ends.`;
+	return `claimed: ${who} picks this up in the run that reported it, in the background. A card comes here when it ends.`;
+}
+
+/**
+ * What a card says after a yes from the page (design 6.1, 6.2). A question shows its state at once;
+ * any other finding says that it runs in the background, and from what when its transcript is gone.
+ */
+export function yesPageLine(said: { said: "Y1"; finding: InboxEntry } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, transcriptKept: boolean): string {
+	if (said.said === "Y2") return `Not run (${said.why})`;
+	if (said.finding.ask) return answerLine(said.finding) ?? "Waiting to run";
+	return transcriptKept ? "Running in the background, in the run that reported it." : `Running in the background. The run's transcript is gone, so ${who} starts from the finding's text.`;
+}
+
+/** What a no to a question says (design 6.1): the run that asked is told, and the call is refused for 14 days. */
+export function noQuestionLine(surface: "terminal" | "page", who: string): string {
+	return surface === "terminal" ? `said no: ${who} is told why on its next run; the same command is refused for 14 days` : `You said no. ${who} is told on its next run, and the same command is refused for 14 days.`;
+}
+
+/** What the CLI prints after a claim of a question (design 6.1): a claim from a shell allows no command. */
+export function shellClaimOfQuestion(id: string, who: string): string[] {
+	return [`claimed ${id}. This finding is a question, and a claim from a shell allows no command:`, `nothing runs. ${who} asks again when it next needs the command; say yes to that in pi (/inbox)`, "or on the page."];
 }

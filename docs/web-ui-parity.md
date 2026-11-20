@@ -366,45 +366,24 @@ weaker, and worth converting whenever one of them breaks.
       path says so on its row, with the next look from the process that checks rules*.
 - [x] The inbox as cards around the conversations: decisions above them under **Needs you**, each with
       **Waiting on** and **If you don't** when the loop said them, and news below them. A card names its loop
-      only when the list holds more than one loop's findings, and says where a claim runs only when
-      that is not the conversation on screen (another conversation's or project's finding, or a
-      terminal that takes no messages). **See the run** is there only when the finding has a run this page can read
+      only when the list holds more than one loop's findings. **See the run** is there only when the finding has a run this page can read
       (`test/page-server.test.ts`: *See the run is offered only for a transcript the server would read*).
       Every card carries its finding's whole id; no button names a position. `test/web-page.test.ts`:
-      *the inbox shows decisions before news, each row only with a value, and where a claim runs
-      only when that is not here*. `test/page-server.test.ts`: *GET /inbox: one project's cards, decisions first,
+      *the inbox shows decisions before news, each row only with a value, and the loop only when
+      there is more than one*. `test/page-server.test.ts`: *GET /inbox: one project's cards, decisions first,
       fifty at most, a torn line left out, and starts no pi*; `test/web-page.test.ts`: *the list reads
       what needs you, then the conversations, then news, and the starters last*.
-- [x] **Yes, do it** on a decision and **Look into it** on news claim the finding into the
-      conversation that created its loop, and the card says where it runs: queued for your
-      terminal, running in a conversation open in the page, starting one, or waiting on pi-loops'
-      scheduled turn. `test/web-page.test.ts`: *Yes posts the finding's id and this conversation,
-      nothing else, and shows where it runs*. `test/page-server.test.ts`: *a claim from the page
-      queues the born-left inbox: row for the terminal that holds the conversation, once*; *a claim
-      for a conversation nobody holds starts its pi and rings it with the row's fingerprint*; *a
-      claim for a conversation whose pi has no pi-loops sends that pi nothing*.
-- [x] A finding whose loop belongs to its project (a starter added before its conversation was
-      saved) runs in the conversation you claim it from: **Yes, do it here** claims it into the one
-      open here. `test/web-page.test.ts`: *a project-owned finding runs in the conversation it is
-      claimed from: Yes, do it here, and no line to say so*. `test/page-server.test.ts`: *a
-      project-owned finding (a starter's loop installed before its conversation was saved) says it
-      runs where it is claimed from, and is claimed into the asking conversation*.
-      `test/scoping.test.ts`: *a recipe installed in a conversation pi has not saved makes a
-      project-owned loop; in a saved one the loop keeps its conversation*. Live: J7 checks the
-      starter's job has no creating conversation.
-- [x] A finding whose conversation is gone is claimed into the one open here, when it is in the
-      finding's project (**Yes, do it here**). `test/page-server.test.ts`: *a claim whose
-      conversation is gone runs in the page's own when it is in the project, and is refused
-      otherwise*. Listed for another project, it says "its conversation is gone; runs in a new
-      conversation in <project>", and **Yes, do it** starts that conversation (as + New does
-      there), claims the finding into it and goes to it; one that cannot start claims nothing and
-      says why. `test/web-page.test.ts`: *a card whose conversation is gone runs in this one in its
-      own project, and in a new conversation there in another project*.
-- [x] A project-owned finding listed for another project says "runs in a new conversation in
-      <project>", and **Yes, do it** starts that conversation, claims the finding into it and goes
-      to it, as a gone one does; in the open conversation's project it stays as above.
-      `test/web-page.test.ts`: *a project-owned card listed for another project runs in a new
-      conversation there: started, claimed into, and opened*.
+- [x] **Yes, do it** on a decision and **Look into it** on news are a person's yes (design 6.2):
+      the run that reported the finding picks it up in the background, and the card says "Running in
+      the background, in the run that reported it." (or that the run's transcript is gone, so the
+      loop starts from the finding's text). A yes on a finding with no lane says why nothing runs:
+      "Not run (the loop was removed)". A second yes, from this page, another page, a terminal or a
+      shell, is refused with what it found. `test/web-page.test.ts`: *Yes posts the finding's id and
+      this conversation, nothing else, and says it runs in the background*. `test/page-server.test.ts`:
+      *a yes from the page queues one answer row in the loop's lane and says it runs in the
+      background, in the run that reported it; a second yes from any surface is refused with the
+      state it found*; *a yes on a finding with no lane is not run: its answer says why and a news
+      finding says so, in the same rewrite, and no row is queued*.
 - [x] The Loops pane lists loops and rules and nothing else; the list's cards and the tab title
       count the inbox. The desktop rail and the phone's tab bar call the list
       **Inbox**. `test/web-page.test.ts`: *the Loops pane lists loops: no inbox count and no summary
@@ -477,15 +456,27 @@ weaker, and worth converting whenever one of them breaks.
       button's `offsetHeight`, and `scrollWidth` against `innerWidth`); the rules themselves are
       pinned by `test/web-page.test.ts`: *inbox card buttons are at least 32 px tall and the card
       wraps rather than scroll sideways*.
-- [x] A claim's card follows the server: queued while its row waits, then "Handed to that
-      conversation." once the row is gone, also when it is gone before the page looks again; the
+- [x] A yes's card follows the server under **Handled**: the line of its answer's state (design
+      6.1: "Waiting to run", with why when its lane is blocked; "Running"; "Done · <the run's
+      summary>"; "Started and did not finish (<why>)."; "Not run (<why>)"; "Cancelled. The question
+      is open again"), for every answer that is open and every one that ended within a day; the
       list's and the panel's counts are asked for again with it. A disabled button looks disabled
-      and does not change on hover. `test/web-page.test.ts`: *a claim's card follows the server*;
-      *a claim whose row is taken before the page looks again says it was handed over, at once*;
-      a claim whose row is cancelled from this page's queue says "Cancelled; nothing was sent. The
-      finding stays claimed." instead (*a claim cancelled from this page's queue says nothing was
-      sent and the finding stays claimed, not that it was handed over*);
-      *a disabled card button looks disabled, and a disabled button does not change on hover*.
+      and does not change on hover. `test/web-page.test.ts`: *a yes's card follows the server: the
+      line of its answer's state, as it moves; the counts are asked for again at once*; *a disabled
+      card button looks disabled, and a disabled button does not change on hover*.
+      `test/page-server.test.ts`: *GET /inbox lists the project's answers with design 6.1's line,
+      and Cancel only while one waits*.
+- [x] **Cancel** on a yes that waits to run takes it back, and the question is open again as a new
+      card; one that started or ended is refused with why ("It has already started: stop it
+      instead.", "It has already ended."). A running answer is stopped with Stop, as any run is.
+      `test/web-page.test.ts`: *Cancel on a yes that waits posts the finding's id and says the
+      question is open again; one too late says why*. `test/page-server.test.ts`: *a cancel from the
+      page opens the question again; one that started or ended is refused in design 6.2's words*.
+- [x] **No…** on a question says that the run is told and the command is refused for 14 days ("You
+      said no. <loop> is told on its next run, and the same command is refused for 14 days."), and a
+      question from a conversation is told by a row in it. `test/page-server.test.ts`: *a no to a
+      question from a conversation dismisses it with its reason, tells the conversation by its row,
+      and says so*.
 - [x] **Loop activity** between the conversation and the composer: closed, one line ("loop
       activity · 5 runs today · 1 failed · 1 rule result"); open, a row for each loop run and each
       matched or failed rule check of this project over the last day, newest first, at most 100. A
@@ -939,10 +930,19 @@ weaker, and worth converting whenever one of them breaks.
   a chip by the name; the wizard asks for the tracker when it needs it; and `+ Watch for…` above the
   list is the one way to describe a loop.
 - **A dim `not said` under a decision, the meta line on every card, and a greyed See the run.** A row
-  shows only when the loop gave it a value, a card says where a claim runs only when that is not the
-  conversation on screen, and See the run shows only when there is a run to see. The claim's own
-  answer still says where it runs (*Yes posts the finding's id and this conversation, nothing else,
-  and shows where it runs*).
+  shows only when the loop gave it a value, and See the run shows only when there is a run to see.
+  The yes's own answer says where it runs (*Yes posts the finding's id and this conversation,
+  nothing else, and says it runs in the background*).
+- **Where a claim runs, on a card ("runs in your terminal", "starts its conversation", "its
+  conversation is gone; runs here"), Yes, do it here, and Yes on another project's card starting a
+  new conversation there.** Design 6.2 (owner decision 1, M5a.8): a yes runs in the background, in
+  the run that reported the finding, whatever conversation is open or gone, so a card no longer
+  names one and no yes starts one. `/inbox open <n>` in a terminal (a fork of the run into a
+  conversation) stays for a person who wants to do the work with the agent, and the page's **See
+  the run** looks at the run.
+- **"Handed to that conversation." and "Cancelled; nothing was sent. The finding stays claimed." on
+  a claim's card.** A yes queues no row in a conversation now. Its card says its answer's state
+  (the **Handled** line above), and a yes that waits is cancelled from its card, not the queue's ✕.
 - **"pi-loops running in the background (pid N): loops and checks run there" in the Loops pane, its
   link "What pi-loops is doing in the background", and the rail's Background icon.** The status bar
   says it and is the link to the Background view, on a phone under the Loops pane; a paused reason

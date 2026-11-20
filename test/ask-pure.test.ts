@@ -41,7 +41,7 @@ import {
 	readAskFields,
 	repairRows,
 } from "../src/ask.ts";
-import { ASKS_OPEN_PER_LANE, askedLines } from "../src/ask.ts";
+import { ASKS_OPEN_PER_LANE, answerPrompt, askedLines } from "../src/ask.ts";
 import type { InboxEntry as Finding } from "../src/inbox.ts";
 import type { ResolvedCap } from "../src/ask.ts";
 import { BACKOFF_MS } from "../src/backoff.ts";
@@ -507,4 +507,18 @@ test("[asked-lines] askedLines: at most ASKS_OPEN_PER_LANE lines, the newest, ol
 	assert.equal(lines[1], "- 11-14 run `echo hi git push --force origin main`", "on one line");
 	assert.ok(!lines[2].includes(token), "a secret never reaches the prompt");
 	assert.equal(lines[3], "- 11-16 run `git push --force origin main`", "no terminal escape");
+});
+
+test("[answer-prompt] a resumed run is told the words the card showed: a secret is masked, an escape is gone, the text is capped", () => {
+	const key = "sk-ant-api03-" + "a".repeat(40);
+	const finding = {
+		id: "inb-0123456789abcdef0123456789abcdef", created_at: AT, source: "cron:cron-a1", cwd: "/p", status: "claimed",
+		text: `deploy with ${key} \u001b]0;PWN\u0007now ` + "x".repeat(2000),
+	} as unknown as Finding;
+	const prompt = answerPrompt(finding, "ans-1", Date.parse(LATER));
+	assert.ok(!prompt.includes(key), "the secret the card masks is not sent to the model");
+	assert.ok(!prompt.includes("\u001b") && !prompt.includes("PWN\u0007"), "no escape reaches the run");
+	assert.ok(prompt.length < 1000, "the finding's text is capped as the card caps it");
+	const asked = { ...finding, ask: { id: "ask-1", created_at: AT, lane: LOOP, session_id: SID, call: { ...CALL, command: `curl -H 'Authorization: ${key}' x` } } } as unknown as Finding;
+	assert.ok(!answerPrompt(asked, "ans-1", Date.parse(LATER)).includes(key), "a hand-edited call does not put a secret into the prompt");
 });

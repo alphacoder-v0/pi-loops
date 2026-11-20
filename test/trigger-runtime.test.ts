@@ -13,6 +13,8 @@ import { type Trigger, TriggerStore, buildPeriodicCheckTrigger, extractDynamicRu
 import type { RunnerResult, SubagentRequest } from "../src/runner.ts";
 import { fakeRunner } from "./fake-runner.ts";
 import { resolveCap } from "../src/ask.ts";
+import { personAnswers } from "../src/answers.ts";
+import { RequestStore } from "../src/requests.ts";
 
 /** A runner that matches whatever rules the prompt actually contains, so parallel checks differ. */
 function matchingRunner(extra: Partial<RunnerResult> = {}) {
@@ -857,7 +859,8 @@ test("a repeating rule that says the same thing again files nothing more until w
 		process.env.FAKE_PI_REPLY = `matched ${rule.id}. hello, world`;
 		await rt.handle(buildPeriodicCheckTrigger(dir, 5), "sub_agent");
 		assert.equal(inbox.list().length, 3, "only the latest new finding is compared");
-		await inbox.decide(inbox.list().at(-1)!.id, "dismissed", { reason: "seen" });
+		const dirOf = path.dirname(inbox.file);
+		await personAnswers({ inbox, requests: new RequestStore(dirOf), jobs: new JobStore(dirOf), audit: new TriggerStore(dirOf), sessionFile: () => undefined, self: () => ({ pid: process.pid, instance: "test", version: "0" }), now: Date.now, log: () => undefined }).say(inbox.list().at(-1)!.id, "no", { by: "cli" }, { reason: "seen" });
 		await rt.handle(buildPeriodicCheckTrigger(dir, 6), "sub_agent");
 		assert.equal(inbox.list().filter((e) => e.status === "new").length, 3, "once dismissed, the same text is news again");
 	} finally {

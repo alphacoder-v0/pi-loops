@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { inboxClaimRow, personRow, plainJobRow, queuedPrompt } from "../src/engine.ts";
+import { personRow, plainJobRow, queuedPrompt, recipeRow } from "../src/engine.ts";
 import type { InboxEntry } from "../src/inbox.ts";
 import { heldJobsNotice, jobLines, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice, loopLabel } from "../src/job-lines.ts";
 import { formatLocal } from "../src/schedule.ts";
@@ -177,14 +177,14 @@ const plain = { id: "cron-a", sessionId: "s", prompt: "check CI and report", cwd
 
 test("/cron queue lists what waits, numbered in the order it runs, with its source, age and text", () => {
 	const clock = plainJobRow(plain, "run-" + "1".repeat(32), "cron:cron-a", "", address.createdBy, QUEUE_NOW - 120_000);
-	const claim = inboxClaimRow("investigate the disk", "inb-12345678", address, QUEUE_NOW - 30_000);
+	const claim = recipeRow("investigate the disk", "daily", "tracker", address, QUEUE_NOW - 30_000);
 	const result = { ...plainJobRow(plain, "t-1", "cron:cron-a", "", address.createdBy, QUEUE_NOW - 300_000), id: "t-1", source: "rule:local:dynamic" as const, mode: "none" as const, wake: "append" as const, payload: { text: "[Trigger t-1] rule fired: CI is red", cwd: "/p" } };
 	const you = personRow("p-1", "and then push it", undefined, address, QUEUE_NOW - 5_000);
 	const lines = queueLines([result, clock, claim, you], { now: QUEUE_NOW, jobName: (id) => (id === "cron-a" ? "ci-watch" : undefined), inFlight: new Set(["t-1"]) });
 	// The engine's order: the result keeps its place, then what the person typed, then the clock's row.
 	assert.deepEqual(lines.map((l) => l.split("\n")[0]), [
 		" 1. rule local:dy · 5m · handed to pi · t-1",
-		" 2. claim inb-1234 · 30s · waits for pi to be idle · " + claim.id,
+		" 2. recipe daily · 30s · waits for pi to be idle · " + claim.id,
 		" 3. you · 5s · waits for pi to be idle · p-1",
 		" 4. cron ci-watch · 2m · waits for pi to be idle · run-" + "1".repeat(32),
 	]);

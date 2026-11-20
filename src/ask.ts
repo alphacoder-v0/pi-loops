@@ -640,13 +640,15 @@ function ago(at: string, now: number): string {
  * Built from the finding, never from the row.
  */
 export function answerPrompt(finding: Finding, rowId: string, now: number): string {
+	// The words the card showed: screened, redacted and capped as the card does, so the run is told what the
+	// person read and said yes to, and a secret masked on the card is not sent to the model.
 	const answered = finding.answer && finding.answer.state !== "unreadable" ? ago(finding.answer.at, now) : "just now";
 	const head = `[Trigger ${rowId}] `;
 	if (finding.ask) {
 		const call = finding.ask.call;
-		return `${head}A person said yes to the call you asked about (you asked ${ago(finding.ask.created_at, now)}, they answered ${answered}):\n${call.command ?? call.tool}\nRun it now, exactly as written. pi-loops lets this one call through once. Then finish what it was for. If the situation has changed since you asked, say so and do not run it.`;
+		return `${head}A person said yes to the call you asked about (you asked ${ago(finding.ask.created_at, now)}, they answered ${answered}):\n${cardText(call.command ?? call.tool)}\nRun it now, exactly as written. pi-loops lets this one call through once. Then finish what it was for. If the situation has changed since you asked, say so and do not run it.`;
 	}
-	const first = `${head}A person read this finding of yours and said yes (you reported it ${ago(finding.created_at, now)}, they answered ${answered}): ${finding.text}`;
+	const first = `${head}A person read this finding of yours and said yes (you reported it ${ago(finding.created_at, now)}, they answered ${answered}): ${capChars(cardText(finding.text), INBOX_TEXT_MAX_CHARS)}`;
 	if (finding.kind === "checkpoint") return `${first}\nThis is their approval of the decision it recommends. Carry it out, and stop where it says a person acts. If what you found has changed since you reported it, say so and do not act.`;
 	return `${first}\nThey ask you to investigate and address it.`;
 }

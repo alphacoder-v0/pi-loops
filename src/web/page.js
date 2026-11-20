@@ -1176,15 +1176,7 @@ function drawQueue() {
     b.type = "button"; b.textContent = label; b.title = title; b.onclick = onclick;
     return b;
   };
-  // A claim's row cancelled here: its card says so, not that it was handed over (drawInbox).
-  const cancel = (id, source) => () =>
-    api("/queue/cancel", { id }).then((r) => {
-      if (r && r.success && typeof source === "string" && source.startsWith("inbox:")) {
-        cancelledClaims.add(source.slice("inbox:".length));
-        drawInbox();
-      }
-      return refresh();
-    });
+  const cancel = (id) => () => api("/queue/cancel", { id }).then(refresh);
   const send = (id) => () => api("/queue/send", id === undefined ? {} : { id }).then(refresh);
   const sendHere = (id) => () => api("/queue/send-here", { id }).then(refresh);
   for (const q of list) {
@@ -1203,8 +1195,8 @@ function drawQueue() {
     what.textContent = q.text + (q.images ? " [" + q.images + (q.images === 1 ? " image]" : " images]") : "");
     line.append(who, what);
     if (q.offered) line.append(button("send", "Send it now, from this page", send(q.id)), button("discard", "Forget it", cancel(q.id)));
-    else if (stuck && stuck.button) line.append(button(stuck.button, "Take it out of the queue and send it to this page's pi, as before 0.24", sendHere(q.id)), button("✕", "Cancel this before it runs", cancel(q.id, q.source)));
-    else line.append(button("✕", "Cancel this before it runs", cancel(q.id, q.source)));
+    else if (stuck && stuck.button) line.append(button(stuck.button, "Take it out of the queue and send it to this page's pi, as before 0.24", sendHere(q.id)), button("✕", "Cancel this before it runs", cancel(q.id)));
+    else line.append(button("✕", "Cancel this before it runs", cancel(q.id)));
     box.append(line);
   }
   for (const text of inPi) {
@@ -2883,14 +2875,13 @@ async function refreshList() {
 /**
  * This project's new findings, decisions first, from the server's one parser (src/inbox-card.ts).
  * Every button sends the finding's whole id and nothing that becomes a prompt: Yes and Look into it
- * claim it into the conversation that created its loop; No and Dismiss take a reason that goes to the
- * loop's next run. All text goes in with textContent.
+ * are a person's yes, which runs in the background in the run that reported the finding; No and
+ * Dismiss take a reason that goes to the loop's next run; Cancel takes back a yes that waits. All
+ * text goes in with textContent.
  */
 let inboxAnswer;
 /** Cards acted on here, with the line the server answered: kept on screen until the next answers leave them out. */
 const inboxDone = new Map();
-/** Findings whose claim row was cancelled from this page's queue (drawQueue's ✕). */
-const cancelledClaims = new Set();
 let newsOpen = false;
 const NEWS_SHOWN = 5;
 /**
@@ -2933,7 +2924,6 @@ function restoreForms() {
     }
   }
 }
-const OWNER_HINTS = { page: (t) => "runs in " + (t ? "“" + t + "”" : "its conversation"), terminal: () => "runs in your terminal", "terminal-quiet": () => "its terminal is not taking messages", background: () => "runs after pi-loops finishes its scheduled run there", none: () => "starts its conversation", gone: () => "its conversation is gone; runs here", project: () => "runs in the conversation you claim it from" };
 
 async function refreshInbox() {
   if (!TOKEN) await tokenReady;
@@ -3016,21 +3006,14 @@ function inboxCardEl(c, done) {
     }
     if (dl.children.length) card.append(dl);
   } else if (c.body) card.append(textEl("p", "ib", c.body));
-  const owner = c.owner || {};
-  // Gone or the project's, in another project than the open conversation's: not run here, but in a new conversation there.
-  const away = startsElsewhere(c);
-  // Where a claim runs, said only when that is not the conversation on screen.
-  const elsewhere = away || owner.holder === "terminal-quiet" || (!c.fromThisConversation && owner.holder !== "project");
-  const hint = !elsewhere ? undefined : away ? () => (owner.holder === "gone" ? "its conversation is gone; runs" : "runs") + " in a new conversation in " + projectName(inboxAnswer.cwd) : OWNER_HINTS[owner.holder];
-  const meta = [manyOrigins() ? originLabel(c) : "", hint ? hint(plain(str(owner.title))) : ""].filter(Boolean).join(" · ");
-  if (meta) card.append(textEl("div", "im", meta));
+  if (manyOrigins()) card.append(textEl("div", "im", originLabel(c)));
   const stat = textEl("div", "cstat", done || c.line || "");
   stat.setAttribute("role", "status");
   const parts = { stat, buttons: [], why: undefined, field: undefined };
   if (!done && c.status === "new") {
     const acts = document.createElement("div");
     acts.className = "acts";
-    if (!c.claiming) acts.append(inboxButton(decision ? ((owner.holder === "gone" || owner.holder === "project") && !away ? "Yes, do it here" : "Yes, do it") : "Look into it", "claim", decision));
+    acts.append(inboxButton(decision ? "Yes, do it" : "Look into it", "claim", decision));
     acts.append(inboxButton(decision ? "No…" : "Dismiss…", "no"));
     if (c.hasTranscript) acts.append(inboxButton("See the run", "run"));
     card.append(acts);
@@ -3060,6 +3043,15 @@ function inboxCardEl(c, done) {
     // Every control of the card, the field too: nothing is sent twice while a post is out.
     parts.buttons = [...acts.children, ...why.children];
     card.addEventListener("click", (e) => onCardClick(c, e && e.target, parts));
+  } else if (c.cancel && (!done || done === c.line)) {
+    // A yes that waits to run can be taken back, while the card says the server's line and not what
+    // an action here answered; one that started is stopped with Stop.
+    const acts = document.createElement("div");
+    acts.className = "acts";
+    acts.append(inboxButton("Cancel", "withdraw"));
+    card.append(acts);
+    parts.buttons = [...acts.children];
+    card.addEventListener("click", (e) => onCardClick(c, e && e.target, parts));
   }
   card.append(stat);
   return card;
@@ -3081,6 +3073,7 @@ function onCardClick(c, b, parts) {
     return;
   }
   if (act === "claim") return void inboxAct(c, parts, "claim").catch(() => {});
+  if (act === "withdraw") return void inboxAct(c, parts, "withdraw").catch(() => {});
   if (act === "reason") return void inboxAct(c, parts, "dismiss", b.dataset.reason).catch(() => {});
   if (act === "bare") return void inboxAct(c, parts, "dismiss").catch(() => {});
   if (act === "typed") {
@@ -3139,16 +3132,14 @@ function drawInbox() {
   const handled = (Array.isArray(a.handled) ? a.handled : []).filter((c) => c && typeof c.id === "string" && !shown.has(c.id));
   const doneHere = [...inboxDone.entries()].filter(([id]) => !shown.has(id) && !handled.some((c) => c.id === id));
   if (handled.length || doneHere.length) group("Handled");
-  // A claim made here follows the server: while its row waits, the line of where it waits; once the
-  // row is gone, its turn ran. Other lines (a dismiss, handled elsewhere) stay as they were said.
+  // A yes made here follows the server: the line of its answer's state (waiting, running, done). A
+  // cancel made here keeps its own line; other lines (a dismiss, handled elsewhere) stay as said.
   for (const c of handled) {
     shown.add(c.id);
     const d = inboxDone.get(c.id);
     slot.append(inboxCardEl(c, d && !d.claim ? d.line : c.line || (d && d.line)));
   }
-  // The row goes once its message is in the conversation, not when the turn ends.
-  // A row cancelled from this page's queue ran nothing, and its finding stays claimed.
-  for (const [id, d] of doneHere) slot.append(inboxCardEl(d.card, d.claim ? (cancelledClaims.has(id) ? "Cancelled; nothing was sent. The finding stays claimed." : "Handed to that conversation.") : d.line));
+  for (const [, d] of doneHere) slot.append(inboxCardEl(d.card, d.line));
   if (num(a.elsewhere)) slot.append(textEl("div", "lnote", num(a.elsewhere) + " new in other projects"));
   restoreForms();
 }
@@ -3171,24 +3162,13 @@ async function showRun(id) {
   $("detail").showModal();
 }
 
-/** A card whose conversation is gone, or the project's own, listed for a project other than the open conversation's. */
-function startsElsewhere(c) {
-  return !!c && !!c.owner && (c.owner.holder === "gone" || c.owner.holder === "project") && !!inboxAnswer && typeof inboxAnswer.cwd === "string" && otherProject(inboxAnswer.cwd);
-}
-
 async function inboxAct(c, parts, act, reason) {
   const id = c.id;
   for (const b of parts.buttons) b.disabled = true;
-  // Yes on another project's card whose conversation is gone, or the project's own: a new conversation there first, claimed into.
-  const opened = act === "claim" && startsElsewhere(c) ? await startConversationIn(inboxAnswer.cwd) : undefined;
-  if (opened && !opened.url) {
-    for (const b of parts.buttons) b.disabled = false;
-    parts.stat.textContent = "Not sent: " + opened.error + ". Try again.";
-    return;
-  }
-  const r = act === "claim" ? await inboxPost("/inbox/claim", { id, from: opened ? opened.id : SESSION }) : await inboxPost("/inbox/dismiss", reason ? { id, reason } : { id });
-  if (opened && r.status === 200) return void location.assign(opened.url);
-  const settled = r.status === 200 ? plain(str(r.body.line)) : r.status === 409 && (r.body.status === "claimed" || r.body.status === "dismissed") ? (r.body.status === "claimed" ? "Already claimed." : "Already dismissed.") : undefined;
+  const r = act === "claim" ? await inboxPost("/inbox/claim", { id, from: SESSION }) : act === "withdraw" ? await inboxPost("/inbox/cancel", { id }) : await inboxPost("/inbox/dismiss", reason ? { id, reason } : { id });
+  // A cancel that came too late says why in the server's words: it started, or it ended.
+  const late = act === "withdraw" && r.status === 409 && r.body && typeof r.body.error === "string" ? plain(r.body.error[0].toUpperCase() + r.body.error.slice(1)) + "." : undefined;
+  const settled = r.status === 200 ? plain(str(r.body.line)) : late !== undefined ? late : r.status === 409 && (r.body.status === "claimed" || r.body.status === "dismissed") ? (r.body.status === "claimed" ? "Already claimed." : "Already dismissed.") : undefined;
   if (settled !== undefined) {
     inboxDone.set(id, { line: settled, at: Date.now(), card: c, claim: act === "claim" && r.status === 200 });
     openForms.delete(id);

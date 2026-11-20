@@ -6,6 +6,16 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Inbox, findingId } from "../src/inbox.ts";
 import { stamp } from "../src/schedule.ts";
+import { personAnswers } from "../src/answers.ts";
+import { RequestStore } from "../src/requests.ts";
+import { JobStore } from "../src/store.ts";
+import { TriggerStore } from "../src/triggers.ts";
+
+/** `/inbox clear --all`: every new finding dismissed in one rewrite, through the surfaces' one writer. */
+function clearAll(dir: string, inbox: Inbox): Promise<unknown> {
+	const answers = personAnswers({ inbox, requests: new RequestStore(dir), jobs: new JobStore(dir), audit: new TriggerStore(dir), sessionFile: () => undefined, self: () => ({ pid: process.pid, instance: "test", version: "0" }), now: Date.now, log: () => undefined });
+	return answers.clear(undefined, { by: "terminal", session: "s" });
+}
 
 test("a finding appended while another process rewrites the inbox is not lost", async () => {
 	const dir = tmp("pi-loops-inbox-race-");
@@ -29,7 +39,7 @@ test("a finding appended while another process rewrites the inbox is not lost", 
 	const exited = new Promise<number>((r) => child.on("exit", (c) => r(c ?? -1)));
 	// Rewrite the whole file repeatedly while the child appends to it.
 	for (let i = 0; i < 25; i++) {
-		await inbox.dismissAllNew();
+		await clearAll(dir, inbox);
 		await new Promise((r) => setTimeout(r, 10));
 	}
 	assert.equal(await exited, 0);
@@ -69,7 +79,7 @@ test("the inbox is rotated past 1 MB, keeping every new finding", async () => {
 	let appended = 0;
 	for (let round = 0; round < 3; round++) {
 		for (let i = 0; i < 900; i++, appended++) await inbox.append({ source: "cron:old", text: `${filler} ${round}-${i}`, run_id: "r", job_id: "j", cwd: dir });
-		await inbox.dismissAllNew();
+		await clearAll(dir, inbox);
 	}
 	const keepers = [];
 	for (let i = 0; i < 5; i++, appended++) keepers.push(await inbox.append({ source: "cron:new", text: `unread ${i}`, run_id: "r", job_id: "j", cwd: dir }));

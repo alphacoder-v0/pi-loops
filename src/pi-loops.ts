@@ -33,7 +33,9 @@ import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxR
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { capRedacted, previewRedacted, redact, screenText } from "./redact.ts";
-import { cardLines, cardOrigin, claimPrompt, dismissOutcome, dismissTail, inboxCard } from "./inbox-card.ts";
+import { CANCELLED_LINE, answerLine, answerWho, cancelRefusal, cardLines, cardOrigin, dismissOutcome, dismissTail, inboxCard, noQuestionLine, yesTerminalLine } from "./inbox-card.ts";
+import { type PersonAnswers, personAnswers } from "./answers.ts";
+import { type StepRefusal, answerRowId } from "./ask.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { FRESH_RUNS_READ, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardLines, runCardsHere, runLine } from "./run-card.ts";
 import { type ShareMessage, renderShare, shareSummary, shareableMessages } from "./share.ts";
@@ -47,7 +49,7 @@ import { jobLines as cronJobLines } from "./job-lines.ts";
 import { plural } from "./plural.ts";
 import { type OwnerView, type PlainJobLeases, type SessionSnapshot, openWhere, ownerViewOf, runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, closedConversation, openWindowPids, procStart } from "./lease.ts";
-import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, proofOf, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
+import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, newTriggerRow, promotionTarget, promotionView, proofOf, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
 import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
 import type { Row, UnclaimedRow } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
@@ -643,11 +645,14 @@ export default function piLoops(pi: ExtensionAPI) {
 	const delivered = (row: Row) => executor.delivered(row);
 	const handOverDeps = (): HandOverDeps => ({ store: requests, delivered, produced: (row) => executor.produced(row), drain: drainRequests });
 	/** A prompt one of this window's sources has for the chat (src/engine.ts handOver), and the line that says it waits. */
-	async function handOver(row: UnclaimedRow, claim?: { inbox: Inbox; entryId: string }): Promise<HandOverOutcome> {
-		const out = await engineHandOver(handOverDeps(), row, claim);
+	async function handOver(row: UnclaimedRow): Promise<HandOverOutcome> {
+		const out = await engineHandOver(handOverDeps(), row);
 		if (out.line && lastCtx?.hasUI) lastCtx.ui.notify(out.line, "info");
 		return out;
 	}
+
+	/** A person's yes, no, clear and cancel typed here (src/answers.ts). The rows it appends are signed by this window. */
+	const answers: PersonAnswers = personAnswers({ inbox: stores.inbox, requests, jobs: stores.jobs, audit: stores.rules, sessionFile: (id) => new LeaseStore(dir).read(id)?.sessionFile, self: createdBy, now: Date.now, log: (line) => log.info(line) });
 
 	function noteBinding(outcome: AcquireOutcome): void {
 		if (outcome.outcome === "acquired" && outcome.tookFromPid) log.info(`took session ${shortSessionId(outcome.lease.sessionId)} from dead pid ${outcome.tookFromPid}`);
@@ -1734,13 +1739,14 @@ export default function piLoops(pi: ExtensionAPI) {
 	pi.registerCommand("crontab", { description: "Alias of /cron", getArgumentCompletions: cronCompletions, handler: cronHandler });
 	pi.registerCommand("loop", { description: "Alias of /cron", getArgumentCompletions: cronCompletions, handler: cronHandler });
 
-	const INBOX_USAGE = "[list|all|claim <n>|dismiss <n> [reason]|open <n>|clear|help] [--all]";
+	const INBOX_USAGE = "[list|all|claim <n>|dismiss <n> [reason]|cancel [n]|open <n>|clear|help] [--all]";
 
 	const INBOX_HELP = [
 		"/inbox                list new findings of this project    /inbox --all   every project on this machine",
 		"/inbox all [--all]    include claimed/dismissed history",
-		"/inbox claim <n|id>   mark claimed and hand it to the agent as a real turn",
+		"/inbox claim <n|id>   say yes: the run that reported it picks it up in the background",
 		"/inbox dismiss <n|id> [reason]   mark dismissed; a reason is shown to the loop's next run",
+		"/inbox cancel [n|id]  take back a yes that waits to run; alone, lists the answers waiting or running",
 		"/inbox clear [--all]  dismiss the ones listed",
 		"/inbox open <n|id>    start a new conversation from the run that filed it",
 	];
@@ -1753,10 +1759,15 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * prefix, project, source, when it arrived. The numbers are positions in `entries`, which is what
 	 * `claim` and `dismiss` resolve a number against.
 	 */
-	function inboxLines(entries: InboxEntry[], numbered: boolean): string[] {
+	function inboxLines(entries: InboxEntry[], numbered: boolean, answered = false): string[] {
 		const names = new Map(stores.jobs.load().map((j) => [j.id, j.name]));
 		const ctx = { here: session.sessionId, loopName: (id: string) => names.get(id) };
 		return entries.flatMap((e, i) => {
+			const lines = entryLines(e, i);
+			const said = answered ? answerLineOf(e) : undefined;
+			return said && lines.length ? [...lines, `       ${said}`] : lines;
+		});
+		function entryLines(e: InboxEntry, i: number): string[] {
 			const card = inboxCard(e, ctx);
 			if (!card) return [];
 			// Stored as an instant (ISO, UTC) and shown in this machine's timezone, like every other
@@ -1772,8 +1783,30 @@ export default function piLoops(pi: ExtensionAPI) {
 			const where = `${screenText(projectOf(e.cwd))}, ${screenText(cardOrigin(card))}`;
 			if (!numbered) return cardLines(card, `  [${e.status}] `, `${why}  (${where})`);
 			return cardLines(card, `  ${i + 1}. [${e.id.slice(0, 12)}] `, `  (${where}, ${when})`);
-		});
+		}
 	}
+
+	/** What became of a finding's answer, as the page's card says it (design 6.1). */
+	function answerLineOf(e: InboxEntry): string | undefined {
+		let row: Row | undefined;
+		if (e.answer?.state === "pending" && e.lane !== undefined) {
+			try {
+				row = requests.list(e.lane).find((r) => r.id === answerRowId(e.id));
+			} catch {
+				row = undefined; // a lane the store refuses has no row
+			}
+		}
+		const runId = e.answer?.state === "done" ? e.answer.run.id : undefined;
+		const summary = runId === undefined ? undefined : stores.jobs.allRuns().find((r) => r.runId === runId)?.summary;
+		return answerLine(e, row, summary);
+	}
+
+	/** Who picks up a yes to `e`, by the loop's name in jobs.json. */
+	const whoOf = (e: InboxEntry, lane: InboxEntry["lane"]): string => answerWho(e, lane, (id) => stores.jobs.load().find((j) => j.id === id)?.name);
+
+	/** Why a yes or a no wrote nothing, for `target` as the person typed it. */
+	const refusedLine = (target: string, refusal: StepRefusal): string =>
+		refusal.refused === "missing" ? `inbox entry ${target} is gone` : refusal.refused === "already" ? `inbox entry ${target} was already ${refusal.status}` : `inbox entry ${target} is already answered`;
 
 	/* ------------------------------------------------------------------ /goal */
 
@@ -1999,7 +2032,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	pi.registerCommand("inbox", {
 		description: "Triage findings from stateful cron jobs — /inbox help",
 		getArgumentCompletions: (prefix) => {
-			const subs = ["list", "all", "claim", "dismiss", "open", "clear", "help", "--all"];
+			const subs = ["list", "all", "claim", "dismiss", "cancel", "open", "clear", "help", "--all"];
 			const items = subs.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
 			return items.length ? items : null;
 		},
@@ -2035,7 +2068,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					}
 					case "all": {
 						const entries = scoped(stores.inbox.list());
-						show(ctx, `Inbox history (${where}, ${entries.length} total):`, entries.length ? inboxLines(entries, false) : ["(empty)"]);
+						show(ctx, `Inbox history (${where}, ${entries.length} total):`, entries.length ? inboxLines(entries, false, true) : ["(empty)"]);
 						return;
 					}
 					case "help":
@@ -2095,26 +2128,58 @@ export default function piLoops(pi: ExtensionAPI) {
 							if (forkedFile) await ctx.switchSession(forkedFile);
 							return;
 						}
+						// A person's yes or no (src/answers.ts): the finding is checked again under the inbox lock.
+						const from = { by: "terminal" as const, session: rowAddress().sessionId };
 						if (sub === "dismiss") {
-							const decided = await stores.inbox.decide(entry.id, "dismissed", { reason: reason || undefined });
+							const said = await answers.say(entry.id, "no", from, reason ? { reason } : {});
 							refreshBadge();
-							if (!("ok" in decided)) {
-								ctx.ui.notify("missing" in decided ? `inbox entry ${target} is gone` : `inbox entry ${target} was already ${decided.already}`, "warning");
+							if (said.said !== "N1") {
+								ctx.ui.notify(said.said === "nothing" ? refusedLine(target, said.refusal) : `inbox entry ${target}: a no came to ${said.said}`, "warning");
+								return;
+							}
+							if (said.finding.ask) {
+								ctx.ui.notify(noQuestionLine("terminal", whoOf(said.finding, said.finding.ask.lane)), "info");
 								return;
 							}
 							const loop = stores.jobs.load().find((j) => j.id === entry.job_id);
 							ctx.ui.notify(`dismissed: ${previewRedacted(screenText(entry.text), 80)}${dismissTail(dismissOutcome(entry, loop, reason))}`, "info");
 							return;
 						}
-						// The hand-off is queued before the finding is marked claimed (src/engine.ts handOver).
-						await handOver(inboxClaimRow(claimPrompt(entry, stores.jobs.load().find((j) => j.id === entry.job_id)?.name), entry.id, rowAddress()), { inbox: stores.inbox, entryId: entry.id });
+						const said = await answers.say(entry.id, "yes", from);
 						refreshBadge();
+						if (said.said !== "Y1" && said.said !== "Y2") {
+							ctx.ui.notify(said.said === "nothing" ? refusedLine(target, said.refusal) : `inbox entry ${target}: a yes came to ${said.said}`, "warning");
+							return;
+						}
+						ctx.ui.notify(yesTerminalLine(said, whoOf(said.finding, said.said === "Y1" ? said.lane : said.finding.lane)), said.said === "Y1" ? "info" : "warning");
+						return;
+					}
+					case "cancel": {
+						// The answers a cancel can name: a yes that waits or runs, in this project (or every
+						// project with --all), in the inbox's order. Numbers are positions in this list.
+						const open = scoped(stores.inbox.list()).filter((e) => e.answer?.state === "pending" || e.answer?.state === "started");
+						if (!ref) {
+							show(ctx, `Answers waiting or running (${where}):`, open.length ? inboxLines(open, true, true) : ["(none)"]);
+							return;
+						}
+						const named = /^\d+$/.test(ref) ? open[Number(ref) - 1] : resolveInboxRef(stores.inbox.list(), ref);
+						if (/^\d+$/.test(ref) && !named) {
+							ctx.ui.notify(`no answer #${ref} waiting or running in ${where} (have ${open.length}; /inbox cancel lists them)`, "warning");
+							return;
+						}
+						const out = await answers.cancel(named?.id ?? ref);
+						refreshBadge();
+						if ("refusal" in out) {
+							ctx.ui.notify(out.refusal.refused === "missing" ? `no inbox entry matching '${ref}'` : `cannot cancel: ${cancelRefusal(out.refusal)}`, "warning");
+							return;
+						}
+						ctx.ui.notify(CANCELLED_LINE, "info");
 						return;
 					}
 					case "clear": {
 						// What was listed is what is dismissed: with loops in several checkouts, a clear that
 						// also wiped four other projects' unread findings would be unrecoverable.
-						const n = await stores.inbox.dismissAllNew(everywhere ? undefined : (e) => belongsToProject(e, session.cwd, sameProject));
+						const n = (await answers.clear(everywhere ? undefined : (e) => belongsToProject(e, session.cwd, sameProject), { by: "terminal", session: rowAddress().sessionId })).length;
 						refreshBadge();
 						ctx.ui.notify(`dismissed ${n} inbox entr${n === 1 ? "y" : "ies"} in ${where}`, "info");
 						return;

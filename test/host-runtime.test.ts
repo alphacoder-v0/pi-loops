@@ -12,7 +12,7 @@ import { fakeRunner } from "./fake-runner.ts";
 import { LeaseBinding, LeaseStore, procStart } from "../src/lease.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { RequestStore } from "../src/requests.ts";
-import { heldTurnFor, inboxClaimRow, personRow, ruleResultRow, stopRow } from "../src/engine.ts";
+import { heldTurnFor, personRow, recipeRow, ruleResultRow, stopRow } from "../src/engine.ts";
 import { stopRunFrom } from "../src/host-control-channel.ts";
 import { RUNTIME_RIDERS, Ticker } from "../src/ticker.ts";
 
@@ -36,7 +36,7 @@ test("a row the background cannot run does not cost a read of the conversation o
 		const file = sm.getSessionFile()!;
 		const sessionId = sm.getSessionId();
 		const text = "look into finding f1";
-		const row = inboxClaimRow(text, "f1", { sessionId, cwd: dir, createdBy: { pid: 1, instance: "w", version: "0" } });
+		const row = recipeRow(text, "f1", "tracker", { sessionId, cwd: dir, createdBy: { pid: 1, instance: "w", version: "0" } });
 		// A message with another row's mark, of the same length as this row's id: swapped later, the file keeps its size.
 		const other = "x".repeat(row.id.length);
 		sm.appendMessage({ role: "user", content: "x".repeat(text.length), piLoopsRow: { lane: sessionId, id: other, at: row.created_at }, timestamp: Date.now() } as any);
