@@ -6,7 +6,6 @@
  * with an executor of its own.
  */
 import * as fs from "node:fs";
-import * as path from "node:path";
 import {
 	type Ask,
 	type Answerer,
@@ -14,6 +13,7 @@ import {
 	type FinalState,
 	type Grant,
 	type LaneFact,
+	type Met,
 	type RunRecordM5a,
 	type StepRefusal,
 	type TranscriptFacts,
@@ -37,7 +37,7 @@ import type { LockOptions } from "./lock.ts";
 import type { ClaimedRow, RequestStore, Row, UnclaimedRow } from "./requests.ts";
 import type { Resume } from "./runner.ts";
 import { stamp } from "./schedule.ts";
-import { laneTranscript } from "./session-head.ts";
+import { laneTranscript, ownTranscript } from "./session-head.ts";
 import type { JobStore } from "./store.ts";
 import type { TriggerStore } from "./triggers.ts";
 
@@ -144,6 +144,11 @@ export interface PersonAnswersDeps {
 export interface Answers extends PersonAnswers {
 	/** The executor meets one `ans-` row: section E, W1, F1 to F3, the deleted conversation. */
 	meet(lane: Lane, rowId: string, executor: AnswerExecutor, now: number): Promise<MeetOutcome>;
+	/**
+	 * The case `meet` would decide for one `ans-` row, from a read made without a lock, and no write.
+	 * A conversation's drain asks it before it takes the conversation's lease: only `E4` needs one.
+	 */
+	foresee(lane: Lane, rowId: string, executor: AnswerExecutor, now: number): Met["case"] | "nothing";
 	/** The closing of a run of an answer row (C1 to C4): by the process that ran it, with `ended`, and by `meet` for F2. Each write is safe to repeat. */
 	close(row: ClaimedRow, now: number, ended?: RunRecordM5a): Promise<{ state: FinalState | "none"; record: RunRecordM5a }>;
 	/** H1, at every tick of a process that executes lanes. Returns the ids of the rows appended. */
@@ -279,12 +284,12 @@ export function createAnswers(deps: AnswersDeps): Answers {
 	/**
 	 * The transcript of `lane` whose header names `sessionId`, in the lane's own directory as pi-loops
 	 * derives it from the lane: a loop's sessions, the check sessions of the project the lane is, the
-	 * directory of the conversation's own file for its own id. Never a path from the inbox.
+	 * conversation's own file as its lease names it, for its own id. Never a path from the inbox.
 	 */
 	const laneOwns = (lane: Lane, sessionId: string, finding: Finding): string | undefined => {
 		if (lane.kind === "conversation") {
 			const own = sessionId === lane.id ? deps.sessionFile(lane.id) : undefined;
-			return own === undefined ? undefined : laneTranscript(path.dirname(own), sessionId);
+			return own === undefined ? undefined : ownTranscript(own, sessionId);
 		}
 		if (lane.kind === "check" && deps.checkLaneOf(finding.cwd) !== lane.id) return undefined;
 		return laneTranscript(lane.kind === "loop" ? jobs.sessionDirFor(lane.id.slice(1)) : deps.checkSessionDir(finding.cwd), sessionId);
@@ -303,6 +308,23 @@ export function createAnswers(deps: AnswersDeps): Answers {
 		const entries = file === undefined ? undefined : deps.entries(file);
 		if (!entries) return { check: "file-gone", prompt: false };
 		return { check: blockedCall(entries, finding.ask.call), prompt: holdsPrompt(entries, rowId) };
+	};
+
+	/** What `meet` and `foresee` read before the locks: jobs.json, the row and the finding as they are now, the transcript, and what blocks the lane. undefined: the row is no answer row of the lane. */
+	const readBefore = (lane: Lane, rowId: string, executor: AnswerExecutor) => {
+		const all = jobs.load();
+		const before = requests.list(lane.id).find((r) => r.id === rowId);
+		if (!before || !isAnswerRow(before)) return undefined;
+		const findingId = before.payload?.finding ?? "";
+		const seen = inbox.list().find((f) => f.id === findingId);
+		const fact = seen ? laneFact(seen, all, sessionFileThere) : NO_LANE;
+		const ownProject = lane.kind !== "check" || (seen !== undefined && deps.checkLaneOf(seen.cwd) === lane.id);
+		const proof = seen?.ask ? { ask: seen.ask.id, check: transcriptFacts(lane, seen as Finding & { ask: Ask }, rowId).check as CallCheck } : undefined;
+		const resumeId = seen ? transcriptIdOf(seen) : undefined;
+		const resumeFile = seen && resumeId !== undefined ? laneOwns(lane, resumeId, seen) : undefined;
+		const resume: Resume | undefined = resumeFile === undefined || resumeId === undefined ? undefined : { file: resumeFile, sessionId: resumeId };
+		const blocked = executor.blocked(lane, seen, resume?.sessionId);
+		return { before, findingId, seen, fact, ownProject, proof, resume, blocked };
 	};
 
 	const jobIdOf = (lane: Lane, finding: Finding | undefined): string => (lane.kind === "loop" ? lane.id.slice(1) : lane.kind === "check" ? lane.id : (finding?.job_id ?? ""));
@@ -367,20 +389,17 @@ export function createAnswers(deps: AnswersDeps): Answers {
 	return {
 		...person,
 
+		foresee(lane, rowId, executor, now) {
+			const read = readBefore(lane, rowId, executor);
+			if (!read) return "nothing";
+			const { before, seen, fact, ownProject, proof, blocked } = read;
+			return meetAnswerRow(before, seen, { lane: fact, ownProject, ...(proof ? { proof } : {}), live: before.run ? executor.live(before as ClaimedRow) : false, ...(blocked === undefined ? {} : { blocked }), at: stamp(now) }).case;
+		},
+
 		async meet(lane, rowId, executor, now) {
-			// Before the locks: jobs.json, the finding as it is now, the transcript, and what blocks the lane.
-			const all = jobs.load();
-			const before = requests.list(lane.id).find((r) => r.id === rowId);
-			if (!before || !isAnswerRow(before)) return { met: "nothing" };
-			const findingId = before.payload?.finding ?? "";
-			const seen = inbox.list().find((f) => f.id === findingId);
-			const fact = seen ? laneFact(seen, all, sessionFileThere) : NO_LANE;
-			const ownProject = lane.kind !== "check" || (seen !== undefined && deps.checkLaneOf(seen.cwd) === lane.id);
-			const proof = seen?.ask ? { ask: seen.ask.id, check: transcriptFacts(lane, seen as Finding & { ask: Ask }, rowId).check as CallCheck } : undefined;
-			const resumeId = seen ? transcriptIdOf(seen) : undefined;
-			const resumeFile = seen && resumeId !== undefined ? laneOwns(lane, resumeId, seen) : undefined;
-			const resume: Resume | undefined = resumeFile === undefined || resumeId === undefined ? undefined : { file: resumeFile, sessionId: resumeId };
-			const blocked = executor.blocked(lane, seen, resume?.sessionId);
+			const read = readBefore(lane, rowId, executor);
+			if (!read) return { met: "nothing" };
+			const { findingId, fact, ownProject, proof, resume, blocked } = read;
 			const at = stamp(now);
 
 			type Inside =

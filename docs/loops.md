@@ -69,7 +69,8 @@ A plain job's turn is a scheduled turn wherever it runs, and it runs under the j
 and the dangerous-command policy (below) in an open window as in the background. So does the turn an
 MCP server's `inject_and_run` push starts ([mcp.md](mcp.md)), with no declared tools: the
 dangerous-command policy alone. The difference is
-who answers. In the background a call outside them is refused. In a window, while the job's turn
+who answers. In the background a call outside the job's tools is refused, and a dangerous command
+asks you in the inbox, as a loop's does (below). In a window, while the job's turn
 runs, such a call asks you first: a question with a 60-second countdown and two answers, `No, refuse
 it` focused and `Yes, run it once` under it, so Enter refuses. The yes answer runs it this once;
 anything else, Escape or no answer refuses it and tells the model why, so it does the safe part and reports:
@@ -201,9 +202,12 @@ of the decision the finding recommends; on news, it asks the run to investigate 
 The finding's text is given to the run as a quote of what it reported, not as your words. When the
 run's transcript is gone, the run starts from the finding's text. A card comes to your
 conversation when the run ends. A yes does not run, and says why, when the loop was removed or the
-finding has nowhere to run (no loop and no lane). A yes to a finding of a conversation, such as a
-request that could not be delivered there, waits in that conversation's queue, and this version
-does not run it yet. `/inbox cancel` takes back a yes while it waits; a yes that has
+finding has nowhere to run (no loop and no lane). A yes to a finding of a conversation waits in that
+conversation's queue while a window or the page has the conversation open. When nobody has it open,
+pi-loops in the background takes the conversation, as for its plain job's turn, and runs the yes as
+a turn in the conversation's own file, then gives the conversation back. A conversation written in
+the last two minutes is left for a later tick. A yes to a finding of a conversation that was deleted
+does not run, and says why. `/inbox cancel` takes back a yes while it waits; a yes that has
 started or ended cannot be cancelled.
 
 A dismiss with words after the number — `/inbox dismiss 2 that file is generated, ignore it` — is
@@ -597,15 +601,17 @@ expands, `pi-loops $V`; `git add -A && git commit -m "pi-loops: stop retrying"` 
 why and can do the safe part. A plain job's turn in an open window meets the same corpus, and asks
 you instead of refusing outright (see "Plain cron jobs" above).
 
-A loop's run and a rule check's run in the background ask you in the inbox instead. The call does
+A loop's run, a rule check's run and a plain job's turn in a closed conversation ask you in the
+inbox instead. The call does
 not run, and the inbox gets one question about it, with the command, the reason and **Yes** and
 **No**. The run is told `asked a person: <reason>`, and not to wait or to try another way: it
 finishes what does not need the call. The loop's next runs see the open questions of their lane in
 an `[asked]` block of their prompt. A yes resumes the run that asked, from its transcript, and
 lets that one call through once, when its input is the same as the input that was asked about.
 A no is told to the loop or the rule on its next run, and the same command is refused for 14 days.
-A plain job's turn in the background, the checker and a `/goal` continuation have nobody to ask,
-and refuse as before.
+For a plain job's turn, the question is in its conversation's lane: a yes runs as a turn in that
+conversation, as described below for a yes to a finding of a conversation. The checker and a
+`/goal` continuation have nobody to ask, and refuse as before.
 
 A run cannot answer for a person, because a yes in the inbox lets a dangerous call through. In an
 unattended run, a built-in file tool (`read`, `write`, `edit`, `grep`, `find`, `ls`) whose path is

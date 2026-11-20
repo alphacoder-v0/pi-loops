@@ -218,6 +218,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			log(redact(message));
 			notice(message, job.cwd);
 		},
+		// A closed conversation's answers: met where its queue is delivered, before a conversation that is gone is buried.
+		answers: (sessionId) => answerLanes.drain(parseLane(sessionId)!, Date.now()),
 		log,
 	});
 	/** `run_start` of a loop's run, a scheduled one or an answer's: its audit line, its log line, its hooks. */
@@ -299,8 +301,17 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		now: Date.now,
 		log,
 	});
-	/** A transcript a live pi has open: a window or the page holds the conversation of its session id. No file is read. */
-	const transcriptHeld = (id: string): boolean => parseLane(id)?.kind === "conversation" && (liveHolderPid(leases, id) !== undefined || !!deps.pageHolds?.(id));
+	/**
+	 * A transcript a live pi other than this process has open: a window or the page holds the
+	 * conversation of its session id. The lease this process took for an answer's turn there is not
+	 * such a pi. No file is read.
+	 */
+	const transcriptHeld = (id: string): boolean => {
+		if (parseLane(id)?.kind !== "conversation") return false;
+		if (deps.pageHolds?.(id)) return true;
+		const holder = liveHolderPid(leases, id) === undefined ? undefined : leases.read(id)?.holder;
+		return !!holder && !sameHolder(holder, me());
+	};
 	const answerLanes: AnswerLanes = createAnswerLanes({
 		answers,
 		stores,
@@ -316,6 +327,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		checkSessionDir: checkDir,
 		// The cap of a check's answer is the check's own, from the same function (`checkCap`).
 		checkCap: (cwd) => triggers.checkCapOf(cwd),
+		conversations: background.conversations,
 		started: loopStarted,
 		log: loopLog,
 	});

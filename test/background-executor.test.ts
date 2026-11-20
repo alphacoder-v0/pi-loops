@@ -136,6 +136,23 @@ test("[clock-row] pi-loops in the background writes a due slot's row under its d
 	}
 });
 
+test("[held-guard] a plain job's held turn has a guard seat in its conversation's lane: a dangerous call there files a question for that conversation, under the job's cap and no model of its own", async () => {
+	const s = scene(ok);
+	try {
+		await addV2(s.host.stores, job(s, { name: "remind", tools: ["bash", "read"], model: "fake/pinned", timeoutMs: 120_000 }) as any);
+		await s.tick();
+		assert.equal(s.calls.length, 1);
+		const req = s.calls[0];
+		assert.deepEqual(req.guard, {
+			lane: s.sessionId,
+			origin: { source: "cron:remind", run_id: req.runId, cwd: s.dir, job_id: "cron-held", session_id: s.sessionId, who: "remind" },
+			cap: { cwd: s.dir, model: null, thinking: null, tools: ["bash", "read"], builtinTools: "session", timeoutMs: 120_000 },
+		});
+	} finally {
+		await s.host.stop();
+	}
+});
+
 test("[turn-lease] [runs-list] [R1] [R2] while a held turn runs: its row has the claim, the lease is kept and names the run, and the status, the page and the sweep of unused leases find the run", async () => {
 	let release: () => void = () => undefined;
 	const gate = new Promise<void>((r) => (release = r));
@@ -954,4 +971,35 @@ test("[kept-notices] loop failure and daily budget notices are each said once", 
 		assert.equal(notices.filter((text) => text === `${id} has failed 3 times in a row; backing off (last: boom)`).length, 1);
 		assert.equal(notices.filter((text) => text.includes("budget; dispatching is paused")).length, 1);
 	} finally { await s.host.stop(); }
+});
+
+test("[release-mtime] a hold that wrote nothing does not leave a write made by someone else during it as its own: the next take waits out the quiet guard; one that wrote, or saw no write, is taken again at once", () => {
+	const dir = tmp("pi-loops-bg-");
+	const background = createBackgroundExecutor({
+		dir,
+		requests: new RequestStore(dir),
+		leases: new LeaseStore(dir),
+		jobs: { load: () => [], allRuns: () => [], remove: () => undefined } as any,
+		runs: new RunList(),
+		runner: (() => Promise.reject(new Error("no run here"))) as any,
+		sinks: (() => ({})) as any,
+		holder: (busy) => ({ kind: "host", pid: process.pid, instance: "host", procStart: procStart(process.pid), acquiredAt: new Date().toISOString(), pushServers: [], ...(busy ? { busy } : {}) }),
+		turnTimeoutMs: 1_000,
+		appended: () => undefined,
+		deliveryFailed: () => undefined,
+		log: () => undefined,
+	});
+	const line = (who: string) => `${JSON.stringify({ type: "custom", customType: who })}\n`;
+	/** One hold of a new closed conversation: `during` runs under it, then it is given back, and the conversation is asked for again. */
+	const holdTwice = (during: (file: string) => void, wrote: boolean) => {
+		const { sessionId, file } = closedConversation(dir);
+		const first = background.conversations.hold(sessionId as any, "ans-x", Date.now());
+		assert.ok(!("refused" in first), "the first hold");
+		during(file);
+		background.conversations.release(first, wrote);
+		return background.conversations.hold(sessionId as any, "ans-y", Date.now());
+	};
+	assert.ok(!("refused" in holdTwice(() => undefined, false)), "nothing was written: taken again at once");
+	assert.ok(!("refused" in holdTwice((file) => fs.appendFileSync(file, line("ours")), true)), "this hold wrote the file: taken again at once");
+	assert.deepEqual(holdTwice((file) => fs.appendFileSync(file, line("theirs")), false), { refused: "session file changed in the last two minutes" }, "someone else's write during a hold that wrote nothing keeps the quiet guard");
 });

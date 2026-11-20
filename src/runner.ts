@@ -51,7 +51,10 @@ export interface RunnerResult {
  * compile error.
  *
  * `sessionFile`: a held turn runs `prompt` in this existing conversation instead of a new
- * transcript. Its own model and thinking level are kept unless the request pins them.
+ * transcript. Its own model and thinking level are kept unless the request pins them. `sessionId` is
+ * pi's session id of that conversation: just before it is opened the file must be there and a regular
+ * file, and once open it must be that session, or the run fails before any prompt. The runner never
+ * makes the file.
  *
  * `resume`: an answer's run opens this transcript in place of a new one, and keeps its `kind`, so a
  * resumed loop run shares the loaded resources of its directory and gets the `customTools` of a loop
@@ -60,7 +63,10 @@ export interface RunnerResult {
  * file for: a file that is not there, or is no longer a regular file, fails the run before any session
  * is made, and a file that opens as another session fails it before any prompt.
  */
-export type Reopen = { readonly sessionFile?: string; readonly resume?: undefined } | { readonly sessionFile?: undefined; readonly resume: Resume };
+export type Reopen =
+	| { readonly sessionFile?: undefined; readonly sessionId?: undefined; readonly resume?: undefined }
+	| { readonly sessionFile: string; readonly sessionId: string; readonly resume?: undefined }
+	| { readonly sessionFile?: undefined; readonly sessionId?: undefined; readonly resume: Resume };
 
 /** The transcript an answer's run resumes, and pi's session id it must open as. */
 export interface Resume {

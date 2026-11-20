@@ -205,7 +205,7 @@ test("[reopen-probe] a resumed run opens the same transcript with the transcript
 
 test("a request opens an existing session one way only: sessionFile or resume", () => {
 	const base = { cwd: "/p", prompt: "x", timeoutMs: 1, hop: 1, kind: "loop" } as const;
-	const held: SubagentRequest = { ...base, sessionFile: "/a.jsonl" };
+	const held: SubagentRequest = { ...base, sessionFile: "/a.jsonl", sessionId: "s" };
 	const resumed: SubagentRequest = { ...base, resume: { file: "/a.jsonl", sessionId: "s" } };
 	// @ts-expect-error resume and sessionFile together do not compile
 	const both: SubagentRequest = { ...base, sessionFile: "/a.jsonl", resume: { file: "/a.jsonl", sessionId: "s" } };
@@ -233,7 +233,7 @@ test("[review-F2] a session the runner did not seat has no seat, even when its f
 		const seated = runner({ cwd, prompt: "PROMPT-SLOW a person said yes", timeoutMs: 20_000, hop: 1, kind: "loop", resume: { file, sessionId: first.sessionId! }, guard: seed(cwd, grant) });
 		await new Promise((resolve) => setTimeout(resolve, 700));
 		const before = lines(model.requests).length;
-		const impostor = await runner({ cwd, prompt: "PROMPT-IMPOSTOR", timeoutMs: 20_000, hop: 1, kind: "held", sessionFile: file });
+		const impostor = await runner({ cwd, prompt: "PROMPT-IMPOSTOR", timeoutMs: 20_000, hop: 1, kind: "held", sessionFile: file, sessionId: first.sessionId! });
 		const done = await seated;
 		assert.equal(impostor.guard, undefined, "the held turn has no seat");
 		const toolResults = lines(model.requests).slice(before).flatMap((r: any) => r.messages).filter((m: any) => m.role === "tool").map((m: any) => JSON.stringify(m.content));

@@ -827,9 +827,13 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			// The file `laneTranscript` chose may have been swapped since: just before pi opens it, it is
 			// still a regular file and no link; once open, it is still the session it was chosen for.
 			if (req.resume !== undefined && !regularFile(req.resume.file)) return failedRun(`the transcript to resume is no longer a regular file: ${req.resume.file}`);
+			// A held turn's conversation the same way: pi opens a path that is gone as a new session there,
+			// and would write that file. Its session id is the proof that it is the conversation.
+			if (req.sessionFile !== undefined && !regularFile(req.sessionFile)) return failedRun(`the conversation's file is gone or is no longer a regular file: ${req.sessionFile}`);
 			// This request's own manager: the guard knows the run by this object, not by its file's path.
 			const sessionManager = existing ? SessionManager.open(existing) : req.sessionDir ? SessionManager.create(req.cwd, req.sessionDir) : SessionManager.inMemory(req.cwd);
 			if (req.resume !== undefined && sessionManager.getSessionId() !== req.resume.sessionId) return failedRun(`the transcript to resume opened as another session (${sessionManager.getSessionId()}, not ${req.resume.sessionId}): ${req.resume.file}`);
+			if (req.sessionFile !== undefined && sessionManager.getSessionId() !== req.sessionId) return failedRun(`the conversation's file opened as another session (${sessionManager.getSessionId()}, not ${req.sessionId}): ${req.sessionFile}`);
 			const created = await untilStopped(
 				createAgentSession({
 					cwd: req.cwd,

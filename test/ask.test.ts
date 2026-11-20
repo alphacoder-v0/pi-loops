@@ -236,8 +236,8 @@ async function ask(w: World, lane: "loop" | "conversation" | "check", opts: { sp
 	const laneId = lane === "loop" ? LOOP : lane === "conversation" ? CONV : CHECK;
 	let file: string;
 	if (opts.outside) file = path.join(w.dir, "elsewhere", "t1.jsonl");
-	else if (lane === "loop") file = path.join(w.jobs.sessionDirFor(JOB), "t1.jsonl");
-	else if (lane === "check") file = path.join(w.wrapped.checkSessionDir(w.cwd), "t1.jsonl");
+	else if (lane === "loop") file = path.join(w.jobs.sessionDirFor(JOB), `t1_${SID}.jsonl`);
+	else if (lane === "check") file = path.join(w.wrapped.checkSessionDir(w.cwd), `t1_${SID}.jsonl`);
 	else {
 		file = path.join(w.dir, "conversations", `${CONV}.jsonl`);
 		w.conversations.set(CONV, file);
@@ -1170,7 +1170,7 @@ test("[lane-transcript] a question whose session is only a FIFO, a symlink, a di
 test("[lane-transcript] two transcripts in the lane's directory whose headers name the question's session: no transcript, and the answer is refused", async () => {
 	const w = await world();
 	const f = await ask(w, "loop");
-	writeTranscript(path.join(w.jobs.sessionDirFor(JOB), "copy.jsonl"), CALL);
+	writeTranscript(path.join(w.jobs.sessionDirFor(JOB), `copy_${SID}.jsonl`), CALL);
 	await yes(w, f);
 	assert.deepEqual(await meetRow(w, f), { met: "E3", exit: "refused" });
 	assert.equal(find(w, f.id)?.answer?.state, "not_run");
@@ -1180,7 +1180,7 @@ test("[lane-transcript] two transcripts in the lane's directory whose headers na
 test("[lane-transcript] a yes to a run's finding resumes the transcript its transcript_id names in the lane's directory, and never a path the finding names", { timeout: 30_000 }, async () => {
 	const w = await world();
 	const lane = w.jobs.sessionDirFor(JOB);
-	const own = path.join(lane, "run.jsonl");
+	const own = path.join(lane, "run_0199eeee-0000-7000-8000-0000000000e1.jsonl");
 	writeTranscript(own, CALL, undefined, "0199eeee-0000-7000-8000-0000000000e1");
 	const g = await news(w, { transcript: "/hand/edited.jsonl", transcript_id: "0199eeee-0000-7000-8000-0000000000e1" });
 	assert.deepEqual((await started(w, g)).resume, { file: own, sessionId: "0199eeee-0000-7000-8000-0000000000e1" }, "the lane's file whose header names the id");
@@ -1190,11 +1190,55 @@ test("[lane-transcript] a yes to a run's finding resumes the transcript its tran
 	execFileSync("mkfifo", [fifo]);
 	const elsewhere = path.join(v.dir, "elsewhere", "conv.jsonl");
 	writeTranscript(elsewhere, CALL, undefined, CONV);
-	fs.symlinkSync(elsewhere, path.join(v.jobs.sessionDirFor(JOB), "link.jsonl"));
+	fs.symlinkSync(elsewhere, path.join(v.jobs.sessionDirFor(JOB), `link_${CONV}.jsonl`));
 	const named = await news(v, { transcript: fifo });
 	const linked = await news(v, { text: "another", transcript: elsewhere, transcript_id: CONV });
 	assert.equal((await started(v, named)).resume, undefined, "a path with no id: a new session, and the FIFO is never opened");
 	assert.equal((await started(v, linked)).resume, undefined, "an id only a symlink in the lane's directory leads to: a new session");
+});
+
+test("[own-transcript] a yes to a conversation's finding resumes that conversation's own file, never another conversation's in the same directory that its transcript_id names", async () => {
+	const OTHER = "0199bbbb-0000-7000-8000-0000000000b2";
+	const w = await world();
+	const own = path.join(w.dir, "conversations", `${CONV}.jsonl`);
+	const other = path.join(w.dir, "conversations", `${OTHER}.jsonl`);
+	writeTranscript(own, CALL, undefined, CONV);
+	writeTranscript(other, CALL, undefined, OTHER);
+	w.conversations.set(CONV, own);
+	const elsewhere = await news(w, { lane: CONV, job_id: undefined, transcript_id: OTHER });
+	const inHere = await news(w, { lane: CONV, job_id: undefined, text: "another", transcript_id: CONV });
+	await yes(w, elsewhere);
+	await yes(w, inHere);
+	const startOf = async (f: Finding): Promise<AnswerStart> => {
+		const met = await meetRow(w, f, CONV);
+		assert.equal(met.met, "E4");
+		return (met as Extract<MeetOutcome, { met: "E4" }>).start;
+	};
+	assert.equal((await startOf(elsewhere)).resume, undefined, "another conversation's id resumes nothing");
+	assert.deepEqual((await startOf(inHere)).resume, { file: own, sessionId: CONV }, "the conversation's own id resumes its own file");
+	// The lease names the other conversation's file: a finding that names that conversation still resumes nothing in this lane.
+	w.conversations.set(CONV, other);
+	const named = await news(w, { lane: CONV, job_id: undefined, text: "a third", transcript_id: OTHER });
+	await yes(w, named);
+	assert.equal((await startOf(named)).resume, undefined, "only the lane's own session id is looked for");
+});
+
+test("[own-transcript-name] a conversation whose file has a name of its own (`pi --session ./notes.jsonl`) is resumed by its lease's file and its header: a question in it is proved, and a finding of it resumes it", async () => {
+	const w = await world();
+	const file = path.join(w.dir, "work", "notes.jsonl");
+	writeTranscript(file, CALL, undefined, CONV);
+	w.conversations.set(CONV, file);
+	const origin = { source: CONV, run_id: "r0", cwd: w.cwd, who: "the conversation" };
+	const { id, entry } = questionFinding(CALL, { lane: CONV, sessionId: CONV, sessionFile: file, cap: resolveCap({ cwd: w.cwd }, 900_000) }, origin, stamp(NOW));
+	const question = await w.inbox.fileOnce(entry, id);
+	const finding = await news(w, { lane: CONV, job_id: undefined, transcript_id: CONV });
+	await yes(w, question);
+	await yes(w, finding);
+	for (const f of [question, finding]) {
+		const met = await meetRow(w, f, CONV);
+		assert.equal(met.met, "E4", f.id);
+		assert.deepEqual((met as Extract<MeetOutcome, { met: "E4" }>).start.resume, { file, sessionId: CONV }, f.id);
+	}
 });
 
 test("[copied-ask] a copy of a question under another id is E1: a yes to it starts nothing, and the question's own finding still runs once", async () => {

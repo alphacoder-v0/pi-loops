@@ -9,16 +9,16 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { type AnswerExecutor, type Answerer } from "../src/answers.ts";
 import { type Call, type ResolvedCap, WHY, answerRowId, besideId, inputHash, questionFinding, resolveCap } from "../src/ask.ts";
 import { DEFAULT_RUN_TIMEOUT_MS } from "../src/loop-run.ts";
 import { loadConfig } from "../src/config.ts";
-import { plainJobRow, plainRunId } from "../src/engine.ts";
+import { plainJobRow, plainRunId, ruleResultRow } from "../src/engine.ts";
 import { GuardSeats } from "../src/guard.ts";
 import type { InboxEntry } from "../src/inbox.ts";
 import { parseLane } from "../src/lane.ts";
-import { procStart } from "../src/lease.ts";
+import { LeaseBinding, LeaseStore, procStart } from "../src/lease.ts";
 import { createHostRuntime } from "../src/host-runtime.ts";
 import { RunList } from "../src/run-list.ts";
 import type { RunnerResult, SubagentRequest, SubagentRunner } from "../src/runner.ts";
@@ -530,6 +530,237 @@ test("[removed-job-hooks] run_end of an answer whose loop was removed loads no p
 		await w.host.stop();
 		assert.deepEqual((fs.existsSync(userEvents) ? lines(userEvents) : []).map((e) => [e.event, e.run_id]), [["run_end", rowId]], "the user's hook fires");
 		assert.equal(fs.existsSync(projectEvents), false, "the removed job's project hook does not");
+	} finally {
+		await w.host.stop();
+	}
+});
+
+/** A conversation of the project that nobody has open: its file in the project's session directory, last written ten minutes ago, and its lease with no holder. */
+function closedConversation(w: ReturnType<typeof world>): { sessionId: string; file: string } {
+	const sm = SessionManager.create(w.cwd, path.join(w.dir, "conversations"));
+	sm.appendModelChange("fake", "fake-model");
+	sm.appendMessage({ role: "user", content: "earlier", timestamp: Date.now() } as any);
+	const file = sm.getSessionFile()!;
+	const old = new Date(Date.now() - 10 * 60_000);
+	fs.utimesSync(file, old, old);
+	const sessionId = sm.getSessionId();
+	fs.mkdirSync(path.join(w.dir, "leases"), { recursive: true });
+	fs.writeFileSync(path.join(w.dir, "leases", `${sessionId}.json`), JSON.stringify({ v: 1, sessionId, sessionFile: file, cwd: w.cwd, epoch: 1, holder: null, updatedAt: new Date().toISOString() }));
+	return { sessionId, file };
+}
+const aged = (file: string): void => {
+	const old = new Date(Date.now() - 10 * 60_000);
+	fs.utimesSync(file, old, old);
+};
+/** A plain job of the conversation whose slot is due now. */
+const plainJob = (sessionId: string, cwd: string): LoopJob => ({ id: "cron-fedcba9876543210fedcba9876543210", name: "remind", schedule: { kind: "every", ms: 3_600_000 }, stateful: false, sessionId, prompt: "PROMPT-ONE remind me to ship", cwd, enabled: true, catchUp: false, createdAt: stamp(Date.now() - 3_700_000), runCount: 0, skippedOverlap: 0 }) as LoopJob;
+/** A news finding filed for the conversation, and a person's yes to it. */
+async function yesInConversation(w: ReturnType<typeof world>, sessionId: string, text: string): Promise<InboxEntry> {
+	const finding = await w.stores.inbox.append({ source: "cron:remind", text, run_id: `run-${text}`, cwd: w.cwd, kind: "news", lane: sessionId });
+	const said = await w.host.answers.say(finding.id, "yes", PERSON);
+	assert.deepEqual([said.said, said.said === "Y1" && said.lane], ["Y1", sessionId]);
+	return finding;
+}
+
+test("[answer-conversation] a plain job's held turn in a closed conversation asks about a dangerous call; after a yes the next tick takes the lease, runs the granted call once in that conversation, writes done and gives the lease back", { timeout: 120_000 }, async () => {
+	let model: Awaited<ReturnType<typeof standIn>> | undefined;
+	const w = world(() => (req) => model!.real(req));
+	model = await standIn(w.dir, w.stores.inbox);
+	try {
+		const { sessionId, file } = closedConversation(w);
+		await w.stores.jobs.add(plainJob(sessionId, w.cwd));
+		await w.tick();
+		await w.host.drain(30_000);
+		const question = w.stores.inbox.list().find((f) => f.ask);
+		assert.ok(question, "the held turn asked about its call");
+		assert.deepEqual([question.ask!.lane, question.ask!.session_id, question.lane], [sessionId, sessionId, sessionId], "in the conversation's own lane, from its own transcript");
+		assert.equal(fs.existsSync(path.join(w.cwd, "marker.txt")), false, "nothing ran before the yes");
+		const leases = new LeaseStore(w.dir);
+		const before = leases.read(sessionId)!;
+		assert.equal(before.holder, null, "the held turn gave the conversation back");
+
+		assert.equal((await w.host.answers.say(question.id, "yes", PERSON)).said, "Y1");
+		const rowId = answerRowId(question.id);
+		assert.deepEqual(w.stores.requests.list(sessionId).map((r) => r.id), [rowId]);
+		await w.tick();
+		await w.host.drain(30_000);
+
+		assert.equal(fs.readFileSync(path.join(w.cwd, "marker.txt"), "utf8"), "ran\n", "the granted call ran once");
+		assert.deepEqual(bashResultsAfter(file, `[Trigger ${rowId}] `).map((r) => r.error), [false, true], "in the conversation's file: the granted call, then the same call asked about again");
+		const [record] = w.answerRecords();
+		assert.deepEqual(
+			{ runId: record?.runId, cause: record?.cause, grant_used: record?.grant_used, ok: record?.ok, sessionFile: record?.sessionFile, resumed: record?.resumed, stateful: record?.stateful, requestedBy: record?.requestedBy },
+			{ runId: rowId, cause: "answer", grant_used: true, ok: true, sessionFile: file, resumed: file, stateful: false, requestedBy: { sessionId: PERSON.session } },
+		);
+		assert.equal(w.find(question.id)!.answer?.state, "done");
+		assert.deepEqual(w.stores.requests.list(sessionId), [], "the row is gone");
+		const after = leases.read(sessionId)!;
+		assert.deepEqual([after.holder, after.epoch], [null, before.epoch + 2], "the answer took the lease once and gave it back");
+		assert.equal(w.host.runs.all().length, 0);
+	} finally {
+		await w.host.stop();
+		model?.fake.kill();
+	}
+});
+
+test("[answer-conversation-window] while a window holds the conversation, its answer waits; once the window lets go it waits for the file to be quiet, then runs once as a held turn under the lease, which it gives back", async () => {
+	const s = scripted();
+	const w = world(() => s.runner);
+	try {
+		const { sessionId, file } = closedConversation(w);
+		const finding = await yesInConversation(w, sessionId, "the release notes are stale");
+		const rowId = answerRowId(finding.id);
+		const leases = new LeaseStore(w.dir);
+		const window = new LeaseBinding(leases, "w1", () => ({ kind: "terminal", pid: process.pid, mode: "tui", pushServers: [] }));
+		window.bind(sessionId, { sessionFile: file, cwd: w.cwd });
+		await w.tick();
+		assert.equal(s.answerCalls().length, 0, "nothing runs while the window holds it");
+		assert.deepEqual(w.stores.requests.list(sessionId).map((r) => [r.id, r.run, r.waiting]), [[rowId, undefined, undefined]], "the row is the window's to wait on");
+		assert.equal(w.find(finding.id)!.answer?.state, "pending");
+
+		// The window wrote the conversation and let go of it a moment ago.
+		window.release();
+		fs.utimesSync(file, new Date(), new Date());
+		await w.tick();
+		assert.equal(s.answerCalls().length, 0);
+		assert.deepEqual(w.stores.requests.list(sessionId).map((r) => [r.run, r.waiting]), [[undefined, "its conversation cannot be taken now (session file changed in the last two minutes)"]]);
+		assert.equal(leases.read(sessionId)?.holder, null, "no lease is kept for a row that waits");
+
+		aged(file);
+		await w.tick();
+		assert.equal(s.answerCalls().length, 1);
+		const req = s.answerCalls()[0];
+		assert.deepEqual([req.kind, req.sessionFile, req.resume, req.guard?.lane, req.guard?.cap.cwd, req.guard?.cap.model, req.runId], ["held", file, undefined, sessionId, w.cwd, null, rowId]);
+		const holder = leases.read(sessionId)?.holder;
+		assert.deepEqual([holder?.kind, holder?.busy?.runId], ["host", rowId], "the lease names the answer's run while it goes");
+		assert.equal(w.host.heldTurn(sessionId)?.runId, rowId, "it is the conversation's turn: a stop row reaches it");
+		s.release();
+		await w.host.drain(5_000);
+		assert.equal(w.find(finding.id)!.answer?.state, "done");
+		assert.deepEqual([w.stores.requests.list(sessionId), leases.read(sessionId)?.holder], [[], null], "the row is gone and the lease given back");
+		await w.tick();
+		assert.equal(s.answerCalls().length, 1, "run once");
+	} finally {
+		await w.host.stop();
+	}
+});
+
+test("[answer-conversation-gone] a deleted conversation's answer row is met as gone before bury: the finding says so and nothing runs; the lane's other rows are buried as before", async () => {
+	const s = scripted();
+	const w = world(() => s.runner);
+	try {
+		const { sessionId, file } = closedConversation(w);
+		const finding = await yesInConversation(w, sessionId, "the release notes are stale");
+		w.stores.requests.append(ruleResultRow(sessionId, "a rule's result", { traceId: "trace-gone", sourceLabel: "notes-rule", cwd: w.cwd }, { pid: process.pid, instance: "test", version: "0" } as any));
+		fs.rmSync(file);
+		await w.tick();
+		const answered = w.find(finding.id)!;
+		assert.deepEqual([answered.answer?.state, answered.answer?.state === "not_run" && answered.answer.why], ["not_run", WHY.conversationDeleted]);
+		assert.deepEqual(w.stores.requests.list(sessionId), [], "both rows left");
+		assert.equal(s.answerCalls().length, 0);
+		assert.ok(w.logs.some((line) => line.includes("1 queued request(s) for session") && line.includes("its conversation is gone")), "the rule's row is buried as before, and the answer row is not among them");
+		const audit = w.host.triggers.store.listAudit(20, (r) => r.type === "request").map((r) => [r.traceId, r.state]);
+		assert.ok(audit.some(([id, state]) => id === answerRowId(finding.id) && state === "stale"), "the answer row's exit is audited");
+	} finally {
+		await w.host.stop();
+	}
+});
+
+/** What a person does to a conversation between the lease and pi's open: deletes its file, or puts another session's file in its place. */
+function spoilConversation(how: "deleted" | "replaced", file: string, w: ReturnType<typeof world>): string | undefined {
+	fs.rmSync(file);
+	if (how === "deleted") return undefined;
+	const other = SessionManager.create(w.cwd, path.join(w.dir, "elsewhere"));
+	other.appendModelChange("fake", "fake-model");
+	other.appendMessage({ role: "user", content: "another conversation", timestamp: Date.now() } as any);
+	fs.copyFileSync(other.getSessionFile()!, file);
+	return fs.readFileSync(file, "utf8");
+}
+const modelCalls = (log: string): number => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean).length : 0);
+
+for (const how of ["deleted", "replaced"] as const) {
+	test(`[held-open-proof] an answer's turn whose conversation is ${how} after the lease and before pi opens it runs nothing and makes no file`, { timeout: 60_000 }, async () => {
+		let model: Awaited<ReturnType<typeof standIn>> | undefined;
+		let spoil: ((req: SubagentRequest) => void) | undefined;
+		const w = world(() => (req) => {
+			spoil?.(req);
+			spoil = undefined;
+			return model!.real(req);
+		});
+		model = await standIn(w.dir, w.stores.inbox);
+		try {
+			const { sessionId, file } = closedConversation(w);
+			const finding = await yesInConversation(w, sessionId, "the release notes are stale");
+			let left: string | undefined;
+			spoil = (req) => {
+				assert.equal(req.sessionFile, file);
+				left = spoilConversation(how, file, w);
+			};
+			await w.tick();
+			await w.host.drain(30_000);
+			assert.equal(spoil, undefined, "the turn reached the runner");
+			assert.equal(modelCalls(model.modelLog), 0, "no prompt reached the model");
+			assert.equal(fs.existsSync(file), how === "replaced", how === "deleted" ? "the file is not made again" : "the other session's file is still there");
+			if (how === "replaced") assert.equal(fs.readFileSync(file, "utf8"), left, "and nothing was written into it");
+			const answered = w.find(finding.id)!;
+			assert.equal(answered.answer?.state, "unfinished");
+			assert.match(w.answerRecords()[0]?.error ?? "", how === "deleted" ? /the conversation's file is gone/ : /opened as another session/);
+			assert.equal(new LeaseStore(w.dir).read(sessionId)?.holder, null, "the lease is given back");
+		} finally {
+			await w.host.stop();
+			model?.fake.kill();
+		}
+	});
+
+	test(`[held-open-proof] a plain job's turn whose conversation is ${how} after the lease and before pi opens it runs nothing and makes no file`, { timeout: 60_000 }, async () => {
+		let model: Awaited<ReturnType<typeof standIn>> | undefined;
+		let spoil: ((req: SubagentRequest) => void) | undefined;
+		const w = world(() => (req) => {
+			spoil?.(req);
+			spoil = undefined;
+			return model!.real(req);
+		});
+		model = await standIn(w.dir, w.stores.inbox);
+		try {
+			const { sessionId, file } = closedConversation(w);
+			const job = plainJob(sessionId, w.cwd);
+			await w.stores.jobs.add(job);
+			let left: string | undefined;
+			spoil = (req) => {
+				assert.deepEqual([req.kind, req.sessionFile], ["held", file]);
+				left = spoilConversation(how, file, w);
+			};
+			await w.tick();
+			await w.host.drain(30_000);
+			assert.equal(spoil, undefined, "the turn reached the runner");
+			assert.equal(modelCalls(model.modelLog), 0, "no prompt reached the model");
+			assert.equal(fs.existsSync(file), how === "replaced", how === "deleted" ? "the file is not made again" : "the other session's file is still there");
+			if (how === "replaced") assert.equal(fs.readFileSync(file, "utf8"), left, "and nothing was written into it");
+			const [record] = w.stores.jobs.allRuns().filter((r) => r.jobId === job.id);
+			assert.equal(record?.ok, false);
+			assert.match(record?.error ?? "", how === "deleted" ? /the conversation's file is gone/ : /opened as another session/);
+			assert.equal(w.stores.inbox.list().length, 0, "no question was asked");
+		} finally {
+			await w.host.stop();
+			model?.fake.kill();
+		}
+	});
+}
+
+test("[answer-conversation-one-path] a closed conversation's answer is met by its delivery, never by the answers rider's own drain", async () => {
+	const s = scripted();
+	const w = world(() => s.runner);
+	try {
+		const { sessionId } = closedConversation(w);
+		const finding = await yesInConversation(w, sessionId, "the release notes are stale");
+		await w.host.answerLanes.tick(Date.now());
+		assert.equal(s.answerCalls().length, 0, "the answers rider leaves a conversation's lane alone");
+		assert.deepEqual(w.stores.requests.list(sessionId).map((r) => r.run), [undefined]);
+		await w.host.riders["closed-conversations"](Date.now(), { startedAt: 0, tickMs: 30_000 });
+		assert.equal(s.answerCalls().length, 1, "its delivery meets it");
+		s.release();
+		await w.host.drain(5_000);
+		assert.equal(w.find(finding.id)!.answer?.state, "done");
 	} finally {
 		await w.host.stop();
 	}
