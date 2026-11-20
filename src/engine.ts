@@ -709,6 +709,22 @@ export function claimAlive(row: ClaimedRow, probe: ProcessProbe = systemProbe): 
 }
 
 /**
+ * Whether an `ans-` row's claim is live, as the answer protocol reads it (`AnswerExecutor.live`): a
+ * claim of this process only while its run is in this process's list, another process's by
+ * `claimAlive`. A run of this process that left the list (its start or its closing threw) holds
+ * nothing, so F1 to F3 count it and the lane goes on.
+ */
+export function answerClaimLive(row: ClaimedRow, self: { readonly pid: number; readonly procStart: string | undefined }, listed: (runId: string) => boolean, probe: ProcessProbe = systemProbe): boolean {
+	if (row.run.pid === self.pid && row.run.procStart === self.procStart) return listed(row.run.id);
+	return claimAlive(row, probe);
+}
+
+/** The one liveness of a claim that a loop lane's drain, its overlap pass and the clock read: `answerClaimLive` for an `ans-` row, `claimAlive` for any other. */
+export function laneClaimLive(row: ClaimedRow, self: { readonly pid: number; readonly procStart: string | undefined }, listed: (runId: string) => boolean, probe: ProcessProbe = systemProbe): boolean {
+	return isAnswerRow(row) ? answerClaimLive(row, self, listed, probe) : claimAlive(row, probe);
+}
+
+/**
  * The one builder of a `Proof`, for the rows of `lane`: the marks of that lane among the entries of
  * the session the rows write into (a fork copies entries with their marks, so a mark names its
  * lane), the two fenced rules, and `ran` over the run records. Who builds a proof says where its

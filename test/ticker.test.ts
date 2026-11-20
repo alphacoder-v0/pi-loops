@@ -37,7 +37,7 @@ test("stop prevents the next rider and waits for the rider already running.", as
 test("[ticker-riders] The host's riders keep main's order, and a process that leaves writes no heartbeat after it", async () => {
 	// The order of main's everyTick (src/host.ts): still named, auto-leave, the two sweeps, the page's bind, the heartbeat, the channel's heal.
 	assert.deepEqual(HOST_RIDERS, ["still-named", "auto-leave", "conversation-sweep", "page-sweep", "page-bind", "heartbeat", "channel-heal"]);
-	assert.deepEqual(RUNTIME_RIDERS, ["stray-leases", "closed-conversations", "rule-checks", "removed-jobs", "dead-sessions", "clock", "loop-lanes", "notices"]);
+	assert.deepEqual(RUNTIME_RIDERS, ["stray-leases", "closed-conversations", "rule-checks", "removed-jobs", "dead-sessions", "clock", "answers", "loop-lanes", "notices"]);
 	const seen: string[] = [];
 	const ticker: Ticker<(typeof HOST_RIDERS)[number]> = new Ticker({
 		names: HOST_RIDERS,

@@ -7,7 +7,7 @@ import { TriggerStore } from "../src/triggers.ts";
 import { type ClaimedRow, type ImageContent, RequestStore, type Row, type UnclaimedRow } from "../src/requests.ts";
 import * as path from "node:path";
 import { BACKOFF_MS } from "../src/backoff.ts";
-import { type Action, type Proof, ANSWER_ROW_WAITS, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, proofOf, landed, personRow, plainJobRow, plainRunId, stripImageNotes, claimAlive, changesSomething, runningRun, jobQueued, queuedPrompt, closeRun, heldTurns } from "../src/engine.ts";
+import { type Action, type Proof, ANSWER_ROW_WAITS, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, proofOf, landed, personRow, plainJobRow, plainRunId, stripImageNotes, answerClaimLive, claimAlive, changesSomething, runningRun, jobQueued, queuedPrompt, closeRun, heldTurns } from "../src/engine.ts";
 import { jobCounts, listedJob, runHistory } from "../src/job-status.ts";
 import { runEnd } from "../src/settle.ts";
 import type { RunRecord } from "../src/store.ts";
@@ -2394,6 +2394,16 @@ test("a claim is alive while its process is, by the rule of a lease's holder: th
 	const booted = (at: string) => ({ alive: () => true, startTime: () => "100", bootedAt: () => Date.parse(at) });
 	assert.equal(claimAlive({ ...claimed, run }, booted("2026-06-01T12:05:00Z")), false, "claimed six minutes before the boot");
 	assert.equal(claimAlive({ ...claimed, run }, booted("2026-06-01T11:58:00Z")), true, "claimed after the boot");
+});
+
+test("an answer's claim of this process is live only while its run is listed; another process's by the rule of a lease's holder", () => {
+	const claimed = { ...claimedRow("c1"), run: { id: "run-c1", pid: 4242, procStart: "100", started_at: "2026-06-01T11:59:00Z" } };
+	const probe = (alive: boolean) => ({ alive: () => alive, startTime: () => "100", bootedAt: () => 0 });
+	const self = { pid: 4242, procStart: "100" };
+	assert.equal(answerClaimLive(claimed, self, () => true, probe(true)), true, "its run is in the list");
+	assert.equal(answerClaimLive(claimed, self, () => false, probe(true)), false, "its run left the list: this living process holds nothing");
+	assert.equal(answerClaimLive(claimed, { pid: 7, procStart: "1" }, () => false, probe(true)), true, "another process that lives");
+	assert.equal(answerClaimLive(claimed, { pid: 7, procStart: "1" }, () => true, probe(false)), false, "another process that is gone");
 });
 
 test("[exit-cancelled] a cancel or a stop does not take a claimed row out of its queue: only its run decides what becomes of it", () => {

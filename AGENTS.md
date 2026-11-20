@@ -48,6 +48,8 @@ src/stores.ts               stores of a loops directory, opened once, and job re
 src/trigger-runtime.ts      dynamic-rule evaluation, deliveries, promotion, audit
 src/triggers.ts             rule store, parsing, prompt, dedup window
 src/goal.ts                 /goal: the stop-condition state machine, evaluator prompts, continuation budget
+src/ask.ts                  a question from a background run and its answer, as values: the shapes, the table of steps, the pure deciders, and `PROTOCOL`, the writes of each transition in order
+src/answers.ts              the writers of every transition of an answer: the one module that holds inbox.lock and a lane's lock together
 src/tools.ts                the cron/trigger tool definitions (interactive session and sub-sessions)
 src/watch-plan.ts           a watch from one sentence, as the question cron_create and new_trigger ask before they create: the plan, its card, the dialog's title and options, and the one place an answer becomes store fields
 src/protocol.ts             <loop-state>/<inbox>/<verdict> protocol, caps
@@ -74,6 +76,7 @@ src/sdk-runner.ts           the in-process runner on pi's SDK (createAgentSessio
 src/danger.ts               the dangerous-command policy for unattended runs
 src/window-guard.ts         the cap on a scheduled turn in an open window: declared tools and the dangerous-command policy
 src/subagent-guard.ts       the synthetic extension that applies it inside every sub-session
+src/guard.ts                the guard of a background run: which call needs a person, the question it files, and the one call a yes admits once (seats)
 src/transcript.ts           a sub-agent's session file, folded into readable lines
 
 running with no pi open
@@ -91,6 +94,7 @@ src/page-children.ts        one `pi --mode rpc` per conversation open in the pag
 src/held-read.ts            how big a conversation this process parses, and whether a conversation's file is readable here
 src/host-runtime.ts         what pi-loops runs (the ticker's riders, the loop lanes, triggers, per-request tools), the one list of its runs, and the wiring of the background executor
 src/background-executor.ts  what pi-loops in the background does to the queue of a closed conversation: takes its lease, delivers a rule's result, claims a plain job's row, runs its turn and closes it
+src/answer-lanes.ts         the answer rows of loop and check lanes: a yes resumes the run that asked, runs its call once, and closes it
 src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid, or by a terminal from the page's pi (`page`) while no turn runs (`turnSince`)
 src/requests.ts             requests/<lane>.jsonl: what is addressed to a lane (a conversation's is its session id), kept until it is in it (the row, claimed or not, append, remove, claim)
 src/engine.ts               decideDrain, the pure decision for a lane's rows: classify, take the lane, start; drain, which applies it through an executor; the exits, attempts and dead letters

@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { isAnswerRow } from "./ask.ts";
-import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileMark, type Proof, type QuietMark, DEAD_AFTER_ATTEMPTS, bury, changesSomething, claimAlive, closeRun, conversationHas, decideDrain, drain, jobQueued, modeOf, plainRunId, plainJobRow, proofOf, quietMark, sessionFileEntries, stillQuiet } from "./engine.ts";
+import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileMark, type Proof, type QuietMark, DEAD_AFTER_ATTEMPTS, bury, changesSomething, claimAlive, closeRun, conversationHas, decideDrain, drain, jobQueued, laneClaimLive, modeOf, plainRunId, plainJobRow, proofOf, quietMark, sessionFileEntries, stillQuiet } from "./engine.ts";
 import { type ConversationId, parseLane } from "./lane.ts";
 import { DELIVERY_JOB_ID, type LeaseHolder, type LeaseStore, closedConversation, liveHolderPid } from "./lease.ts";
 import { markDetails, markFor } from "./mark.ts";
@@ -467,7 +467,9 @@ export function abortRemovedJobs(runs: Pick<RunList, "all">, exists: (jobId: str
 /**
  * The test of the drain's pre-pass: a claim of this process whose run left the list. Its run ended
  * here and its closing threw before it wrote the row, so the slot is spent. An `ans-` row is passed
- * over: the answer protocol finds that claim not live and counts it (F1).
+ * over: the answer lane (src/answer-lanes.ts) finds that claim not live (`answerClaimLive`), and
+ * counts it (F1) or closes it (F2, F3). The loop lane's drain reads its liveness the same way, so the
+ * claim does not hold the lane meanwhile.
  */
 export function spentOwnClaim(row: Row, self: { readonly pid: number; readonly procStart: string | undefined }, listed: (runId: string) => boolean): boolean {
 	return !isAnswerRow(row) && row.run !== undefined && row.run.pid === self.pid && row.run.procStart === self.procStart && !listed(row.run.id);
@@ -495,6 +497,8 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 		const current = laneJobs().get(lane.id);
 		const jobs = stores.book().jobs;
 		const sinks = baseSinks();
+		const self = deps.holder();
+		const live = (row: ClaimedRow): boolean => laneClaimLive(row, self, (runId) => runs.get(runId) !== undefined);
 		/** Why a scheduled row of this loop waits for its gates: a missing directory, the budget, the slots. */
 		const gateOf = (row: UnclaimedRow): string | undefined => {
 			const job = jobs.find((item) => item.id === jobId);
@@ -514,7 +518,7 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 			view: () => ({
 				kind: "held", ceiling: CEILING.held, idle: !runs.all().some((run) => run.jobId === jobId),
 				running: undefined, inFlight: new Set(), connected: () => true, producerAlive: () => true,
-				mine: () => false, claimLive: claimAlive,
+				mine: () => false, claimLive: live,
 				blocked: (row) => {
 					if (row.source.startsWith("cron-run:")) return undefined;
 					const job = jobs.find((item) => item.id === jobId);
@@ -542,7 +546,6 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 		// A claim of this process whose run is no longer in the list: the run ended here, and its closing
 		// threw before it wrote the row. The run happened, so its slot is spent, as main spends it when the
 		// end of a run fails: it does not run again, here or after a restart.
-		const self = deps.holder();
 		for (const row of stores.requests.list(lane.id)) {
 			if (!spentOwnClaim(row, self, (runId) => runs.get(runId) !== undefined)) continue;
 			stores.requests.remove(lane.id, [row.id]);
@@ -569,7 +572,8 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 		// /cron run) is that skip: it is counted on the running row and spent.
 		try {
 			const rows = stores.requests.list(lane.id);
-			const going = rows.find((row): row is ClaimedRow => row.run !== undefined && claimAlive(row) && Date.parse(row.run.started_at) < now);
+			// An answer's run is never one this drain started, so one the answer lane started in this tick counts too.
+			const going = rows.find((row): row is ClaimedRow => row.run !== undefined && live(row as ClaimedRow) && (isAnswerRow(row) || Date.parse(row.run.started_at) < now));
 			const overlapped = going && current?.enabled ? rows.filter((row) => !row.run && row.kind === "input" && row.source === `cron:${jobId}`) : [];
 			for (const row of overlapped) {
 				const slot = row.collapsed_slot ?? row.payload?.slot ?? row.created_at;
@@ -582,9 +586,10 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 		}
 		// The lists cannot ask the gates (a window does not know the slots or the budget): the reason
 		// this drain saw is written on each row that still waits, when it changed, as main wrote lastError.
+		// An `ans-` row's reason has one writer, the answer lane (`Answers.meet`'s hold).
 		try {
 			for (const row of stores.requests.list(lane.id)) {
-				if (row.run || row.kind !== "input") continue;
+				if (row.run || row.kind !== "input" || isAnswerRow(row)) continue;
 				const why = gateOf(row);
 				if (why !== row.waiting) stores.requests.update(lane.id, row.id, { waiting: why });
 			}
