@@ -7,9 +7,10 @@
  * `tool_call` handler that applies it, built here so a test can drive it without the extension.
  */
 import type { ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
-import { dangerousCommandReason } from "./danger.ts";
+import { dangerousCommandReason, pathToolReason } from "./danger.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { capRedacted } from "./redact.ts";
+import { defaultLoopsDir } from "./store.ts";
 import { type CurrentTurn, unattendedTurn } from "./window-executor.ts";
 
 /** How long the person has to answer before an unanswered question refuses the call. */
@@ -56,6 +57,8 @@ export interface GuardConfig {
 	windowGuard: boolean;
 	/** `[danger] allow`: commands the dangerous-command policy lets through, as in the background. */
 	allowCommands: readonly string[];
+	/** The loops directory of this process, which a command may not name. `windowGuard` passes `defaultLoopsDir()` when it is absent; `guardDecision` without it has that rule off. */
+	loopsDir?: string;
 }
 
 /**
@@ -71,7 +74,8 @@ export const READ_ONLY_AUTOMATION_TOOLS: readonly string[] = ["cron_list", "list
 export const SELF_GATED_AUTOMATION_TOOLS: readonly string[] = ["cron_create", "cron_remove", "set_cron_job_state", "new_trigger", "remove_trigger", "set_trigger_state"];
 const AUTOMATION_TOOLS: readonly string[] = [...READ_ONLY_AUTOMATION_TOOLS, ...SELF_GATED_AUTOMATION_TOOLS];
 
-export type GuardDecision = { kind: "allow" } | { kind: "ask"; reason: string };
+/** `refuse` is a call nobody is asked about, since a person could not see it as written (a path tool into the loops directory). */
+export type GuardDecision = { kind: "allow" } | { kind: "ask"; reason: string } | { kind: "refuse"; reason: string };
 
 /** The shell command a call carries, for the tools that run one. */
 function commandOf(call: { toolName: string; input?: unknown }): string | undefined {
@@ -84,26 +88,31 @@ function commandOf(call: { toolName: string; input?: unknown }): string | undefi
  * Pure. Everything is allowed unless the turn is a scheduled row's and the guard is on. Then a call
  * asks when the tool is outside what the row declared (`--tools` names the whole set; a built-in
  * list caps only pi's built-ins, so extension and MCP tools pass; neither declares nothing), or when
- * the command is one the background would refuse.
+ * the command is one the background would refuse. A path tool into the loops directory
+ * (`pathToolReason`, its relative path against `call.cwd`) is refused before any of that, as the
+ * background refuses it: nobody could see what it reads or writes.
  */
-export function guardDecision(call: { toolName: string; input?: unknown }, current: CurrentTurn | undefined, cfg: GuardConfig): GuardDecision {
+export function guardDecision(call: { toolName: string; input?: unknown; cwd?: string }, current: CurrentTurn | undefined, cfg: GuardConfig): GuardDecision {
 	if (!cfg.windowGuard || !unattendedTurn(current)) return { kind: "allow" };
+	const own = cfg.loopsDir === undefined ? undefined : pathToolReason(call, call.cwd, cfg.loopsDir);
+	if (own !== undefined) return { kind: "refuse", reason: own };
 	if (current.tools) {
 		if (!current.tools.includes(call.toolName) && !AUTOMATION_TOOLS.includes(call.toolName)) return { kind: "ask", reason: `${call.toolName} is not among the tools the job declared (${current.tools.join(", ") || "none"})` };
 	} else if (current.builtinTools && PI_BUILTIN_TOOL_NAMES.includes(call.toolName) && !current.builtinTools.includes(call.toolName)) {
 		return { kind: "ask", reason: `${call.toolName} is not among the built-in tools the job declared (${current.builtinTools.join(", ") || "none"})` };
 	}
 	const command = commandOf(call);
-	const danger = command === undefined ? undefined : dangerousCommandReason(command, undefined, cfg.allowCommands);
+	const danger = command === undefined ? undefined : dangerousCommandReason(command, undefined, cfg.allowCommands, cfg.loopsDir);
 	return danger === undefined ? { kind: "allow" } : { kind: "ask", reason: danger };
 }
 
 /**
  * What the model is told: the sub-agent guard's wording, with who refused. `nobody` is the default:
- * the question timed out, was escaped, or there was no UI to ask; `person` is a No the person gave.
+ * the question timed out, was escaped, or there was no UI to ask; `person` is a No the person gave;
+ * `blind` is a call nobody was asked about, since a person could not see it.
  */
-export function refusal(reason: string, by: "nobody" | "person" = "nobody"): string {
-	const who = by === "person" ? "The person at the window refused it" : "This scheduled turn ran with nobody answering";
+export function refusal(reason: string, by: "nobody" | "person" | "blind" = "nobody"): string {
+	const who = by === "person" ? "The person at the window refused it" : by === "blind" ? "Nobody was asked, since a person could not see what this call would read or write" : "This scheduled turn ran with nobody answering";
 	return `refused by pi-loops: ${reason}. ${who}; commands that can destroy data or the machine, and tools the job did not declare, are not allowed; do the safe part and report what you would need a human for.`;
 }
 
@@ -132,7 +141,7 @@ export interface WindowGuardDeps {
  * (nothing of ours is running: between settle cycles), the one unknown that is allowed. Whose turn
  * it is comes first, and a failure to learn even that refuses.
  */
-export function windowGuard(deps: WindowGuardDeps): (event: { toolName: string; input?: unknown }, ctx: Pick<ExtensionContext, "hasUI" | "ui" | "mode"> | undefined) => Promise<ToolCallEventResult | undefined> {
+export function windowGuard(deps: WindowGuardDeps): (event: { toolName: string; input?: unknown }, ctx: (Pick<ExtensionContext, "hasUI" | "ui" | "mode"> & { cwd?: string }) | undefined) => Promise<ToolCallEventResult | undefined> {
 	const timeout = deps.confirmTimeoutMs ?? WINDOW_GUARD_CONFIRM_MS;
 	return async (event, ctx) => {
 		let current: CurrentTurn | undefined;
@@ -143,8 +152,13 @@ export function windowGuard(deps: WindowGuardDeps): (event: { toolName: string; 
 			return { block: true, reason: refusal("the guard could not decide") };
 		}
 		try {
-			const decision = guardDecision(event, current, deps.config());
+			const cfg = deps.config();
+			const decision = guardDecision({ toolName: event.toolName, input: event.input, ...(ctx?.cwd ? { cwd: ctx.cwd } : {}) }, current, { ...cfg, loopsDir: cfg.loopsDir ?? defaultLoopsDir() });
 			if (decision.kind === "allow" || !unattendedTurn(current)) return undefined;
+			if (decision.kind === "refuse") {
+				deps.log(`refused ${event.toolName} in scheduled turn ${current.id.slice(0, 8)}: ${decision.reason} (nobody asked: it cannot be shown)`);
+				return { block: true, reason: refusal(decision.reason, "blind") };
+			}
 			const command = commandOf(event);
 			const body = [`A scheduled prompt (trace ${current.id.slice(0, 8)}) wants to run ${event.toolName}: ${decision.reason}.`, ...(command === undefined ? [] : [capRedacted(command, WINDOW_GUARD_COMMAND_CHARS)]), `Yes runs it this once. No, or no answer in ${Math.round(timeout / 1000)} s, refuses it and tells the model why.`].join("\n");
 			const answer = ctx?.hasUI ? await askRefusingFirst(ctx, "Allow this in a scheduled turn?", body, timeout) : "none";

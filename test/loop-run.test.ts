@@ -192,11 +192,11 @@ test("[kept-last-fired] a loop's fired stamp is its claim start, including cron-
 const FAKE_MODEL = path.join(path.dirname(new URL(import.meta.url).pathname), "downstream", "fake-model.mjs");
 const PUSH = "git push --force origin main";
 
-/** The real runner with the guard's seats over `inbox`, against the stand-in model, which asks for `PUSH` on a prompt with PROMPT-ONE. */
-async function standIn(dir: string, reply: string, inbox: Pick<ReturnType<typeof openStores>["inbox"], "list" | "fileOnce">) {
+/** The real runner with the guard's seats over `inbox`, against the stand-in model, which asks for `PUSH` on a prompt with PROMPT-ONE unless `script` says otherwise. */
+async function standIn(dir: string, reply: string, inbox: Pick<ReturnType<typeof openStores>["inbox"], "list" | "fileOnce">, opts: { script?: Array<{ match: string; tool: string; args: unknown }>; loopsDir?: string } = {}) {
 	const portFile = path.join(dir, "port");
 	const modelLog = path.join(dir, "model.jsonl");
-	const fake = spawn(process.execPath, [FAKE_MODEL, portFile], { env: { ...process.env, FAKE_MODEL_REPLY: reply, FAKE_MODEL_LOG: modelLog, FAKE_MODEL_TOOL_SCRIPT: JSON.stringify([{ match: "PROMPT-ONE", tool: "bash", args: { command: PUSH } }]) }, stdio: "ignore" });
+	const fake = spawn(process.execPath, [FAKE_MODEL, portFile], { env: { ...process.env, FAKE_MODEL_REPLY: reply, FAKE_MODEL_LOG: modelLog, FAKE_MODEL_TOOL_SCRIPT: JSON.stringify(opts.script ?? [{ match: "PROMPT-ONE", tool: "bash", args: { command: PUSH } }]) }, stdio: "ignore" });
 	for (let i = 0; i < 200 && !(fs.existsSync(portFile) && fs.readFileSync(portFile, "utf8").trim()); i++) await new Promise((resolve) => setTimeout(resolve, 50));
 	const agentDir = path.join(dir, "agent");
 	fs.mkdirSync(agentDir, { recursive: true });
@@ -213,7 +213,7 @@ async function standIn(dir: string, reply: string, inbox: Pick<ReturnType<typeof
 		customTools: () => [],
 		isTrusted: () => false,
 		ownDir: tmp("pi-loops-own-"),
-		guard: { seats: new GuardSeats(), deps: { inbox, allowCommands: () => [], hop: 1, now: Date.now } },
+		guard: { seats: new GuardSeats(), deps: { inbox, allowCommands: () => [], hop: 1, now: Date.now, ...(opts.loopsDir ? { loopsDir: opts.loopsDir } : {}) } },
 	});
 	return { real, modelLog, fake };
 }
@@ -276,6 +276,29 @@ test("[seated-tools] a job's tools are the same seated as before; only a job tha
 		const both = makeJob({ cwd, tools: ["bash", "read"], builtinTools: ["read"] });
 		assert.deepEqual(await toolsSent(both, false), ["bash", "read"], "before: builtinTools beside tools was not read");
 		assert.deepEqual(await toolsSent(both, true), ["read"], "seated: bash, which builtinTools leaves out, is gone");
+	} finally {
+		fake.kill();
+	}
+});
+
+test("[M5a.8d] a loop run whose model writes into the loops directory by a relative path is refused through the seated guard: the file is unchanged and no question is filed", { timeout: 60_000 }, async () => {
+	const { dir, stores, deps, createdBy } = setup();
+	const cwd = tmp("pi-loops-loop-run-proj-");
+	const target = path.join(dir, "config.toml");
+	fs.writeFileSync(target, "# the person's own\n");
+	const { real, modelLog, fake } = await standIn(dir, "<loop-state>seen</loop-state>", stores.inbox, { script: [{ match: "PROMPT-ONE", tool: "write", args: { path: path.relative(cwd, target), content: "[danger]\nallow = [\"git push --force origin main\"]\n" } }], loopsDir: dir });
+	try {
+		const job = makeJob({ cwd, prompt: "PROMPT-ONE tidy up", name: "nightly" });
+		await stores.jobs.add(job);
+		const row: UnclaimedRow = { v: 3, id: "run-00000000000000000000000000000001", lane: `@${job.id}`, kind: "input", source: `cron:${job.id}`, mode: "unattended", wake: "turn", payload: { text: "x", cwd }, created_at: stamp(now), created_by: createdBy, attempts: 0 };
+		stores.requests.append(row);
+		const claimed = deps.runs.claim(stores.requests, row, deps.holder(), { jobId: job.id, label: "nightly", promptPreview: "x", ctrl: new AbortController() }, now)!;
+		await runLoop(claimed, job, { ...deps, runner: real, session: () => ({ sessionId: "s1", cwd }) });
+
+		assert.equal(fs.readFileSync(target, "utf8"), "# the person's own\n", "the file is unchanged");
+		assert.deepEqual(stores.inbox.list().filter((f) => f.ask), [], "no question is filed");
+		const toolResults = fs.readFileSync(modelLog, "utf8").trim().split("\n").map((line) => JSON.parse(line)).flatMap((body) => body.messages.filter((m: any) => m.role === "tool").map((m: any) => String(m.content)));
+		assert.ok(toolResults.some((text) => text.startsWith("refused by pi-loops: reads or writes pi-loops' own files. Nobody was asked: a person cannot see on the card what this call would read or write")), "the model is told it is refused and nobody was asked");
 	} finally {
 		fake.kill();
 	}

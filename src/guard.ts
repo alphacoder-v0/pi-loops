@@ -8,11 +8,12 @@
  * one handler per loaded extension set, shared by every run of a directory.
  */
 import { type AskOrigin, type Call, ASK_COMMAND_MAX_CHARS, ASKS_OPEN_PER_LANE, ASKS_PER_TURN, type Grant, NO_HOLDS_MS, type ResolvedCap, callKey, inputHash, limitNames, questionFinding } from "./ask.ts";
-import { dangerousCommandReason } from "./danger.ts";
+import { dangerousCommandReason, pathToolReason } from "./danger.ts";
 import type { Inbox, InboxEntry as Finding } from "./inbox.ts";
 import { cardText } from "./redact.ts";
 import type { LaneId } from "./lane.ts";
 import { stamp } from "./schedule.ts";
+import { defaultLoopsDir } from "./store.ts";
 
 /** One call as the `tool_call` event gives it. */
 export interface ToolCallFacts {
@@ -21,6 +22,8 @@ export interface ToolCallFacts {
 	/** Set for a call made inside another tool's call. Its id is in no transcript, so it is never asked about. */
 	parentToolCallId?: string;
 	input?: unknown;
+	/** The run's cwd (`ctx.cwd`), which a relative path of the call is resolved against. */
+	cwd?: string;
 }
 
 /** What `judgeCall` is given for the lane the turn runs in (design 3.1, without `repo`). */
@@ -44,13 +47,18 @@ export interface GuardTurn {
 	asked: number;
 }
 
-/** The six reasons nobody is asked (design 3.1). A nested call is refused with `no-transcript`. */
+/**
+ * The seven reasons nobody is asked (design 3.1). A nested call is refused with `no-transcript`.
+ * `not-shown` is a call with no command (a `read` or a `write` into the loops directory): the card
+ * shows a command as written, and it cannot show a path and a whole content, so a yes would be blind.
+ */
 export type WhyNot =
 	| { why: "no"; date: string }
 	| { why: "turn-cap" }
 	| { why: "lane-cap" }
 	| { why: "too-long" }
 	| { why: "not-as-written" }
+	| { why: "not-shown" }
 	| { why: "no-transcript" };
 
 export type CallVerdict =
@@ -75,6 +83,19 @@ function commandOf(call: Pick<ToolCallFacts, "toolName" | "input">): string | un
 	return typeof command === "string" ? command : undefined;
 }
 
+/** What the policy is given besides the call: `[danger] allow`, and the loops directory of this process. Without `loopsDir`, its rules are off. */
+export interface GuardPolicy {
+	allowCommands: readonly string[];
+	loopsDir?: string;
+}
+
+/** The policy's reason for a call, or undefined when it may run: a shell command's (`dangerousCommandReason`), or a path tool's into the loops directory (`pathToolReason`). */
+function policyReason(call: Pick<ToolCallFacts, "toolName" | "input">, cwd: string | undefined, cfg: GuardPolicy): string | undefined {
+	const command = commandOf(call);
+	if (command !== undefined) return dangerousCommandReason(command, undefined, cfg.allowCommands, cfg.loopsDir);
+	return cfg.loopsDir === undefined ? undefined : pathToolReason(call, cwd, cfg.loopsDir);
+}
+
 /**
  * Pure. The order is 2.3's, with a nested call (`parentToolCallId`) refused before the grant:
  *   1. the policy passes the call: allow, with `grantUsed` when the call is `turn.granted` and not nested;
@@ -82,13 +103,13 @@ function commandOf(call: Pick<ToolCallFacts, "toolName" | "input">): string | un
  *   2. the call is `turn.granted` (its tool, and `inputHash` of its input): granted;
  *   3. `turn.refused` has its key: refuse, `a person said no to this on <date>`;
  *   4. `turn.open` has its key: asked;
- *   5. it can be asked (`turn.resumable`, the command at most
- *      `ASK_COMMAND_MAX_CHARS`, unchanged by `cardText`) and the caps allow it: question;
+ *   5. it can be asked (`turn.resumable`, a command, at most `ASK_COMMAND_MAX_CHARS`, unchanged
+ *      by `cardText`) and the caps allow it: question;
  *   6. else refuse, with why nobody was asked.
  */
-export function judgeCall(call: ToolCallFacts, turn: GuardTurn, cfg: { allowCommands: readonly string[] }): CallVerdict {
+export function judgeCall(call: ToolCallFacts, turn: GuardTurn, cfg: GuardPolicy): CallVerdict {
 	const command = commandOf(call);
-	const reason = command === undefined ? undefined : dangerousCommandReason(command, undefined, cfg.allowCommands);
+	const reason = policyReason(call, call.cwd, cfg);
 	const hash = inputHash(call.input);
 	const nested = call.parentToolCallId !== undefined;
 	const granted = !nested && turn.granted !== undefined && turn.granted.call.tool === call.toolName && turn.granted.call.input_sha256 === hash;
@@ -100,14 +121,15 @@ export function judgeCall(call: ToolCallFacts, turn: GuardTurn, cfg: { allowComm
 	if (date !== undefined) return { kind: "refuse", reason, whyNot: { why: "no", date } };
 	const open = turn.open.get(key);
 	if (open !== undefined) return { kind: "asked", ask: open };
-	const whyNot = whyNotAsked(command!, turn);
+	const whyNot = whyNotAsked(command, turn);
 	if (whyNot) return { kind: "refuse", reason, whyNot };
 	return { kind: "question", call: { tool: call.toolName, tool_call_id: call.toolCallId, command, input_sha256: hash, reason } };
 }
 
 /** Step 5 of `judgeCall`, as the reason it fails, or undefined when the call can be asked about. */
-function whyNotAsked(command: string, turn: GuardTurn): WhyNot | undefined {
+function whyNotAsked(command: string | undefined, turn: GuardTurn): WhyNot | undefined {
 	if (!turn.resumable || turn.lane === undefined) return { why: "no-transcript" };
+	if (command === undefined) return { why: "not-shown" };
 	if ([...command].length > ASK_COMMAND_MAX_CHARS) return { why: "too-long" };
 	// The card collapses a newline, a tab or a run of spaces: a yes would run what the person did not read.
 	if (cardText(command) !== command) return { why: "not-as-written" };
@@ -129,6 +151,8 @@ function whyNotWords(whyNot: WhyNot): string {
 			return `the command is too long to show a person whole (${ASK_COMMAND_MAX_CHARS} characters at most): put it in a script in the project`;
 		case "not-as-written":
 			return "the command cannot be shown as written";
+		case "not-shown":
+			return "a person cannot see on the card what this call would read or write, so a yes would be blind";
 		case "no-transcript":
 			return "this session keeps no transcript an answer could resume";
 	}
@@ -243,6 +267,8 @@ export function guardTurn(seat: GuardSeat | undefined, findings: readonly Findin
 export interface GuardDeps {
 	inbox: Pick<Inbox, "list" | "fileOnce">;
 	allowCommands(): readonly string[];
+	/** The loops directory of this process; `defaultLoopsDir()` when absent. */
+	loopsDir?: string;
 	hop: number;
 	now(): number;
 	log?(message: string): void;
@@ -263,7 +289,7 @@ export async function guardCall(call: ToolCallFacts, seat: GuardSeat | undefined
 	};
 	let verdict: CallVerdict;
 	try {
-		const cfg = { allowCommands: deps.allowCommands() };
+		const cfg: GuardPolicy = { allowCommands: deps.allowCommands(), loopsDir: deps.loopsDir ?? defaultLoopsDir() };
 		verdict = judgeCall(call, guardTurn(seat, [], deps.hop, deps.now()), cfg);
 		if (verdict.kind !== "allow" && verdict.kind !== "granted") verdict = judgeCall(call, guardTurn(seat, seat ? deps.inbox.list() : [], deps.hop, deps.now()), cfg);
 	} catch (err: any) {
@@ -289,7 +315,7 @@ export async function guardCall(call: ToolCallFacts, seat: GuardSeat | undefined
 			return block(reason, askedMessage(reason));
 		}
 		case "asked": {
-			const reason = commandReason(call, deps);
+			const reason = askedReason(call, deps);
 			return block(reason, askedMessage(reason));
 		}
 		case "refuse":
@@ -298,7 +324,6 @@ export async function guardCall(call: ToolCallFacts, seat: GuardSeat | undefined
 }
 
 /** The policy's reason for a call that `judgeCall` found already asked about. */
-function commandReason(call: ToolCallFacts, deps: GuardDeps): string {
-	const command = commandOf(call);
-	return (command === undefined ? undefined : dangerousCommandReason(command, undefined, deps.allowCommands())) ?? call.toolName;
+function askedReason(call: ToolCallFacts, deps: GuardDeps): string {
+	return policyReason(call, call.cwd, { allowCommands: deps.allowCommands(), loopsDir: deps.loopsDir ?? defaultLoopsDir() }) ?? call.toolName;
 }

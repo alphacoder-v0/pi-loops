@@ -5,9 +5,12 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { type AskOrigin, type Call, type DeclaredCap, type Grant, type ResolvedCap, askFindingId, askId, callKey, inputHash, resolveCap } from "../src/ask.ts";
 import { type GuardDeps, type GuardSeed, type GuardTurn, GuardSeats, guardCall, guardTurn, judgeCall } from "../src/guard.ts";
 import { Inbox, type InboxEntry as Finding } from "../src/inbox.ts";
+import { subagentGuardExtension } from "../src/subagent-guard.ts";
 import { tmp } from "./tmp.ts";
 
 const LANE = "@cron-a1";
@@ -214,4 +217,56 @@ test("[review-F1] a nested call never uses a grant: it is refused before the gra
 	const out = await guardCall(nested, seat, w.deps);
 	assert.match(out!.reason, /^refused by pi-loops: git push --force on main\/master\. This run is unattended/);
 	assert.deepEqual([leave(), w.inbox.list().length], [{ grant_used: false, asked: [] }, 0], "the grant is unused and nothing is filed");
+});
+
+const OWN = "reads or writes pi-loops' own files";
+
+/** A loops directory and a project beside it, with a link from the project into the loops directory. */
+function ownFiles() {
+	const root = tmp("pi-loops-guard-own-");
+	const loops = path.join(root, "loops");
+	const proj = path.join(root, "proj");
+	fs.mkdirSync(loops, { recursive: true });
+	fs.mkdirSync(path.join(proj, "src"), { recursive: true });
+	fs.symlinkSync(loops, path.join(proj, "state"));
+	return { loops, proj, policy: { allowCommands: [] as string[], loopsDir: loops } };
+}
+const write = (p: string, cwd: string, toolName = "write") => ({ toolName, toolCallId: "call-w", cwd, input: toolName === "edit" ? { path: p, edits: [{ oldText: "a", newText: "b" }] } : { path: p, content: "{}" } });
+const NOT_SHOWN = "a person cannot see on the card what this call would read or write, so a yes would be blind";
+
+test("[M5a.8d] judgeCall: a read, a write, an edit or a grep into the loops directory is refused and nobody is asked, since the card cannot show it; a write to the project is not; a shell command that names the directory is a question", () => {
+	const { loops, proj, policy } = ownFiles();
+	const t = turn();
+	for (const call of [write(path.join(loops, "inbox.jsonl"), proj), write(path.join(loops, "jobs.json"), proj, "edit"), write(path.join(proj, "state", "inbox.jsonl"), proj), write("../loops/requests/@cron-a1.jsonl", proj), write("state/clock.json", proj), write(loops, proj), write(`@${loops}/hooks.toml`, proj), { toolName: "read", toolCallId: "call-w", cwd: proj, input: { path: "state/web-token" } }, { toolName: "grep", toolCallId: "call-w", cwd: proj, input: { pattern: "token", path: ".." } }]) {
+		assert.deepEqual(judgeCall(call, t, policy), { kind: "refuse", reason: OWN, whyNot: { why: "not-shown" } }, JSON.stringify(call.input));
+	}
+	for (const call of [write(path.join(proj, "src", "a.ts"), proj), write("src/a.ts", proj), write(`${loops}-old/x`, proj), { toolName: "read", toolCallId: "c", cwd: proj, input: { path: "src/a.ts" } }]) assert.deepEqual(judgeCall(call, t, policy), { kind: "allow" }, JSON.stringify(call));
+	const seatless = judgeCall(write(path.join(loops, "inbox.jsonl"), proj), turn({ resumable: false, lane: undefined }), policy);
+	assert.deepEqual(seatless, { kind: "refuse", reason: OWN, whyNot: { why: "no-transcript" } }, "with no seat it is refused with the words of a run that has none");
+	assert.equal(judgeCall(bash(`echo '{}' >> ${loops}/inbox.jsonl`), t, policy).kind, "question", "a shell command that names it is shown as written: a question");
+	assert.deepEqual(judgeCall(bash("pi-loops inbox claim inb-1"), t, policy), { kind: "question", call: { tool: "bash", tool_call_id: "call-1", command: "pi-loops inbox claim inb-1", input_sha256: inputHash({ command: "pi-loops inbox claim inb-1" }), reason: "answers for a person" } });
+	assert.deepEqual(judgeCall(bash("pi-loops inbox claim inb-1"), t, { ...policy, allowCommands: ["pi-loops inbox claim inb-1"] }), { kind: "allow" }, "an allow entry permits it, as for any other rule");
+});
+
+test("[M5a.8d] guardCall: a write or an edit into the loops directory is refused, the model is told to report what it needed, and nothing is filed", async () => {
+	const { loops, proj } = ownFiles();
+	const w = world();
+	const deps: GuardDeps = { ...w.deps, loopsDir: loops };
+	const { seat, leave } = new GuardSeats().enter(sm("s1"), "/runs/s1.jsonl", { lane: LANE, origin: { ...ORIGIN, cwd: proj }, cap: capOf({ cwd: proj }) });
+	for (const call of [write("../loops/inbox.jsonl", proj), write(path.join(loops, "config.toml"), proj, "edit")]) {
+		const out = await guardCall(call, seat, deps);
+		assert.equal(out?.reason, `refused by pi-loops: ${OWN}. Nobody was asked: ${NOT_SHOWN}. Finish what does not need it, and report what you would need a person for.`, JSON.stringify(call.input));
+	}
+	assert.equal(await guardCall(write("src/a.ts", proj), seat, deps), undefined);
+	assert.deepEqual([w.inbox.list().length, leave().asked], [0, []], "no question is filed");
+});
+
+test("[M5a.8d] the sub-agent guard judges a relative path against the run's cwd: a checker's relative write into the loops directory is refused", async () => {
+	const { loops, proj } = ownFiles();
+	const w = world();
+	const handler = (subagentGuardExtension(new GuardSeats(), { ...w.deps, loopsDir: loops }) as unknown as { handlers: Map<string, Array<(...args: unknown[]) => Promise<{ block: true; reason: string } | undefined>>> }).handlers.get("tool_call")![0];
+	const out = await handler({ toolName: "write", toolCallId: "call-c", input: { path: "../loops/inbox.jsonl", content: "{}" } }, { sessionManager: {}, cwd: proj });
+	assert.match(out?.reason ?? "", /^refused by pi-loops: reads or writes pi-loops' own files\. This run is unattended/);
+	assert.equal(await handler({ toolName: "write", toolCallId: "call-d", input: { path: "src/a.ts", content: "{}" } }, { sessionManager: {}, cwd: proj }), undefined, "a write to the project goes through");
+	assert.equal(w.inbox.list().length, 0);
 });

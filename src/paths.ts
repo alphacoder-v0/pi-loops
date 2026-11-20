@@ -13,7 +13,8 @@ import * as path from "node:path";
 
 /**
  * `p` with every symlink above it resolved, whether or not `p` itself exists: the deepest ancestor
- * that does exist is resolved and the rest re-attached. `fs.realpathSync` refuses a path that is
+ * that does exist is resolved and the rest re-attached. The native realpath gives the case the file
+ * system stores on one that ignores case (macOS, Windows), so two spellings of a path agree. `fs.realpathSync` refuses a path that is
  * not there, and resolving nothing at all reports "outside the project" for a directory that is
  * plainly inside it.
  */
@@ -23,7 +24,7 @@ export function realpathish(p: string): string {
 	const tail: string[] = [];
 	for (;;) {
 		try {
-			return path.join(fs.realpathSync(at), ...tail);
+			return path.join(fs.realpathSync.native(at), ...tail);
 		} catch {
 			const parent = path.dirname(at);
 			if (parent === at) return path.resolve(p); // reached the root and nothing resolved

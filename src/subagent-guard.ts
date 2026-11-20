@@ -19,8 +19,8 @@ export const GUARD_PATH = "<pi-loops sub-agent guard>";
 export function subagentGuardExtension(seats: GuardSeats, deps: GuardDeps): Extension {
 	const handler = async (...args: unknown[]) => {
 		const event = args[0] as { toolName: string; toolCallId: string; parentToolCallId?: string; input?: unknown };
-		const ctx = args[1] as { sessionManager?: object } | undefined;
-		return guardCall({ toolName: event.toolName, toolCallId: event.toolCallId, parentToolCallId: event.parentToolCallId, input: event.input }, seats.of(ctx?.sessionManager), deps);
+		const ctx = args[1] as { sessionManager?: object; cwd?: string } | undefined;
+		return guardCall({ toolName: event.toolName, toolCallId: event.toolCallId, parentToolCallId: event.parentToolCallId, input: event.input, ...(ctx?.cwd ? { cwd: ctx.cwd } : {}) }, seats.of(ctx?.sessionManager), deps);
 	};
 	return {
 		path: GUARD_PATH,
