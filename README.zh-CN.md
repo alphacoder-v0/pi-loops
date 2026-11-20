@@ -596,7 +596,7 @@ src/store.ts                jobs.json（第 3 版，只存定义）、state/*.md
 src/inbox.ts                inbox.jsonl
 src/archive.ts              .pisession 归档：无依赖 tar 读写、导出、导入改写
 src/lock.ts                 文件锁、原子写、pid 存活
-src/convert-v2.ts           旧版本留在 loops 目录里的东西：每次启动时把第 2 版 jobs.json 转成第 3 版（游标写进 clock.json），并清除不再使用的文件；只有这个模块提到第 2 版
+src/convert-v2.ts           旧版本留在 loops 目录里的东西：每次启动时把第 2 版 jobs.json 转成第 3 版（游标写进 clock.json），并清除不再使用的文件；第 2 版的结构（`V2Job`、`fromV2`）放在这里，存储和归档导入通过它读取
 src/paths.ts                realpathish：解析到最深的那个存在的祖先，所以还不存在的路径按它父目录的方式解析
 src/snapshot.ts             pi_loops_snapshot 的指纹，以及什么样的变化才值得写一条新条目
 src/config.ts               config.toml 与环境变量覆盖

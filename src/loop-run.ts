@@ -156,9 +156,14 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 	}
 }
 
-/** The ordinal of the run that ends now. A run log that cannot be read leaves it out; the closing counts the run from what it can read. */
+/**
+ * The ordinal of the run that ends now: one more than the count so far, which is the highest of the
+ * run log's ordinals and the cursor's count (a directory 0.24.2 left brings its count in the cursor,
+ * and its run log may be gone). A run log that cannot be read leaves it out; the closing counts the
+ * run from what it can read.
+ */
 function nextOrdinal(jobId: string, deps: Pick<LoopRunDeps, "stores" | "sinks">): number | undefined {
-	try { return (deps.stores.history().get(jobId)?.ordinal ?? 0) + 1; }
+	try { return Math.max(deps.stores.history().get(jobId)?.ordinal ?? 0, deps.stores.clock.read().jobs[jobId]?.runs ?? 0) + 1; }
 	catch (error) {
 		deps.sinks.log(`loop ${jobId}: run history read failed: ${error instanceof Error ? error.message : String(error)}`, "info");
 		return undefined;

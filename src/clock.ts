@@ -10,7 +10,6 @@ import type { RequestStore, Row, UnclaimedRow } from "./requests.ts";
 type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
 import { computeDue, formatLocal, isValidSchedule, stamp } from "./schedule.ts";
 import type { Disabled, JobStore, LoopJob, RunRecord } from "./store.ts";
-import { fromV2 } from "./convert-v2.ts";
 import { jobStatus, runHistory, type JobHistory } from "./job-status.ts";
 import { oneShotDoneV3 } from "./settle.ts";
 import type { Book } from "./stores.ts";

@@ -128,7 +128,8 @@ export interface Conversion {
 /**
  * The conversion of a loops directory that 0.24.2 left, at every start (design section 5). Under
  * `jobs.lock`, for a `version: 2` `jobs.json`: (1) each job's cursor into `clock.json`, (2) one row
- * for each owed slot and each dead run marker, (5) `jobs.json.v2.bak`, then `jobs.json` as version 3
+ * for each owed slot and each dead run marker whose prompt was not written (a plain job's whose
+ * prompt is in its conversation is counted as a run, not asked again), (5) `jobs.json.v2.bak`, then `jobs.json` as version 3
  * with the counters dropped and `disabled` from the reason; then (6) the retired files go. No mark
  * says "converted": each step reads its own store, so a crash after any step leaves stores that the
  * next start finishes, and a window and pi-loops can both run it on one directory. A row of a

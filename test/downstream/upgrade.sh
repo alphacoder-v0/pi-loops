@@ -1,6 +1,7 @@
 #!/bin/sh
 # A loops directory that 0.24.2 left, started once from the outside: its jobs.json is version 2 with a
-# loop three runs in, and the start converts it. Not one of docs/downstream.md's three: the files read
+# loop three runs in, and no run log (it may have been removed), so the count lives only in the file.
+# The start converts it. Not one of docs/downstream.md's three: the files read
 # here are private. It is here because it is checked as a person meets it, with `pi-loops` and jq,
 # and what it holds is that an upgrade keeps a person's loops: the definition, the file before, and
 # the count of runs, so the next run is the fourth.
@@ -11,9 +12,6 @@ cat > "$PI_LOOPS_DIR/jobs.json" <<JSON
 { "version": 2, "jobs": [ { "id": "cron-00000000000000000000000000000002", "name": "upgraded", "schedule": { "kind": "every", "ms": 60000 }, "stateful": true, "prompt": "report", "cwd": "$PROJECT", "enabled": true, "catchUp": true, "createdAt": "2026-01-01T00:00:00.000+00:00", "runCount": 3, "skippedOverlap": 1, "lastDueAt": "2026-01-01T00:03:00.000+00:00", "lastFiredAt": "2026-01-01T00:03:00.000+00:00", "consecutiveFailures": 0 } ] }
 JSON
 cp "$PI_LOOPS_DIR/jobs.json" "$ROOT/jobs.v2.json"
-for n in 1 2 3; do
-	printf '{"runId":"run-v2-%s","jobId":"cron-00000000000000000000000000000002","stateful":true,"cwd":"%s","pid":1,"startedAt":"2026-01-01T00:0%s:00.000+00:00","finishedAt":"2026-01-01T00:0%s:30.000+00:00","ok":true,"findings":0,"droppedFindings":0,"stateUpdated":true,"ordinal":%s}\n' "$n" "$PROJECT" "$n" "$n" "$n" >>"$PI_LOOPS_DIR/runs.jsonl"
-done
 cat > "$PI_LOOPS_DIR/hooks.toml" <<TOML
 [[hook]]
 event = "run_end"
@@ -34,7 +32,7 @@ echo "the version 2 file is kept beside it, byte for byte"
 cmp -s "$ROOT/jobs.v2.json" "$PI_LOOPS_DIR/jobs.json.v2.bak" || fail "jobs.json.v2.bak is not the file 0.24.2 left"
 ok "jobs.json.v2.bak"
 
-echo "the loop's runs go on from 0.24.2's count"
+echo "the loop's runs go on from 0.24.2's count, which only the version 2 file held"
 expect_eq "the new run is the fourth" "$(tail -n 1 "$PI_LOOPS_DIR/runs.jsonl" | jq -r .ordinal)" 4
 expect_eq "and it ran" "$(tail -n 1 "$PI_LOOPS_DIR/runs.jsonl" | jq -r .ok)" true
 finish

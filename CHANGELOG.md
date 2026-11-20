@@ -65,8 +65,8 @@ All notable changes to pi-loops are documented here. The format follows
   schedule ran again at the first tick after the long run ended.
 - **A loop's and a plain job's failures are read from the run log.** After pi-loops stops in the
   middle of a run, that run is not counted as a failure, where it was counted once from the mark
-  it left. `[failing ×N]` counts the failed runs that `runs.jsonl` still holds: it keeps its newest
-  1 MB. A failing loop that you import from an archive starts with no failures.
+  it left. `[failing ×N]` counts the failed runs that `runs.jsonl` still holds: past 1 MB it keeps its
+  newer half. A failing loop that you import from an archive starts with no failures.
 - **`/cron clear` says there is no running marker to clear.** A run's claim is closed when its
   process is gone, so there is nothing to clear by hand.
 - **`/triggers audit` says more about a loop's runs.** It also lists a run that is stopped, removed
