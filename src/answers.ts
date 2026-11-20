@@ -32,7 +32,7 @@ import {
 	noRow,
 	repairRows,
 } from "./ask.ts";
-import { type Inbox, type InboxEntry as Finding, UNDER_INBOX_LOCK } from "./inbox.ts";
+import { type Inbox, type InboxEntry as Finding, UNDER_INBOX_LOCK, screenFinding } from "./inbox.ts";
 import { type ConversationId, type Lane, type LaneId, parseLane } from "./lane.ts";
 import type { LockOptions } from "./lock.ts";
 import type { ClaimedRow, RequestStore, Row, UnclaimedRow } from "./requests.ts";
@@ -235,7 +235,10 @@ export function personAnswers(deps: PersonAnswersDeps): PersonAnswers {
 				});
 				if (!writes.length) return [];
 				tx.write(writes[0], ...writes.slice(1));
-				return writes.flatMap((w) => tx.find(w.id) ?? []);
+				return writes.flatMap((w) => {
+					const written = tx.find(w.id);
+					return written ? [screenFinding(written)] : [];
+				});
 			});
 			for (const finding of dismissed) {
 				const row = noRow(finding, at, deps.self());
@@ -411,7 +414,8 @@ export function createAnswers(deps: AnswersDeps): Answers {
 					case "E4": {
 						// meetAnswerRow gives E4 only for a row with no claim and a finding it read.
 						const unclaimed = row as UnclaimedRow;
-						const claimed = executor.claim(unclaimed, finding!, UNDER_INBOX_LOCK, now);
+						// The run list shows its label and preview: the finding as a reader gets it.
+						const claimed = executor.claim(unclaimed, screenFinding(finding!), UNDER_INBOX_LOCK, now);
 						if (!claimed) return { out: { met: "hold", why: "no free slot" }, row };
 						try {
 							const step = answerStep("E4", finding, { to: "started", run: claimed.run }, { at, lane: lane.id });

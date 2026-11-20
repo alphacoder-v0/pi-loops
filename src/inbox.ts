@@ -9,10 +9,11 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { type AnswerWrite, type AskFields, keptByRotation, readAskFields } from "./ask.ts";
+import { type AnswerWrite, type AskFields, keptByRotation, readAskFields, screenAskFields } from "./ask.ts";
 import type { LaneId } from "./lane.ts";
 import { type LockOptions, withFileLock, withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { INBOX_TEXT_MAX_CHARS, type FindingKind, capChars } from "./protocol.ts";
+import { cardText, redact, screenText } from "./redact.ts";
 import { newId } from "./store.ts";
 import { stamp } from "./schedule.ts";
 import { laneTranscripts } from "./session-head.ts";
@@ -26,7 +27,8 @@ export const INBOX_ROTATE_BYTES = 1_000_000;
  * A finding, in memory and on disk: the ten fields of the contract first, in their order, then
  * pi-loops' own, which no interface names and which a line may be missing. This is the one shape —
  * a line of `inbox.jsonl` is `JSON.stringify` of this, and `pi-loops inbox --json` is the first ten
- * fields of it.
+ * fields of it. What the inbox gives a reader has its words screened (`screenFinding`); the file
+ * keeps them as they were written.
  */
 export interface InboxEntry {
 	id: string;
@@ -92,7 +94,12 @@ export type NewFinding = Omit<InboxEntry, "id" | "created_at" | "status" | "kind
 /** A value that is not a promise: the body of a section is synchronous, so `inbox.lock` is never held across an await. */
 export type Sync<T> = T extends PromiseLike<unknown> ? never : T;
 
-/** `inbox.jsonl` while `inbox.lock` is held. It lives for one call of `Inbox.section`. */
+/**
+ * `inbox.jsonl` while `inbox.lock` is held. It lives for one call of `Inbox.section`. `list` and
+ * `find` give the findings with their words as the file has them: the protocol's steps read those,
+ * so a finding they file beside another carries its words, not a reader's copy. What the section
+ * gives back out of it is screened (`screenFinding`), as `write` and `fileOnce` return it.
+ */
 export interface InboxSection {
 	/** Every finding, as the file has it now. Read once for the section. */
 	list(): readonly InboxEntry[];
@@ -100,10 +107,10 @@ export interface InboxSection {
 	/**
 	 * One atomic rewrite, made at once: `change.set` on its finding, and `change.beside` appended
 	 * unless a finding has that id. `more` are further changes of the same rewrite. Returns the first
-	 * finding as written. A change whose finding is not in the file throws, and nothing is written.
+	 * finding as written, screened. A change whose finding is not in the file throws, and nothing is written.
 	 */
 	write(change: AnswerWrite, ...more: AnswerWrite[]): InboxEntry;
-	/** `Inbox.fileOnce`, inside the section: a finding with this id is returned as it is, else `entry` is written with it. */
+	/** `Inbox.fileOnce`, inside the section: a finding with this id is returned as it is, else `entry` is written with it. Screened. */
 	fileOnce(entry: NewFinding, id: string): InboxEntry;
 }
 
@@ -114,13 +121,24 @@ export interface InboxSection {
  */
 export const UNDER_INBOX_LOCK: LockOptions = { timeoutMs: 5_000 };
 
-/** One line of `inbox.jsonl`: its text, the finding it reads as, and the fields of that line this version does not read. */
-interface Line {
-	raw: string;
-	entry?: InboxEntry;
-	/** Written back as they were by every rewrite. */
-	rest?: Record<string, unknown>;
-}
+/**
+ * One line of `inbox.jsonl`: its text, and the finding it reads as, with the words as the file has
+ * them. A reader outside a section gets `screenFinding` of it. A rewrite writes a line nothing
+ * `changed` as `raw`, byte for byte, and a changed one from `stored`, so that reading never changes
+ * the file.
+ */
+type Line =
+	| { raw: string; stored?: undefined }
+	| {
+			raw: string;
+			stored: InboxEntry;
+			/** The fields of the line this version does not read: written back as they were. */
+			rest?: Record<string, unknown>;
+			/** A write set fields on it, or it is new: `raw` is not what it is now. */
+			changed?: true;
+	  };
+type FindingLine = Extract<Line, { stored: InboxEntry }>;
+const isFindingLine = (line: Line): line is FindingLine => line.stored !== undefined;
 
 /**
  * The id of a finding that is filed once: `inb-` and the first 32 hex of SHA-256(`seed`). It has
@@ -129,6 +147,9 @@ interface Line {
 export function findingId(seed: string): string {
 	return `inb-${createHash("sha256").update(seed).digest("hex").slice(0, 32)}`;
 }
+
+/** The shape of every finding's id, `newId("inb")`'s and `findingId`'s alike. */
+const FINDING_ID = /^inb-[0-9a-f]{32}$/;
 
 export class Inbox {
 	readonly file: string;
@@ -148,7 +169,7 @@ export class Inbox {
 		// The lock is awaited, never spun on: a leftover lock directory from a killed process would
 		// otherwise block this process's event loop for the whole stale window.
 		await withFileLock(this.lockPath, () => this.write(full));
-		return full;
+		return screenFinding(full);
 	}
 
 	/**
@@ -162,16 +183,17 @@ export class Inbox {
 	 */
 	async appendOnce(entry: NewFinding, key: { run_id: string; source: string } | { run_id: string; source: string; session_id: string | undefined }, opts: { unlessRepeat?: boolean } = {}): Promise<InboxEntry> {
 		const full = this.build(entry);
-		const source = capChars(key.source, 80);
+		const source = capChars(key.source, LABEL_MAX_CHARS);
 		fs.mkdirSync(path.dirname(this.file), { recursive: true });
 		return withFileLock(this.lockPath, () => {
-			const all = this.list();
-			const there = all.find((e) => e.run_id === key.run_id && e.source === source && (!("session_id" in key) || e.session_id === key.session_id));
-			if (there) return there;
-			const latest = opts.unlessRepeat ? all.filter((e) => e.status === "new" && e.job_id === full.job_id && e.cwd === full.cwd && e.source === full.source).at(-1) : undefined;
-			if (latest && latest.text === full.text) return latest;
+			// Compared by the stored words: a key is what a writer gave, before any screening.
+			const all = this.lines().filter(isFindingLine);
+			const there = all.find(({ stored: e }) => e.run_id === key.run_id && e.source === source && (!("session_id" in key) || e.session_id === key.session_id));
+			if (there) return screenFinding(there.stored);
+			const latest = opts.unlessRepeat ? all.filter(({ stored: e }) => e.status === "new" && e.job_id === full.job_id && e.cwd === full.cwd && e.source === full.source).at(-1) : undefined;
+			if (latest && latest.stored.text === full.text) return screenFinding(latest.stored);
 			this.write(full);
-			return full;
+			return screenFinding(full);
 		});
 	}
 
@@ -184,7 +206,7 @@ export class Inbox {
 	 * of the file is not there to find: a repeat that late files again.
 	 */
 	async fileOnce(entry: NewFinding, id: string): Promise<InboxEntry> {
-		if (!/^inb-[0-9a-f]{32}$/.test(id)) throw new Error(`not a finding id: ${JSON.stringify(id)}`);
+		if (!FINDING_ID.test(id)) throw new Error(`not a finding id: ${JSON.stringify(id)}`);
 		return this.section((tx) => tx.fileOnce(entry, id));
 	}
 
@@ -207,43 +229,47 @@ export class Inbox {
 	/** The section over the file as it is now. Caller holds the lock. */
 	private openSection(): InboxSection {
 		let lines = this.lines();
-		const find = (id: string): InboxEntry | undefined => lines.find((l) => l.entry?.id === id)?.entry;
+		const lineOf = (id: string): FindingLine | undefined => lines.filter(isFindingLine).find((l) => l.stored.id === id);
+		const find = (id: string): InboxEntry | undefined => lineOf(id)?.stored;
 		// An append past the rotation size rotates, as `append` does, and the section goes on with what is left.
 		const rotated = (): void => {
 			const kept = this.rotate(() => lines);
 			if (kept) lines = kept;
 		};
 		return {
-			list: () => lines.flatMap(({ entry }) => (entry ? [entry] : [])),
+			list: () => lines.flatMap(({ stored }) => (stored ? [stored] : [])),
 			find,
 			write: (change, ...more) => {
 				const changes = [change, ...more];
 				const targets = changes.map((c) => {
-					const target = find(c.id);
+					const target = lineOf(c.id);
 					if (!target) throw new Error(`no finding ${c.id} to write`);
 					return target;
 				});
 				let appended = false;
 				changes.forEach((c, i) => {
-					Object.assign(targets[i], c.set);
+					const target = targets[i];
+					Object.assign(target.stored, c.set);
+					target.changed = true;
 					if (c.beside && !find(c.beside.id)) {
-						lines.push({ raw: "", entry: this.build(c.beside.entry, c.beside.id) });
+						lines.push({ raw: "", stored: this.build(c.beside.entry, c.beside.id), changed: true });
 						appended = true;
 					}
 				});
 				this.rewrite(lines);
 				if (appended) rotated();
-				return targets[0];
+				return screenFinding(targets[0].stored);
 			},
 			fileOnce: (entry, id) => {
-				if (!/^inb-[0-9a-f]{32}$/.test(id)) throw new Error(`not a finding id: ${JSON.stringify(id)}`);
+				if (!FINDING_ID.test(id)) throw new Error(`not a finding id: ${JSON.stringify(id)}`);
 				const there = find(id);
-				if (there) return there;
-				const full = this.build(entry, id);
-				fs.appendFileSync(this.file, `${JSON.stringify(full)}\n`, "utf8");
-				lines.push({ raw: "", entry: full });
+				if (there) return screenFinding(there);
+				const stored = this.build(entry, id);
+				const raw = JSON.stringify(stored);
+				fs.appendFileSync(this.file, `${raw}\n`, "utf8");
+				lines.push({ raw, stored });
 				rotated();
-				return full;
+				return screenFinding(stored);
 			},
 		};
 	}
@@ -255,7 +281,7 @@ export class Inbox {
 			created_at: stamp(),
 			status: "new",
 			kind: entry.kind ?? "news",
-			source: capChars(entry.source, 80),
+			source: capChars(entry.source, LABEL_MAX_CHARS),
 			run_id: entry.run_id,
 			cwd: entry.cwd,
 			text: capChars(entry.text.replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS),
@@ -293,13 +319,13 @@ export class Inbox {
 			if (fs.statSync(this.file).size < INBOX_ROTATE_BYTES) return undefined;
 			const lines = read();
 			const now = Date.now();
-			const droppable = lines.flatMap(({ entry }) => (entry && !keptByRotation(entry, now) ? [entry] : []));
+			const droppable = lines.flatMap(({ stored }) => (stored && !keptByRotation(stored, now) ? [stored] : []));
 			const drop = Math.floor(droppable.length / 2);
 			// Nothing to drop means an inbox full of findings it keeps: rewriting it would change
 			// nothing and would cost a full read+write on every append from here on.
 			if (drop === 0) return undefined;
 			const dropped = new Set(droppable.slice(0, drop));
-			const kept = lines.filter(({ entry }) => !entry || !dropped.has(entry));
+			const kept = lines.filter(({ stored }) => !stored || !dropped.has(stored));
 			this.rewrite(kept);
 			return kept;
 		} catch {
@@ -310,7 +336,7 @@ export class Inbox {
 
 	/** All entries, oldest first. Unparseable lines are skipped. */
 	list(): InboxEntry[] {
-		return this.lines().flatMap(({ entry }) => (entry ? [entry] : []));
+		return this.lines().flatMap(({ stored }) => (stored ? [screenFinding(stored)] : []));
 	}
 
 	/**
@@ -334,8 +360,8 @@ export class Inbox {
 			} catch {
 				/* a corrupt line: kept as raw text, read as nothing */
 			}
-			const entry = readFinding(parsed);
-			out.push(entry ? { raw, entry, rest: unread(parsed as Record<string, unknown>, entry) } : { raw });
+			const stored = readFinding(parsed);
+			out.push(stored ? { raw, stored, rest: unread(parsed as Record<string, unknown>, stored) } : { raw });
 		}
 		return out;
 	}
@@ -405,11 +431,12 @@ export class Inbox {
 	}
 
 	/**
-	 * Write `lines` back, each finding in this version's shape with every field it does not read as
-	 * it was, and every line it could not read as it was. Caller holds the lock.
+	 * Write `lines` back: a line nothing changed as it was, byte for byte; a changed finding in this
+	 * version's shape, from its stored words, with every field it does not read as it was. Caller
+	 * holds the lock.
 	 */
 	private rewrite(lines: Line[]): void {
-		writeFileAtomic(this.file, lines.map(({ raw, entry, rest }) => (entry ? findingLine(entry, rest) : raw)).join("\n") + (lines.length ? "\n" : ""));
+		writeFileAtomic(this.file, lines.map((l) => (l.stored && l.changed ? findingLine(l.stored, l.rest) : l.raw)).join("\n") + (lines.length ? "\n" : ""));
 	}
 }
 
@@ -420,7 +447,9 @@ export class Inbox {
  * rewritten in this shape the next time its status changes.
  */
 function readFinding(raw: any): InboxEntry | undefined {
-	if (!raw || typeof raw !== "object") return undefined;
+	// The id is the only handle a surface prints and a button sends: a line without one of the shape
+	// pi-loops gives (`inb-` and 32 hex) is no finding, and is kept as it is, like a torn line.
+	if (!raw || typeof raw !== "object" || typeof raw.id !== "string" || !FINDING_ID.test(raw.id)) return undefined;
 	// A line anything may have written: a field of the wrong type reads as missing, so every reader
 	// of a finding can call a string method on a string field.
 	const str = (...keys: string[]): string | undefined => {
@@ -429,7 +458,7 @@ function readFinding(raw: any): InboxEntry | undefined {
 	};
 	const status = str("status");
 	return {
-		id: str("id") ?? "",
+		id: raw.id,
 		created_at: str("created_at", "createdAt") ?? "",
 		status: status === "claimed" || status === "dismissed" ? status : "new",
 		kind: raw.kind === "checkpoint" ? "checkpoint" : "news",
@@ -449,6 +478,29 @@ function readFinding(raw: any): InboxEntry | undefined {
 		...(raw.undelivered === true ? { undelivered: true as const } : {}),
 		...(typeof raw.lane === "string" ? { lane: raw.lane } : {}),
 		...readAskFields(raw),
+	};
+}
+
+/** The longest `source` and `job_id` a consumer reads, as `build` caps a new finding's source. */
+const LABEL_MAX_CHARS = 80;
+
+/**
+ * A finding as every consumer reads it: each field a surface shows, as the card shows it. The text,
+ * the source, the job, the reasons, the call and the answer are screened, redacted, on one line and
+ * capped. The cwd is an identity, not words: it is as stored, so it matches its project and its lane
+ * exactly; a surface that shows it screens it there. Ids, stamps, the lane, the transcript and the cap are as stored. Only
+ * the steps inside a section and a rewrite read the stored words.
+ */
+export function screenFinding(stored: InboxEntry): InboxEntry {
+	const words = (text: string, max: number): string => capChars(cardText(text), max);
+	return {
+		...stored,
+		source: words(stored.source, LABEL_MAX_CHARS),
+		text: words(stored.text, INBOX_TEXT_MAX_CHARS),
+		dismiss_reason: stored.dismiss_reason === null ? null : words(stored.dismiss_reason, INBOX_TEXT_MAX_CHARS),
+		...(stored.job_id === undefined ? {} : { job_id: words(stored.job_id, LABEL_MAX_CHARS) }),
+		...(stored.verified_reason === undefined ? {} : { verified_reason: capChars(redact(screenText(stored.verified_reason)), INBOX_TEXT_MAX_CHARS) }),
+		...screenAskFields(stored),
 	};
 }
 

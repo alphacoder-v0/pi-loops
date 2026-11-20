@@ -26,7 +26,6 @@ import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } fr
 import { CANCELLED_LINE, answerWho, cancelRefusal, cardLine, cardOrigin, inboxCard, shellClaimOfQuestion } from "./inbox-card.ts";
 import { type PersonAnswers, personAnswers } from "./answers.ts";
 import { sameProject } from "./paths.ts";
-import { redact } from "./redact.ts";
 import { crashPaused, crashPauseText, ensureHost, HOST_LOG, hostCommand, hostServiceAlive, LEAVE_WAIT_MS, readHostService, RESTART_WAIT_LINE, readSpawnLog, removeHostService, type EnsureHostOptions, type HostServiceRecord } from "./host-control.ts";
 import { loadConfig, pageBindPort } from "./config.ts";
 import { writeUiPref } from "./ui-prefs.ts";
@@ -564,13 +563,12 @@ function shellAnswers(loopsDir: string): PersonAnswers {
 
 /**
  * One finding as docs/downstream.md fixes it: the contract's fields of the entry and nothing else,
- * in their order, with what a person may read redacted. Fields are added at the end, never renamed.
+ * in their order. The inbox gives every finding with what a person may read screened and redacted
+ * (`Inbox.list`). Fields are added at the end, never renamed.
  */
 function findingJson(e: InboxEntry): Record<string, unknown> {
 	const out: Record<string, unknown> = {};
 	for (const field of FINDING_FIELDS) out[field] = e[field];
-	out.text = redact(e.text);
-	out.dismiss_reason = e.dismiss_reason === null ? null : redact(e.dismiss_reason);
 	return out;
 }
 

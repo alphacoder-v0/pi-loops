@@ -5,8 +5,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { FINDING_FIELDS, Inbox, type InboxEntry, findingId, resolveInboxRef, UNDER_INBOX_LOCK } from "../src/inbox.ts";
-import { type AnswerWrite, answerStep } from "../src/ask.ts";
+import { FINDING_FIELDS, INBOX_ROTATE_BYTES, Inbox, type InboxEntry, findingId, inProject, resolveInboxRef, UNDER_INBOX_LOCK } from "../src/inbox.ts";
+import { type AnswerWrite, answerPrompt, answerRow, answerStep, besideId } from "../src/ask.ts";
+import { sameProject } from "../src/paths.ts";
+import { checkLane } from "../src/trigger-runtime.ts";
+import { queueLines } from "../src/job-lines.ts";
 import { type PersonAnswers, personAnswers } from "../src/answers.ts";
 import { RequestStore } from "../src/requests.ts";
 import { JobStore } from "../src/store.ts";
@@ -43,8 +46,8 @@ test("an entry written before kind existed reads as news, and a kind that is not
 	fs.writeFileSync(
 		inbox.file,
 		[
-			JSON.stringify({ id: "inb-1", created_at: "2026-09-15T00:00:00.000+00:00", source: "cron:old", text: "old finding · waits: you", trace_id: "r", status: "new", job_id: "j", cwd: "/p" }),
-			JSON.stringify({ id: "inb-2", created_at: "2026-09-15T00:00:01.000+00:00", source: "cron:odd", text: "odd", trace_id: "r", status: "new", job_id: "j", cwd: "/p", kind: "urgent" }),
+			JSON.stringify({ id: findingId("1"), created_at: "2026-09-15T00:00:00.000+00:00", source: "cron:old", text: "old finding · waits: you", trace_id: "r", status: "new", job_id: "j", cwd: "/p" }),
+			JSON.stringify({ id: findingId("2"), created_at: "2026-09-15T00:00:01.000+00:00", source: "cron:odd", text: "odd", trace_id: "r", status: "new", job_id: "j", cwd: "/p", kind: "urgent" }),
 		].join("\n") + "\n",
 	);
 	assert.deepEqual(inbox.listNew().map((e) => e.kind), ["news", "news"], "the kind is what the run wrote at append time, never re-read from the text");
@@ -185,14 +188,14 @@ test("a line with fields of the wrong type reads as strings and a boolean, and a
 	fs.writeFileSync(
 		inbox.file,
 		[
-			JSON.stringify({ id: "inb-1", status: "new", source: 5, job_id: ["x"], cwd: {}, run_id: 7, session_id: 1, verified: "yes", text: "typed by hand", created_at: 3, transcript: 9 }),
-			JSON.stringify({ id: "inb-2", status: "new", text: "" }),
+			JSON.stringify({ id: findingId("1"), status: "new", source: 5, job_id: ["x"], cwd: {}, run_id: 7, session_id: 1, verified: "yes", text: "typed by hand", created_at: 3, transcript: 9 }),
+			JSON.stringify({ id: findingId("2"), status: "new", text: "" }),
 			JSON.stringify({ status: "new", kind: "checkpoint", text: "no id · waits: you" }),
 		].join("\n") + "\n",
 	);
 	const [e] = inbox.list();
 	assert.deepEqual([e.source, e.job_id, e.cwd, e.run_id, e.session_id, e.verified, e.created_at, e.transcript], ["", undefined, "", "", undefined, null, "", undefined]);
-	assert.deepEqual(inbox.listNew().map((x) => x.id), ["inb-1"], "a finding with no id or no text is not listed");
+	assert.deepEqual(inbox.listNew().map((x) => x.id), [findingId("1")], "a finding with no id or no text is not listed");
 	assert.equal(inbox.newCount(), 1, "nor counted by the badge");
 	assert.equal(inbox.decisionCount(), 0);
 });
@@ -285,8 +288,8 @@ test("a finding keeps its lane through a rewrite, and a lane that is not a strin
 	await answersOver(inbox).say(other.id, "no", { by: "cli" });
 	assert.equal(inbox.list().find((e) => e.id === withLane.id)?.lane, "@cron-abc", "the rewrite of the file kept it");
 	assert.match(fs.readFileSync(inbox.file, "utf8").split("\n")[0], /"lane":"@cron-abc"\}$/);
-	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-x", created_at: "2026-11-01T00:00:00.000+00:00", status: "new", source: "s", run_id: "r", cwd: "/p", text: "t", lane: 5 })}\n`);
-	assert.equal("lane" in inbox.list().find((e) => e.id === "inb-x")!, false);
+	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: findingId("x"), created_at: "2026-11-01T00:00:00.000+00:00", status: "new", source: "s", run_id: "r", cwd: "/p", text: "t", lane: 5 })}\n`);
+	assert.equal("lane" in inbox.list().find((e) => e.id === findingId("x"))!, false);
 });
 
 test("pi-loops inbox --json fields do not gain lane", () => {
@@ -396,7 +399,7 @@ test("[section] fileOnce inside a section files once and carries ask", async () 
 	const id = findingId("ask | one");
 	const entry = { source: "cron:x", run_id: "r", cwd: "/p", text: "Run it?", ask: ASK as InboxEntry["ask"] };
 	const [first, second] = await inbox.section((tx) => [tx.fileOnce(entry, id), tx.fileOnce({ ...entry, text: "other" }, id)]);
-	assert.equal(first, second);
+	assert.deepEqual(first, second);
 	assert.deepEqual(inbox.list().map((e) => [e.id, e.text]), [[id, "Run it?"]]);
 	assert.deepEqual(inbox.list()[0].ask, ASK);
 	assert.equal(Object.keys(inbox.list()[0]).at(-1), "ask", "written after lane");
@@ -444,4 +447,135 @@ test("[pins-by-id] pinnedTranscripts finds a finding's transcript in the lane's 
 
 test("[lock] UNDER_INBOX_LOCK is five seconds", () => {
 	assert.deepEqual(UNDER_INBOX_LOCK, { timeoutMs: 5_000 });
+});
+
+/** A secret every redactor knows, and words that hold it, terminal escapes and 2000 characters. */
+const SECRET = "sk-ant-api03-" + "a".repeat(40);
+const dirty = (label: string): string => `${label} \u001b[2J\u001b]0;owned\u0007 ${SECRET} \u001b[31m${"y".repeat(2000)}`;
+const DIRTY_ID = findingId("dirty");
+/** A line written by hand: its keys in another order and spaced, so only a byte-for-byte copy keeps it. */
+const DIRTY = {
+	text: dirty("text"),
+	id: DIRTY_ID,
+	created_at: AT,
+	status: "new",
+	kind: "checkpoint",
+	source: dirty("source"),
+	run_id: "r",
+	cwd: dirty("/cwd"),
+	verified: true,
+	dismiss_reason: dirty("dismissed"),
+	verified_reason: dirty("verified"),
+	ask: { ...ASK, call: { ...ASK.call, command: dirty("git push") } },
+};
+const DIRTY_LINE = JSON.stringify(DIRTY, null, 1).replace(/\n\s*/g, " ");
+const DIRTY_WORDS = (e: InboxEntry): Record<string, string | null | undefined> => ({ text: e.text, source: e.source, cwd: e.cwd, dismiss_reason: e.dismiss_reason, verified_reason: e.verified_reason, command: e.ask?.call.command });
+
+function seedDirty(inbox: Inbox, ...more: object[]): void {
+	fs.mkdirSync(path.dirname(inbox.file), { recursive: true });
+	fs.writeFileSync(inbox.file, [DIRTY_LINE, ...more.map((m) => JSON.stringify(m))].join("\n") + "\n");
+}
+
+function assertClean(what: string, value: string | null | undefined): void {
+	assert.equal(typeof value, "string", `${what} is there`);
+	assert.ok(!value!.includes("\u001b"), `${what} holds no escape`);
+	assert.ok(!value!.includes(SECRET), `${what} holds no secret`);
+}
+
+test("[screen] a finding is read with its words as the card shows them, and its row, the queue and the prompt hold no escape and no secret", () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	seedDirty(inbox);
+	const [finding] = inbox.list();
+	for (const [field, value] of Object.entries(DIRTY_WORDS(finding))) {
+		// A cwd is an identity, not words: a reader gets it as stored, and a surface that shows it screens it.
+		if (field === "cwd") assert.equal(value, DIRTY.cwd, "cwd");
+		else {
+			assertClean(field, value);
+			assert.ok(Array.from(value!).length <= 501, `${field} is capped`);
+		}
+	}
+	assert.ok(!finding.ask!.call.command!.includes("2J"), "an escape goes whole, not only its first byte");
+	const row = answerRow({ ...finding, claimed_by: "s1" }, "@cron-abc", AT, { pid: 1, instance: "test", version: "0" });
+	assertClean("the row's text", String(row.payload.text));
+	assert.equal(row.payload.cwd, DIRTY.cwd, "the row's cwd is the finding's, as stored: it names the project the run starts in");
+	for (const line of queueLines([row], { now: Date.parse(AT), jobName: () => undefined, inFlight: new Set() })) assertClean("/cron queue", line);
+	assertClean("the prompt of a yes to the question", answerPrompt(finding, row.id, Date.parse(AT)));
+	assertClean("the prompt of a yes to the finding", answerPrompt({ ...finding, ask: undefined }, row.id, Date.parse(AT)));
+	assert.equal(fs.readFileSync(inbox.file, "utf8"), `${DIRTY_LINE}\n`, "reading changes nothing in the file");
+});
+
+test("[screen] a rewrite keeps a line it does not change byte for byte, and one it changes with its stored words", async () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	const other = { id: findingId("other"), created_at: AT, status: "new", kind: "news", source: "cron:x", run_id: "r", cwd: "/p", text: "other", verified: null, dismiss_reason: null };
+	const third = { ...other, id: findingId("third"), text: "third" };
+	seedDirty(inbox, other, third);
+	const dirtyLineThere = (after: string) => assert.ok(fs.readFileSync(inbox.file, "utf8").split("\n").includes(DIRTY_LINE), `the hand-written line is as it was after ${after}`);
+	await inbox.section((tx) => tx.write(answerStep("N1", tx.find(other.id), { to: "none", by: "terminal" }, { at: AT, lane: undefined }) as AnswerWrite));
+	dirtyLineThere("section.write on another finding");
+	assert.equal((await answersOver(inbox).clear((f) => f.id === third.id, { by: "terminal", session: "s" })).length, 1);
+	dirtyLineThere("a clear");
+	// Past the rotation size, the oldest half of the triaged findings goes and the rest is rewritten.
+	const filler = Array.from({ length: Math.ceil(INBOX_ROTATE_BYTES / 500) }, (_, i) => JSON.stringify({ ...other, id: findingId(`filler-${i}`), status: "dismissed", text: "z".repeat(400) }));
+	fs.appendFileSync(inbox.file, `${filler.join("\n")}\n`);
+	const before = fs.statSync(inbox.file).size;
+	await inbox.append({ source: "cron:x", run_id: "r", cwd: "/p", text: "one more" });
+	assert.ok(fs.statSync(inbox.file).size < before, "the inbox rotated");
+	dirtyLineThere("a rotation");
+	// A change of its own status: the fields the change set are new, every other word is as stored.
+	await inbox.section((tx) => tx.write(answerStep("N1", tx.find(DIRTY_ID), { to: "none", by: "terminal" }, { at: AT, lane: undefined }) as AnswerWrite));
+	const line = fs.readFileSync(inbox.file, "utf8").split("\n").map((l) => (l ? JSON.parse(l) : undefined)).find((l) => l?.id === DIRTY_ID);
+	assert.equal(line.status, "dismissed");
+	assert.deepEqual(
+		{ text: line.text, source: line.source, cwd: line.cwd, dismiss_reason: line.dismiss_reason, verified_reason: line.verified_reason, command: line.ask.call.command },
+		{ text: DIRTY.text, source: DIRTY.source, cwd: DIRTY.cwd, dismiss_reason: DIRTY.dismiss_reason, verified_reason: DIRTY.verified_reason, command: DIRTY.ask.call.command },
+		"the stored words are as they were on disk",
+	);
+	assertClean("the finding as read after its rewrite", inbox.list().find((e) => e.id === DIRTY_ID)?.text);
+});
+
+test("[screen] a cwd is an identity: a reader gets it as stored, so its project and its lane still match", async () => {
+	const dir = tmp("pi-loops-inbox-");
+	const project = path.join(dir, "task-scheduler-backend-service");
+	fs.mkdirSync(project, { recursive: true });
+	const inbox = new Inbox(dir);
+	await inbox.append({ source: "cron:x", run_id: "r", cwd: project, text: "a finding of this project" });
+	const [listed] = inbox.list();
+	assert.equal(listed.cwd, project, "a project whose name has a key's shape inside a word reads as written");
+	assert.equal(inProject(inbox.list(), project, sameProject).length, 1, "and its finding is listed in its project");
+	const odd = `${project}/${SECRET}/${"d".repeat(2000)}\u0007`;
+	await inbox.append({ source: "cron:x", run_id: "r2", cwd: odd, text: "another" });
+	assert.equal(inbox.list()[1].cwd, odd, "a path is neither screened, redacted nor cut for a reader");
+	const zw = path.join(dir, "proj\u200bx");
+	fs.mkdirSync(zw, { recursive: true });
+	await inbox.append({ source: "cron:x", run_id: "r3", cwd: zw, text: "a third" });
+	assert.equal(inProject(inbox.list(), zw, sameProject).length, 1, "a legal format character in a path keeps its finding in its project");
+});
+
+test("[screen] a cancel files the question open again with the words as they were stored, not as a reader got them", async () => {
+	const dir = tmp("pi-loops-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project, { recursive: true });
+	const inbox = new Inbox(dir);
+	const id = findingId("to-cancel");
+	const stored = { id, created_at: AT, status: "new", kind: "news", source: "trigger:\u001b[31mred", run_id: "r", cwd: project, text: `deploy with ${SECRET} \u001b]0;owned\u0007 now`, verified: null, dismiss_reason: null, lane: checkLane(project) };
+	fs.writeFileSync(inbox.file, `${JSON.stringify(stored)}\n`);
+	const answers = answersOver(inbox);
+	assert.equal((await answers.say(id, "yes", { by: "page", session: "s" })).said, "Y1");
+	assert.ok("cancelled" in (await answers.cancel(id)), "the yes is cancelled");
+	const again = fs.readFileSync(inbox.file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((l) => l.id === besideId(id, "again"));
+	assert.ok(again, "the question is filed again");
+	assert.deepEqual({ text: again.text, source: again.source }, { text: stored.text, source: stored.source }, "its stored words are the finding's stored words");
+	assertClean("the question open again, as a reader gets it", inbox.list().find((e) => e.id === again.id)?.text);
+});
+
+test("[screen] a line whose id is not inb- and 32 hex digits is no finding to a reader, and a rewrite keeps it as it was", async () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	const good = { id: findingId("good"), created_at: AT, status: "new", kind: "news", source: "cron:x", run_id: "r", cwd: "/p", text: "good", verified: null, dismiss_reason: null };
+	const bad = ["inb-\u001b[2J\u001b]0;owned\u0007", "inb-123", `inb-${"A".repeat(32)}`, "../../etc"].map((badId) => JSON.stringify({ ...good, id: badId, text: "bad" }));
+	fs.mkdirSync(path.dirname(inbox.file), { recursive: true });
+	fs.writeFileSync(inbox.file, [JSON.stringify(good), ...bad].join("\n") + "\n");
+	assert.deepEqual(inbox.list().map((e) => e.id), [good.id], "only the finding with an id of the finding shape is read");
+	await inbox.section((tx) => tx.write(answerStep("N1", tx.find(good.id), { to: "none", by: "terminal" }, { at: AT, lane: undefined }) as AnswerWrite));
+	const after = fs.readFileSync(inbox.file, "utf8").split("\n");
+	for (const line of bad) assert.ok(after.includes(line), `kept as it was: ${line.slice(0, 30)}`);
 });

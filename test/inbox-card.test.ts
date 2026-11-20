@@ -218,6 +218,16 @@ test("an answer's state reads as design 6.1's table says, from the finding alone
 	assert.ok(!said.includes(key) && !said.includes("\u001b"), said);
 });
 
+test("a yes from the page whose row was not queued does not say it runs", () => {
+	const news = entry({ status: "claimed" });
+	for (const kept of [true, false]) {
+		const line = yesPageLine({ said: "Y1", finding: news, queued: false }, "nightly", kept);
+		assert.doesNotMatch(line, /running/i, `transcript kept: ${kept}`);
+		assert.equal(line, "Your yes is saved, but its run could not be queued. pi-loops queues it again on its next tick.");
+	}
+	assert.equal(yesPageLine({ said: "Y1", finding: news, queued: true }, "nightly", true), "Running in the background, in the run that reported it.");
+});
+
 test("a cancel that comes too late is refused in design 6.2's words", () => {
 	assert.equal(CANCELLED_LINE, "Cancelled. The question is open again");
 	assert.equal(cancelRefusal({ refused: "state", state: "started" }), "it has already started: stop it instead");

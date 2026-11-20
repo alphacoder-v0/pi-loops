@@ -309,10 +309,13 @@ export function yesTerminalLine(said: { said: "Y1"; finding: InboxEntry } | { sa
 /**
  * What a card says after a yes from the page (design 6.1, 6.2). A question shows its state at once;
  * any other finding says that it runs in the background, and from what when its transcript is gone.
+ * `queued` is false when the yes was written and its row was not: nothing runs until the next tick
+ * puts the row back (H1), and the card says that.
  */
-export function yesPageLine(said: { said: "Y1"; finding: InboxEntry } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, transcriptKept: boolean): string {
+export function yesPageLine(said: { said: "Y1"; finding: InboxEntry; queued?: boolean } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, transcriptKept: boolean): string {
 	if (said.said === "Y2") return `Not run (${said.why})`;
 	if (said.finding.ask) return answerLine(said.finding) ?? "Waiting to run";
+	if (said.queued === false) return "Your yes is saved, but its run could not be queued. pi-loops queues it again on its next tick.";
 	return transcriptKept ? "Running in the background, in the run that reported it." : `Running in the background. The run's transcript is gone, so ${who} starts from the finding's text.`;
 }
 

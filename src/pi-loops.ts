@@ -1777,9 +1777,9 @@ export default function piLoops(pi: ExtensionAPI) {
 			const when = formatLocal(Date.parse(e.created_at));
 			// The project comes first of the three: with loops running in several checkouts it is what
 			// decides whether a finding is this morning's problem, and claiming runs it in that cwd.
-			// Every field from the file goes through screenText, as the card's text does: none of them
-			// may repaint the terminal this prints in.
-			const why = e.dismiss_reason ? ` — dismissed: ${redact(screenText(e.dismiss_reason))}` : "";
+			// The inbox screens every field it reads from the file (`Inbox.list`); a loop's label comes
+			// from jobs.json and is screened here. None of them may repaint the terminal this prints in.
+			const why = e.dismiss_reason ? ` — dismissed: ${e.dismiss_reason}` : "";
 			const where = `${screenText(projectOf(e.cwd))}, ${screenText(cardOrigin(card))}`;
 			if (!numbered) return cardLines(card, `  [${e.status}] `, `${why}  (${where})`);
 			return cardLines(card, `  ${i + 1}. [${e.id.slice(0, 12)}] `, `  (${where}, ${when})`);
@@ -2115,7 +2115,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							// The run worked in its own project; a conversation forked from it here would be a
 							// conversation about that project with this one's directory and tools.
 							if (entry.cwd && !sameProject(entry.cwd, session.cwd)) {
-								ctx.ui.notify(`inbox entry ${target} is from ${homeRel(entry.cwd)}: open it from a pi in that project`, "warning");
+								ctx.ui.notify(`inbox entry ${target} is from ${screenText(homeRel(entry.cwd))}: open it from a pi in that project`, "warning");
 								return;
 							}
 							const transcript = entry.transcript ?? stores.jobs.allRuns().find((record) => record.runId === entry.run_id)?.sessionFile;
@@ -2142,7 +2142,7 @@ export default function piLoops(pi: ExtensionAPI) {
 								return;
 							}
 							const loop = stores.jobs.load().find((j) => j.id === entry.job_id);
-							ctx.ui.notify(`dismissed: ${previewRedacted(screenText(entry.text), 80)}${dismissTail(dismissOutcome(entry, loop, reason))}`, "info");
+							ctx.ui.notify(`dismissed: ${previewRedacted(entry.text, 80)}${dismissTail(dismissOutcome(entry, loop, reason))}`, "info");
 							return;
 						}
 						const said = await answers.say(entry.id, "yes", from);

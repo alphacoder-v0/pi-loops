@@ -246,15 +246,15 @@ test("a line of inbox.jsonl is the finding of the contract, and the two older sh
 	assert.equal(raw.verified_reason, "checked");
 	// A line from pi-loops ≤ 0.1.2 (camelCase), and one in the shape written until 0.21.0 (`trace_id`,
 	// optional keys left out) — both read, with the defaults the missing keys stand for.
-	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-old", createdAt: "2026-09-08T00:00:00.000Z", source: "loop:y", text: "legacy", runId: "r0", jobId: "j0", cwd: "/q", status: "new", claimedBy: "s0" })}\n`);
-	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-021", created_at: "2026-09-15T00:00:00.000Z", source: "loop:z", text: "from 0.21.0", trace_id: "r1", session_id: null, status: "new", job_id: "j1", cwd: "/r" })}\n`);
+	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-00000000000000000000000000000001", createdAt: "2026-09-08T00:00:00.000Z", source: "loop:y", text: "legacy", runId: "r0", jobId: "j0", cwd: "/q", status: "new", claimedBy: "s0" })}\n`);
+	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-00000000000000000000000000000021", created_at: "2026-09-15T00:00:00.000Z", source: "loop:z", text: "from 0.21.0", trace_id: "r1", session_id: null, status: "new", job_id: "j1", cwd: "/r" })}\n`);
 	const all = inbox.list();
 	assert.deepEqual(
 		all.map((e) => [e.id, e.run_id, e.kind, e.verified, e.dismiss_reason, e.claimed_by]),
 		[
 			[a.id, "run-1", "news", true, null, undefined],
-			["inb-old", "r0", "news", null, null, "s0"],
-			["inb-021", "r1", "news", null, null, undefined],
+			["inb-00000000000000000000000000000001", "r0", "news", null, null, "s0"],
+			["inb-00000000000000000000000000000021", "r1", "news", null, null, undefined],
 		],
 	);
 	assert.equal(all[0].session_id, "s1");
@@ -489,7 +489,7 @@ test("a dismiss with a reason is kept on the entry and handed to that loop's nex
 	assert.deepEqual(inbox.feedbackFor("job-x").map((e) => e.id), [a.id], "clear stamps the time but has no reason to pass on");
 	assert.equal(inbox.list().find((e) => e.id === a.id)?.dismiss_reason, "that file is generated");
 	// A line dismissed before pi-loops stamped dismissed_at has no time to compare and is left out.
-	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-old", created_at: before, source: "cron:x", text: "old", trace_id: "r0", job_id: "job-x", cwd: "/", status: "dismissed", dismiss_reason: "typed by hand" })}\n`);
+	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-00000000000000000000000000000001", created_at: before, source: "cron:x", text: "old", trace_id: "r0", job_id: "job-x", cwd: "/", status: "dismissed", dismiss_reason: "typed by hand" })}\n`);
 	assert.deepEqual(inbox.feedbackFor("job-x").map((e) => e.id), [a.id]);
 });
 
