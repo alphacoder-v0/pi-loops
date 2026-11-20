@@ -6,6 +6,7 @@
  * a dead letter; which exit a row may take), so a change to the engine's own constants is a change
  * these checks see.
  */
+import { type InboxEntry, findingId } from "../../src/inbox.ts";
 import type { Row } from "../../src/requests.ts";
 import { type Conversation, type Copy, type Removal, type World, answered, countsFor, everyProcess, failedHandOvers, held, label, who } from "./world.ts";
 
@@ -25,8 +26,8 @@ interface Memory {
 	spent: Map<string, { dead: number; audited: number }>;
 	/** Rows that left by a named exit at least once. */
 	exited: Set<string>;
-	/** Each finding's status when it was last read. */
-	findings: Map<string, string>;
+	/** Each finding as it was last read (I7). */
+	findings: FindingMemory;
 	/** Hand-overs of a row that has left its queue since: what a stop asked of them is over. */
 	released: Set<Copy>;
 }
@@ -237,19 +238,110 @@ function heldIsStillOwed(world: World, memory: Memory): string[] {
 }
 
 /**
- * I7. A finding goes from `new` to `claimed` or `dismissed` once and never back or away; two
- * decisions at once give one `ok`; and the hand-off of a claim (src/engine.ts `handOver`, which the
- * schedule calls) is queued only for a finding that is claimed, so a claim that lost queued nothing.
+ * Where a finding stands, as I7 reads it: its status and, once it is claimed, the state of its answer,
+ * or who claimed it when it has none (`cli`: a yes from the command line; `0.24.2`: a claim an older
+ * version wrote, with no surface named; `none`: a claim from a person's surface with no answer).
+ */
+export type Standing = "new" | "dismissed" | `claimed:${"pending" | "started" | "done" | "unfinished" | "not_run" | "unreadable" | "cli" | "0.24.2" | "none"}`;
+
+export function standingOf(entry: InboxEntry): Standing {
+	if (entry.status !== "claimed") return entry.status;
+	const state = entry.answer?.state;
+	if (state !== undefined) return `claimed:${state}`;
+	return entry.answered_by === "cli" ? "claimed:cli" : entry.answered_by === undefined ? "claimed:0.24.2" : "claimed:none";
+}
+
+/**
+ * The arrows of the answer protocol, stated here and not imported from src/ask.ts. A person decides a
+ * `new` finding once (a yes that queues, a yes with nowhere to run, a yes from the command line, a
+ * no). An answer goes `pending` to `started` or `not_run`, `started` to `done` or `unfinished`. A
+ * finding goes back to `new` only by a cancel of a `pending` answer (V1) or by the conversion of an
+ * older version's claim (K2): never from `started` or a final state.
+ */
+const ARROWS: Readonly<Record<Standing, readonly Standing[]>> = {
+	new: ["dismissed", "claimed:pending", "claimed:not_run", "claimed:cli"],
+	"claimed:pending": ["claimed:started", "claimed:not_run", "new"],
+	"claimed:started": ["claimed:done", "claimed:unfinished"],
+	"claimed:0.24.2": ["new"],
+	dismissed: [],
+	"claimed:done": [],
+	"claimed:unfinished": [],
+	"claimed:not_run": [],
+	"claimed:unreadable": [],
+	"claimed:cli": [],
+	"claimed:none": [],
+};
+
+/** Every standing a finding may reach from `from` in one step of a schedule, which can make several moves. */
+function reachable(from: Standing): Set<Standing> {
+	const out = new Set<Standing>();
+	const next = [...ARROWS[from]];
+	while (next.length) {
+		const to = next.pop()!;
+		if (out.has(to)) continue;
+		out.add(to);
+		next.push(...ARROWS[to]);
+	}
+	return out;
+}
+
+/** The news a final state stands beside, written in the same rewrite: an unfinished answer's outcome, a yes that was not run. A done answer has none. */
+const NEWS: Partial<Record<Standing, "outcome" | "not-run">> = { "claimed:unfinished": "outcome", "claimed:not_run": "not-run" };
+const newsId = (id: string, what: "outcome" | "not-run"): string => findingId(`${id} | ${what}`);
+
+/** What I7 remembers of the inbox: each finding as it was last read, and every id it ever read. */
+export interface FindingMemory {
+	last: Map<string, InboxEntry>;
+	seen: Set<string>;
+}
+export const findingMemory = (): FindingMemory => ({ last: new Map(), seen: new Set() });
+
+/**
+ * I7, over one read of the inbox. A finding moves only along `ARROWS`, so it is decided once per
+ * answer. A final state stands beside its news, in every read, and never beside the news of another
+ * final state. Each id is in the inbox once. `exempt` names findings a hand edit changed: the step
+ * that edited one tells the memory (`remember`), and none of these checks reads it. Returns what is
+ * broken, and the findings the inbox no longer holds, as they were last read: whether one may go is
+ * the caller's (only a rotation of the inbox takes one away).
+ */
+export function decidedOnceOver(memory: FindingMemory, entries: readonly InboxEntry[], exempt: (id: string) => boolean = () => false): { broken: string[]; gone: InboxEntry[] } {
+	const broken: string[] = [];
+	const ids = new Set<string>();
+	for (const entry of entries) {
+		if (ids.has(entry.id)) broken.push(`the inbox holds ${entry.id} twice`);
+		ids.add(entry.id);
+		memory.seen.add(entry.id);
+	}
+	for (const entry of entries) {
+		const was = memory.last.get(entry.id);
+		memory.last.set(entry.id, entry);
+		if (exempt(entry.id)) continue;
+		const now = standingOf(entry);
+		if (was !== undefined && standingOf(was) !== now && !reachable(standingOf(was)).has(now)) broken.push(`${entry.id} went from ${standingOf(was)} to ${now}`);
+		for (const what of ["outcome", "not-run"] as const) {
+			const filed = memory.seen.has(newsId(entry.id, what));
+			if (NEWS[now] === what && !filed) broken.push(`${entry.id} is ${now} and its news ${what} was never filed`);
+			if (NEWS[now] !== what && filed && now !== "new" && now !== "dismissed") broken.push(`${entry.id} is ${now} beside the news ${what} of another state`);
+		}
+	}
+	const gone = [...memory.last.values()].filter((entry) => !ids.has(entry.id));
+	for (const entry of gone) memory.last.delete(entry.id);
+	return { broken, gone };
+}
+
+/** A finding a hand edit changed: I7 takes it as it is now, with no arrow to check. */
+export function remember(memory: FindingMemory, entry: InboxEntry): void {
+	memory.last.set(entry.id, entry);
+	memory.seen.add(entry.id);
+}
+
+/**
+ * I7. A finding is decided once per answer (`decidedOnceOver`), and no finding leaves the inbox: this
+ * world never rotates it. Two decisions at once on a `new` finding give one `ok`.
  */
 function decidedOnce(world: World, memory: Memory, queues: Queues, coverage: Coverage): string[] {
-	const out: string[] = [];
-	const entries = world.inbox.list();
-	for (const [index, entry] of entries.entries()) {
-		const was = memory.findings.get(entry.id);
-		if (was !== undefined && was !== "new" && was !== entry.status) out.push(`finding ${index + 1} went from ${was} to ${entry.status}`);
-		memory.findings.set(entry.id, entry.status);
-	}
-	if (entries.length < memory.findings.size) out.push(`the inbox holds ${entries.length} findings and held ${memory.findings.size}: one is gone`);
+	const { broken: out, gone } = decidedOnceOver(memory.findings, world.inbox.list());
+	for (const entry of gone) out.push(`${entry.id} is gone from the inbox`);
 	for (const decided of world.facts.decided) {
 		coverage.decisions++;
 		const expected = decided.was === "new" ? 1 : 0;
@@ -456,7 +548,7 @@ export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
 	["a pi-loops custom message keeps its mark", customKeepsItsMark],
 	["an aborted message proves no row of the same id queued after it", abortedProvesNoLaterRow],
 	["I6 what pi holds unwritten is still owed on disk", heldIsStillOwed],
-	["I7 a finding is decided once", decidedOnce],
+	["I7 a finding is decided once per answer", decidedOnce],
 	["a stop and a cancel do what they name", stopsAndCancelsWork],
 	["what the person typed stays in the editor until they send it", typedStaysInTheEditor],
 	["a prompt of ours is written by one pi at most three times", writesAreBounded],
@@ -472,7 +564,7 @@ export const INVARIANTS: ReadonlyArray<readonly [string, Invariant]> = [
  * as any other check. `check(true)` is the last one, when the schedule is over.
  */
 export function createChecker(world: World, enforce?: string): { check(end?: boolean): { violation?: Violation; known: Violation[] }; coverage: Coverage } {
-	const memory: Memory = { queued: new Map(), spent: new Map(), exited: new Set(), findings: new Map(), released: new Set() };
+	const memory: Memory = { queued: new Map(), spent: new Map(), exited: new Set(), findings: findingMemory(), released: new Set() };
 	const coverage: Coverage = { exits: {}, handOvers: 0, turnsBesideATurn: 0, decisions: 0, markLess: 0, cappedCalls: 0 };
 	return {
 		coverage,

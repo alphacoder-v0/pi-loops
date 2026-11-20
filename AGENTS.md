@@ -206,6 +206,15 @@ schedules by default. An interleaving that random schedules reach only rarely is
 count: it is a scene of its own in `test/clock-scenes.test.ts`, which drives the real code step by
 step in milliseconds.
 
+A fifth, `test/sim-asks.test.ts`, runs 120 schedules of asks (`test/sim/asks.ts`): runs of a loop, a
+check and a conversation ask a person about a call through the real guard; yeses, noes and cancels
+from a terminal, the page and the CLI; the real `Answers` and answer lanes; runs that make the
+granted call, make it again and end in every way; a process that dies at any write; hand edits of
+the inbox, a rotation and the conversion of 0.24.2's claims. It checks I5 (a call that needs a
+person runs after a yes to it, once per yes, in the lane that asked, never after a cancel), I7 (a
+finding is decided once per answer; the check is shared with `test/sim.test.ts`), that no row is
+stuck and that a run has one record. Its rare interleavings are scenes in the same file.
+
 `check:docs` is there because nothing else in CI reads a README: 0.17.0 was tagged green with an
 install line that answered 404. It holds every install command in every document to what
 `package.json` declares — the route (`piLoops.publishedToNpm` is the one place that says whether npm
