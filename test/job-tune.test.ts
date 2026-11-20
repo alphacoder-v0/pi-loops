@@ -1,4 +1,5 @@
 import type { ListedJob } from "../src/job-status.ts";
+import { stamp } from "../src/schedule.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { PAUSE_DISMISSED, PAUSE_FINDINGS, QUIET_SUGGEST_AFTER, applyTune, rowSignal, scheduleAudit, suggestTune } from "../src/job-tune.ts";
@@ -43,17 +44,18 @@ test("no suggestion for a disabled, plain, one-shot or running loop, or one the 
 });
 
 test("applying: hourly goes through applyJobEdit (the clock restarts at the edit); Pause turns the loop off", () => {
-	const hourly = applyTune(job({ tuneKept: "old" }), suggestTune(shown(job()), signal({ quiet: 12 }), now)!, ctx);
+	const hourly = applyTune(job({ tuneKept: "old" }), undefined, suggestTune(shown(job()), signal({ quiet: 12 }), now)!, ctx);
 	assert.equal(hourly.op, "set");
 	assert.deepEqual(hourly.patch.schedule, { kind: "every", ms: 3_600_000 });
-	assert.equal(Date.parse(hourly.patch.lastDueAt!), now);
+	assert.equal(Date.parse(hourly.slot!), now, "the clock restarts at the edit");
 	assert.ok("tuneKept" in hourly.patch && hourly.patch.tuneKept === undefined);
 	assert.deepEqual(hourly.changed, ["schedule changed from every 15m to every 1h"]);
-	const cron = applyTune(job({ schedule: { kind: "cron", expr: "*/15 * * * *" } }), { kind: "slower", key: "k", label: "Run hourly instead" }, ctx);
+	const cron = applyTune(job({ schedule: { kind: "cron", expr: "*/15 * * * *" } }), undefined, { kind: "slower", key: "k", label: "Run hourly instead" }, ctx);
 	assert.deepEqual(cron.patch.schedule, { kind: "cron", expr: "0 * * * *" });
-	const pause = applyTune(job(), { kind: "pause", key: "k", label: "Pause" }, ctx);
+	const pause = applyTune(job(), undefined, { kind: "pause", key: "k", label: "Pause" }, ctx);
 	assert.equal(pause.op, "disable");
 	assert.equal(pause.patch.enabled, false);
+	assert.deepEqual(pause.patch.disabled, { code: "person", why: "disabled by a person", at: stamp(now) }, "a Pause is a person's disable");
 });
 
 test("rowSignal: the four numbers a row shows", () => {

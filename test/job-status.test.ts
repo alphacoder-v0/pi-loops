@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fromV2 } from "../src/convert-v2.ts";
+import { fromV2, type V2Job } from "../src/convert-v2.ts";
 import { jobStatus, listedJob, runHistory } from "../src/job-status.ts";
 import type { JobClock } from "../src/clock.ts";
 import type { Row } from "../src/requests.ts";
 type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
-import type { LoopJob, LoopJobV3, RunRecord } from "../src/store.ts";
+import type { LoopJob, RunRecord } from "../src/store.ts";
 
 const at = "2026-01-02T03:04:05.000Z";
-const job = (over: Partial<LoopJobV3> = {}): LoopJobV3 => ({ id: "cron-job", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "work", cwd: "/", enabled: true, catchUp: true, createdAt: at, ...over });
+const job = (over: Partial<LoopJob> = {}): LoopJob => ({ id: "cron-job", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "work", cwd: "/", enabled: true, catchUp: true, createdAt: at, ...over });
 const record = (over: Partial<RunRecord> = {}): RunRecord => ({ runId: "r", jobId: "cron-job", stateful: true, cwd: "/", pid: 1, startedAt: at, finishedAt: at, ok: false, findings: 0, droppedFindings: 0, stateUpdated: false, ...over });
 const row = (over: Partial<CountedRow> = {}): CountedRow => ({ v: 3, id: "row", lane: "@cron-job", kind: "input", source: "cron:cron-job", mode: "unattended", wake: "turn", collapse_key: "cron:cron-job", created_at: at, created_by: { pid: 1, instance: "i", version: "1" }, attempts: 0, ...over });
 
@@ -53,10 +53,11 @@ test("[status-disabled] Main's five disabled reasons map to codes, and disabled 
 
 // A loop as the lists show it: the fields main wrote, derived from rows, the run log and the cursor.
 const T = (minutes: number) => new Date(Date.parse(at) + minutes * 60_000).toISOString();
-const v2 = (over: Partial<LoopJob> = {}): LoopJob => ({ id: "cron-job", schedule: { kind: "every", ms: 600_000 }, stateful: true, prompt: "work", cwd: "/", enabled: true, catchUp: true, createdAt: at, runCount: 0, skippedOverlap: 0, ...over });
+const v2 = (over: Partial<V2Job> = {}): V2Job => ({ id: "cron-job", schedule: { kind: "every", ms: 600_000 }, stateful: true, prompt: "work", cwd: "/", enabled: true, catchUp: true, createdAt: at, runCount: 0, skippedOverlap: 0, ...over });
 const claimed = (startedAt: string, over: Partial<CountedRow> = {}): CountedRow => ({ ...row(over), run: { id: "run-1", pid: 7, started_at: startedAt } } as CountedRow);
-const shown = (job: LoopJob, rows: CountedRow[], records: RunRecord[], opts: { live?: boolean; cwd?: boolean; now?: number } = {}) =>
-	listedJob(job, rows, runHistory(records).get(job.id), () => opts.live ?? true);
+/** A version 2 job converted as a start converts it (`fromV2`), then listed. */
+const shown = (job: V2Job, rows: CountedRow[], records: RunRecord[], opts: { live?: boolean; cwd?: boolean; now?: number } = {}) =>
+	listedJob(fromV2(job).job, fromV2(job).clock, rows, runHistory(records).get(job.id), () => opts.live ?? true);
 
 test("[listed-running] A loop runs while a live claim is on its row: the claim is the marker, and its start is the last fire.", () => {
 	const job = v2({ lastDueAt: T(0), lastFiredAt: T(0) });
@@ -64,7 +65,7 @@ test("[listed-running] A loop runs while a live claim is on its row: the claim i
 	assert.deepEqual([running.status.run?.runId, running.status.run?.startedAt, running.status.fired, running.status.error], ["run-1", T(10), T(10), undefined]);
 	const dead = shown(job, [claimed(T(10))], [], { live: false });
 	assert.deepEqual([dead.status.run, dead.status.fired], [undefined, T(0)], "a claim whose process is gone is no run");
-	assert.equal(shown(v2({ running: { runId: "old", pid: 9, startedAt: T(1) } }), [], []).status.run?.runId, "old", "an older version's marker that conversion kept is still a run");
+	assert.equal(shown(v2({ running: { runId: "old", pid: 9, startedAt: T(1) } }), [], []).status.run, undefined, "a run is a claim: an older version's marker is converted at the start, not listed");
 	assert.equal(shown(job, [claimed(T(10), { collapsed: 2, collapsed_slot: T(20), skipped: 1 })], []).status.error, "skipped: previous run still active");
 	assert.equal(shown(job, [claimed(T(12), { collapsed: 1, collapsed_slot: T(20) })], []).status.error, undefined, "a slot counted while the row waited, or while its process was gone, is no skip of this run");
 });
@@ -76,7 +77,7 @@ test("[listed-failure] The last failure is the error while it is the newest run 
 	const stopped = record({ runId: "b", aborted: true, stoppedBy: "person", finishedAt: T(11) });
 	assert.deepEqual([shown(job, [], [failed, stopped]).status.error, shown(job, [], [failed, stopped]).status.streak, shown(job, [], [failed, stopped]).status.completed], [undefined, 1, T(11)], "the launch of the stopped run cleared the error; the streak stays");
 	assert.equal(shown(job, [], [failed, record({ runId: "c", ok: true, finishedAt: T(12) })]).status.streak, 0);
-	assert.equal(shown({ ...job, clearedAt: T(5) } as LoopJob, [], [failed]).status.error, undefined, "an enable after the failure");
+	assert.equal(shown({ ...job, clearedAt: T(5) } as V2Job, [], [failed]).status.error, undefined, "an enable after the failure");
 	assert.equal(shown(v2({ enabled: false }), [], [failed]).status.error, "boom", "a disable by a person keeps it");
 	assert.equal(shown(v2({ enabled: false, lastError: "disabled: cwd / has been missing since then" }), [], [failed]).status.error, "disabled: cwd / has been missing since then");
 	const interrupted = record({ runId: "d", interrupted: true, error: "the process running it stopped", finishedAt: T(20) });
@@ -101,9 +102,13 @@ test("[listed-one-shot] A one-shot's first failure says it retries once, and its
 	assert.deepEqual([parked.status.error, parked.status.due, parked.status.fired], ["parked: its last 3 runs were interrupted", undefined, undefined]);
 });
 
-test("[listed-plain] A plain job's status is what jobs.json has: its turns still write the fields, and a claim on its row is not read here.", () => {
+test("[listed-plain] A plain job's status comes from its cursor and its run log, as a loop's does; a claim on its row is not read here.", () => {
 	const plain = v2({ stateful: false, sessionId: "s", lastError: "kept", consecutiveFailures: 4, runCount: 7, lastFiredAt: T(3) });
 	const listed = shown(plain, [claimed(T(1))], [record({ error: "other" })]);
-	assert.deepEqual(listed.status, { fired: T(3), runs: 7, collapsed: 0, streak: 4, error: "kept" });
+	assert.deepEqual(listed.status, { fired: T(3), completed: at, runs: 7, collapsed: 0, streak: 1, error: "other" });
 	assert.equal((listed as any).lastError, undefined, "the listing carries no field of the version 2 file");
+	const ok = shown(plain, [], [record({ error: "other" }), record({ runId: "r2", ok: true, finishedAt: T(5) })]);
+	assert.deepEqual([ok.status.error, ok.status.streak], [undefined, 0], "a success clears it, as the turn's closing did");
+	const stopped = shown(plain, [], [record({ error: "other" }), record({ runId: "r2", aborted: true, stoppedBy: "person", finishedAt: T(5) })]);
+	assert.equal(stopped.status.error, "other", "a stop is no failure and clears nothing on a plain job");
 });

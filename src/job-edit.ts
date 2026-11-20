@@ -12,6 +12,7 @@
  * assigning a whole job built from a stale copy would erase it.
  */
 import { computeDue, computeNext, formatSchedule, stamp, type DueInput, type Schedule } from "./schedule.ts";
+import type { JobClock } from "./clock.ts";
 import type { LoopJob } from "./store.ts";
 
 export interface JobEdit {
@@ -31,6 +32,8 @@ export type NextRun = { kind: "disabled" } | { kind: "due" } | { kind: "at"; at:
 export interface AppliedJobEdit {
 	/** Exactly the fields to write. Anything absent must keep whatever the store has. */
 	patch: Partial<LoopJob>;
+	/** The slot the clock restarts from (`Clock.reset`), when the schedule changed. */
+	slot?: string;
 	/** One line per field a person would not otherwise be able to recover, for the log. */
 	changed: string[];
 	nextRun: NextRun;
@@ -49,7 +52,7 @@ export interface JobEditContext {
  * Apply `edit` to `job`. Throws — leaving the caller nothing to write — when the result would be a
  * job that cannot run or cannot be referred to.
  */
-export function applyJobEdit(job: LoopJob, edit: JobEdit, ctx: JobEditContext): AppliedJobEdit {
+export function applyJobEdit(job: LoopJob, clock: JobClock | undefined, edit: JobEdit, ctx: JobEditContext): AppliedJobEdit {
 	if (edit.prompt !== undefined) {
 		if (!edit.prompt.trim()) throw new Error("cron action cannot be empty");
 		if (Buffer.byteLength(edit.prompt, "utf8") > ctx.maxPromptBytes) throw new Error(`cron action exceeds ${ctx.maxPromptBytes} bytes`);
@@ -60,6 +63,7 @@ export function applyJobEdit(job: LoopJob, edit: JobEdit, ctx: JobEditContext): 
 	if (edit.schedule?.kind === "once") throw new Error("a job cannot be changed to a one-shot schedule; /cron run <id> runs it now instead");
 
 	const patch: Partial<LoopJob> = {};
+	let slot: string | undefined;
 	const changed: string[] = [];
 	if (edit.model !== undefined) patch.model = edit.model ?? undefined;
 	if (edit.thinking !== undefined) patch.thinking = edit.thinking ?? undefined;
@@ -79,36 +83,37 @@ export function applyJobEdit(job: LoopJob, edit: JobEdit, ctx: JobEditContext): 
 
 	const schedule = edit.schedule ?? job.schedule;
 	const createdAt = Date.parse(job.createdAt);
-	const lastFiredAt = job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined;
+	const fired = clock?.fired ? Date.parse(clock.fired) : undefined;
 	if (edit.schedule !== undefined) {
 		// An expression can parse and still never match ("0 0 30 2 *"): the job would go quiet with
 		// nothing to see. Refuse it, so the caller writes nothing.
-		if (computeNext({ schedule, createdAt, fired: lastFiredAt }, ctx.now) === undefined) {
+		if (computeNext({ schedule, createdAt, fired }, ctx.now) === undefined) {
 			throw new Error(`${formatSchedule(edit.schedule)} has no next run; the job is unchanged`);
 		}
 		patch.schedule = edit.schedule;
-		// A cron job owes every slot its expression matched since `lastDueAt`, so moving a daily job
+		// A cron job owes every slot its expression matched since its last slot, so moving a daily job
 		// to "*/5 * * * *" at noon would owe a run at once — for a slot that only existed
 		// retroactively. Restart the clock at the edit; the first run under the new expression is its
-		// next one. An `every <dur>` job is measured from `lastFiredAt`, which is real bookkeeping and
+		// next one. An `every <dur>` job is measured from its last fire, which is real bookkeeping and
 		// is left alone: "every 30m" means at most 30 minutes apart, so one that last ran an hour ago
 		// is genuinely overdue and should fire on the next tick.
-		patch.lastDueAt = stamp(ctx.now);
+		slot = stamp(ctx.now);
 		changed.push(`schedule changed from ${formatSchedule(job.schedule)} to ${formatSchedule(edit.schedule)}`);
 	}
 
 	const merged = { ...job, ...patch };
-	return { patch, changed, nextRun: nextRunOf(merged, ctx.now) };
+	const cursor = slot === undefined ? clock : { ...(clock ?? { runs: 0 }), slot };
+	return { patch, ...(slot === undefined ? {} : { slot }), changed, nextRun: nextRunOf(merged, cursor, ctx.now) };
 }
 
 /** Read the job back exactly as the scheduler will, so the confirmation cannot promise a fiction. */
-export function nextRunOf(job: LoopJob, now: number): NextRun {
+export function nextRunOf(job: LoopJob, clock: JobClock | undefined, now: number): NextRun {
 	if (!job.enabled) return { kind: "disabled" };
 	const input: DueInput = {
 		schedule: job.schedule,
 		createdAt: Date.parse(job.createdAt),
-		due: job.lastDueAt ? Date.parse(job.lastDueAt) : undefined,
-		fired: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined,
+		due: clock?.slot ? Date.parse(clock.slot) : undefined,
+		fired: clock?.fired ? Date.parse(clock.fired) : undefined,
 	};
 	if (computeDue(input, now) !== undefined) return { kind: "due" };
 	const at = computeNext(input, now);

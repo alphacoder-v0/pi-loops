@@ -27,7 +27,7 @@ export type Gone = "stopped" | "dropped" | "lost";
 import { backoffFor, DEAD_AFTER_ATTEMPTS } from "./backoff.ts";
 export { DEAD_AFTER_ATTEMPTS } from "./backoff.ts";
 import { stamp } from "./schedule.ts";
-import { INTERRUPTED, type RunEnd, type Settlement, runEnd, settle } from "./settle.ts";
+import { INTERRUPTED, type RunEnd, type SettleCounts, type Settlement, runEnd, settle } from "./settle.ts";
 import { type JobStore, type LoopJob, type RunRecord, newId } from "./store.ts";
 import { type TriggerStore, checkDecidedFinding } from "./triggers.ts";
 
@@ -1309,7 +1309,9 @@ export interface EngineSinks {
 	inbox: Pick<Inbox, "appendOnce" | "fileOnce">;
 	audit: Pick<TriggerStore, "appendAudit" | "listAudit">;
 	/** jobs.json and the run log, for the closing of a run: its record when none is there, and the job's patch. A window gives these too: it closes the claim of a background process that is gone. */
-	ledger: Pick<JobStore, "load" | "update" | "appendRun">;
+	ledger: Pick<JobStore, "load" | "disable" | "appendRun">;
+	/** The job's counts in the run log, read after the closing's record is in it (src/job-status.ts `jobCounts`). */
+	counts(jobId: string): SettleCounts;
 	/** This process, as the `created_by` of a row the closing writes. */
 	self(): Row["created_by"];
 }
@@ -1435,7 +1437,7 @@ export interface Closed {
  * The writes, in order. Each is safe to repeat, and a process that stops after any of them leaves
  * the row with its claim, so the next drain starts again at the first:
  *   1. the record, when none belongs to the claim: `record`, else one that says `interrupted`;
- *   2. the job's patch, which `settle` gives once per record;
+ *   2. the job turned off, when `settle` says so (a repeat keeps the first reason);
  *   3. the successor row, under an id derived from this row's;
  *   4. the row, last: it leaves, or its claim is cleared, with or without an attempt.
  */
@@ -1452,11 +1454,9 @@ export async function closeRun(store: RequestStore, sinks: EngineSinks, row: Cla
 	// Whether the prompt is in the conversation. A run that ended spends its slot either way (the
 	// table of `settle`); a run that did not end is delivered only when its prompt is there.
 	const written = landed(row, proof);
-	let settlement = settle(undefined, closed, written);
-	const job = jobId === undefined ? undefined : await sinks.ledger.update(jobId, (j) => {
-		settlement = settle(j, closed, written);
-		if (settlement.job) Object.assign(j, settlement.job);
-	});
+	const named = jobId === undefined ? undefined : sinks.ledger.load().find((j) => j.id === jobId);
+	const settlement = settle(named, closed, written, jobId === undefined ? { streak: 0, interrupted: 0 } : sinks.counts(jobId));
+	const job = named && settlement.disable ? (await sinks.ledger.disable(named.id, settlement.disable)) ?? named : named;
 	const fate = settlement.row;
 	if (job && fate.do === "leave" && fate.exit === "delivered" && fate.successor) store.appendIfAbsent(plainJobRow(job, successorId(job.id, row.id), `cron:${job.id}`, "", sinks.self(), now));
 	let outcome: Closed["outcome"];

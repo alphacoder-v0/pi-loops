@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { failingJobs, failingSummary, ruleFailureMark } from "../src/job-health.ts";
 import { FAILING_AFTER } from "../src/backoff.ts";
 import type { ListedJob } from "../src/job-status.ts";
-import type { LoopJobV3 } from "../src/store.ts";
+import type { LoopJob } from "../src/store.ts";
 
-const job = ({ streak = 0, ...over }: Partial<LoopJobV3> & { streak?: number }): ListedJob => ({ id: "j-1", schedule: { kind: "every", everyMs: 60_000 } as any, stateful: true, prompt: "p", cwd: "/p", enabled: true, catchUp: true, createdAt: new Date().toISOString(), ...over, status: { runs: 0, collapsed: 0, streak } });
+const job = ({ streak = 0, ...over }: Partial<LoopJob> & { streak?: number }): ListedJob => ({ id: "j-1", schedule: { kind: "every", everyMs: 60_000 } as any, stateful: true, prompt: "p", cwd: "/p", enabled: true, catchUp: true, createdAt: new Date().toISOString(), ...over, status: { runs: 0, collapsed: 0, streak } });
 
 test("a loop is reported as failing once the scheduler has started backing it off", () => {
 	const jobs = [

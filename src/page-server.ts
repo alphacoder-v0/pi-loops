@@ -24,6 +24,8 @@ import { formatSchedule, nextRunStamp, scheduleWords, stamp } from "./schedule.t
 import { type Look, lookLine, watchOf } from "./path-precheck.ts";
 import { failingJobs } from "./job-health.ts";
 import { type JobHistory, type ListedJob, listedJob, runHistory } from "./job-status.ts";
+import type { ClockFile } from "./clock.ts";
+import { clockStore } from "./stores.ts";
 import { loopLane } from "./lane.ts";
 import { loopSignal, type LoopSignal, SIGNAL_WINDOW_MS } from "./job-signal.ts";
 import { applyTune, rowSignal, scheduleAudit, suggestTune } from "./job-tune.ts";
@@ -1314,11 +1316,12 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const leases = new LeaseStore(LOOPS_DIR);
 	const audit = new TriggerStore(LOOPS_DIR);
 	const jobStore = new JobStore(LOOPS_DIR);
+	const clock = clockStore(LOOPS_DIR);
 	let histories: { stamp: string; byJob: ReadonlyMap<string, JobHistory> } | undefined;
 	/** The entries of jobs.json as the lists show them: a loop's run, failures and last error come from its rows and run log (src/job-status.ts `listedJob`). */
 	const listedRaw = (raw: any[]): ListedJob[] => {
 		let byJob: ReadonlyMap<string, JobHistory> = new Map();
-		if (raw.some((j) => j?.stateful && typeof j.id === "string")) {
+		if (raw.some((j) => typeof j?.id === "string")) {
 			try {
 				let stamp = "-";
 				try { const s = fs.statSync(jobStore.runsFile); stamp = `${s.size}:${s.mtimeMs}`; }
@@ -1329,12 +1332,15 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				opts.log(`pi-loops web: loop state: ${err?.message ?? err}`);
 			}
 		}
+		let cursors: ClockFile["jobs"] = {};
+		try { cursors = clock.read().jobs; }
+		catch (err: any) { opts.log(`pi-loops web: clock: ${err?.message ?? err}`); }
 		return raw.map((j) => {
 			try {
 				let rows: Row[] = [];
 				try { const lane = j?.stateful && typeof j.id === "string" ? loopLane(j.id) : undefined; if (lane) rows = requests.list(lane); }
 				catch { /* an unreadable lane lists as one with no rows */ }
-				return listedJob(j, rows, typeof j?.id === "string" ? byJob.get(j.id) : undefined);
+				return listedJob(j, typeof j?.id === "string" ? cursors[j.id] : undefined, rows, typeof j?.id === "string" ? byJob.get(j.id) : undefined);
 			} catch (err: any) {
 				// A hand-written entry the reader cannot fold lists with its definition and no status.
 				opts.log(`pi-loops web: loop state: ${err?.message ?? err}`);
@@ -2159,7 +2165,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		if (!suggestion || suggestion.key !== key) return changed;
 		// Re-checked under the lock: the loop as the key was computed for it, and not kept meanwhile
 		// (Keep in one tab and Apply in another: only the first lands).
-		const sameSchedule = (j: LoopJob) => j.enabled && !j.running && j.tuneKept !== key && formatSchedule(j.schedule) === formatSchedule(job.schedule);
+		const sameSchedule = (j: LoopJob) => j.enabled && !listedRaw([j])[0].status.run && j.tuneKept !== key && formatSchedule(j.schedule) === formatSchedule(job.schedule);
 		if (choice === "keep") {
 			let kept = false;
 			await jobStore.update(job.id, (j) => {
@@ -2169,7 +2175,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			});
 			return kept ? { status: 200, body: { ok: true, kept: true } } : changed;
 		}
-		const applied = applyTune(job, suggestion, { now, maxPromptBytes: MAX_PROMPT_BYTES, checkName: () => undefined, others: [] });
+		const applied = applyTune(job, clock.read().jobs[job.id], suggestion, { now, maxPromptBytes: MAX_PROMPT_BYTES, checkName: () => undefined, others: [] });
 		let after: LoopJob | undefined;
 		await jobStore.update(job.id, (j) => {
 			if (!sameSchedule(j)) return;
@@ -2177,6 +2183,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			after = { ...j };
 		});
 		if (!after) return changed;
+		if (applied.slot !== undefined) clock.reset(job.id, applied.slot);
 		const row = scheduleAudit(job, after, { sourceLabel: "page", suggestion: key });
 		if (row) audit.appendAudit({ ...row, traceId: newTraceId() });
 		// The time goes as a stamp: the page writes it in the browser's local time, as it does the rest of the row.

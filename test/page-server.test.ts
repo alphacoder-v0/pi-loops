@@ -12,6 +12,7 @@ import { entriesReadable, HELD_READ_MAX_BYTES } from "../src/held-read.ts";
 import { openFileDir } from "../src/open-file.ts";
 import { PAGE_INSTANCE, pageClaimRow } from "../src/engine.ts";
 import { RequestStore } from "../src/requests.ts";
+import { convertStores, fromV2 } from "../src/convert-v2.ts";
 import { DELIVERY_JOB_ID, LeaseStore } from "../src/lease.ts";
 import type { SessionLease } from "../src/lease.ts";
 import { fakePi, firstVisit, mintKey, secretIn, startTestPage, TEST_TOKEN, until } from "./page-harness.ts";
@@ -1966,8 +1967,12 @@ test("GET /activity: one project's runs and rule results, the attention block, a
 		fs.writeFileSync(path.join(page.loops, "triggers-audit.jsonl"), audit.map((l) => JSON.stringify(l)).join("\n") + "\n");
 		fs.writeFileSync(path.join(page.loops, "triggers.json"), JSON.stringify({ version: 1, rules: [{ id: "dyn-1", condition: "~/build.done appears", action: "print it", cwd: project, enabled: true }] }));
 		writeInbox(page.loops, [finding({ id: `inb-${hex(1)}`, source: "trigger:local:dynamic", run_id: "t-1", job_id: "dyn-1", cwd: project, text: "matched dyn-1. hello, world" }), finding({ id: `inb-${hex(2)}`, kind: "checkpoint", cwd: path.join(dir, "other"), text: "Merge it? · waits: you" })]);
-		const failing = (n: number) => ({ id: "cron-1", name: "issue-triage", cwd: project, enabled: true, runCount: 10, consecutiveFailures: n });
-		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [failing(2)] }));
+		// The job, its cursor (ten runs), and failed runs at the end of the log, of another checkout so the project's items stay as they are.
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 3, jobs: [{ id: "cron-1", name: "issue-triage", cwd: project, enabled: true }] }));
+		fs.writeFileSync(path.join(page.loops, "clock.json"), JSON.stringify({ v: 1, jobs: { "cron-1": { runs: 10 } } }));
+		let failed = 0;
+		const failures = (n: number) => { for (; failed < n; failed++) fs.appendFileSync(path.join(page.loops, "runs.jsonl"), `\n${JSON.stringify(record(100 + failed, { cwd: path.join(dir, "elsewhere"), ok: false, error: "boom", startedAt: ago(2 - failed / 10), finishedAt: ago(1 - failed / 10) }))}`); };
+		failures(2);
 		assert.equal((await fetch(`${page.url}activity`)).status, 401, "behind the token");
 		const unknown = await page.get(`activity?cwd=${encodeURIComponent(path.join(dir, "nowhere"))}`);
 		assert.deepEqual([unknown.status, unknown.body], [404, { error: "no such project" }]);
@@ -1985,7 +1990,7 @@ test("GET /activity: one project's runs and rule results, the attention block, a
 		assert.deepEqual([got.body.attention.decisions, got.body.attention.news], [0, 1], "the title counts this project");
 		assert.deepEqual(got.body.attention.newDecisions.map((d: any) => [d.id, d.headline]), [[`inb-${hex(2)}`, "Merge it?"]], "the notification hears the whole machine");
 		assert.deepEqual([got.body.attention.failing, got.body.attention.budget], [[], undefined], "two failures are not a streak, and the budget is said only when over");
-		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [failing(3)] }));
+		failures(3);
 		budget = { spent: 5.5, cap: 5, over: true };
 		const later = await page.get(`activity?cwd=${encodeURIComponent(project)}`);
 		assert.deepEqual(later.body.attention.failing, [{ jobId: "cron-1", name: "issue-triage", streak: 3, key: "cron-1:7" }]);
@@ -2366,11 +2371,14 @@ test("a loop row carries its run, its signal and one suggestion; apply writes on
 		const original = loopJob(dir);
 		// pi-loops in the background holds the busy loop's run: its pid is the service record's.
 		fs.writeFileSync(path.join(page.loops, "host-service.json"), JSON.stringify({ v: 1, pid: process.pid, startedAt: new Date().toISOString() }));
-		const inWindow = { runId: `run-${"9".repeat(32)}`, pid: 999_999_999, host: "h", startedAt: new Date().toISOString() };
-		fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [original, loopJob(dir, { id: "cron-cccccccc", name: "busy", running }), loopJob(dir, { id: "cron-dddddddd", name: "window", stateful: false, running: inWindow }), loopJob(dir, { id: "cron-eeeeeeee", name: "held", stateful: false, sessionId: "held-here" }), loopJob(dir, { id: "cron-ffffffff", name: "left", stateful: false, sessionId: "held-there" })] }));
+		fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [original, loopJob(dir, { id: "cron-cccccccc", name: "busy" }), loopJob(dir, { id: "cron-dddddddd", name: "window", stateful: false }), loopJob(dir, { id: "cron-eeeeeeee", name: "held", stateful: false, sessionId: "held-here" }), loopJob(dir, { id: "cron-ffffffff", name: "left", stateful: false, sessionId: "held-there" })] }));
+		convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
 		// A plain job's turn in a closed conversation has no marker: it is the claim on the job's row. One is the background's, one a process's that is not.
 		const queue = new RequestStore(page.loops);
 		const claimedAt = new Date().toISOString();
+		// A loop's run is the claim on the row of its lane, here pi-loops' in the background.
+		queue.append({ v: 3, id: RUN, lane: "@cron-cccccccc", kind: "input", source: "cron:cron-cccccccc", mode: "unattended", wake: "turn", payload: { text: `[Trigger ${RUN}] go`, cwd: dir }, collapse_key: "cron:cron-cccccccc", created_at: running.startedAt, created_by: { pid: 1, instance: "t", version: "0" }, attempts: 0 } as any);
+		assert.equal(queue.claim("@cron-cccccccc", RUN, { id: RUN, pid: process.pid, started_at: running.startedAt } as any), true);
 		for (const [session, job, pid] of [["held-here", "cron-eeeeeeee", process.pid], ["held-there", "cron-ffffffff", 999_999_999]] as const) {
 			queue.append({ v: 3, id: `run-${job}`, lane: session, kind: "input", source: `cron:${job}`, mode: "unattended", wake: "turn", payload: { text: `[Trigger run-${job}] go`, cwd: dir }, collapse_key: `cron:${job}`, created_at: claimedAt, created_by: { pid: 1, instance: "host", version: "0" }, attempts: 0 });
 			assert.equal(queue.claim(session, `run-${job}`, { id: `run-${job}`, pid, started_at: claimedAt } as any), true);
@@ -2386,7 +2394,7 @@ test("a loop row carries its run, its signal and one suggestion; apply writes on
 		assert.deepEqual(busy.run, { runId: RUN, since: running.startedAt }, "the run Stop this run names");
 		assert.equal(busy.suggestion, undefined, "no suggestion while it runs");
 		const window = rows.find((j: any) => j.id === "cron-dddddddd");
-		assert.deepEqual([window.running, window.run], [true, undefined], "a turn a window runs has no Stop this run: only what pi-loops in the background holds");
+		assert.deepEqual([window.running, window.run], [false, undefined], "a turn a window runs is the window's: the page has no marker for it, and no Stop this run");
 		const held = rows.find((j: any) => j.id === "cron-eeeeeeee");
 		assert.deepEqual([held.running, held.run], [true, { runId: "run-cron-eeeeeeee", since: claimedAt }], "a held turn of pi-loops in the background: the claim is the run Stop this run names");
 		const left = rows.find((j: any) => j.id === "cron-ffffffff");
@@ -2401,7 +2409,7 @@ test("a loop row carries its run, its signal and one suggestion; apply writes on
 		const kept = await page.post("loops/tune", { jobId: "cron-aaaaaaaa", key: "slower:cron-aaaaaaaa:every 15m", choice: "keep" });
 		assert.deepEqual(kept, { status: 200, body: { ok: true, kept: true } });
 		const afterKeep = jobs().find((j: any) => j.id === "cron-aaaaaaaa");
-		assert.deepEqual({ ...afterKeep, tuneKept: undefined }, { ...original, tuneKept: undefined }, "the schedule, enabled and every stamp as they were");
+		assert.deepEqual({ ...afterKeep, tuneKept: undefined }, { ...fromV2(original as any).job, tuneKept: undefined }, "the definition as the start converted it: the schedule and enabled as they were");
 		assert.equal(afterKeep.tuneKept, "slower:cron-aaaaaaaa:every 15m");
 		assert.equal(audits(page.loops).length, 0, "Keep writes no audit row");
 		const again = (await page.get("c/s1/state")).body.automation.jobs.find((j: any) => j.id === "cron-aaaaaaaa");
@@ -2410,6 +2418,7 @@ test("a loop row carries its run, its signal and one suggestion; apply writes on
 
 		// Apply: a fresh loop, the same numbers.
 		fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [loopJob(dir, { lastFiredAt: new Date(Date.now() - 60_000).toISOString() })] }));
+		convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
 		const applied = await page.post("loops/tune", { jobId: "cron-aaaaaaaa", key: "slower:cron-aaaaaaaa:every 15m", choice: "apply" });
 		assert.equal(applied.status, 200);
 		assert.equal(applied.body.op, "set");
@@ -2417,7 +2426,7 @@ test("a loop row carries its run, its signal and one suggestion; apply writes on
 		assert.ok(Date.parse(applied.body.nextAt) > Date.now(), "the next time as a stamp, which the page writes in local time");
 		const job = jobs()[0];
 		assert.deepEqual(job.schedule, { kind: "every", ms: 3_600_000 });
-		assert.ok(job.lastDueAt, "the clock restarts at the edit, as /cron set does");
+		assert.ok(JSON.parse(fs.readFileSync(path.join(page.loops, "clock.json"), "utf8")).jobs["cron-aaaaaaaa"].slot, "the clock restarts at the edit, as /cron set does");
 		// The row's next run is worked out from the job as the edit left it: the time the answer gave.
 		const tuned = (await page.get("c/s1/state")).body.automation.jobs.find((j: any) => j.id === "cron-aaaaaaaa");
 		assert.equal(tuned.next, applied.body.nextAt, "the row and the answer say one time");
@@ -2436,6 +2445,7 @@ test("a loop whose findings were all dismissed is offered Pause, and applying it
 	try {
 		fs.mkdirSync(page.loops, { recursive: true });
 		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [loopJob(dir)] }));
+		convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
 		writeInbox(page.loops, Array.from({ length: 6 }, (_, i) => finding({ id: `inb-${hex(i + 1)}`, job_id: "cron-aaaaaaaa", status: "dismissed" })));
 		fs.writeFileSync(path.join(page.loops, "runs.jsonl"), JSON.stringify({ runId: `run-${hex(1)}`, jobId: "cron-aaaaaaaa", stateful: true, cwd: dir, pid: 1, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), ok: true, findings: 6, droppedFindings: 0, stateUpdated: true }) + "\n");
 		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
@@ -2482,6 +2492,7 @@ test("a tune whose store write fails answers 500 with fixed words and logs the e
 		// L2: Keep in one tab, Apply in another, at once: exactly one lands, whichever is first.
 		for (let i = 0; i < 4; i++) {
 			fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [loopJob(dir, { lastFiredAt: new Date(Date.now() - 60_000).toISOString() })] }));
+			convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
 			const answers = await Promise.all([page.post("loops/tune", { jobId: "cron-aaaaaaaa", key, choice: "keep" }), page.post("loops/tune", { jobId: "cron-aaaaaaaa", key, choice: "apply" })]);
 			assert.deepEqual(answers.map((a) => a.status).sort(), [200, 409], `round ${i}: ${JSON.stringify(answers)}`);
 			const job = JSON.parse(fs.readFileSync(jobsFile, "utf8")).jobs[0];
@@ -2490,10 +2501,12 @@ test("a tune whose store write fails answers 500 with fixed words and logs the e
 
 		// L3: a loop whose cwd names no project the page lists.
 		fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [loopJob("")] }));
+		convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
 		assert.deepEqual(await page.post("loops/tune", { jobId: "cron-aaaaaaaa", key: "slower:cron-aaaaaaaa:every 15m", choice: "apply" }), { status: 404, body: { error: "no such loop" } });
 
 		// L1: the store cannot be written.
 		fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [loopJob(dir)] }));
+		convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
 		const store = (await import("../src/store.ts")).JobStore.prototype;
 		const real = store.update;
 		store.update = async () => { throw new Error(`EACCES: permission denied, open '${jobsFile}.tmp'`); };

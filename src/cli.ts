@@ -34,6 +34,7 @@ import { JobStore, defaultLoopsDir, homeLoopsDir, piAgentDir } from "./store.ts"
 import { automationBadge, previewText, readSessionHead, shortSessionId } from "./session-head.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, TRACKER_FILE, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, listRecipes, loadRecipe, planInstall, playbookFiles, readRecord, resolveRecipeRef } from "./recipe.ts";
 import { TriggerStore } from "./triggers.ts";
+import { openStores } from "./stores.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { formatLocal, stamp } from "./schedule.ts";
 import { canonicalDir } from "./paths.ts";
@@ -366,17 +367,19 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	if (command === "export") {
 		const sessions = listSessions(path.join(agentDir, "sessions"));
 		const picked = pickSession(sessions, { id: str("session"), cwd });
-		const jobStore = new JobStore(loopsDir);
+		// The stores as pi-loops opens them: a directory 0.24.2 left is converted first.
+		const stores = openStores(loopsDir);
+		const jobStore = stores.jobs;
 		// The archive carries what the picked session created in its project — the one rule
 		// `/session-export` follows too, in `automationOf`.
-		const { jobs, rules } = automationOf(jobStore.load(), new TriggerStore(loopsDir).load(), picked.cwd, picked.id);
+		const { jobs, rules } = automationOf(jobStore.load(), stores.rules.load(), picked.cwd, picked.id);
 		const states: Record<string, string> = {};
 		for (const job of jobs) {
 			const loopState = job.stateful ? jobStore.readState(job.id) : undefined;
 			if (loopState) states[job.id] = loopState;
 		}
 		const outputPath = path.resolve(str("output") ?? defaultExportPath(process.cwd(), picked.id));
-		const summary = exportSession({ sessionFile: picked.file, cwd: picked.cwd, jobs, rules, states, excludeTriggers: flags.has("exclude-triggers"), outputPath, piVersion: process.env.PI_VERSION ?? "unknown", piLoopsVersion: PI_LOOPS_VERSION });
+		const summary = exportSession({ sessionFile: picked.file, cwd: picked.cwd, jobs, clock: stores.clock.read(), rules, states, excludeTriggers: flags.has("exclude-triggers"), outputPath, piVersion: process.env.PI_VERSION ?? "unknown", piLoopsVersion: PI_LOOPS_VERSION });
 		out(`exported ${picked.id} → ${outputPath}`);
 		out(`entries=${summary.entryCount} cron=${summary.hasCron ? jobs.length : 0} triggers=${summary.hasTriggers ? rules.length : 0} loop-state=${summary.loopStateCount}`);
 		return 0;
@@ -386,8 +389,10 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		const file = positional[0];
 		if (!file) throw new UsageError("import needs an archive path");
 		const mode = parseActivateMode(str("activate-triggers"));
-		const jobStore = new JobStore(loopsDir);
-		const triggerStore = new TriggerStore(loopsDir);
+		// The stores as pi-loops opens them: a directory 0.24.2 left is converted first.
+		const stores = openStores(loopsDir);
+		const jobStore = stores.jobs;
+		const triggerStore = stores.rules;
 		// pi encodes a project as `--home-u-proj--` and `SessionManager.list()` reads only that one
 		// directory, with no fallback — a hand-rolled name here would restore a session pi never sees.
 		// Loaded here, not at the top: pi's SDK takes about a second, and only this verb needs it.
@@ -397,7 +402,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		const existingRules = triggerStore.load();
 		const summary = importSession({ archivePath: path.resolve(file), sessionDir, targetCwd: cwd, activate: mode === "on", existingJobs, existingRules, existingJobIds: new Set(existingJobs.map((j) => j.id)), existingRuleIds: new Set(existingRules.map((r) => r.id)) });
 		// The writes and the rollback the slash command does, in `applyImport`.
-		await applyImport(summary, jobStore, triggerStore);
+		await applyImport(summary, jobStore, triggerStore, stores.clock);
 		const skipped = (summary.skippedJobs ?? 0) + (summary.skippedRules ?? 0);
 		// The id and the notes come out of the archive's own header, like everything `inspect` prints.
 		out(`imported ${plain(summary.originalSessionId)} → ${summary.sessionId}`);

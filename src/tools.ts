@@ -18,7 +18,7 @@ import type { SessionSnapshot } from "./job-owner.ts";
 import { removeJob } from "./stores.ts";
 import type { Stores } from "./stores.ts";
 import type { RunList } from "./run-list.ts";
-import { MAX_PROMPT_BYTES, type JobStore, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
+import { DISABLED_BY_PERSON, MAX_PROMPT_BYTES, type JobStore, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
 import type { RequestStore } from "./requests.ts";
 import type { Inbox } from "./inbox.ts";
 import { jobNameFrom } from "./job-name.ts";
@@ -201,8 +201,6 @@ export async function createLoopJob(host: ToolStoresHost & Pick<ToolHost, "sessi
 		// A sub-agent schedules on behalf of the session that runs it.
 		...(scope?.projectOwned ? { owner: "project" as const } : { createdBy: { sessionId: scope?.parentSessionId ?? host.session().sessionId, cwd: scope?.parentCwd ?? host.session().cwd } }),
 		sessionId: owningSessionId(input.stateful, host.session().sessionId, scope?.parentSessionId),
-		runCount: 0,
-		skippedOverlap: 0,
 	};
 	await jobsOf(host).add(job);
 	if (job.stateful) host.ensureHost?.();
@@ -599,7 +597,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 				if (denied) return deny(denied);
 			}
 			const at = stamp();
-			const updated = (params.enabled ? await jobsOf(host).enable(job.id) : await jobsOf(host).disable(job.id, { code: "person", why: "disabled by a person", at })) ?? job;
+			const updated = (params.enabled ? await jobsOf(host).enable(job.id) : await jobsOf(host).disable(job.id, { code: "person", why: DISABLED_BY_PERSON, at })) ?? job;
 			if (params.enabled) host.stores.clock.clear(job.id, at);
 			const auditEntryId = host.cronControlAudit(params.enabled ? "enable" : "disable", scope.actor, job, updated);
 			return {

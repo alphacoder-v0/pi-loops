@@ -1,13 +1,12 @@
 import { failurePause } from "./backoff.ts";
-import { fromV2 } from "./convert-v2.ts";
 import { claimAlive, plainCollapseKey } from "./engine.ts";
 import { loopLane } from "./lane.ts";
 import { runEnd } from "./settle.ts";
-import type { JobClock } from "./clock.ts";
+import type { ClockFile, JobClock } from "./clock.ts";
 import type { ClaimedRow, RequestStore, Row } from "./requests.ts";
 type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
 import { computeNext, formatLocal } from "./schedule.ts";
-import type { Disabled, JobStore, LoopJob, LoopJobV3, RunningMarker, RunRecord } from "./store.ts";
+import { DISABLED_BY_PERSON, type Disabled, type JobStore, type LoopJob, type RunningMarker, type RunRecord } from "./store.ts";
 
 export interface BudgetState { readonly spent: number; readonly cap: number; readonly over: boolean }
 
@@ -31,23 +30,36 @@ export interface JobHistory {
 	readonly streak: number;
 	readonly failed?: { readonly at: string; readonly error: string };
 	readonly finished?: string;
-	/** The end of the newest run that wrote its own record: main's `lastCompletedAt`. An interrupted run wrote none. */
+	/** The end of the newest run that wrote its own record: what main listed as last completed. An interrupted run wrote none. */
 	readonly completed?: string;
+	/** The end of the newest run that ended there or was stopped by a person: a plain turn's closing wrote no field for a hand-back. */
+	readonly settled?: string;
+	/** The ends of the interrupted runs at the end of the log: a run that ended in any other way starts it again. */
+	readonly interrupted: readonly string[];
 	readonly spent: ReadonlySet<string>;
+}
+
+/** A job's failures in a row, and its interrupted runs in a row since its last enable (`cleared`): what a closing counts. */
+export function jobCounts(history: JobHistory | undefined, cleared: string | undefined): { readonly streak: number; readonly interrupted: number } {
+	const since = cleared === undefined ? -Infinity : Date.parse(cleared);
+	return { streak: history?.streak ?? 0, interrupted: (history?.interrupted ?? []).filter((at) => Date.parse(at) > since).length };
 }
 
 /** Fold run records once for all jobs. */
 export function runHistory(records: readonly RunRecord[]): ReadonlyMap<string, JobHistory> {
-	const histories = new Map<string, { ordinal: number; streak: number; failed?: { at: string; error: string }; finished?: string; completed?: string; spent: Set<string> }>();
+	const histories = new Map<string, { ordinal: number; streak: number; failed?: { at: string; error: string }; finished?: string; completed?: string; settled?: string; interrupted: string[]; spent: Set<string> }>();
 	for (const record of records) {
 		let history = histories.get(record.jobId);
 		if (!history) {
-			history = { ordinal: 0, streak: 0, spent: new Set() };
+			history = { ordinal: 0, streak: 0, interrupted: [], spent: new Set() };
 			histories.set(record.jobId, history);
 		}
 		history.finished = record.finishedAt;
 		const end = runEnd(record);
 		if (end.how !== "interrupted") history.completed = record.finishedAt;
+		if (end.how !== "interrupted" && end.how !== "handed-back") history.settled = record.finishedAt;
+		if (end.how === "interrupted") history.interrupted.push(record.finishedAt);
+		else if (end.how !== "handed-back") history.interrupted = [];
 		if (end.how === "succeeded") {
 			history.streak = 0;
 			history.failed = undefined;
@@ -78,7 +90,7 @@ export interface JobStatus {
 	readonly runs: number;
 }
 
-export function jobStatus(job: LoopJobV3, clock: JobClock | undefined, rows: readonly CountedRow[], history: JobHistory | undefined, now: number): JobStatus {
+export function jobStatus(job: LoopJob, clock: JobClock | undefined, rows: readonly CountedRow[], history: JobHistory | undefined, now: number): JobStatus {
 	const state = job.proposed ? "proposed" : job.enabled ? "enabled" : "disabled";
 	let next: number | undefined;
 	if (state === "enabled") {
@@ -116,9 +128,9 @@ export interface GateFacts {
 }
 
 /** Why a loop's queued row waits, in the words main wrote into `lastError`, or undefined when it can start. */
-export function loopWait(job: Pick<LoopJob, "cwd" | "cwdMissingSince">, facts: GateFacts, now: number): string | undefined {
+export function loopWait(job: Pick<LoopJob, "cwd">, cwdMissing: string | undefined, facts: GateFacts, now: number): string | undefined {
 	if (!facts.cwdExists(job.cwd)) {
-		const since = Date.parse(job.cwdMissingSince ?? "") || now;
+		const since = Date.parse(cwdMissing ?? "") || now;
 		return `waiting: cwd ${job.cwd} is not there yet (since ${formatLocal(since)}; disabled if it stays missing)`;
 	}
 	const budget = facts.budget();
@@ -129,36 +141,33 @@ export function loopWait(job: Pick<LoopJob, "cwd" | "cwdMissingSince">, facts: G
 }
 
 /**
- * A loop as main's `jobs.json` had it, for the lists. Since a loop's runs are rows of its lane,
- * nothing writes `running`, `lastCompletedAt` or `consecutiveFailures` of a loop, and `lastError`
- * only for the clock's notes and a disable's reason. They are derived here from its rows, its run
- * log and its cursor, as main wrote them:
+ * A job as every list shows it, each value derived as main wrote it into its version 2 file:
  *
- *   running              the live claim on a row of its lane, or an older version's marker
- *   lastFiredAt          that claim's start while it goes (main wrote it at the launch), else the cursor's
- *   lastDueAt            none while a row waits to start: main wrote it at the launch, and the slot
- *                        of the launch before is not kept, so it is not shown
- *   lastDueAt and lastFiredAt  neither, for a row that is owed again (an interrupted run, a one-shot's
- *                        second try) and for a loop parked after interrupted runs: main rolled both
- *                        back so that the slot fires again
- *   lastCompletedAt      the end of the newest run that wrote its own record
- *   consecutiveFailures  the failed records at the end of the run log
- *   lastError            the first that applies: a disabled job's reason; why a waiting row waits
- *                        (`Row.waiting`, which the background writes); an interrupted run's retry;
- *                        a slot skipped while the run goes (`Row.skipped`); nothing else while
- *                        it goes (the launch cleared it); then the later of the last failure (while
- *                        it is the newest run that ended, and not one before an enable) and the
- *                        clock's note
+ *   run        the live claim on a row of the loop's lane
+ *   fired      that claim's start while it goes (main wrote it at the launch), else the cursor's
+ *   due        none while a row waits to start: main wrote it at the launch, and the slot of the
+ *              launch before is not kept, so it is not shown
+ *   due, fired neither, for a row that is owed again (an interrupted run, a one-shot's second try)
+ *              and for a loop parked after interrupted runs: main rolled both back so that the slot
+ *              fires again
+ *   completed  the end of the newest run that wrote its own record
+ *   streak     the failed records at the end of the run log
+ *   error      the first that applies: a disabled job's reason; why a waiting row waits
+ *              (`Row.waiting`, which the background writes); an interrupted run's retry; a slot
+ *              skipped while the run goes (`Row.skipped`); nothing else while it goes (the launch
+ *              cleared it); then the later of the last failure (while it is the newest run that
+ *              ended, and not one before an enable) and the clock's note
  *
- * A plain job is returned as it is: its turns still write these fields (until M4b.B).
+ * A plain job's values come from its cursor and its run log in the same way; its last error stays
+ * until a success, as its turns wrote it.
  */
 /** What a list shows of a job beside its definition: its cursor, its run and its failures. */
 export interface ListedStatus {
-	/** The last slot the schedule fired or owes: main's `lastDueAt`. */
+	/** The last slot the schedule fired or owes. */
 	readonly due?: string;
-	/** When the last run started: main's `lastFiredAt`. */
+	/** When the last run started. */
 	readonly fired?: string;
-	/** When the last run that wrote its own record ended: main's `lastCompletedAt`. */
+	/** When the last run that wrote its own record ended. */
 	readonly completed?: string;
 	readonly runs: number;
 	/** Skipped overlaps, a lifetime count. */
@@ -172,63 +181,71 @@ export interface ListedStatus {
 }
 
 /** A job as every list shows it: the definition, and its status from its clock, its rows and its run log. */
-export type ListedJob = LoopJobV3 & { readonly status: ListedStatus };
+export type ListedJob = LoopJob & { readonly status: ListedStatus };
 
-export function listedJob(job: LoopJob, rows: readonly Row[], history: JobHistory | undefined, live: (row: ClaimedRow) => boolean = claimAlive): ListedJob {
-	const definition = fromV2(job).job;
-	if (!job.stateful) return { ...definition, status: { ...(job.lastDueAt ? { due: job.lastDueAt } : {}), ...(job.lastFiredAt ? { fired: job.lastFiredAt } : {}), ...(job.lastCompletedAt ? { completed: job.lastCompletedAt } : {}), runs: job.runCount, collapsed: job.skippedOverlap, streak: job.consecutiveFailures ?? 0, ...(job.lastError ? { error: job.lastError } : {}), ...(job.running ? { run: job.running } : {}) } };
+export function listedJob(job: LoopJob, clock: JobClock | undefined, rows: readonly Row[], history: JobHistory | undefined, live: (row: ClaimedRow) => boolean = claimAlive): ListedJob {
+	const cleared = clock?.cleared;
+	const afterEnable = (at: string) => !(cleared && Date.parse(at) <= Date.parse(cleared));
+	// A note older than the last run that ended is gone: main's launch, and a plain turn's success, cleared the field.
+	const note = job.enabled && clock?.note && !(history?.completed && Date.parse(clock.note.at) <= Date.parse(history.completed)) ? clock.note : undefined;
+	// Main's last writer won: the later of the last failure and the clock's note.
+	const lastWord = (failed: { readonly at: string; readonly error: string } | undefined, retrying: boolean): string | undefined =>
+		failed && !(note && Date.parse(note.at) > Date.parse(failed.at)) ? (retrying ? `${failed.error} (one-shot: retrying once)` : failed.error) : note?.text;
+	// A person's disable wrote no error on main; any other disable wrote its reason.
+	const offWord = (failed: { readonly error: string } | undefined): string | undefined =>
+		job.disabled && job.disabled.why !== DISABLED_BY_PERSON ? job.disabled.why : failed?.error ?? clock?.note?.text;
+	const counts = { runs: Math.max(clock?.runs ?? 0, history?.ordinal ?? 0), collapsed: clock?.collapsed ?? 0, streak: history?.streak ?? 0 };
+	if (!job.stateful) {
+		// A plain job's turns kept their last error until the next success; a stop did not clear it.
+		const failed = history?.failed && afterEnable(history.failed.at) ? history.failed : undefined;
+		const error = job.enabled ? lastWord(failed, job.schedule?.kind === "once" && history?.streak === 1) : offWord(failed);
+		return { ...job, status: { ...(clock?.slot ? { due: clock.slot } : {}), ...(clock?.fired ? { fired: clock.fired } : {}), ...(history?.settled ? { completed: history.settled } : {}), ...counts, runs: clock?.runs ?? 0, ...(error ? { error } : {}) } };
+	}
 	const mine = rows.filter((row) => row.kind === "input") as CountedRow[];
 	const claim = mine.find((row): row is ClaimedRow & CountedRow => row.run !== undefined && live(row as ClaimedRow));
 	const waiting = mine.filter((row) => !row.run).sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))[0];
-	const cleared = (job as LoopJob & { clearedAt?: string }).clearedAt;
 	// Main cleared the error at every launch: a failure shows while it is the newest run that ended with a record of its own.
-	const failed = history?.failed && history.failed.at === history.completed && !(cleared && Date.parse(history.failed.at) <= Date.parse(cleared)) ? history.failed : undefined;
-	const oneShotRetry = job.schedule.kind === "once" && waiting !== undefined && failed !== undefined && (history?.streak ?? 0) === 1;
-	const parked = !job.enabled && job.lastError?.startsWith("parked: ") === true;
+	const failed = history?.failed && history.failed.at === history.completed && afterEnable(history.failed.at) ? history.failed : undefined;
+	const oneShotRetry = job.schedule?.kind === "once" && waiting !== undefined && failed !== undefined && (history?.streak ?? 0) === 1;
+	const parked = !job.enabled && job.disabled?.code === "interrupted";
 	const owedAgain = parked || (!claim && waiting !== undefined && (waiting.attempts > 0 || oneShotRetry));
-	let lastFiredAt = job.lastFiredAt;
-	if (claim && (!lastFiredAt || Date.parse(claim.run.started_at) > Date.parse(lastFiredAt))) lastFiredAt = claim.run.started_at;
-	let lastDueAt = job.lastDueAt;
-	if (owedAgain || (!claim && waiting)) lastDueAt = undefined;
-	if (owedAgain) lastFiredAt = undefined;
-	const note = job.enabled ? job.lastError : undefined;
-	const lastError = ((): string | undefined => {
-		if (!job.enabled) return job.lastError ?? failed?.error;
+	let fired = clock?.fired;
+	if (claim && (!fired || Date.parse(claim.run.started_at) > Date.parse(fired))) fired = claim.run.started_at;
+	let due = clock?.slot;
+	if (owedAgain || (!claim && waiting)) due = undefined;
+	if (owedAgain) fired = undefined;
+	const error = ((): string | undefined => {
+		if (!job.enabled) return offWord(failed);
 		if (waiting && !claim) {
 			if (typeof waiting.waiting === "string" && waiting.waiting) return waiting.waiting;
 			if (waiting.attempts > 0) return "cleared stale running state (previous pi process ended mid-run); the run will be retried";
 		}
 		// Only a slot counted while this run went is a skip (`Row.skipped`): not one counted while the row waited or its process was gone.
 		if (claim) return claim.skipped ? "skipped: previous run still active" : undefined;
-		if (failed && !(note && job.lastDueAt && Date.parse(job.lastDueAt) > Date.parse(failed.at))) return oneShotRetry ? `${failed.error} (one-shot: retrying once)` : failed.error;
-		return note;
+		return lastWord(failed, oneShotRetry);
 	})();
 	return {
-		...definition,
+		...job,
 		status: {
-			...(lastDueAt === undefined ? {} : { due: lastDueAt }),
-			...(lastFiredAt === undefined ? {} : { fired: lastFiredAt }),
+			...(due === undefined ? {} : { due }),
+			...(fired === undefined ? {} : { fired }),
 			...(history?.completed === undefined ? {} : { completed: history.completed }),
-			runs: job.runCount,
-			collapsed: job.skippedOverlap,
-			streak: history?.streak ?? 0,
-			...(lastError === undefined ? {} : { error: lastError }),
-			// An older version's marker is kept only while its pid is alive (src/convert-v2.ts): it is still a run.
-			...(claim ? { run: { runId: claim.run.id, pid: claim.run.pid, startedAt: claim.run.started_at } } : job.running ? { run: job.running } : {}),
+			...counts,
+			...(error === undefined ? {} : { error }),
+			...(claim ? { run: { runId: claim.run.id, pid: claim.run.pid, startedAt: claim.run.started_at } } : {}),
 		},
 	};
 }
 
-/** Every job of `jobs.json` as the lists show it (`listedJob`): one read of the jobs, of each loop's lane, and of the folded run log. */
-export function listedJobs(stores: { readonly jobs: Pick<JobStore, "load">; readonly requests: Pick<RequestStore, "list">; history(): ReadonlyMap<string, JobHistory> }, live?: (row: ClaimedRow) => boolean): ListedJob[] {
-	const jobs = stores.jobs.load();
-	const histories = jobs.some((job) => job.stateful) ? stores.history() : new Map<string, JobHistory>();
+/** Every job of `jobs.json` as the lists show it (`listedJob`): one read of the jobs and the clock, of each loop's lane, and of the folded run log. */
+export function listedJobs(stores: { book(): { readonly jobs: readonly LoopJob[]; readonly clock: ClockFile }; readonly requests: Pick<RequestStore, "list">; history(): ReadonlyMap<string, JobHistory> }, live?: (row: ClaimedRow) => boolean): ListedJob[] {
+	const { jobs, clock } = stores.book();
+	const histories = stores.history();
 	return jobs.map((job) => {
-		if (!job.stateful) return listedJob(job, [], undefined, live);
-		const lane = loopLane(job.id);
+		const lane = job.stateful ? loopLane(job.id) : undefined;
 		let rows: Row[] = [];
 		try { if (lane) rows = stores.requests.list(lane); }
 		catch { /* an unreadable lane lists as one with no rows */ }
-		return listedJob(job, rows, histories.get(job.id), live);
+		return listedJob(job, clock.jobs[job.id], rows, histories.get(job.id), live);
 	});
 }

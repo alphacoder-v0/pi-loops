@@ -5,7 +5,9 @@ import type { InboxEntry } from "../src/inbox.ts";
 import { heldJobsNotice, jobLines, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice, loopLabel } from "../src/job-lines.ts";
 import { formatLocal } from "../src/schedule.ts";
 import { parseSchedule, stamp } from "../src/schedule.ts";
-import type { LoopJob, RunRecord } from "../src/store.ts";
+import type { RunRecord } from "../src/store.ts";
+import { fromV2, type V2Job } from "../src/convert-v2.ts";
+import { type ListedJob, listedJob } from "../src/job-status.ts";
 
 /**
  * docs/loops.md:319-323 prints the two lines `/cron` shows for a job, and :146-150 names the
@@ -18,10 +20,14 @@ const NOW = Date.parse("2026-09-15T09:00:00.000+08:00");
 const HOME = "/home/dev";
 const SESSION = "01a09fef-2222";
 
-const linesFor = (jobs: LoopJob[], opts: Partial<Parameters<typeof jobLines>[1]> = {}) =>
-	jobLines(jobs, { runs: [], inbox: [], requests: () => [], view: { sessionId: SESSION, holdsOwn: true, holderOf: () => undefined }, now: NOW, home: HOME, cwdExists: () => true, showCwd: false, ...opts });
+/**
+ * The jobs here are written as a version 2 file held them, and converted as a start converts them
+ * (src/convert-v2.ts `fromV2`): the definition for jobs.json, the cursor for clock.json.
+ */
+const linesFor = (jobs: V2Job[], opts: Partial<Parameters<typeof jobLines>[1]> = {}) =>
+	jobLines(jobs.map((j) => fromV2(j).job), { clock: Object.fromEntries(jobs.map((j) => [j.id, fromV2(j).clock])), runs: [], inbox: [], requests: () => [], view: { sessionId: SESSION, holdsOwn: true, holderOf: () => undefined }, now: NOW, home: HOME, cwdExists: () => true, showCwd: false, ...opts });
 
-const job = (over: Partial<LoopJob> = {}): LoopJob => ({
+const job = (over: Partial<V2Job> = {}): V2Job => ({
 	id: "cron-b91def87",
 	name: "pr-watch",
 	schedule: parseSchedule("*/15 * * * *", NOW),
@@ -35,6 +41,9 @@ const job = (over: Partial<LoopJob> = {}): LoopJob => ({
 	skippedOverlap: 0,
 	...over,
 });
+
+/** A job as the panel gets it: listed, with no rows and no run log. */
+const shown = (j: V2Job): ListedJob => { const { job: definition, clock } = fromV2(j); return listedJob(definition, clock, [], undefined); };
 
 const run = (daysAgo: number, findings: number): RunRecord => {
 	const at = new Date(NOW - daysAgo * DAY).toISOString();
@@ -98,10 +107,6 @@ test("a job with nothing queued looks as before", () => {
 	assert.equal(before[0], ' 1. cron-b91def87 "pr-watch"  */15 * * * *');
 	// Another job's row in the same conversation is not this job's prompt.
 	assert.deepEqual(linesFor([plain], { requests: () => [queuedRow("cron-other", 60_000)] }), before);
-	// The row a held turn is running is shown as running, not as queued.
-	const running = { ...plain, running: { runId: "run-cron-b91def87", pid: 7, startedAt: stamp(NOW - 1000) } } as LoopJob;
-	const [head] = linesFor([running], { requests: () => [queuedRow(plain.id, 60_000)] });
-	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  */15 * * * *  running run-cron-b91def87');
 	// A loop has no queue to wait in.
 	assert.doesNotMatch(linesFor([job()], { requests: () => [queuedRow("cron-b91def87", 60_000)] })[0], /queued/);
 });
@@ -229,7 +234,7 @@ test("the widget is the project's rules, loops, runs and MCP, with marks only wh
 	const input = {
 		rules: [rule, { ...rule, condition: "a deploy fails", action: "open an issue", enabled: false, fireOnce: false }, { ...rule, condition: "CI is red", action: "say so", failureMark: "[failing ×4]" }],
 		poll: { at: new Date(NOW).toISOString(), outcome: "failed" },
-		jobs: [job(), job({ id: "cron-0000aaaa", name: undefined, stateful: false, enabled: false, schedule: parseSchedule("every 1h", NOW), prompt: "remind me" }), job({ id: "cron-0000bbbb", name: "busy", skippedOverlap: 2 })],
+		jobs: ([job(), job({ id: "cron-0000aaaa", name: undefined, stateful: false, enabled: false, schedule: parseSchedule("every 1h", NOW), prompt: "remind me" }), job({ id: "cron-0000bbbb", name: "busy", skippedOverlap: 2 })] as V2Job[]).map(shown),
 		runs: [{ ...run(0, 1), finishedAt: new Date(NOW).toISOString() }],
 		runText: (r: RunRecord, name?: string) => `${name ?? r.jobId} ran`,
 		sources: [{ name: "github", state: "connected", tools: 3 }, { name: "slack", state: "error", tools: 0 }],
@@ -256,7 +261,7 @@ test("the widget is the project's rules, loops, runs and MCP, with marks only wh
 	assert.ok(!panelLines({ ...input, poll: { at: input.poll.at, outcome: "matched 2" } }).some((l) => l.text.startsWith("Last check")), "nor one that matched: the rule's result says so");
 	assert.ok(!quiet.some((l) => /enabled|stateful|Inbox|notification hooks|trace/.test(l)), "no column that is the same on every row, no inbox count the footer has");
 	assert.deepEqual(panelLines({ ...input, rules: [], poll: undefined, jobs: [], runs: [], sources: [] }), [], "nothing to show is no widget, hooks or not");
-	assert.equal(panelLines({ ...input, jobs: [job()] }).find((l) => l.text.startsWith("Loops"))?.text, "Loops  1", "no disabled count when none is");
+	assert.equal(panelLines({ ...input, jobs: [shown(job())] }).find((l) => l.text.startsWith("Loops"))?.text, "Loops  1", "no disabled count when none is");
 });
 
 test("a path is written with ~ only when it is inside the home directory, not when it starts with the same letters", () => {

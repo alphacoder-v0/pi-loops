@@ -172,12 +172,12 @@ export function awayFor(input: AwayInput): AwaySummary {
 		const ms = typeof at === "string" ? Date.parse(at) : NaN;
 		return ms > cursor.sinceMs && ms <= input.now;
 	};
-	let runCount = 0;
+	let runsSince = 0;
 	let failedRuns = 0;
 	let costUsd = 0;
 	for (const r of runs) {
 		if (!r.stateful || !here(r.cwd) || !after(r.finishedAt)) continue;
-		runCount++;
+		runsSince++;
 		if (!r.ok && !r.aborted) failedRuns++;
 		costUsd += (typeof r.usage?.cost === "number" ? r.usage.cost : 0) + (typeof r.checker?.cost === "number" ? r.checker.cost : 0);
 	}
@@ -193,7 +193,7 @@ export function awayFor(input: AwayInput): AwaySummary {
 		cwd: input.cwd,
 		since: cursor.looked ? stamp(cursor.sinceMs) : null,
 		asOf: stamp(input.now),
-		runs: runCount,
+		runs: runsSince,
 		failedRuns,
 		findings: results.length,
 		decisions: results.filter((g) => g.some((f) => f.kind === "checkpoint")).length,

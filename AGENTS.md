@@ -197,7 +197,7 @@ answered twice, that no attempt or failure is counted twice, and that no row is 
 
 A fourth simulation, `test/sim-clock.test.ts`, interleaves real clock writes from multiple tickers,
 crashes between T2 and T3, then drains rows through real proofs and loop settlement. It checks I1:
-one row per job and slot, including cursor commits, fires, collapses and spent runs. It runs 200
+one row per job and slot, including cursor commits, fires, collapses and spent runs. It runs 400
 schedules by default. An interleaving that random schedules reach only rarely is not left to a larger
 count: it is a scene of its own in `test/clock-scenes.test.ts`, which drives the real code step by
 step in milliseconds.

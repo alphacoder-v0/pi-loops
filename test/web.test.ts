@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
+import { convertStores } from "../src/convert-v2.ts";
 import * as http from "node:http";
 import * as net from "node:net";
 import * as fs from "node:fs";
@@ -1140,6 +1141,7 @@ test("the panel and /cron agree about what this project is", { timeout: 30_000 }
 		path.join(loops, "jobs.json"),
 		JSON.stringify({ version: 2, jobs: [job("cron-linked", project, 3), job("cron-worktree-gone", path.join(link, "worktrees", "issue-42")), job("cron-home", os.homedir()), job("cron-elsewhere", path.join(real, "another"))] }),
 	);
+	convertStores(loops); // as pi-loops converts 0.24.2's file at its start
 	// A rule somewhere else as well. The two counts are kept apart because the commands are: /cron
 	// counts jobs and /triggers counts rules, so one number covering both matches neither of them.
 	fs.writeFileSync(
@@ -1250,6 +1252,7 @@ test("the panel shows each job's next run from the job itself, with no file betw
 		job("cron-off", { kind: "cron", expr: "0 9 * * *" }, false),
 		job("every-bad", { kind: "every", ms: 5 }),
 	] }));
+	convertStores(loops); // as pi-loops converts 0.24.2's file at its start
 	fs.writeFileSync(path.join(loops, "host-service.json"), JSON.stringify({ v: 1, pid: process.pid, startedAt: new Date().toISOString() }));
 
 	const answering = [
@@ -1303,6 +1306,7 @@ test("a key in a job's prompt does not reach the page", { timeout: 30_000 }, asy
 	fs.writeFileSync(path.join(loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [
 		{ id: "cron-secret", name: "secret", schedule: { kind: "every", ms: 60000 }, stateful: true, prompt, cwd: project, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, lastError: err },
 	] }));
+	convertStores(loops); // as pi-loops converts 0.24.2's file at its start
 
 	const answering = [
 		"#!/usr/bin/env node",

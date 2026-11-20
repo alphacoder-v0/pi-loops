@@ -7,7 +7,7 @@ import { type EngineSinks } from "../src/engine.ts";
 import { RequestStore, type ClaimedRow, type UnclaimedRow } from "../src/requests.ts";
 import { RunList } from "../src/run-list.ts";
 import { stamp } from "../src/schedule.ts";
-import { type LoopJob, type LoopJobV3 } from "../src/store.ts";
+import { type LoopJob } from "../src/store.ts";
 import { tmp } from "./tmp.ts";
 import { fakeRunner } from "./fake-runner.ts";
 
@@ -81,7 +81,7 @@ test("[loop-R2] started runs after the claim is on disk and before the runner", 
 		assert.equal(f.stores.requests.list(claimed.lane)[0].run?.id, claimed.id);
 		assert.equal(called, false);
 	};
-	await runLoop(row, job as LoopJobV3, f.deps);
+	await runLoop(row, job as LoopJob, f.deps);
 	assert.equal(called, true);
 	assert.equal(f.runs.get(row.id), undefined);
 });
@@ -93,7 +93,7 @@ test("[loop-R3] close plan writes the record, clock and row in order and repeats
 	const claim = { ...row, run: { ...row.run, pid: 99999999, procStart: "dead" } };
 	const ended: RunRecordM4b = { ...interruptedRecord(claim), ok: true, error: undefined, interrupted: undefined, ordinal: 1 };
 	const history = { ordinal: 1, streak: 0, spent: new Set<string>([ended.runId]) };
-	const plan = closeSteps({ row: claim, job: job as LoopJobV3, record: ended, history, self: f.createdBy, now });
+	const plan = closeSteps({ row: claim, job: job as LoopJob, record: ended, history, self: f.createdBy, now });
 	assert.deepEqual(plan.map((step) => step.write), ["run-end", "clock", "row"]);
 	const first = await closeLoopRun(claim, f.deps, now, ended);
 	const second = await closeLoopRun(claim, f.deps, now, ended);
@@ -109,9 +109,9 @@ test("[loop-R4] a person's stop spends the slot; a hand-back leaves it owed", ()
 	const row = rowFor(f.dir, f.createdBy);
 	const stopped = { ...interruptedRecord(row), aborted: true as const, stoppedBy: "person" as const, interrupted: undefined, error: "stopped by a person" };
 	const history = { ordinal: 0, streak: 0, spent: new Set<string>() };
-	assert.deepEqual(closeSteps({ row, job: job as LoopJobV3, record: stopped, history, self: f.createdBy, now }).at(-1), { write: "row", fate: { do: "leave", exit: "stopped" } });
+	assert.deepEqual(closeSteps({ row, job: job as LoopJob, record: stopped, history, self: f.createdBy, now }).at(-1), { write: "row", fate: { do: "leave", exit: "stopped" } });
 	const handedBack = { ...stopped, stoppedBy: undefined, stop: undefined, aborted: true as const };
-	assert.deepEqual(closeSteps({ row, job: job as LoopJobV3, record: handedBack, history, self: f.createdBy, now }).at(-1), { write: "row", fate: { do: "owed" } });
+	assert.deepEqual(closeSteps({ row, job: job as LoopJob, record: handedBack, history, self: f.createdBy, now }).at(-1), { write: "row", fate: { do: "owed" } });
 });
 
 test("[loop-R5] interrupted claims share a stop record; the live process has no stop", async () => {
@@ -144,7 +144,7 @@ test("[loop-R6] the third alone interruption disables the job before it removes 
 	const stopped: ProcessStop = { pid: row.run.pid, procStart: row.run.procStart, runs: [row.id] };
 	const record = interruptedRecord(row, stopped);
 	const history = { ordinal: 0, streak: 0, spent: new Set<string>() };
-	const plan = closeSteps({ row, job: job as LoopJobV3, record, history, self: f.createdBy, now });
+	const plan = closeSteps({ row, job: job as LoopJob, record, history, self: f.createdBy, now });
 	assert.deepEqual(plan.map((step) => step.write), ["run-end", "disable", "row"]);
 	assert.equal(plan.at(-1)?.write, "row");
 	const prior = [record, record].map((item, index) => ({ ...item, runId: `old-${index}`, finishedAt: stamp(now - 1000 + index), ordinal: index + 1 }));
@@ -165,7 +165,7 @@ test("[kept-catch-up-note] a caught-up run tells the model it is catching up", a
 		prompt = request.prompt;
 		return { ok: true, exitCode: 0, timedOut: false, text: "ok", usage: { input: 1, output: 1, cost: 0, turns: 1 } };
 	};
-	await runLoop(claimed, job as LoopJobV3, f.deps);
+	await runLoop(claimed, job as LoopJob, f.deps);
 	assert.match(prompt, /\(catching up a missed tick\)/);
 });
 
@@ -178,5 +178,5 @@ test("[kept-last-fired] a loop's fired stamp is its claim start, including cron-
 	const record: RunRecordM4b = { ...interruptedRecord(claim), ok: true, error: undefined, interrupted: undefined, ordinal: 1 };
 	await closeLoopRun(claim, f.deps, now, record);
 	assert.equal(f.stores.book().clock.jobs[job.id].fired, startedAt);
-	assert.equal(f.stores.jobs.load()[0].lastFiredAt, startedAt);
+	assert.equal("lastFiredAt" in f.stores.jobs.load()[0], false, "the definition holds no cursor");
 });

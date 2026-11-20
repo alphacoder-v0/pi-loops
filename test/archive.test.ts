@@ -6,8 +6,15 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { ARCHIVE_SCHEMA, applyImport, automationOf, defaultExportPath, exportSession, importSession, parseActivateMode, readTar, writeTar } from "../src/archive.ts";
 import { JobStore } from "../src/store.ts";
+import { fromV2, type V2Job } from "../src/convert-v2.ts";
+import { clockStore } from "../src/stores.ts";
 import { type DynamicTriggerRule, TriggerStore } from "../src/triggers.ts";
 
+/** An export of jobs written as a version 2 file held them: their definitions, and their cursors as clock.json holds them. */
+function exportV2(input: Omit<Parameters<typeof exportSession>[0], "clock">): ReturnType<typeof exportSession> {
+	const converted = (input.jobs as unknown as V2Job[]).map((job) => fromV2(job));
+	return exportSession({ ...input, jobs: converted.map((c) => c.job), clock: { v: 1, jobs: Object.fromEntries(converted.map((c) => [c.job.id, c.clock])) } });
+}
 
 /** An archive built by hand, so the transcript can be broken with a manifest that still matches it. */
 function handmade(file: string, lines: string[], extra: Array<{ name: string; data: Buffer }> = [], schema = ARCHIVE_SCHEMA): string {
@@ -53,12 +60,12 @@ test("export bundles session + cron + triggers + loop state; import rewrites and
 	const inject: any = { ...job, id: "cron-bbbbbbbb", name: "ping", stateful: false, sessionId: "orig-id", enabled: false };
 	const rule: any = { id: "dyn-" + "1".repeat(32), condition: "c", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: "/old/project" };
 	const out = defaultExportPath(dir, "orig-id");
-	const summary = exportSession({ sessionFile, cwd: "/old/project", jobs: [job, inject], rules: [rule], states: { "cron-aaaaaaaa": "seen: #1 #2", "cron-bbbbbbbb": "ignored (not stateful)" }, outputPath: out, piVersion: "0.85.1", piLoopsVersion: "0.1.0" });
+	const summary = exportV2({ sessionFile, cwd: "/old/project", jobs: [job, inject], rules: [rule], states: { "cron-aaaaaaaa": "seen: #1 #2", "cron-bbbbbbbb": "ignored (not stateful)" }, outputPath: out, piVersion: "0.85.1", piLoopsVersion: "0.1.0" });
 	assert.equal(summary.entryCount, 2);
 	assert.equal(summary.loopStateCount, 1, "only stateful jobs carry state");
 	assert.deepEqual([...readTar(fs.readFileSync(out)).keys()].sort(), ["loops/cron-aaaaaaaa.md", "manifest.json", "session.jsonl", "sidecars/cron.json", "sidecars/triggers.json"]);
 	assert.equal(fs.statSync(out).mode & 0o777, 0o600);
-	assert.throws(() => exportSession({ sessionFile, cwd: "/old/project", jobs: [], rules: [], states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" }), /EEXIST/, "never overwrites");
+	assert.throws(() => exportV2({ sessionFile, cwd: "/old/project", jobs: [], rules: [], states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" }), /EEXIST/, "never overwrites");
 
 	const sessionDir = path.join(dir, "sessions");
 	// An unrelated job already holds the archive's id (same id, different provenance and prompt):
@@ -76,9 +83,9 @@ test("export bundles session + cron + triggers + loop state; import rewrites and
 	const watch = imp.jobs.find((j) => j.name === "watch")!;
 	assert.notEqual(watch.id, "cron-aaaaaaaa", "colliding id regenerated");
 	assert.equal(watch.enabled, false, "automation disabled until activated");
-	assert.equal(watch.running, undefined);
-	assert.equal(watch.lastError, undefined);
-	assert.equal(watch.skippedOverlap, 0);
+	assert.deepEqual(["running", "lastError", "skippedOverlap", "runCount"].filter((key) => key in watch), [], "the definition only: no counter of the version 2 shape");
+	assert.equal(watch.disabled?.code, "person", "off as a person's disable, until activated");
+	assert.deepEqual(imp.carry[watch.id], { ordinal: 3 }, "the run count goes to the cursor, as 0.24.2's import showed it");
 	assert.equal(watch.cwd, "/new/project");
 	assert.equal(imp.states[watch.id], "seen: #1 #2", "loop state follows the regenerated id");
 	const ping = imp.jobs.find((j) => j.name === "ping")!;
@@ -106,7 +113,7 @@ test("import rejects tampered, unsafe, or foreign archives", () => {
 	assert.throws(() => importSession({ archivePath: evil, sessionDir: dir, targetCwd: dir, activate: false, existingJobIds: new Set(), existingRuleIds: new Set() }), /unsafe path/);
 	const sessionFile = fakeSession(dir);
 	const out = path.join(dir, "ok.pisession");
-	exportSession({ sessionFile, cwd: dir, jobs: [], rules: [], states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
+	exportV2({ sessionFile, cwd: dir, jobs: [], rules: [], states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
 	const files = readTar(fs.readFileSync(out));
 	files.set("session.jsonl", Buffer.from(files.get("session.jsonl")!.toString() + JSON.stringify({ type: "message", id: "z" }) + "\n"));
 	const tampered = path.join(dir, "tampered.pisession");
@@ -120,7 +127,7 @@ test("--exclude-triggers drops cron jobs and loop state too", () => {
 	const job: any = { id: "cron-aaaaaaaa", schedule: { kind: "cron", expr: "0 9 * * *" }, stateful: true, prompt: "watch", cwd: dir, enabled: true, createdAt: "t", runCount: 0, skippedOverlap: 0 };
 	const rule: any = { id: "dyn-" + "2".repeat(32), condition: "c", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: dir };
 	const out = path.join(dir, "bare.pisession");
-	const summary = exportSession({ sessionFile, cwd: dir, jobs: [job], rules: [rule], states: { "cron-aaaaaaaa": "seen" }, outputPath: out, piVersion: "x", piLoopsVersion: "y", excludeTriggers: true });
+	const summary = exportV2({ sessionFile, cwd: dir, jobs: [job], rules: [rule], states: { "cron-aaaaaaaa": "seen" }, outputPath: out, piVersion: "x", piLoopsVersion: "y", excludeTriggers: true });
 	assert.equal(summary.hasCron, false);
 	assert.equal(summary.hasTriggers, false);
 	assert.equal(summary.loopStateCount, 0);
@@ -131,7 +138,7 @@ test("import validates every sidecar before it writes anything: a corrupt sideca
 	const dir = tmp("pi-loops-arc-");
 	const sessionFile = fakeSession(dir);
 	const good = path.join(dir, "good.pisession");
-	exportSession({ sessionFile, cwd: dir, jobs: [], rules: [], states: {}, outputPath: good, piVersion: "x", piLoopsVersion: "y" });
+	exportV2({ sessionFile, cwd: dir, jobs: [], rules: [], states: {}, outputPath: good, piVersion: "x", piLoopsVersion: "y" });
 	const files = readTar(fs.readFileSync(good));
 	files.set("sidecars/cron.json", Buffer.from(JSON.stringify({ jobs: "nope" })));
 	const broken = path.join(dir, "broken.pisession");
@@ -168,7 +175,7 @@ test("a host stamp in an archive is dropped on import: this machine runs what it
 	const job: any = { id: "cron-cccccccc", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: "/old", enabled: true, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0, host: "the-laptop" };
 	const rule: any = { id: "dyn-" + "2".repeat(32), condition: "c", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: "/old", host: "the-laptop" };
 	const out = defaultExportPath(dir, "orig-2");
-	exportSession({ sessionFile, cwd: "/old", jobs: [job], rules: [rule], states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
+	exportV2({ sessionFile, cwd: "/old", jobs: [job], rules: [rule], states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
 	const imp = importSession({ archivePath: out, sessionDir: path.join(dir, "sessions"), targetCwd: "/new", activate: true, existingJobIds: new Set(), existingRuleIds: new Set() });
 	assert.equal((imp.jobs[0] as any).host, undefined, "pi-loops runs on one machine; the stamp means nothing here");
 	assert.equal((imp.rules[0] as any).host, undefined);
@@ -184,7 +191,7 @@ test("a path-only rule's pre-check is read again on import, against the new proj
 		{ id: "dyn-" + "5".repeat(32), condition: "the build is green", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: "/old", precheck: theirs },
 	];
 	const out = defaultExportPath(dir, "orig-pre");
-	exportSession({ sessionFile, cwd: "/old", jobs: [], rules, states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
+	exportV2({ sessionFile, cwd: "/old", jobs: [], rules, states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
 	const imp = importSession({ archivePath: out, sessionDir: path.join(dir, "sessions"), targetCwd: "/new", activate: true, existingJobIds: new Set(), existingRuleIds: new Set() });
 	assert.equal(imp.rules[0].precheck?.resolved, "/new/ready");
 	assert.equal(imp.rules[1].precheck, undefined, "a condition that is not path-only carries no pre-check, whatever the archive said");
@@ -212,7 +219,7 @@ test("importing the same archive twice does not double the automation", () => {
 	const job: any = { id: "cron-dddddddd", name: "watch", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "watch issues", cwd: "/old/project", enabled: true, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0 };
 	const rule: any = { id: "dyn-" + "3".repeat(32), condition: "c", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: "/old/project" };
 	const out = path.join(dir, "twice.pisession");
-	exportSession({ sessionFile, cwd: "/old/project", jobs: [job], rules: [rule], states: { "cron-dddddddd": "seen" }, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
+	exportV2({ sessionFile, cwd: "/old/project", jobs: [job], rules: [rule], states: { "cron-dddddddd": "seen" }, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
 	const sessionDir = path.join(dir, "sessions");
 	const first = importSession({ archivePath: out, sessionDir, targetCwd: "/new/project", activate: true, existingJobIds: new Set(), existingRuleIds: new Set(), existingJobs: [], existingRules: [] });
 	assert.equal(first.jobs.length, 1);
@@ -239,7 +246,7 @@ test("a project-owned loop comes back owned by the project; one from before crea
 	const project: any = { ...base, id: "cron-eeeeeeee", name: "project", prompt: "the project's", owner: "project" };
 	const old: any = { ...base, id: "cron-ffffffff", name: "old", prompt: "from before createdBy" };
 	const out = path.join(dir, "owner.pisession");
-	exportSession({ sessionFile, cwd: "/old/project", jobs: [project, old], rules: [], states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
+	exportV2({ sessionFile, cwd: "/old/project", jobs: [project, old], rules: [], states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
 	const written = JSON.parse(readTar(fs.readFileSync(out)).get("sidecars/cron.json")!.toString("utf8"));
 	assert.equal((written.jobs ?? written).find((j: any) => j.name === "project").owner, "project", "export writes the owner");
 	const imp = importSession({ archivePath: out, sessionDir: path.join(dir, "sessions"), targetCwd: "/new/project", activate: false, existingJobIds: new Set(), existingRuleIds: new Set(), existingJobs: [], existingRules: [] });
@@ -259,7 +266,7 @@ test("an archive cannot smuggle in a schedule that would break every tick", () =
 	const hostile = (schedule: unknown, n: number): string => {
 		const out = defaultExportPath(dir, `hostile${n}`);
 		const job: any = { id: `cron-${String(n).repeat(32).slice(0, 32)}`, schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: "/old", enabled: true, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0 };
-		exportSession({ sessionFile, cwd: "/old", jobs: [job], rules: [], states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
+		exportV2({ sessionFile, cwd: "/old", jobs: [job], rules: [], states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
 		// Rewrite the sidecar with a hostile schedule and re-checksum it, as a hand-made archive would.
 		const files = readTar(fs.readFileSync(out));
 		const sidecar = JSON.parse(files.get("sidecars/cron.json")!.toString("utf8"));
@@ -314,7 +321,7 @@ test("applyImport rolls back a half-written import: no job, no loop state, no or
 	const job: any = { id: "cron-eeeeeeee", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: "/old/project", enabled: true, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0 };
 	const rule: any = { id: "dyn-" + "4".repeat(32), condition: "c", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: "/old/project" };
 	const out = path.join(dir, "rollback.pisession");
-	exportSession({ sessionFile, cwd: "/old/project", jobs: [job], rules: [rule], states: { "cron-eeeeeeee": "seen" }, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
+	exportV2({ sessionFile, cwd: "/old/project", jobs: [job], rules: [rule], states: { "cron-eeeeeeee": "seen" }, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
 	const loops = path.join(dir, "loops");
 	fs.mkdirSync(loops);
 	const jobStore = new JobStore(loops);
@@ -325,7 +332,7 @@ test("applyImport rolls back a half-written import: no job, no loop state, no or
 		}
 	}
 	const imp = importSession({ archivePath: out, sessionDir: path.join(dir, "sessions"), targetCwd: dir, activate: true, existingJobIds: new Set(), existingRuleIds: new Set() });
-	await assert.rejects(applyImport(imp, jobStore, new RefusingTriggerStore(loops)), /not writable/, "the original error is what the caller reports");
+	await assert.rejects(applyImport(imp, jobStore, new RefusingTriggerStore(loops), clockStore(loops)), /not writable/, "the original error is what the caller reports");
 	assert.deepEqual(jobStore.load(), [], "no half-imported job is left to run and to bill");
 	assert.equal(fs.existsSync(jobStore.statePath(imp.jobs[0].id)), false, "and no loop state for one");
 	assert.equal(fs.existsSync(imp.sessionPath), false, "nor a session file nothing points at");

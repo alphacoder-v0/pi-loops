@@ -20,9 +20,9 @@ import { type RunList, STOPPED_BY_PERSON } from "./run-list.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { formatLocal, stamp } from "./schedule.ts";
 import { shortSessionId } from "./session-head.ts";
-import { oneShotDone } from "./settle.ts";
+import { oneShotDoneV3 } from "./settle.ts";
 import type { SubagentSlot, SubagentSlots } from "./slots.ts";
-import type { JobStore, LoopJob, LoopJobV3, RunRecord } from "./store.ts";
+import type { JobStore, LoopJob, RunRecord } from "./store.ts";
 import { FAILING_AFTER, failurePause } from "./backoff.ts";
 import { loopLane, type LaneId } from "./lane.ts";
 import { runLoop, closeLoopRun, type LoopRunDeps } from "./loop-run.ts";
@@ -44,6 +44,8 @@ export interface BackgroundDeps {
 	leases: LeaseStore;
 	/** jobs.json and the run log. */
 	jobs: Pick<JobStore, "load" | "allRuns" | "remove">;
+	/** A job's slots the clock has counted (`clock.json`): a plain one-shot is done once one is. */
+	runsOf: (jobId: string) => number;
 	/** The process's list of the runs that are going. A held turn is in it from its claim to its closing. */
 	runs: RunList;
 	runner: SubagentRunner;
@@ -307,9 +309,10 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 			const fate = closed.settlement.row;
 			if (handedBack) log(`cron ${name}: ${preempted ? `a window opened session ${shortSessionId(held.sessionId)} during its turn; that window runs it` : `turn stopped (${record.error}); ${fate.do === "leave" ? "a fresh prompt is queued for it" : "its slot is owed"}`}`);
 			if (stopped) log(`cron ${name}: turn stopped; it is done`, "info");
-			if (closed.job && closed.end.how === "failed" && (closed.job.consecutiveFailures ?? 0) >= FAILING_AFTER) deps.failing?.(`${closed.job.name ?? closed.job.id} has failed ${closed.job.consecutiveFailures} times in a row; backing off (last: ${record.error ?? "unknown"})`, closed.job);
+			const streak = closed.job ? deps.sinks().counts(closed.job.id).streak : 0;
+			if (closed.job && closed.end.how === "failed" && streak >= FAILING_AFTER) deps.failing?.(`${closed.job.name ?? closed.job.id} has failed ${streak} times in a row; backing off (last: ${record.error ?? "unknown"})`, closed.job);
 			// The one-shot rule, asked at once; the tick asks it again after a crash.
-			if (closed.job && oneShotDone(closed.job, jobQueued(closed.job.id, requests.list(held.sessionId)))) await deps.jobs.remove(closed.job.id);
+			if (closed.job && oneShotDoneV3(closed.job, { queued: jobQueued(closed.job.id, requests.list(held.sessionId)) || undefined, runs: deps.runsOf(closed.job.id), ...(streak ? { error: { streak } } : {}) })) await deps.jobs.remove(closed.job.id);
 		} catch (err: any) {
 			// The claim stays, and the run leaves the list below: the next delivery closes it.
 			log(`cron ${job.id}: could not close its turn (${err?.message ?? err})`);
@@ -460,10 +463,10 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 	const inFlight = new Set<Promise<void>>();
 	const baseSinks = deps.engine;
 	const proof = (lane: LaneId): Proof => proofOf(lane, () => [], () => stores.jobs.allRuns());
-	/** When a loop's checkout was first found missing: a version 2 field until M4b.B moves it into the clock. */
-	const missingSince = (jobId: string): string | undefined => stores.jobs.load().find((job) => job.id === jobId)?.cwdMissingSince;
-	const laneJobs = (): Map<string, LoopJobV3> => {
-		const result = new Map<string, LoopJobV3>();
+	/** When a loop's checkout was first found missing: its clock entry keeps it while it is. */
+	const missingSince = (jobId: string): string | undefined => stores.clock.read().jobs[jobId]?.cwdMissing;
+	const laneJobs = (): Map<string, LoopJob> => {
+		const result = new Map<string, LoopJob>();
 		for (const job of stores.book().jobs) {
 			const lane = job.stateful ? loopLane(job.id) : undefined;
 			if (lane) result.set(lane, job);
@@ -483,7 +486,7 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 			// Main's order: the directory, the budget, a failure's backoff, then the slots. A row in its
 			// backoff is not "deferred": the backoff writes no reason of its own.
 			const backingOff = row.not_before !== undefined && Date.parse(row.not_before) > now;
-			return loopWait({ cwd: job.cwd, cwdMissingSince: missingSince(jobId) }, {
+			return loopWait({ cwd: job.cwd }, missingSince(jobId), {
 				cwdExists: deps.cwdExists,
 				budget: () => budgetState(stores.jobs, deps.budgetCap(), now),
 				...(backingOff ? {} : { slots: () => ({ inUse: slots.inUseCount, free: slots.free, limit: slots.limit }) }),
@@ -540,8 +543,8 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 					await stores.jobs.disable(current.id, { code: "cwd-missing", at: stamp(now), why: `disabled: cwd ${current.cwd} has been missing since ${formatLocal(since)} (re-enable after /cron add --cwd or restoring it)` });
 					stores.requests.remove(lane.id, [row.id]); // the slot is spent; a re-enabled job does not run the stale row
 					deps.sinks.log(`cron ${current.name ?? current.id}: disabled, cwd ${current.cwd} missing since ${formatLocal(since)}`, undefined, current);
-				} else if (!marked) await stores.jobs.update(current.id, (j) => { j.cwdMissingSince = stamp(since); });
-			} else if (missingSince(current.id) && deps.cwdExists(current.cwd)) await stores.jobs.update(current.id, (j) => { j.cwdMissingSince = undefined; });
+				} else if (!marked) stores.clock.cwdMissing(current.id, stamp(since));
+			} else if (missingSince(current.id) && deps.cwdExists(current.cwd)) stores.clock.cwdMissing(current.id, undefined);
 		}
 		const result = await drain(lane.id, stores.requests, executor, now, sinks);
 		// Main's overlap rule, at each tick of an enabled job (a disabled one was passed over before it): a
@@ -554,7 +557,7 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 			const overlapped = going && current?.enabled ? rows.filter((row) => !row.run && row.kind === "input" && row.source === `cron:${jobId}`) : [];
 			for (const row of overlapped) {
 				const slot = row.collapsed_slot ?? row.payload?.slot ?? row.created_at;
-				if (stores.requests.collapse(lane.id, going!.id, slot, true) === "counted") await stores.jobs.update(jobId, (j) => { j.skippedOverlap += 1; });
+				if (stores.requests.collapse(lane.id, going!.id, slot, true) === "counted") stores.clock.countCollapse(jobId);
 				stores.requests.remove(lane.id, [row.id]);
 				deps.sinks.log(`cron ${current?.name ?? jobId}: skipped: previous run still active (its ${slot} slot)`, "info", current);
 			}

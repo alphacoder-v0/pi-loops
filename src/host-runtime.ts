@@ -23,7 +23,7 @@ import { RunList } from "./run-list.ts";
 import type { OwnerView, SessionSnapshot } from "./job-owner.ts";
 import { DEFAULT_RUN_TIMEOUT_MS } from "./loop-run.ts";
 import { stamp } from "./schedule.ts";
-import { budgetState } from "./job-status.ts";
+import { budgetState, jobCounts } from "./job-status.ts";
 import { SubagentSlots } from "./slots.ts";
 import { type LoopJob, newId } from "./store.ts";
 import { RUNTIME_RIDERS, type Riders, type TickFacts } from "./ticker.ts";
@@ -125,7 +125,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const ownerView: OwnerView = { holdsOwn: false, hostRuns: (sessionId) => canHold(sessionId) };
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
-	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: stores.inbox, audit: triggers.store, ledger: stores.jobs, self: createdBy });
+	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: stores.inbox, audit: triggers.store, ledger: stores.jobs, counts: (id) => jobCounts(stores.history().get(id), stores.clock.read().jobs[id]?.cleared), self: createdBy });
 
 	/* ------------------------------------------------------ lifecycle hooks */
 
@@ -188,6 +188,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		requests,
 		leases,
 		jobs: stores.jobs,
+		runsOf: (id) => stores.clock.read().jobs[id]?.runs ?? 0,
 		runs,
 		runner: deps.runner,
 		sinks,
@@ -438,9 +439,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			if (due === undefined && !background.owes(job, now)) continue;
 			if (due !== undefined && budget.over) continue;
 			const history = stores.history().get(job.id);
-			const legacy = stores.jobs.load().find((candidate) => candidate.id === job.id);
-			const streak = legacy?.consecutiveFailures ?? history?.streak ?? 0;
-			const failedAt = history?.failed?.at ?? legacy?.lastCompletedAt;
+			const streak = history?.streak ?? 0;
+			const failedAt = history?.failed?.at;
 			if (streak >= FAILING_AFTER && failedAt && now - Date.parse(failedAt) < failurePause(streak)) continue;
 			const permit = slots.acquire();
 			if (!permit) continue;

@@ -14,12 +14,14 @@
  * queue, a one-shot, and a window that dies.
  */
 import assert from "node:assert/strict";
+import { isDeepStrictEqual } from "node:util";
 import { CEILING, type EngineSinks, type Executor, closeRun, drain, plainRunId, proofOf } from "../../src/engine.ts";
 import { Inbox, findingId } from "../../src/inbox.ts";
 import { type ClaimedRow, RequestStore, type Row, type UnclaimedRow } from "../../src/requests.ts";
 import { RunList } from "../../src/run-list.ts";
 import { stamp } from "../../src/schedule.ts";
-import { runEnd } from "../../src/settle.ts";
+import { INTERRUPTIONS_BEFORE_PARKING, runEnd } from "../../src/settle.ts";
+import { jobCounts, runHistory } from "../../src/job-status.ts";
 import type { RunRecord } from "../../src/store.ts";
 import { type Random, weighted } from "./prng.ts";
 
@@ -50,7 +52,8 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 	/** Every row the clock or a closing queued, in order. */
 	const known: string[] = [];
 	const gone = new Map<string, string>();
-	const job: Record<string, any> = { id: JOB, sessionId: SESSION, prompt: "go", cwd: "/p", schedule: { kind: "every", ms: 60_000 }, enabled: true, stateful: false, runCount: 0 };
+	const job: Record<string, any> = { id: JOB, sessionId: SESSION, prompt: "go", cwd: "/p", schedule: { kind: "every", ms: 60_000 }, enabled: true, stateful: false };
+	const definition = structuredClone(job);
 	const out: Outcome = { steps: [], seen: new Set() };
 	const fail = (what: string): void => void (out.violation ??= what);
 	let now = START;
@@ -60,8 +63,6 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 	let holder: "background" | "window" | undefined;
 	let fuse = Infinity;
 	let crashed = false;
-	/** How many times the process died in the middle of a drain's or a closing's writes. */
-	let cutClosings = 0;
 	const alive = (): void => {
 		if (crashed) throw new Crash();
 	};
@@ -69,7 +70,6 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 		if (--fuse > 0) return;
 		fuse = Infinity;
 		crashed = true;
-		cutClosings++;
 		die("in the middle of its writes");
 		throw new Crash();
 	};
@@ -164,9 +164,9 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 			},
 			ledger: {
 				load: () => [job as any],
-				update: async (_id, patch) => {
+				disable: async (_id, disabled) => {
 					before();
-					patch(job as any);
+					if (job.enabled) Object.assign(job, { enabled: false, disabled });
 					after();
 					return job as any;
 				},
@@ -176,6 +176,7 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 					after();
 				},
 			},
+			counts: (id) => jobCounts(runHistory(records).get(id), undefined),
 			self: () => ({ pid: fused ? proc.pid : 1, instance: fused ? "background" : "window", version: "sim" }),
 		};
 	};
@@ -266,16 +267,6 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 		});
 	};
 
-	/** The streak the job must show once every closing is through: each failed record raises it, each success clears it. */
-	const streak = (upTo = records.length): number => {
-		let n = 0;
-		for (const record of records.slice(0, upTo)) {
-			const how = runEnd(record).how;
-			if (how === "succeeded") n = 0;
-			else if (how === "failed") n++;
-		}
-		return n;
-	};
 
 	function check(final = false): void {
 		const rows = real.list(SESSION);
@@ -292,14 +283,12 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 			if (row.attempts > cutOff) fail(`${row.id} has ${row.attempts} attempt(s) and only ${cutOff} of its runs were cut off before the prompt: a failure, a stop or a hand-back counted`);
 			if (runsOf(row.id).some((r) => r.end === "ok" || r.end === "failed") && !row.run) fail(`${row.id} is queued again after a run of it ended: a run that ended spends its slot`);
 		}
-		// The job counts a process that died once per run, and never more.
-		if ((job.interruptions ?? 0) > records.filter((r) => r.interrupted).length) fail(`the job counts ${job.interruptions} interruptions and the run log has ${records.filter((r) => r.interrupted).length}`);
-		// A failure is never counted twice, also when a closing runs again after another row's closing
-		// came between. A process that died in the middle of a closing can leave one record uncounted.
-		const streakNow = job.consecutiveFailures ?? 0;
-		const most = Math.max(...records.map((_, i) => streak(i + 1)), 0);
-		if (streakNow > most) fail(`the job's streak is ${streakNow}, and the run log never says more than ${most}: a failure was counted twice`);
-		if (job.runCount !== known.filter((id) => id.startsWith("slot-")).length) fail(`the closing changed the job's run count to ${job.runCount}`);
+		// A closing writes nothing on the job but its disable: every count is the run log's.
+		const { enabled: _enabled, disabled, ...rest } = job;
+		if (!isDeepStrictEqual({ ...rest, enabled: true }, definition)) fail(`a closing wrote on the job: ${JSON.stringify(job)}`);
+		// The job is turned off only when the run log has the interrupted runs in a row that say so.
+		const interruptedInARow = records.reduce((acc, r) => { const end = runEnd(r).how; const run = end === "interrupted" ? acc.run + 1 : end === "handed-back" ? acc.run : 0; return { run, most: Math.max(acc.most, run) }; }, { run: 0, most: 0 }).most;
+		if (disabled && interruptedInARow < INTERRUPTIONS_BEFORE_PARKING) fail(`the job was turned off (${disabled.why}) and the run log has ${interruptedInARow} interrupted run(s) in a row`);
 		// A successor follows a run that was handed back with its prompt written, and nothing else; one each.
 		for (const id of known) {
 			if (id.startsWith("slot-")) continue;
@@ -324,7 +313,7 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 		if (rows.length) fail(`${rows.map((r) => r.id).join(", ")} still queued after every run was let to end: a row is stuck`);
 		for (const id of known) if (!gone.has(id)) fail(`${id} never left`);
 		if (records.length !== runs.length) fail(`${runs.length} runs and ${records.length} records: a run has no record`);
-		if (cutClosings === 0 && (job.consecutiveFailures ?? 0) !== streak()) fail(`the job's streak is ${job.consecutiveFailures ?? 0} and the run log says ${streak()}, and no process died in a closing`);
+
 	}
 
 	for (let i = 0; i < steps && !out.violation; i++) {
@@ -339,7 +328,6 @@ export async function play(dir: string, random: Random, steps: number): Promise<
 				const row: UnclaimedRow = { v: 3, id, lane: SESSION, kind: "input", source: `cron:${JOB}`, mode: "unattended", wake: "turn", payload: { text: `[Trigger ${id}] go`, cwd: "/p" }, collapse_key: `cron:${JOB}`, created_at: stamp(now), created_by: { pid: proc.pid, instance: "background", version: "sim" }, attempts: 0 };
 				real.appendIfAbsent(row);
 				known.push(id);
-				job.runCount++;
 				out.steps.push(`the clock queues ${id}`);
 				break;
 			}

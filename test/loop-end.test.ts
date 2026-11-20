@@ -229,7 +229,7 @@ test("[overlap-at-drain] A scheduled row that waits beside a run of the same loo
 		await host.loops.drain(parseLane(lane) as any, t0);
 		const rows = host.stores.requests.list(lane) as any[];
 		assert.deepEqual(rows.map((row) => [row.id, row.collapsed, row.collapsed_slot, row.skipped]), [["run-asked", 1, slot, 1]]);
-		assert.equal(host.stores.jobs.load().find((j) => j.id === ID)?.skippedOverlap, 1);
+		assert.equal(host.stores.clock.read().jobs[ID]?.collapsed, 1, "one skipped overlap on the loop's cursor");
 		assert.equal(listedJobs(host.stores, () => true).find((j) => j.id === ID)?.status.error, "skipped: previous run still active");
 	} finally { await host.stop(); }
 });
@@ -312,6 +312,7 @@ test("[dead-session-sweep] a plain job whose conversation is gone is disabled wi
 		await host.riders["dead-sessions"](t0, { startedAt: 0, tickMs: 30_000 });
 		const job = host.stores.jobs.load().find((j) => j.id === "cron-plain")!;
 		assert.equal(job.enabled, false);
-		assert.match(job.lastError ?? "", /^disabled: session .* no longer exists \(\/cron gc removes it\)$/);
+		assert.equal(job.disabled?.code, "session-gone");
+		assert.match(job.disabled?.why ?? "", /^disabled: session .* no longer exists \(\/cron gc removes it\)$/);
 	} finally { await host.stop(); }
 });
