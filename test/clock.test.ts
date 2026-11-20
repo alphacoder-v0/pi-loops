@@ -128,6 +128,10 @@ test("[T2-replaces-refused] In a window, the next slot is not collapsed onto a p
 	if (decision.do !== "row") return;
 	assert.equal(decision.replaces, "run-refused");
 	assert.equal(decision.row.id, plainRunId(j.id, decision.slot));
+	const { requests, deps } = stores(tmp());
+	requests.appendIfAbsent(refused);
+	assert.equal(writeSlot(decision, deps).t2, "wrote");
+	assert.deepEqual(requests.list("s").map((r) => r.id), [decision.row.id]);
 });
 
 test("[collapse-own-id] A queued row for the slot moves only the cursor.", () => {
