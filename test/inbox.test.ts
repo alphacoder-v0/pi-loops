@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { FINDING_FIELDS, INBOX_ROTATE_BYTES, Inbox, type InboxEntry, findingId, inProject, resolveInboxRef, UNDER_INBOX_LOCK } from "../src/inbox.ts";
-import { type AnswerWrite, answerPrompt, answerRow, answerStep, besideId } from "../src/ask.ts";
+import { type AnswerWrite, answerPrompt, answerRow, answerStep } from "../src/ask.ts";
 import { sameProject } from "../src/paths.ts";
 import { checkLane } from "../src/trigger-runtime.ts";
 import { queueLines } from "../src/job-lines.ts";
@@ -551,7 +551,7 @@ test("[screen] a cwd is an identity: a reader gets it as stored, so its project 
 	assert.equal(inProject(inbox.list(), zw, sameProject).length, 1, "a legal format character in a path keeps its finding in its project");
 });
 
-test("[screen] a cancel files the question open again with the words as they were stored, not as a reader got them", async () => {
+test("[screen] a cancel reopens the finding with the words as they were stored, not as a reader got them", async () => {
 	const dir = tmp("pi-loops-inbox-");
 	const project = path.join(dir, "proj");
 	fs.mkdirSync(project, { recursive: true });
@@ -562,10 +562,10 @@ test("[screen] a cancel files the question open again with the words as they wer
 	const answers = answersOver(inbox);
 	assert.equal((await answers.say(id, "yes", { by: "page", session: "s" })).said, "Y1");
 	assert.ok("cancelled" in (await answers.cancel(id)), "the yes is cancelled");
-	const again = fs.readFileSync(inbox.file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((l) => l.id === besideId(id, "again"));
-	assert.ok(again, "the question is filed again");
-	assert.deepEqual({ text: again.text, source: again.source }, { text: stored.text, source: stored.source }, "its stored words are the finding's stored words");
-	assertClean("the question open again, as a reader gets it", inbox.list().find((e) => e.id === again.id)?.text);
+	const lines = fs.readFileSync(inbox.file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+	assert.deepEqual(lines.map((l) => [l.id, l.status]), [[id, "new"]], "the finding is open again, and nothing is filed beside it");
+	assert.deepEqual({ text: lines[0].text, source: lines[0].source }, { text: stored.text, source: stored.source }, "its stored words are as they were");
+	assertClean("the finding open again, as a reader gets it", inbox.list().find((e) => e.id === id)?.text);
 });
 
 test("[screen] a line whose id is not inb- and 32 hex digits is no finding to a reader, and a rewrite keeps it as it was", async () => {

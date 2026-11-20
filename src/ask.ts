@@ -82,7 +82,7 @@ export type AnsweredBy = PersonSurface | "cli";
 /** The claim of the process that runs an answer: the same value as `row.run`. */
 export type AnswerClaim = ClaimedRow["run"];
 
-export type AnswerState = "pending" | "started" | "done" | "unfinished" | "not_run" | "cancelled";
+export type AnswerState = "pending" | "started" | "done" | "unfinished" | "not_run";
 export type OpenState = "pending" | "started";
 export type FinalState = Exclude<AnswerState, OpenState>;
 
@@ -101,8 +101,7 @@ export type Answer =
 	| { state: "started"; run: AnswerClaim; at: string }
 	| { state: "done"; run: AnswerClaim; at: string }
 	| { state: "unfinished"; run: AnswerClaim; why: string; ending?: Ending; at: string }
-	| { state: "not_run"; why: string; at: string }
-	| { state: "cancelled"; at: string };
+	| { state: "not_run"; why: string; at: string };
 
 /**
  * An `answer` that `readAskFields` cannot read as an arm of `Answer`: a state this version does not
@@ -148,10 +147,10 @@ export function askFindingId(ask: string): string {
 	return findingId(`ask | ${ask}`);
 }
 
-/** What is filed beside a state, in the same rewrite. */
-export type Beside = "again" | "outcome" | "not-run";
+/** The news filed beside a state, in the same rewrite. */
+export type Beside = "outcome" | "not-run";
 
-/** The id of the successor (`again`) or of a news line of finding `id`. */
+/** The id of a news line of finding `id`. A finding reaches a final state once, so each is filed at most once. */
 export function besideId(id: string, what: Beside): string {
 	return findingId(`${id} | ${what}`);
 }
@@ -196,7 +195,7 @@ const isObject = (value: unknown): value is Record<string, unknown> => !!value &
 const isString = (value: unknown): value is string => typeof value === "string";
 const isStrings = (value: unknown): value is string[] => Array.isArray(value) && value.every(isString);
 const ENDINGS: ReadonlySet<unknown> = new Set<Ending>([NOT_RUN, MAYBE_RUN]);
-const STATES: ReadonlySet<unknown> = new Set<AnswerState>(["pending", "started", "done", "unfinished", "not_run", "cancelled"]);
+const STATES: ReadonlySet<unknown> = new Set<AnswerState>(["pending", "started", "done", "unfinished", "not_run"]);
 
 function readCall(raw: unknown): Call | undefined {
 	if (!isObject(raw)) return undefined;
@@ -256,7 +255,7 @@ function readAnswer(raw: unknown): Answer | UnreadableAnswer {
 	if (!isObject(raw) || !STATES.has(raw.state) || !isString(raw.at)) return unreadable;
 	const at = raw.at;
 	const state = raw.state as AnswerState;
-	if (state === "pending" || state === "cancelled") return { state, at };
+	if (state === "pending") return { state, at };
 	if (state === "not_run") return isString(raw.why) ? { state, why: raw.why, at } : unreadable;
 	const run = readClaim(raw.run);
 	if (!run) return unreadable;
@@ -302,16 +301,15 @@ export function screenAskFields({ ask, answer }: AskFields): Pick<AskFields, "as
 
 /**
  * Where an answer may go from each state. `none` is a finding with no `answer`. A final state has
- * `never`: no row of `ANSWER_STEPS` can start there.
+ * `never`: no row of `ANSWER_STEPS` can start there. `pending` back to `none` is a cancel (V1).
  */
 export interface AnswerMoves {
 	none: "none" | "pending" | "not_run";
-	pending: "started" | "not_run" | "cancelled";
+	pending: "started" | "not_run" | "none";
 	started: "done" | "unfinished";
 	done: never;
 	unfinished: never;
 	not_run: never;
-	cancelled: never;
 }
 export type AnswerFrom = keyof AnswerMoves;
 
@@ -323,7 +321,9 @@ type StepRule = {
 /**
  * Every rewrite of `inbox.jsonl` in the protocol, by its transition id. `GONE` is the deleted
  * conversation. `F1` is F1 at the third attempt. Q1 is not here: it files a finding and changes
- * none.
+ * none. V1 is the only step that moves a finding back: a cancel takes off what the yes wrote, and
+ * the finding is `new` again, with its own id, for a person to answer again. Every other step
+ * moves forward.
  */
 export const ANSWER_STEPS = {
 	Y1: { from: "none", to: ["pending"], sets: "claimed" },
@@ -336,12 +336,12 @@ export const ANSWER_STEPS = {
 	E4: { from: "pending", to: ["started"] },
 	F1: { from: "pending", to: ["not_run"] },
 	C3: { from: "started", to: ["done", "unfinished"] },
-	V1: { from: "pending", to: ["cancelled"] },
+	V1: { from: "pending", to: ["none"] },
 } as const satisfies Record<string, StepRule>;
 export type AnswerStepId = keyof typeof ANSWER_STEPS;
 
 /**
- * The finding that is filed with each state, in the same rewrite. The type gives every final state
+ * The news that is filed with each state, in the same rewrite. The type gives every final state
  * but `done` a companion.
  */
 export const BESIDE = {
@@ -350,7 +350,6 @@ export const BESIDE = {
 	done: undefined,
 	unfinished: "outcome",
 	not_run: "not-run",
-	cancelled: "again",
 } as const satisfies { [S in AnswerState]: S extends OpenState | "done" ? undefined : Beside };
 
 /** What each step is given. `to` picks the state it writes, and must be one the table allows (checked below). */
@@ -366,17 +365,20 @@ export interface StepInput {
 	E4: { to: "started"; run: AnswerClaim };
 	F1: { to: "not_run" };
 	C3: { to: "done" } | { to: "unfinished"; why: string; ending?: Ending };
-	V1: { to: "cancelled" };
+	V1: { to: "none" };
 }
 type StepOffTable = { [K in AnswerStepId]: StepInput[K]["to"] extends (typeof ANSWER_STEPS)[K]["to"][number] ? never : K }[AnswerStepId];
 const everyInputIsOnTheTable: [StepOffTable] extends [never] ? true : false = true;
 void everyInputIsOnTheTable;
 
+/** What a yes wrote on a finding, which V1 takes off. `lane` stays: it is the finding's lane. */
+const REOPENED = ["answer", "answered_by", "claimed_by"] as const;
+
 declare const answerWrite: unique symbol;
 /**
- * One rewrite of `inbox.jsonl`: the fields set on finding `id`, and the finding filed beside it.
- * Only `answerStep` makes one, so no code writes `answer`, `answered_by` or a status but through
- * the table.
+ * One rewrite of `inbox.jsonl`: the fields set on finding `id`, the fields taken off it, and the
+ * finding filed beside it. Only `answerStep` makes one, so no code writes `answer`, `answered_by`
+ * or a status but through the table.
  */
 export interface AnswerWrite {
 	readonly [answerWrite]: true;
@@ -384,6 +386,8 @@ export interface AnswerWrite {
 	readonly id: string;
 	/** `answer` is always an arm of `Answer`: no step writes an `UnreadableAnswer`. `lane` only at Y1, on a finding that has none. */
 	readonly set: Partial<Pick<Finding, "status" | "claimed_by" | "answered_by" | "dismissed_at" | "dismiss_reason" | "lane">> & { readonly answer?: Answer };
+	/** Only V1: the fields taken off, after `set`. */
+	readonly unset?: typeof REOPENED;
 	/** Filed in the same rewrite, unless a finding has its id already. */
 	readonly beside?: { readonly id: string; readonly entry: NewFinding };
 }
@@ -422,7 +426,7 @@ export function answerStep<K extends AnswerStepId>(step: K, finding: Finding | u
 	if (state !== from) return { refused: "state", state };
 
 	const write = (set: AnswerWrite["set"], beside?: Beside, text?: string): AnswerWrite =>
-		({ step, id: finding.id, set: defined(set), ...(beside ? { beside: { id: besideId(finding.id, beside), entry: besideEntry(finding, beside, text, ctx.lane) } } : {}) }) as AnswerWrite;
+		({ step, id: finding.id, set: defined(set), ...(beside ? { beside: { id: besideId(finding.id, beside), entry: newsEntry(finding, text ?? "", ctx.lane) } } : {}) }) as AnswerWrite;
 	const s = { step, input } as AnyStep;
 	switch (s.step) {
 		case "Y1":
@@ -453,7 +457,7 @@ export function answerStep<K extends AnswerStepId>(step: K, finding: Finding | u
 			return write({ answer }, "outcome", outcomeNews(finding, s.input.why, s.input.ending));
 		}
 		case "V1":
-			return write({ answer: { state: "cancelled", at: ctx.at } }, "again");
+			return { step, id: finding.id, set: { status: "new" }, unset: REOPENED } as AnswerWrite;
 	}
 }
 
@@ -461,15 +465,9 @@ function notRun(write: (set: AnswerWrite["set"], beside?: Beside, text?: string)
 	return write({ answer: { state: "not_run", why, at } }, "not-run", notRunNews(finding, why));
 }
 
-/**
- * The finding filed beside a state. `again` is the question open again: the same text, kind,
- * origin, transcript and ask, and no answer. A news line keeps the origin of the finding it is
- * about, and no transcript, so it pins none.
- */
-function besideEntry(finding: Finding, what: Beside, text: string | undefined, lane: LaneId | undefined): NewFinding {
-	const origin = { source: finding.source, run_id: finding.run_id, cwd: finding.cwd, job_id: finding.job_id, session_id: finding.session_id };
-	if (what === "again") return defined({ ...origin, text: finding.text, kind: finding.kind, transcript: finding.transcript, transcript_id: finding.transcript_id, ask: finding.ask, lane });
-	return defined({ ...origin, text: text ?? "", kind: "news" as const, lane });
+/** The news filed beside a state. It keeps the origin of the finding it is about, and no transcript, so it pins none. */
+function newsEntry(finding: Finding, text: string, lane: LaneId | undefined): NewFinding {
+	return defined({ source: finding.source, run_id: finding.run_id, cwd: finding.cwd, job_id: finding.job_id, session_id: finding.session_id, text, kind: "news" as const, lane });
 }
 
 /** The state `ANSWER_STEPS` reads: `none` for a finding with no answer. `unreadable` is in no row of the table. */
@@ -797,27 +795,15 @@ export interface MeetFacts {
 	 */
 	blocked?: string;
 	at: string;
-	/** The inbox as it is under `inbox.lock`: who may carry a question (`carriesAsk`). Absent: only the question's own finding. */
-	inbox?: readonly Finding[];
 }
 
 /**
- * Whether `finding` is a finding the question it carries may be answered on: the one Q1 filed
- * (`askFindingId`), or the successor a cancel filed (`again`) of such a finding whose answer is
- * cancelled. A copy of a question under another id is neither, so one question gets one grant at a
- * time.
+ * Whether `finding` is the finding the question it carries may be answered on: the one Q1 filed
+ * (`askFindingId`). A cancel reopens that finding, so there is no other. A copy of a question under
+ * another id is not it, so one question gets one grant at a time.
  */
-export function carriesAsk(finding: Finding & { ask: Ask }, inbox: readonly Finding[]): boolean {
-	const seen = new Set<string>();
-	let current: Finding & { ask: Ask } = finding;
-	for (;;) {
-		if (current.id === askFindingId(current.ask.id)) return true;
-		seen.add(current.id);
-		const id = current.id;
-		const before = inbox.find((f): f is Finding & { ask: Ask } => f.ask?.id === finding.ask.id && !seen.has(f.id) && f.answer?.state === "cancelled" && besideId(f.id, "again") === id);
-		if (!before) return false;
-		current = before;
-	}
+export function carriesAsk(finding: Finding & { ask: Ask }): boolean {
+	return finding.id === askFindingId(finding.ask.id);
 }
 
 /** What the executor does with one `ans-` row. The first case that matches applies, in this order. */
@@ -861,7 +847,9 @@ const sameClaim = (a: AnswerClaim, b: AnswerClaim): boolean => a.id === b.id && 
  * `finding` the finding `row.payload.finding` names, as it is under `inbox.lock`.
  *
  * E1, for a row with or without a `run`: no finding; not a real yes; a row whose id is not
- * `answerRowId(finding.id)`; a question on a finding that does not carry it (`carriesAsk`); a row in a lane that is not the finding's; an `UnreadableAnswer`; for
+ * `answerRowId(finding.id)`; a row whose `requested_by` is not the finding's `claimed_by` (an
+ * earlier yes's row, appended after a cancel reopened the finding); a question on a finding that
+ * does not carry it (`carriesAsk`); a row in a lane that is not the finding's; an `UnreadableAnswer`; for
  * a row with no `run`, a state that is not `pending`; for a row with a `run`, an answer that has a
  * claim that is not this `run` (a forged or older claim is `stale`, never W1).
  *
@@ -876,7 +864,8 @@ export function meetAnswerRow(row: Row, finding: Finding | undefined, facts: Mee
 	if (!finding) return { case: "E1", why: "the finding is missing" };
 	if (!realYes(finding)) return { case: "E1", why: "the finding is not a yes from a person" };
 	if (row.id !== answerRowId(finding.id)) return { case: "E1", why: "the row is not the finding's" };
-	if (finding.ask && !carriesAsk(finding as Finding & { ask: Ask }, facts.inbox ?? [])) return { case: "E1", why: "the finding is not its question's" };
+	if (row.payload?.requested_by !== finding.claimed_by) return { case: "E1", why: "the row is an earlier yes's" };
+	if (finding.ask && !carriesAsk(finding as Finding & { ask: Ask })) return { case: "E1", why: "the finding is not its question's" };
 	if (facts.lane.lane !== row.lane || !facts.ownProject) return { case: "E1", why: "the row is not in the finding's lane" };
 	const answer = finding.answer;
 	if (!answer || answer.state === "unreadable") return { case: "E1", why: "the answer cannot be read" };
@@ -962,7 +951,7 @@ export function repairRows(findings: readonly Finding[], lanes: ReadonlyMap<Lane
 		const answer = finding.answer;
 		if (finding.lane === undefined || !answer || (answer.state !== "pending" && answer.state !== "started")) continue;
 		// A copy of a question meets E1: a row put back for it would be taken away again at every tick.
-		if (finding.ask && !carriesAsk(finding as Finding & { ask: Ask }, findings)) continue;
+		if (finding.ask && !carriesAsk(finding as Finding & { ask: Ask })) continue;
 		const rows = lanes.get(finding.lane);
 		if (!rows || rows.some((r) => r.id === answerRowId(finding.id))) continue;
 		const row = answerRow(finding, finding.lane, ctx.at, ctx.self);
@@ -1112,11 +1101,17 @@ export const PROTOCOL = {
 	F2: [{ id: "C1", write: "record", lock: "runs" }, { id: "C2", write: "run_end", lock: "none" }, { id: "C3", write: "finding", lock: "inbox" }, { id: "C4", write: "row-", lock: "lane" }],
 	F3: [{ id: "C2", write: "run_end", lock: "none", when: "the answer has a claim" }, { id: "C4", write: "row-", lock: "lane" }],
 	C: [{ id: "C1", write: "record", lock: "runs" }, { id: "C2", write: "run_end", lock: "none" }, { id: "C3", write: "finding", lock: "inbox" }, { id: "C4", write: "row-", lock: "lane" }],
-	V: [{ id: "V1", write: "finding", lock: "inbox" }, { id: "V2", write: "row-", lock: "inbox+lane" }, { id: "V2.audit", write: "audit", lock: "none" }],
+	/** The row leaves first, so a finding that is open again never has the row of the answer it had. */
+	V: [{ id: "V2", write: "row-", lock: "inbox+lane" }, { id: "V1", write: "finding", lock: "inbox" }, { id: "V2.audit", write: "audit", lock: "none" }],
 	H1: [{ id: "H1", write: "row+", lock: "inbox+lane" }],
 	"removed-job": [{ id: "removed-job", write: "jobs", lock: "jobs" }],
 	/** The conversion of an `inbox:` row that 0.24.2 handed over (section 14 of the sketch). */
 	K1: [{ id: "K1", write: "row-", lock: "inbox+lane" }, { id: "K1.audit", write: "audit", lock: "none" }],
-	/** The conversion of an `inbox:` row that 0.24.2 had not handed over: its successor, then the row. */
+	/**
+	 * The conversion of an `inbox:` row that 0.24.2 had not handed over: its finding reopened as V1
+	 * reopens one, then the row. The order is V's reversed on purpose: the row is what finds the finding
+	 * at the next start, so a stop between the two leaves an inert row beside a finding open again, which
+	 * the next start removes; the other order would leave the finding claimed with nothing to find it.
+	 */
 	K2: [{ id: "K2", write: "finding", lock: "inbox+lane" }, { id: "K2.row", write: "row-", lock: "inbox+lane" }, { id: "K2.audit", write: "audit", lock: "none" }],
 } as const satisfies Record<string, readonly ProtocolWrite[]>;

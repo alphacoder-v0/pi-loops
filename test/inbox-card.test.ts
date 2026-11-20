@@ -207,7 +207,6 @@ test("an answer's state reads as design 6.1's table says, from the finding alone
 	assert.equal(answerLine(claimed({ ask: QUESTION, answer: { state: "unfinished", run: RUN, why: "the process died", at: AT } })), "Started and did not finish (the process died). The command may or may not have run.");
 	assert.equal(answerLine(claimed({ answer: { state: "unfinished", run: RUN, why: "stopped", at: AT } })), "Started and did not finish (stopped).", "a finding that is not a question has no ending");
 	assert.equal(answerLine(claimed({ answer: { state: "not_run", why: "the loop was removed", at: AT } })), "Not run (the loop was removed)");
-	assert.equal(answerLine(claimed({ answer: { state: "cancelled", at: AT } })), "Cancelled. The question is open again");
 	assert.equal(answerLine(entry({ status: "claimed", answered_by: "cli" })), "Claimed from the command line. Nothing ran");
 	assert.equal(answerLine(entry({ status: "claimed", claimed_by: "s1" })), "Claimed before the upgrade.", "no answer and no answered_by: a claim 0.24.2 made");
 	assert.equal(answerLine(entry({})), undefined, "a new finding has nothing to say");
@@ -231,7 +230,7 @@ test("a yes from the page whose row was not queued does not say it runs", () => 
 test("a cancel that comes too late is refused in design 6.2's words", () => {
 	assert.equal(CANCELLED_LINE, "Cancelled. The question is open again");
 	assert.equal(cancelRefusal({ refused: "state", state: "started" }), "it has already started: stop it instead");
-	for (const state of ["done", "unfinished", "not_run", "cancelled"] as const) assert.equal(cancelRefusal({ refused: "state", state }), "it has already ended", state);
+	for (const state of ["done", "unfinished", "not_run"] as const) assert.equal(cancelRefusal({ refused: "state", state }), "it has already ended", state);
 	assert.equal(cancelRefusal({ refused: "not-a-real-yes" }), "it has no queued answer to cancel");
 	assert.equal(cancelRefusal({ refused: "state", state: "none" }), "it has no queued answer to cancel");
 });

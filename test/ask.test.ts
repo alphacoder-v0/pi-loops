@@ -14,7 +14,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type AnswerExecutor, type AnswerStart, type Answers, type AnswersDeps, type MeetOutcome, createAnswers } from "../src/answers.ts";
-import { type Call, type ProtocolWrite, type RunRecordM5a, PROTOCOL, WHY, answerRow, answerRowId, besideId, inputHash, isAnswerRow, noRowId, questionFinding, resolveCap } from "../src/ask.ts";
+import { type Call, type ProtocolWrite, type RunRecordM5a, PROTOCOL, WHY, answerRow, answerRowId, answerStep, besideId, inputHash, isAnswerRow, noRowId, questionFinding, resolveCap } from "../src/ask.ts";
 import { Inbox, type InboxEntry as Finding, type InboxSection, type NewFinding, type Sync, UNDER_INBOX_LOCK } from "../src/inbox.ts";
 import { type Lane, type LaneId, parseLane } from "../src/lane.ts";
 import { type ClaimedRow, type Listed, type Row, RequestStore } from "../src/requests.ts";
@@ -298,7 +298,7 @@ async function settle(w: World): Promise<void> {
 	assert.fail("the drains did not settle");
 }
 
-const COMPANION = { done: undefined, unfinished: "outcome", not_run: "not-run", cancelled: "again" } as const;
+const COMPANION = { done: undefined, unfinished: "outcome", not_run: "not-run" } as const;
 
 /** What holds after every settle: a yes run once, one record per run, a final state with its one companion, no row beside a final answer, a row beside an open one. */
 function invariants(w: World): void {
@@ -317,7 +317,7 @@ function invariants(w: World): void {
 			continue;
 		}
 		assert.equal(rows.length, 0, `no row beside the ${state} answer of ${f.id}`);
-		for (const what of ["outcome", "not-run", "again"] as const) assert.equal(ids.filter((i) => i === besideId(f.id, what)).length, COMPANION[state] === what ? 1 : 0, `${state} has ${what} ${COMPANION[state] === what ? "once" : "never"}`);
+		for (const what of ["outcome", "not-run"] as const) assert.equal(ids.filter((i) => i === besideId(f.id, what)).length, COMPANION[state] === what ? 1 : 0, `${state} has ${what} ${COMPANION[state] === what ? "once" : "never"}`);
 	}
 }
 
@@ -329,7 +329,7 @@ const want = (writes: readonly ProtocolWrite[]): Logged[] => writes.map(({ write
  * answer it started). Then a stop after each prefix, a new process, its drains; `final` checks the
  * state with `stop` the number of writes made before the stop (undefined: no stop).
  */
-async function crashTable<T>(opts: { setup: () => Promise<World>; act: (w: World) => Promise<T>; writes: readonly ProtocolWrite[]; after?: (w: World, out: T) => Promise<void>; final: (w: World, stop: number | undefined) => void }): Promise<void> {
+async function crashTable<T>(opts: { setup: () => Promise<World>; act: (w: World) => Promise<T>; writes: readonly ProtocolWrite[]; after?: (w: World, out: T) => Promise<void>; stopped?: (w: World, stop: number) => void; final: (w: World, stop: number | undefined) => void }): Promise<void> {
 	const writes = want(opts.writes);
 	const w = await opts.setup();
 	w.log = [];
@@ -349,6 +349,7 @@ async function crashTable<T>(opts: { setup: () => Promise<World>; act: (w: World
 		assert.ok(v.dead, `the process stopped after write ${stop}`);
 		assert.deepEqual(v.log, writes.slice(0, stop), `the first ${stop} writes`);
 		restart(v);
+		opts.stopped?.(v, stop);
 		await settle(v);
 		invariants(v);
 		opts.final(v, stop);
@@ -925,19 +926,17 @@ test("[C4] the row leaves last", async () => {
 	});
 });
 
-test("[V1] a cancel writes cancelled and the successor in one rewrite; refused when started or final", async () => {
+test("[V1] a cancel reopens the finding in one rewrite, under its own id; refused when started or final", async () => {
 	const w = await world();
 	const f = await ask(w, "loop");
 	await yes(w, f);
 	w.log = [];
 	const out = await w.answers.cancel(answerRowId(f.id));
-	assert.ok("cancelled" in out);
+	assert.ok("cancelled" in out && !("again" in out));
 	assert.equal(w.log.filter((l) => l.write === "finding").length, 1, "one rewrite");
-	assert.equal(find(w, f.id)?.answer?.state, "cancelled");
-	const again = find(w, besideId(f.id, "again"))!;
-	assert.equal(again.status, "new");
-	assert.equal(again.ask?.id, f.ask!.id);
-	assert.equal(again.lane, LOOP);
+	const open = find(w, f.id)!;
+	assert.deepEqual([open.status, open.answer, open.answered_by, open.claimed_by, open.ask?.id, open.lane], ["new", undefined, undefined, undefined, f.ask!.id, LOOP]);
+	assert.equal(w.inbox.list().length, 1, "nothing is filed beside it");
 
 	const v = await world();
 	const g = await news(v);
@@ -947,23 +946,7 @@ test("[V1] a cancel writes cancelled and the successor in one rewrite; refused w
 	assert.deepEqual(await v.answers.cancel(g.id), { refusal: { refused: "state", state: "done" } });
 });
 
-test("[V2] the row leaves under inbox.lock; a stop between V1 and V2 leaves it to E1; a cancel and E4 at once: one wins", async () => {
-	let f!: Finding;
-	await crashTable({
-		setup: async () => {
-			const w = await world();
-			f = await ask(w, "loop");
-			await yes(w, f);
-			return w;
-		},
-		act: (w) => w.answers.cancel(f.id),
-		writes: PROTOCOL.V,
-		final: (w) => {
-			assert.equal(find(w, f.id)?.answer?.state, "cancelled");
-			assert.equal(answerRows(w).length, 0);
-			assert.equal(w.starts.size, 0);
-		},
-	});
+test("[V2] a cancel and E4 at once: one wins", async () => {
 	for (let i = 0; i < 4; i++) {
 		const w = await world();
 		const g = await news(w);
@@ -976,11 +959,75 @@ test("[V2] the row leaves under inbox.lock; a stop between V1 and V2 leaves it t
 		} else {
 			assert.ok("cancelled" in cancel, "the cancel first: E4 does not happen");
 			await settle(w);
-			assert.equal(find(w, g.id)?.answer?.state, "cancelled");
+			assert.equal(find(w, g.id)?.status, "new");
 			assert.equal(w.starts.size, 0);
 		}
 		invariants(w);
 	}
+});
+
+test("[V1] [V2] a cancel reopens its finding; a stop after each write leaves no open finding beside a row, and no cancel without a way to answer again", async () => {
+	let f!: Finding;
+	await crashTable({
+		setup: async () => {
+			const w = await world();
+			f = await ask(w, "loop");
+			await yes(w, f);
+			// Two starts that did not get to E4b: the row keeps a dead claim and two attempts.
+			w.requests.claim(LOOP, answerRowId(f.id), { id: "run-dead", pid: 999_999, started_at: stamp(NOW) } as Listed);
+			w.requests.update(LOOP, answerRowId(f.id), { attempts: 2 });
+			return w;
+		},
+		act: (w) => w.answers.cancel(f.id),
+		writes: PROTOCOL.V,
+		stopped: (w, stop) => {
+			const now = find(w, f.id)!;
+			if (now.status === "new") assert.equal(answerRows(w).length, 0, `stop ${stop}: a finding open again has no row of the answer it had`);
+			else assert.equal(now.answer?.state, "pending", `stop ${stop}: or the cancel did not happen, and the yes still waits`);
+		},
+		final: (w, stop) => {
+			const now = find(w, f.id)!;
+			assert.equal(w.inbox.list().length, 1, "one finding, and no successor");
+			if (now.status === "new") {
+				assert.deepEqual([now.answer, now.answered_by, now.claimed_by], [undefined, undefined, undefined], "nothing of the yes is left on it");
+				assert.equal(w.starts.size, 0);
+				assert.ok(!("refused" in answerStep("Y1", now, { to: "pending", by: "page", claimed_by: CONV, lane: LOOP }, { at: stamp(NOW), lane: LOOP })), "a person can say yes to it again");
+				return;
+			}
+			assert.ok(stop !== undefined, "a cancel that was not stopped reopens the finding");
+			assert.equal(now.answer?.state, "done", "a cancel the stop cut short leaves the yes, which runs");
+			assert.equal(w.starts.get(f.id), 1);
+		},
+	});
+});
+
+test("[V1] [Y1] a yes, a cancel, then a second yes on the same finding: one finding throughout, and the second answer runs once on its own row", async () => {
+	const w = await world();
+	const f = await ask(w, "loop");
+	const other = "01a1dce4-8ad1-77c0-89b0-475ccfeaf999";
+	assert.equal((await w.answers.say(f.id, "yes", { by: "page", session: other })).said, "Y1");
+	assert.ok("cancelled" in (await w.answers.cancel(f.id)));
+	assert.equal(w.inbox.list().length, 1, "no successor");
+	const open = find(w, f.id)!;
+	assert.deepEqual([open.status, open.answer, open.answered_by, open.claimed_by], ["new", undefined, undefined, undefined]);
+	assert.equal(answerRows(w).length, 0);
+	// The first yes's row, appended late: its Y1b came after the cancel.
+	w.requests.appendIfAbsent(answerRow({ ...open, status: "claimed", answered_by: "page", claimed_by: other }, LOOP, stamp(NOW), w.wrapped.self()));
+	assert.equal((await w.answers.say(f.id, "yes", PERSON)).said, "Y1");
+	assert.deepEqual(await meetRow(w, f), { met: "E1", exit: "stale" }, "the first yes's row is not the second's");
+	assert.deepEqual(await w.answers.repair(() => true, NOW), [answerRowId(f.id)]);
+	const met = await meetRow(w, f);
+	assert.equal(met.met, "E4");
+	const start = (met as Extract<MeetOutcome, { met: "E4" }>).start;
+	assert.deepEqual([start.row.attempts, start.row.payload?.requested_by], [0, CONV], "the second answer's row names the second sayer");
+	await run(w, start);
+	await settle(w);
+	assert.equal(find(w, f.id)?.answer?.state, "done");
+	assert.equal(w.starts.get(f.id), 1);
+	assert.equal(w.inbox.list().length, 1, "one finding throughout, and no news");
+	assert.deepEqual(w.jobs.listRuns(undefined, Number.MAX_SAFE_INTEGER).map((r) => r.row), [answerRowId(f.id)], "one record");
+	assert.deepEqual(audits(w).map((a) => a.state), ["cancelled", "stale"]);
+	invariants(w);
 });
 
 test("[H1] a lost row comes back for pending and started, also after the job is removed; nothing is read when nothing is open", async () => {

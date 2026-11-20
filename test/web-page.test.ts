@@ -3600,18 +3600,21 @@ test("a disabled card button looks disabled, and a disabled button does not chan
 	assert.match(src, /\.icard button\.primary:disabled:hover\{background:var\(--brand\);color:var\(--brand-ink\);filter:none\}/, "and the amber one keeps its amber");
 });
 
-test("Cancel on a yes that waits posts the finding's id and says the question is open again; one too late says why", { timeout: 20_000 }, async () => {
+test("Cancel on a yes that waits posts the finding's id; the same card is open again with its buttons; one too late says why", { timeout: 20_000 }, async () => {
 	const waiting = { ...DECISION_CARD, status: "claimed", line: "Waiting to run", cancel: true };
-	const { dom, cards, texts, button, click, answers } = await inboxPage({ "/inbox?": { ...INBOX, cards: [NEWS_CARD], handled: [waiting] }, "/inbox/cancel": { ok: true, id: DECISION_CARD.id, again: "inb-" + "c".repeat(32), line: "Cancelled. The question is open again" } });
+	const { dom, cards, texts, button, click, answers } = await inboxPage({ "/inbox?": { ...INBOX, cards: [NEWS_CARD], handled: [waiting] }, "/inbox/cancel": { ok: true, id: DECISION_CARD.id, line: "Cancelled. The question is open again" } });
 	const card = () => cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);
 	assert.ok(texts(card()).includes("Waiting to run"));
 	for (const label of ["Yes, do it", "No\u2026"]) assert.equal(button(card(), label), undefined, `a handled card has no ${label}`);
-	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [{ ...waiting, line: "Cancelled. The question is open again", cancel: undefined }] };
+	// The server now lists the same finding as new again.
+	answers["/inbox?"] = { ...INBOX, cards: [{ ...DECISION_CARD, status: "new" }, NEWS_CARD], handled: [] };
 	await click(card(), "Cancel");
 	await settled();
 	assert.deepEqual(dom.calls.find((c) => c.url === "/inbox/cancel")?.body, { id: DECISION_CARD.id });
 	assert.ok(texts(card()).includes("Cancelled. The question is open again"), texts(card()).filter(Boolean).join(" | "));
-	assert.equal(button(card(), "Cancel"), undefined, "nothing to cancel twice");
+	const withdraw = (el: any): boolean => (el.tag === "button" && el.dataset?.act === "withdraw") || el.children.some((c: any) => c && typeof c === "object" && withdraw(c));
+	assert.equal(withdraw(card()), false, "nothing to cancel twice");
+	for (const label of ["Yes, do it", "No\u2026"]) assert.ok(button(card(), label), `the card open again has ${label}`);
 	dom.dispose();
 	const late = await inboxPage({ "/inbox?": { ...INBOX, cards: [NEWS_CARD], handled: [waiting] }, "/inbox/cancel": { __status: 409, __body: { error: "it has already started: stop it instead" } } });
 	const lateCard = () => late.cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);

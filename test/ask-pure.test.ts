@@ -42,7 +42,7 @@ import {
 	repairRows,
 } from "../src/ask.ts";
 import { ASKS_OPEN_PER_LANE, answerPrompt, askedLines } from "../src/ask.ts";
-import type { InboxEntry as Finding } from "../src/inbox.ts";
+import { type InboxEntry as Finding, findingId } from "../src/inbox.ts";
 import type { ResolvedCap } from "../src/ask.ts";
 import { BACKOFF_MS } from "../src/backoff.ts";
 import type { ClaimedRow, Row } from "../src/requests.ts";
@@ -81,9 +81,8 @@ const ARMS: Record<Exclude<AnswerFrom, "none">, Answer> = {
 	done: { state: "done", run: CLAIM, at: AT },
 	unfinished: { state: "unfinished", run: CLAIM, why: WHY.died, ending: "The command may or may not have run.", at: AT },
 	not_run: { state: "not_run", why: WHY.loopRemoved, at: AT },
-	cancelled: { state: "cancelled", at: AT },
 };
-const FROM: readonly (AnswerFrom | "unreadable")[] = ["none", "pending", "started", "done", "unfinished", "not_run", "cancelled", "unreadable"];
+const FROM: readonly (AnswerFrom | "unreadable")[] = ["none", "pending", "started", "done", "unfinished", "not_run", "unreadable"];
 
 /** A finding at `state`: `new` with no answer for `none`, else a real yes with that answer. */
 const atState = (state: AnswerFrom | "unreadable", over: Partial<Finding> = {}): Finding => at(state, over);
@@ -190,14 +189,18 @@ test("[C3] a run closes: done keeps the claim; unfinished keeps it, with why, th
 	assert.equal(plain.beside?.entry.text, 'Your yes to "CI is red on main" was started and did not finish (the process running it stopped).', "a finding that is no question has no ending");
 });
 
-test("[V1] a cancel: cancelled and the successor, open again with the same text and ask", () => {
-	const write = holdsRow("V1", { to: "cancelled" });
-	assert.deepEqual(write.set, { answer: { state: "cancelled", at: LATER } });
-	const again = write.beside?.entry;
-	const was = at("pending");
-	assert.deepEqual(again, { source: was.source, run_id: was.run_id, cwd: was.cwd, job_id: was.job_id, text: was.text, kind: was.kind, transcript: was.transcript, ask: was.ask, lane: LOOP });
-	assert.deepEqual(answerStep("V1", at("started"), { to: "cancelled" }, ctx), { refused: "state", state: "started" }, "it has already started");
-	assert.deepEqual(answerStep("V1", at("done"), { to: "cancelled" }, ctx), { refused: "state", state: "done" }, "it has already ended");
+test("[V1] a cancel reopens the finding: new again, with what the yes wrote taken off, and nothing beside it", () => {
+	const write = holdsRow("V1", { to: "none" });
+	assert.deepEqual([write.id, write.set, write.unset, write.beside], [ID, { status: "new" }, ["answer", "answered_by", "claimed_by"], undefined]);
+	assert.deepEqual(answerStep("V1", at("started"), { to: "none" }, ctx), { refused: "state", state: "started" }, "it has already started");
+	assert.deepEqual(answerStep("V1", at("done"), { to: "none" }, ctx), { refused: "state", state: "done" }, "it has already ended");
+	assert.deepEqual(answerStep("V1", question(), { to: "none" }, ctx), { refused: "not-a-real-yes" }, "a finding open again has no queued answer");
+});
+
+test("[E1] a row that names another sayer than the finding's is an earlier yes's row", () => {
+	const late = { ...queued(), payload: { ...queued().payload!, requested_by: "another" } };
+	assert.deepEqual(meetAnswerRow(late, at("pending"), facts()), { case: "E1", why: "the row is an earlier yes's" });
+	assert.equal(meetAnswerRow(queued(), at("pending"), facts()).case, "E4", "the row of this yes");
 });
 
 test("each derived id is stable for one input and differs for another", () => {
@@ -208,8 +211,8 @@ test("each derived id is stable for one input and differs for another", () => {
 	assert.match(askFindingId("ask-1"), /^inb-[0-9a-f]{32}$/);
 	assert.equal(askFindingId("ask-1"), askFindingId("ask-1"));
 	assert.notEqual(askFindingId("ask-1"), askFindingId("ask-2"));
-	assert.equal(besideId(ID, "again"), besideId(ID, "again"));
-	assert.equal(new Set([besideId(ID, "again"), besideId(ID, "outcome"), besideId(ID, "not-run"), besideId(`inb-${"b".repeat(32)}`, "again")]).size, 4);
+	assert.equal(besideId(ID, "outcome"), besideId(ID, "outcome"));
+	assert.equal(new Set([besideId(ID, "outcome"), besideId(ID, "not-run"), besideId(`inb-${"b".repeat(32)}`, "outcome")]).size, 3);
 	assert.equal(answerRowId(ID), `ans-${ID.slice(4)}`, "the 32 hex of the finding's id");
 	assert.equal(noRowId(ID), `no-${ID.slice(4)}`);
 	assert.match(answerRowId("hand written"), /^ans-[0-9a-f]{32}$/, "an id of another shape is hashed");
@@ -258,7 +261,6 @@ test("answerStatus for every state, read from the finding; a pending answer says
 	assert.deepEqual(answerStatus(at("done"), undefined), { status: "done" });
 	assert.deepEqual(answerStatus(at("unfinished"), undefined), { status: "unfinished", why: WHY.died, ending: "The command may or may not have run." });
 	assert.deepEqual(answerStatus(at("not_run"), undefined), { status: "not_run", why: WHY.loopRemoved });
-	assert.deepEqual(answerStatus(at("cancelled"), undefined), { status: "cancelled" });
 	assert.deepEqual(answerStatus(question({ status: "claimed", answered_by: "cli" }), undefined), { status: "cli" });
 	assert.equal(answerStatus(question({ status: "claimed" }), undefined), undefined, "a claim 0.24.2 made");
 	assert.equal(answerStatus(question(), undefined), undefined, "nobody answered");
@@ -283,7 +285,7 @@ test("[E1] a row that means nothing is stale: missing, not a real yes, wrong id 
 	stale({ ...queued(), lane: "@cron-other" }, at("pending"));
 	stale(queued(), at("pending"), facts({ ownProject: false }));
 	stale(queued(), at("unreadable"));
-	for (const state of ["started", "done", "unfinished", "not_run", "cancelled"] as const) stale(queued(), at(state));
+	for (const state of ["started", "done", "unfinished", "not_run"] as const) stale(queued(), at(state));
 	stale(claimed(OTHER_CLAIM), at("started"), facts({ live: true }));
 	stale(claimed(OTHER_CLAIM), at("done"));
 	stale(claimed(OTHER_CLAIM), at("unfinished"));
@@ -336,7 +338,6 @@ test("[F3] [C2] a dead claim beside a final state: run_end only for an answer wi
 	assert.deepEqual(meetAnswerRow(claimed(), at("done"), facts()), { case: "F3", runEnd: true });
 	assert.deepEqual(meetAnswerRow(claimed(), at("unfinished"), facts()), { case: "F3", runEnd: true });
 	assert.deepEqual(meetAnswerRow(claimed(), at("not_run"), facts()), { case: "F3", runEnd: false });
-	assert.deepEqual(meetAnswerRow(claimed(), at("cancelled"), facts()), { case: "F3", runEnd: false });
 });
 
 test("[deleted-conversation] a queued yes in a deleted conversation's lane is GONE, before E3", () => {
@@ -360,7 +361,7 @@ test("[H1] repairRows puts back a missing row for pending and started, and nothi
 		at("started", { id: `inb-${"2".repeat(32)}` }),
 		at("pending", { id: `inb-${"3".repeat(32)}`, lane: "@cron-gone" }),
 	];
-	const closed = (["none", "done", "unfinished", "not_run", "cancelled", "unreadable"] as const).map((s, i) => at(s, { id: `inb-${String(i + 4).repeat(32)}` }));
+	const closed = (["none", "done", "unfinished", "not_run", "unreadable"] as const).map((s, i) => at(s, { id: `inb-${String(i + 4).repeat(32)}` }));
 	const there = at("pending", { id: `inb-${"f".repeat(32)}` });
 	const lanes = new Map<string, readonly Row[]>([
 		[LOOP, [{ ...queued(there), run: OTHER_CLAIM, kind: "input" } as ClaimedRow]],
@@ -451,14 +452,26 @@ test("[resolved-cap] narrowCap: the job now, narrowed field by field by what the
 	assert.deepEqual(recordedCap(job), { cwd: "/now", timeout_ms: 900_000 });
 });
 
-test("[copied-ask] a question is answered only on the finding Q1 filed, or on the successor a cancel filed", () => {
+test("[copied-ask] a question is answered only on the finding Q1 filed", () => {
 	const copy = at("pending", { id: `inb-${"c".repeat(32)}` });
 	assert.deepEqual(meetAnswerRow(queued(copy), copy, facts()), { case: "E1", why: "the finding is not its question's" }, "a copy of one ask under another id is E1 and starts nothing");
-	const cancelled = at("cancelled");
-	const again = at("pending", { id: besideId(ID, "again") });
-	assert.equal(carriesAsk(again as Finding & { ask: NonNullable<Finding["ask"]> }, [cancelled, again]), true);
-	assert.equal(meetAnswerRow(queued(again), again, facts({ inbox: [cancelled, again] })).case, "E4", "the question open again after a cancel");
-	assert.equal(meetAnswerRow(queued(again), again, facts({ inbox: [at("pending"), again] })).case, "E1", "a successor whose question was not cancelled is a copy");
+	assert.equal(carriesAsk(at("pending") as Finding & { ask: NonNullable<Finding["ask"]> }), true);
+	assert.equal(meetAnswerRow(queued(), at("pending"), facts()).case, "E4", "the question's own finding");
+});
+
+test("[copied-ask] a copy of a question under another id is E1 in every state, whatever the inbox holds, and gets no row from H1", () => {
+	// A cancel once filed its successor under this id; no exception is left for it.
+	const successorId = findingId(`${ID} | again`);
+	const cancelled = question({ status: "claimed", answered_by: "terminal", claimed_by: CONV, answer: { state: "cancelled", at: AT } as unknown as Answer });
+	const withInbox = (inbox: Finding[]): MeetFacts => Object.assign(facts(), { inbox });
+	for (const id of [`inb-${"c".repeat(32)}`, successorId]) {
+		for (const state of ["pending", "started", "done", "unfinished", "not_run"] as const) {
+			const copy = at(state, { id });
+			const row: Row = state === "pending" ? queued(copy) : ({ ...queued(copy), kind: "input", run: CLAIM } as ClaimedRow);
+			for (const inbox of [[copy], [cancelled, copy], [question(), copy]]) assert.deepEqual(meetAnswerRow(row, copy, withInbox(inbox)), { case: "E1", why: "the finding is not its question's" }, `a copy at ${state} under ${id}`);
+		}
+		assert.deepEqual(repairRows([cancelled, at("pending", { id }), at("started", { id })], new Map([[LOOP, []]]), { at: LATER, self: SELF }), [], `no row for a copy under ${id}`);
+	}
 });
 
 test("[legacy-ask] a question an older version wrote, with a path and no session id, is still a question", () => {
@@ -484,7 +497,7 @@ test("[C1] [C3] [C4] [V2] [removed-job] [K1] [K2] PROTOCOL orders the writes of 
 	assert.deepEqual(ids("C"), ["C1", "C2", "C3", "C4"]);
 	assert.deepEqual(ids("F2"), ids("C"), "F2 is the closing");
 	assert.deepEqual(ids("E4"), ["E4a", "E4b"]);
-	assert.deepEqual(ids("V"), ["V1", "V2", "V2.audit"]);
+	assert.deepEqual(ids("V"), ["V2", "V1", "V2.audit"], "the row leaves before the finding is open again");
 	assert.deepEqual(ids("removed-job"), ["removed-job"]);
 	assert.deepEqual(ids("K2"), ["K2", "K2.row", "K2.audit"]);
 	assert.deepEqual(ids("K1"), ["K1", "K1.audit"]);

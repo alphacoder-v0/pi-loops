@@ -277,21 +277,19 @@ export function answerLine(finding: InboxEntry, row?: Row, summary?: string): st
 			return `Started and did not finish (${why}).${finding.ask ? ` ${status.ending ?? MAY_HAVE_RUN}` : ""}`;
 		case "not_run":
 			return `Not run (${why})`;
-		case "cancelled":
-			return CANCELLED_LINE;
 		case "cli":
 			return "Claimed from the command line. Nothing ran";
 	}
 }
 
-/** What a card says once its queued answer is cancelled (V1), and what a successful cancel prints. */
+/** What a successful cancel says (V1): the finding is `new` again, under its own id. */
 export const CANCELLED_LINE = "Cancelled. The question is open again";
 
 /** Why a cancel was refused, in a person's words (design 6.2). `missing` is the caller's to say: a page answers 404. */
 export function cancelRefusal(refusal: StepRefusal): string {
 	if (refusal.refused === "missing") return "there is no such finding";
 	if (refusal.refused === "state" && refusal.state === "started") return "it has already started: stop it instead";
-	if (refusal.refused === "state" && (refusal.state === "done" || refusal.state === "unfinished" || refusal.state === "not_run" || refusal.state === "cancelled")) return "it has already ended";
+	if (refusal.refused === "state" && (refusal.state === "done" || refusal.state === "unfinished" || refusal.state === "not_run")) return "it has already ended";
 	return "it has no queued answer to cancel";
 }
 

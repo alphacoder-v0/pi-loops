@@ -306,14 +306,16 @@ test("pi-loops inbox claim is a claim alone and runs nothing; on a question it s
 		before = lines.length;
 		assert.equal(await runCli(["inbox", "cancel", waiting.id, "--json"], out), 0);
 		const json = JSON.parse(lines[lines.length - 1]);
-		assert.equal(json.finding.id, waiting.id);
-		assert.equal(inbox.list().find((e) => e.id === waiting.id)?.answer?.state, "cancelled");
+		assert.deepEqual(Object.keys(json), ["finding"]);
+		assert.deepEqual([json.finding.id, json.finding.status], [waiting.id, "new"]);
+		const reopened = inbox.list().find((e) => e.id === waiting.id)!;
+		assert.deepEqual([reopened.status, reopened.answer], ["new", undefined], "the finding is open again, under its own id");
 		assert.deepEqual(rows(), [], "the row left its lane");
-		assert.equal(inbox.list().find((e) => e.id === json.again)?.status, "new", "the finding is open again");
+		assert.equal(inbox.list().length, 3, "nothing is filed beside it");
 		assert.equal(await runCli(["inbox", "cancel", waiting.id, "--json"], out), 1);
-		assert.equal(JSON.parse(lines[lines.length - 1]).error, `inbox entry ${waiting.id} cannot be cancelled: it has already ended`);
+		assert.equal(JSON.parse(lines[lines.length - 1]).error, `inbox entry ${waiting.id} cannot be cancelled: it has no queued answer to cancel`);
 		// One that started is stopped with Stop, not cancelled.
-		const again = json.again as string;
+		const again = waiting.id;
 		assert.equal((await pi.say(again, "yes", { by: "terminal", session: "s1" })).said, "Y1");
 		const { answerStep } = await import("../src/ask.ts");
 		await inbox.section((tx) => {

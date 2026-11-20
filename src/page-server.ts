@@ -2127,15 +2127,15 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	}
 
 	/**
-	 * `POST /inbox/cancel {id}`: a person takes back a yes that waits (V1, V2). The question is open
-	 * again as a new finding. One that started is stopped with Stop, as any run is; one that ended is
+	 * `POST /inbox/cancel {id}`: a person takes back a yes that waits (V2, V1). The finding is `new`
+	 * again, under its own id. One that started is stopped with Stop, as any run is; one that ended is
 	 * not cancelled.
 	 */
 	async function cancelAnswer(b: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
 		if (typeof b.id !== "string" || !INBOX_ID.test(b.id)) return { status: 400, body: { error: "bad id" } };
 		const out = await answers.cancel(b.id);
 		if ("refusal" in out) return out.refusal.refused === "missing" ? { status: 404, body: { error: "no such finding" } } : { status: 409, body: { error: cancelRefusal(out.refusal) } };
-		return { status: 200, body: { ok: true, id: out.cancelled.id, again: out.again, line: CANCELLED_LINE } };
+		return { status: 200, body: { ok: true, id: out.cancelled.id, line: CANCELLED_LINE } };
 	}
 
 	/**

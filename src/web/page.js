@@ -2880,7 +2880,11 @@ async function refreshList() {
  * text goes in with textContent.
  */
 let inboxAnswer;
-/** Cards acted on here, with the line the server answered: kept on screen until the next answers leave them out. */
+/**
+ * Cards acted on here, with the line the server answered: kept on screen until the next answers leave
+ * them out. A cancel's (`open`) is on a card that is new again, which keeps its buttons; its line goes
+ * after a minute.
+ */
 const inboxDone = new Map();
 let newsOpen = false;
 const NEWS_SHOWN = 5;
@@ -2937,7 +2941,7 @@ async function refreshInbox() {
   if (!body || !Array.isArray(body.cards)) return;
   inboxAnswer = body;
   const listed = new Set([...body.cards, ...(Array.isArray(body.handled) ? body.handled : [])].map((c) => c && c.id));
-  for (const [id, d] of inboxDone) if (!listed.has(id) && Date.now() - d.at > 60000) inboxDone.delete(id);
+  for (const [id, d] of inboxDone) if ((!listed.has(id) || d.open) && Date.now() - d.at > 60000) inboxDone.delete(id);
   drawInbox();
   drawAway();
   drawStarters();
@@ -2979,7 +2983,7 @@ function manyOrigins() {
 }
 
 /** One card. "done" is the line an action here was answered with. */
-function inboxCardEl(c, done) {
+function inboxCardEl(c, done, reopened) {
   const card = document.createElement("article");
   const decision = c.kind === "decision";
   card.className = "icard" + (decision ? " decision" : " news");
@@ -3010,7 +3014,8 @@ function inboxCardEl(c, done) {
   const stat = textEl("div", "cstat", done || c.line || "");
   stat.setAttribute("role", "status");
   const parts = { stat, buttons: [], why: undefined, field: undefined };
-  if (!done && c.status === "new") {
+  // A cancel made here says so on the card, which is new again and is answered as any new one.
+  if ((!done || reopened) && c.status === "new") {
     const acts = document.createElement("div");
     acts.className = "acts";
     acts.append(inboxButton(decision ? "Yes, do it" : "Look into it", "claim", decision));
@@ -3105,7 +3110,7 @@ function drawInbox() {
   const add = (c) => {
     shown.add(c.id);
     const d = inboxDone.get(c.id);
-    slot.append(inboxCardEl(c, d && d.line));
+    slot.append(inboxCardEl(c, d && d.line, !!(d && d.open)));
   };
   const failing = (Array.isArray(a.failing) ? a.failing : []).filter((f) => f && typeof f === "object");
   if (decisions.length || failing.length) group("Needs you");
@@ -3133,11 +3138,12 @@ function drawInbox() {
   const doneHere = [...inboxDone.entries()].filter(([id]) => !shown.has(id) && !handled.some((c) => c.id === id));
   if (handled.length || doneHere.length) group("Handled");
   // A yes made here follows the server: the line of its answer's state (waiting, running, done). A
-  // cancel made here keeps its own line; other lines (a dismiss, handled elsewhere) stay as said.
+  // cancel made here is on a new card, so a card answered elsewhere since says the server's line;
+  // other lines (a dismiss, handled elsewhere) stay as said.
   for (const c of handled) {
     shown.add(c.id);
     const d = inboxDone.get(c.id);
-    slot.append(inboxCardEl(c, d && !d.claim ? d.line : c.line || (d && d.line)));
+    slot.append(inboxCardEl(c, d && !d.claim && !d.open ? d.line : c.line || (d && d.line)));
   }
   for (const [, d] of doneHere) slot.append(inboxCardEl(d.card, d.line));
   if (num(a.elsewhere)) slot.append(textEl("div", "lnote", num(a.elsewhere) + " new in other projects"));
@@ -3170,7 +3176,7 @@ async function inboxAct(c, parts, act, reason) {
   const late = act === "withdraw" && r.status === 409 && r.body && typeof r.body.error === "string" ? plain(r.body.error[0].toUpperCase() + r.body.error.slice(1)) + "." : undefined;
   const settled = r.status === 200 ? plain(str(r.body.line)) : late !== undefined ? late : r.status === 409 && (r.body.status === "claimed" || r.body.status === "dismissed") ? (r.body.status === "claimed" ? "Already claimed." : "Already dismissed.") : undefined;
   if (settled !== undefined) {
-    inboxDone.set(id, { line: settled, at: Date.now(), card: c, claim: act === "claim" && r.status === 200 });
+    inboxDone.set(id, { line: settled, at: Date.now(), card: c, claim: act === "claim" && r.status === 200, open: act === "withdraw" && r.status === 200 });
     openForms.delete(id);
     drawInbox();
     // The cards, the list's counts (Needs you, a conversation's flag) and the panel's inbox count, on

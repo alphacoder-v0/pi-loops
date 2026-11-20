@@ -105,7 +105,7 @@ export interface InboxSection {
 	list(): readonly InboxEntry[];
 	find(id: string): InboxEntry | undefined;
 	/**
-	 * One atomic rewrite, made at once: `change.set` on its finding, and `change.beside` appended
+	 * One atomic rewrite, made at once: `change.set` on its finding, `change.unset` taken off it, and `change.beside` appended
 	 * unless a finding has that id. `more` are further changes of the same rewrite. Returns the first
 	 * finding as written, screened. A change whose finding is not in the file throws, and nothing is written.
 	 */
@@ -250,6 +250,7 @@ export class Inbox {
 				changes.forEach((c, i) => {
 					const target = targets[i];
 					Object.assign(target.stored, c.set);
+					for (const key of c.unset ?? []) delete target.stored[key];
 					target.changed = true;
 					if (c.beside && !find(c.beside.id)) {
 						lines.push({ raw: "", stored: this.build(c.beside.entry, c.beside.id), changed: true });

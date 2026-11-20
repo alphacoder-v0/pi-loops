@@ -1430,13 +1430,13 @@ test("a cancel from the page opens the question again; one that started or ended
 		assert.equal((await page.post("inbox/claim", { id: `inb-${hex(1)}`, from: "s1" })).status, 200);
 		assert.equal(answerRows(page.loops, "@cron-1").length, 1);
 		const cancelled = await page.post("inbox/cancel", { id: `inb-${hex(1)}` });
-		assert.deepEqual([cancelled.status, cancelled.body.line, cancelled.body.again], [200, "Cancelled. The question is open again", besideId(`inb-${hex(1)}`, "again")]);
+		assert.deepEqual([cancelled.status, cancelled.body], [200, { ok: true, id: `inb-${hex(1)}`, line: "Cancelled. The question is open again" }]);
 		assert.deepEqual(answerRows(page.loops, "@cron-1"), [], "the row of the yes left its lane");
 		const listed = await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=s1`);
-		assert.ok(listed.body.cards.some((c: any) => c.id === besideId(`inb-${hex(1)}`, "again") && c.headline === "the cache is cold"), "the question is a new card again");
-		assert.deepEqual(listed.body.handled.map((c: any) => [c.id, c.line, c.cancel]), [[`inb-${hex(1)}`, "Cancelled. The question is open again", undefined]]);
-		const ended = await page.post("inbox/cancel", { id: `inb-${hex(1)}` });
-		assert.deepEqual([ended.status, ended.body], [409, { error: "it has already ended" }]);
+		assert.ok(listed.body.cards.some((c: any) => c.id === `inb-${hex(1)}` && c.status === "new" && c.headline === "the cache is cold"), "the same finding is a new card again");
+		assert.deepEqual(listed.body.handled, [], "and nothing is handled");
+		const twice = await page.post("inbox/cancel", { id: `inb-${hex(1)}` });
+		assert.deepEqual([twice.status, twice.body], [409, { error: "it has no queued answer to cancel" }]);
 		// One that started is stopped with Stop.
 		assert.equal((await page.post("inbox/claim", { id: `inb-${hex(2)}`, from: "s1" })).status, 200);
 		await new Inbox(page.loops).section((tx) => {

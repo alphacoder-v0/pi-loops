@@ -502,10 +502,10 @@ async function inboxCommandBody(positional: string[], opts: { all: boolean; json
 		const taken = await shellAnswers(loopsDir).cancel(named?.id ?? ref.trim());
 		if ("refusal" in taken) return fail(taken.refusal.refused === "missing" ? `no inbox entry matching '${ref}'` : `inbox entry ${named?.id ?? ref} cannot be cancelled: ${cancelRefusal(taken.refusal)}`);
 		if (opts.json) {
-			out(JSON.stringify({ finding: findingJson(taken.cancelled), again: taken.again }));
+			out(JSON.stringify({ finding: findingJson(taken.cancelled) }));
 			return 0;
 		}
-		out(`cancelled ${taken.cancelled.id}. ${CANCELLED_LINE} as ${taken.again}.`);
+		out(`cancelled ${taken.cancelled.id}. ${CANCELLED_LINE}.`);
 		return 0;
 	}
 	if (sub === "claim" || sub === "dismiss") {

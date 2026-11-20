@@ -20,7 +20,6 @@ import {
 	WHY,
 	answerRowId,
 	answerStep,
-	besideId,
 	blockedCall,
 	canonicalJson,
 	closeOutcome,
@@ -126,8 +125,8 @@ export interface PersonAnswers {
 	say(id: string, word: "yes" | "no", from: Answerer, opts?: { reason?: string }): Promise<SayOutcome>;
 	/** `/inbox clear`: N1 for every `new` finding `match` takes, in one section and one rewrite; then the `no-` rows. Returns the findings dismissed. */
 	clear(match: ((finding: Finding) => boolean) | undefined, from: Answerer): Promise<Finding[]>;
-	/** A person cancels a queued yes (V1, V2). `ref` is the finding's id or its `ans-` row's id. */
-	cancel(ref: string): Promise<{ cancelled: Finding; again: string } | { refusal: StepRefusal }>;
+	/** A person cancels a queued yes (V2, V1): the row leaves, and the finding is `new` again under its own id. `ref` is the finding's id or its `ans-` row's id. */
+	cancel(ref: string): Promise<{ cancelled: Finding } | { refusal: StepRefusal }>;
 }
 
 /** What `personAnswers` reads and writes: no transcript, no hook and no check lane, since a surface starts no run. */
@@ -163,7 +162,7 @@ function holdsPrompt(entries: readonly unknown[], rowId: string): boolean {
 	});
 }
 
-const finalStates: ReadonlySet<string> = new Set<FinalState>(["done", "unfinished", "not_run", "cancelled"]);
+const finalStates: ReadonlySet<string> = new Set<FinalState>(["done", "unfinished", "not_run"]);
 const finalOf = (finding: Finding | undefined): FinalState | "none" => {
 	const state = finding?.answer?.state;
 	return state !== undefined && finalStates.has(state) ? (state as FinalState) : "none";
@@ -255,17 +254,19 @@ export function personAnswers(deps: PersonAnswersDeps): PersonAnswers {
 			const lane = laneOf(seen, all);
 			const at = stamp(deps.now());
 			const out = await inbox.section((tx) => {
-				const step = answerStep("V1", tx.find(id), { to: "cancelled" }, { at, lane });
+				const finding = tx.find(id);
+				const step = answerStep("V1", finding, { to: "none" }, { at, lane });
 				if ("refused" in step) return { refusal: step };
-				const cancelled = tx.write(step);
-				// V2, still under inbox.lock: the row of the yes leaves its lane.
-				const rowLane = cancelled.lane ?? lane;
+				// V2 before V1, both under inbox.lock: the row of the yes leaves its lane first, so a stop
+				// between the two leaves the yes waiting (H1 puts its row back), never a finding that is
+				// open again beside the row of the answer it had.
+				const rowLane = finding?.lane ?? lane;
 				if (rowLane !== undefined && parseLane(rowLane)) requests.remove(rowLane, [answerRowId(id)], UNDER_INBOX_LOCK);
-				return { cancelled, rowLane };
+				return { cancelled: tx.write(step), rowLane };
 			});
 			if (out.refusal) return { refusal: out.refusal };
 			if (out.rowLane !== undefined) auditExit(deps, answerRowId(id), out.rowLane, id, "cancelled", out.cancelled.cwd);
-			return { cancelled: out.cancelled, again: besideId(id, "again") };
+			return { cancelled: out.cancelled };
 		},
 	};
 }
@@ -391,7 +392,7 @@ export function createAnswers(deps: AnswersDeps): Answers {
 				if (!row || !isAnswerRow(row) || row.payload?.finding !== findingId) return { out: { met: "nothing" } };
 				const finding = tx.find(findingId);
 				const live = row.run ? executor.live(row) : false;
-				const met = meetAnswerRow(row, finding, { lane: fact, ownProject, ...(proof ? { proof } : {}), live, ...(blocked === undefined ? {} : { blocked }), at, inbox: tx.list() });
+				const met = meetAnswerRow(row, finding, { lane: fact, ownProject, ...(proof ? { proof } : {}), live, ...(blocked === undefined ? {} : { blocked }), at });
 				const cwd = finding?.cwd ?? row.payload?.cwd ?? "";
 				switch (met.case) {
 					case "E1": {

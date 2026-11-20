@@ -466,11 +466,11 @@ weaker, and worth converting whenever one of them breaks.
       card button looks disabled, and a disabled button does not change on hover*.
       `test/page-server.test.ts`: *GET /inbox lists the project's answers with design 6.1's line,
       and Cancel only while one waits*.
-- [x] **Cancel** on a yes that waits to run takes it back, and the question is open again as a new
-      card; one that started or ended is refused with why ("It has already started: stop it
-      instead.", "It has already ended."). A running answer is stopped with Stop, as any run is.
-      `test/web-page.test.ts`: *Cancel on a yes that waits posts the finding's id and says the
-      question is open again; one too late says why*. `test/page-server.test.ts`: *a cancel from the
+- [x] **Cancel** on a yes that waits to run takes it back, and the same card is open again with
+      its Yes and No; one that started or ended is refused with why ("It has already started: stop
+      it instead.", "It has already ended."). A running answer is stopped with Stop, as any run is.
+      `test/web-page.test.ts`: *Cancel on a yes that waits posts the finding's id; the same card is
+      open again with its buttons; one too late says why*. `test/page-server.test.ts`: *a cancel from the
       page opens the question again; one that started or ended is refused in design 6.2's words*.
 - [x] **No…** on a question says that the run is told and the command is refused for 14 days ("You
       said no. <loop> is told on its next run, and the same command is refused for 14 days."), and a
