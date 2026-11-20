@@ -42,7 +42,6 @@ src/backoff.ts              the one table of waits after a failure: a row, a loo
 src/job-status.ts           what a list shows for one job, folded from its clock, rows and run history; `listedJob`, a loop's run, failures and last error as every list reads them
 src/clock.ts                the schedule cursor, pure tick decisions and their compare-and-set writes
 src/settle.ts               how a plain job's turn ends, as one table: what becomes of its row and of its job, for each way a run ends
-src/scheduler.ts            no longer fires anything: the clock rider writes every slot and the lanes run them. A window still builds one for `ownerView` (which plain jobs its clock fires), `runningRuns`, `runningCount` and `abortRun`; pi-loops in the background builds one too, as `HostRuntime.scheduler`, and stops it at its stop; the control channel and `src/tools.ts` fall back to it when they have no run list or stores; and `SessionSnapshot`, `PlainJobLeases` and a second `DEFAULT_RUN_TIMEOUT_MS` are still declared in it, imported by `src/loop-run.ts`, `src/tools.ts`, `src/host.ts`, `src/host-runtime.ts` and `src/pi-loops.ts`. M4b.5 moves these and deletes it
 src/loop-run.ts              one loop run, its stop record, and its ordered closing writes
 src/ticker.ts               one process timer and its typed, ordered riders
 src/stores.ts               stores of a loops directory, opened once, and job removal
@@ -90,7 +89,7 @@ src/open-file.ts            the 0600 file `pi-loops` opens the browser on, so th
 src/browser-open.ts         which command opens a browser on each platform (WSL included), and whether one did
 src/page-children.ts        one `pi --mode rpc` per conversation open in the page: spawn, JSONL, idle stop and cap, orphans stopped
 src/held-read.ts            how big a conversation this process parses, and whether a conversation's file is readable here
-src/host-runtime.ts         what pi-loops runs (scheduler + triggers + per-request tools), the one list of its runs, and the wiring of the background executor
+src/host-runtime.ts         what pi-loops runs (the ticker's riders, the loop lanes, triggers, per-request tools), the one list of its runs, and the wiring of the background executor
 src/background-executor.ts  what pi-loops in the background does to the queue of a closed conversation: takes its lease, delivers a rule's result, claims a plain job's row, runs its turn and closes it
 src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid, or by a terminal from the page's pi (`page`) while no turn runs (`turnSince`)
 src/requests.ts             requests/<lane>.jsonl: what is addressed to a lane (a conversation's is its session id), kept until it is in it (the row, claimed or not, append, remove, claim)

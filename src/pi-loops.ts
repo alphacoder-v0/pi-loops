@@ -25,7 +25,7 @@ import { envFlag, loadConfig } from "./config.ts";
 import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluationApplies, evaluatorPrompt, goalPursued, judgeCaughtUp, latestGoal, newGoal, parseDecision, pauseFor, resumeGoal, settledTurn, transcriptFromMessages } from "./goal.ts";
 import { sameProject } from "./paths.ts";
 import { isExactlyTrusted, projectNeedsTrust, sessionTrustCovers, windowTrusted } from "./trust.ts";
-import { HookRunner, type HookEventData, messageKind, messageSummary, resultSummary, runEndEvent, runStartEvent, truncateSummary } from "./hooks.ts";
+import { HookRunner, type HookEventData, messageKind, messageSummary, resultSummary, truncateSummary } from "./hooks.ts";
 import { failingSummary, ruleFailureMark } from "./job-health.ts";
 import { loopSignal, signalSummary } from "./job-signal.ts";
 import { LoopsLog, pruneLogs } from "./log.ts";
@@ -45,7 +45,7 @@ import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, pars
 import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
 import { plural } from "./plural.ts";
-import { openWhere, runsHere } from "./job-owner.ts";
+import { type OwnerView, type PlainJobLeases, type SessionSnapshot, openWhere, ownerViewOf, runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, closedConversation, openWindowPids, procStart } from "./lease.ts";
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, proofOf, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
 import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
@@ -53,7 +53,6 @@ import type { Row, UnclaimedRow } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
-import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { budgetState, listedJobs } from "./job-status.ts";
 import { runClockTick, decideRunNow } from "./clock.ts";
 import { openStores, removeJob } from "./stores.ts";
@@ -69,7 +68,7 @@ import { HOST_LOG, crashPaused, crashPauseText, decideEviction, ensureHost, evic
 import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome, promotionToInbox, checkLane } from "./trigger-runtime.ts";
 import { scheduleAudit } from "./job-tune.ts";
-import { auditArgs, auditCronFinish, auditCronStart, newTraceId, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
+import { auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
 import { claimPageChild } from "./page-children.ts";
 import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
@@ -242,65 +241,17 @@ export default function piLoops(pi: ExtensionAPI) {
 	 */
 	const subagentSlots = new SubagentSlots(() => config.maxConcurrentRuns);
 
-	const scheduler: LoopScheduler = new LoopScheduler({
-		dir,
-		hop,
-		slots: subagentSlots,
-		getSession: () => session,
-		getSettings: () => ({ maxConcurrentRuns: config.maxConcurrentRuns, catchUp: config.cronCatchUp, dailyBudgetUsd: config.dailyBudgetUsd }),
-		runner,
-		kind: "interactive",
-		instance,
-		leases: {
-			heldEpoch: (id) => binding.heldEpoch(id),
-			sessionFile: (id) => new LeaseStore(dir).read(id)?.sessionFile,
-			holderOf: (id) => binding.holderOf(id),
-			standsAside: () => binding.standingAside,
-			holderKind: (id) => binding.holderKindOf(id),
-			hostRuns: (id) => closedHere(id),
-			hostPaused: () => hostPauseReason(),
-		},
-		// A window fires only the plain jobs of the conversation it holds; every loop runs in the host.
-		owns: (job, view) => !job.stateful && runsHere(job, view),
-		// A plain job whose session is gone is parked, /cron gc removes it.
-		sessionExists: (id) => sessionExists(path.join(getAgentDir(), "sessions"), id),
-		hooks: {
-			onRunStart: (job, runId) => {
-				auditCronStart(triggers.store, job, runId);
-				refreshBadge();
-				fireRunHook(runStartEvent(job, runId));
-			},
-			onCatchUp: (job, dueAt) => {
-				if (lastCtx?.hasUI && sameProject(job.cwd, session.cwd)) lastCtx.ui.notify(`cron ${job.name ?? job.id}: catching up the run missed at ${formatLocal(dueAt)}`, "info");
-			},
-			onJobRetired: (job) => cronControlAudit("remove", "clock", job, undefined),
-			// A row this window wrote is its own (`/cron run`'s is the person's). While pi is busy the row
-			// waits in the file, where nothing else shows it: said once, as pi said a queued follow-up.
-			onRowWritten: (row, job) => {
-				executor.produced(row);
-				const line = waitingLine(row.source, row.id, job.name ?? job.id);
-				if (line && lastCtx?.hasUI && !lastCtx.isIdle()) lastCtx.ui.notify(line, "info");
-				refreshBadge();
-			},
-			onRunFinished: ({ job, record, result }) => {
-				auditCronFinish(triggers.store, job, record, result.stopReason === "aborted");
-				refreshBadge();
-				fireRunHook(runEndEvent(job, record));
-				if (!lastCtx?.hasUI) return;
-				// Another project's findings and prompt previews do not belong in this transcript; the
-				// audit sink below and the inbox already carry them to where they do.
-				if (sameProject(job.cwd, session.cwd)) showRunCard(lastCtx, job.name, record);
-			},
-			onInboxChanged: () => refreshBadge(),
-			// Rule checks run in the host. A window handles only the inject_* pushes for the
-			// conversation it holds, deduplicated machine-wide (see startMcpSources).
-			// These carry "job disabled", "state write failed", "cannot read jobs"; the scheduler says
-			// which of its lines are routine instead of leaving it to be guessed from the wording.
-			log: (msg, level) => diagnostic(msg, level),
-			onSchedulerError: (msg) => diagnostic(msg),
-			onBudgetExceeded: (spent, cap) => diagnostic(`today's automation has cost $${spent.toFixed(2)} of the $${cap.toFixed(2)} budget; dispatching is paused until tomorrow or a higher [limits] daily_budget_usd`),
-		},
-	});
+	/** The lease side of plain-job ownership (src/job-owner.ts): which conversation this window holds, and who holds the others. */
+	const plainLeases: PlainJobLeases = {
+		heldEpoch: (id) => binding.heldEpoch(id),
+		sessionFile: (id) => new LeaseStore(dir).read(id)?.sessionFile,
+		holderOf: (id) => binding.holderOf(id),
+		standsAside: () => binding.standingAside,
+		holderKind: (id) => binding.holderKindOf(id),
+		hostRuns: (id) => closedHere(id),
+		hostPaused: () => hostPauseReason(),
+	};
+	const ownerView = (): OwnerView => ownerViewOf(session, plainLeases);
 
 	const windowRiders: Riders<(typeof WINDOW_RIDERS)[number]> = {
 		lease: () => leaseTick(),
@@ -314,7 +265,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			kind: "window", self: createdBy(), startedAt: facts.startedAt, tickMs: facts.tickMs,
 			catchUp: config.cronCatchUp, budgetOver: budgetState(stores.jobs, config.dailyBudgetUsd, now).over,
 			mine: (job) => {
-				if (job.stateful || !runsHere(job, scheduler.ownerView())) return undefined;
+				if (job.stateful || !runsHere(job, ownerView())) return undefined;
 				const epoch = binding.heldEpoch(job.sessionId ?? "");
 				return epoch === undefined ? undefined : { kind: "plain", epoch };
 			},
@@ -604,17 +555,6 @@ export default function piLoops(pi: ExtensionAPI) {
 		else await hookRunner.fire(data, ctx?.signal);
 	}
 
-	/**
-	 * A run's hooks, from the scheduler's callbacks. Never awaited even in `sync` mode: those
-	 * callbacks are on the tick's path, and a webhook that hangs must not hold up the clock — the
-	 * run it is announcing has already started or already finished. `sync` is about ordering within
-	 * a conversation turn, and a run is not one.
-	 */
-	function fireRunHook(data: HookEventData): void {
-		if (!hookRunner?.hasHooksFor(data.event)) return;
-		void hookRunner.fire(data).catch((err: any) => log.warn(`hooks: ${err?.message ?? err}`));
-	}
-
 	/* ------------------------------------------------------------ panel */
 
 	const PANEL_KEY = "pi-loops-panel";
@@ -875,11 +815,10 @@ export default function piLoops(pi: ExtensionAPI) {
 	function machineRuns(): Array<{ id: string; source: string; event: string; label: string; startedAt: string; promptPreview: string; sessionFile?: string; check: boolean; inHost: boolean }> {
 		return [
 			...triggers.runningList().map((r) => ({ id: r.traceId, source: r.sourceLabel, event: r.eventLabel, label: r.sourceLabel === "local:dynamic" ? "trigger-check" : r.sourceLabel, startedAt: r.startedAt, promptPreview: r.promptPreview, check: r.sourceLabel === "local:dynamic", inHost: false })),
-			...scheduler.runningRuns().map((r) => ({ id: r.runId, source: "Cron", event: r.jobId, label: r.label, startedAt: r.startedAt, promptPreview: r.promptPreview, sessionFile: r.sessionFile, check: false, inHost: false })),
 			...(hostSnapshot?.runs ?? []).map((r) => ({ id: r.runId, source: "Cron", event: r.jobId, label: r.label, startedAt: r.startedAt, promptPreview: r.promptPreview, sessionFile: r.sessionFile, check: false, inHost: true })),
 			// A run the background process started since this window last asked it: its marker is in
 			// jobs.json at once (see watchStore), the snapshot only on the next tick.
-			...storeRunning().filter((r) => !scheduler.runningRuns().some((x) => x.runId === r.id) && !(hostSnapshot?.runs ?? []).some((x) => x.runId === r.id)),
+			...storeRunning().filter((r) => !(hostSnapshot?.runs ?? []).some((x) => x.runId === r.id)),
 			...(hostSnapshot?.checks ?? []).map((c) => ({ id: c.traceId, source: c.sourceLabel, event: c.eventLabel, label: c.sourceLabel === "local:dynamic" ? "trigger-check" : c.sourceLabel, startedAt: c.startedAt, promptPreview: `${c.sourceLabel}/${c.eventLabel} in ${c.cwd}`, check: c.sourceLabel === "local:dynamic", inHost: true })),
 		];
 	}
@@ -1224,7 +1163,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		// of the lines is src/job-lines.ts, where a test can see a marker go.
 		const runs = jobs.some((j) => j.stateful) ? stores.jobs.allRuns() : [];
 		const inbox = jobs.some((j) => j.stateful) ? stores.inbox.list() : [];
-		return cronJobLines(jobs, { runs, inbox, requests: (sessionId) => requests.list(sessionId), view: scheduler.ownerView(), now: Date.now(), home: process.env.HOME ?? "", cwdExists: (cwd) => fs.existsSync(cwd), showCwd });
+		return cronJobLines(jobs, { runs, inbox, requests: (sessionId) => requests.list(sessionId), view: ownerView(), now: Date.now(), home: process.env.HOME ?? "", cwdExists: (cwd) => fs.existsSync(cwd), showCwd });
 	}
 
 	/* --------------------------------------------------------- creation */
@@ -1440,7 +1379,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							const sessionId = job.sessionId ?? "";
 							const now = Date.now();
 							const book = stores.book();
-							const decision = decideRunNow(book.jobs.find((item) => item.id === job.id), book.clock.jobs[job.id], stores.requests.list(sessionId), { kind: "window", self: createdBy(), view: scheduler.ownerView(), epoch: binding.heldEpoch(sessionId) }, now);
+							const decision = decideRunNow(book.jobs.find((item) => item.id === job.id), book.clock.jobs[job.id], stores.requests.list(sessionId), { kind: "window", self: createdBy(), view: ownerView(), epoch: binding.heldEpoch(sessionId) }, now);
 							if ("refused" in decision) ran = decision.refused;
 							else if (!stores.requests.appendIfAbsent(decision.row)) ran = "is already running";
 							else {
@@ -2291,7 +2230,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							.filter((t): t is string => !!t)
 							.sort((a, b) => Date.parse(a) - Date.parse(b))
 							.at(-1);
-						lines.push(`  - source #${mcpSources.length + 1}: ${localState} queued=${scheduler.runningCount} dropped=0 deduped=0 last_event=${lastFired ?? "never"}`);
+						lines.push(`  - source #${mcpSources.length + 1}: ${localState} queued=0 dropped=0 deduped=0 last_event=${lastFired ?? "never"}`);
 						lines.push(`      subscriptions: ${jobs.length ? `local crontab: ${plural(jobs.length, "loop")}, ${jobs.filter((j) => j.enabled).length} enabled` : "local crontab: 0 loops"}`);
 						lines.push(`  - source #${mcpSources.length + LOCAL_SOURCES}: ${localState} queued=${triggers.runningList().filter((r) => r.sourceLabel === "local:dynamic").length} dropped=0 deduped=${triggers.dedupedCount} last_event=${triggers.lastPoll?.at ?? "never"}`);
 						lines.push("      subscriptions: dynamic trigger periodic check");
@@ -2450,7 +2389,6 @@ export default function piLoops(pi: ExtensionAPI) {
 						};
 						if (rest.trim() === "--all") {
 							let n = triggers.abortAll();
-							for (const r of scheduler.runningRuns()) if (scheduler.abortRun(r.runId)) n++;
 							const host = await refreshHostSnapshot();
 							for (const r of host?.runs ?? []) if (await askHostAbort(r.runId, true)) n++;
 							for (const c of host?.checks ?? []) if (await askHostAbort(c.traceId, false)) n++;
@@ -2459,8 +2397,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						}
 						const target = rest.trim();
 						const hit = triggers.runningList().find((r) => r.traceId === target || r.traceId.startsWith(target));
-						const cronHit = scheduler.runningRuns().find((r) => r.runId === target || r.runId.startsWith(target));
-						if (target && !hit && !cronHit) {
+						if (target && !hit) {
 							// A turn in a closed conversation, run by pi-loops in the background: stopped through a
 							// request (src/engine.ts stopRow), which outlives a socket that does not answer. A loop
 							// run or a check belongs to no conversation and keeps the socket.
@@ -2484,13 +2421,12 @@ export default function piLoops(pi: ExtensionAPI) {
 								return;
 							}
 						}
-						if (!target || (!hit && !cronHit)) {
+						if (!target || !hit) {
 							ctx.ui.notify(target ? `no running trigger with trace_id '${target}'` : "usage: /triggers abort <trace_id>|--all", "warning");
 							return;
 						}
-						if (hit) triggers.abort(hit.traceId);
-						if (cronHit) scheduler.abortRun(cronHit.runId);
-						ctx.ui.notify(`requested abort for trigger ${hit?.traceId ?? cronHit?.runId}`, "info");
+						triggers.abort(hit.traceId);
+						ctx.ui.notify(`requested abort for trigger ${hit.traceId}`, "info");
 						return;
 					}
 					case "panel": {
@@ -3198,7 +3134,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	const toolHost: ToolHost = {
 		stores,
 		triggers,
-		owner: () => scheduler.ownerView(),
+		owner: () => ownerView(),
 		// In a scheduled turn the chat is the row's declared tools, not this window's: a job made
 		// there gets no more built-ins than the turn, as a job a background run makes gets that run's.
 		session: () => {
@@ -3398,7 +3334,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			// What was loaded is printed on every start; without a line here a session
 			// can begin with loops and rules the user has entirely forgotten about.
 			// "Active here" means it: a plain job of another session is asleep, not active.
-			const myJobs = listedNow().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && runsHere(j, scheduler.ownerView()));
+			const myJobs = listedNow().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && runsHere(j, ownerView()));
 			const myRules = loadOrNone(() => triggers.store.load()).filter((r) => sameProject(r.cwd, session.cwd) && r.enabled);
 			// What is scheduled says nothing about what is working: a loop that has failed every night
 			// since Tuesday is still counted as active, and this line is the only one a user reads.

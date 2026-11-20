@@ -5,7 +5,6 @@ import { parseLane } from "../src/lane.ts";
 import { RequestStore } from "../src/requests.ts";
 import { RunList, STOPPED_BY_PERSON, type Running } from "../src/run-list.ts";
 import { stamp } from "../src/schedule.ts";
-import { STOPPED_BY_PERSON as SCHEDULER_STOPPED_BY_PERSON } from "../src/scheduler.ts";
 import { tmp } from "./tmp.ts";
 
 const by = { pid: 321, procStart: "start-321" };
@@ -154,7 +153,6 @@ test("all returns insertion order in a copy and remove reports whether it found 
 	assert.equal(list.remove("first"), false);
 });
 
-test("scheduler exports the same stop reason.", () => {
+test("the stop reason of a person's stop is the words its record carries.", () => {
 	assert.equal(STOPPED_BY_PERSON, "stopped by a person");
-	assert.equal(SCHEDULER_STOPPED_BY_PERSON, STOPPED_BY_PERSON);
 });

@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { LoopScheduler } from "../src/scheduler.ts";
+import { ownerViewOf } from "../src/job-owner.ts";
+import { openStores } from "../src/stores.ts";
 import { TriggerStore, parseTriggerRule } from "../src/triggers.ts";
 import { ruleLines } from "../src/rule-lines.ts";
 import { TriggerRuntime } from "../src/trigger-runtime.ts";
@@ -21,10 +22,11 @@ function fixture() {
 	const other = path.join(dir, "other");
 	fs.mkdirSync(mine);
 	fs.mkdirSync(other);
-	const scheduler = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "s", cwd: mine }) });
-	const triggers = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: scheduler.store, getSession: () => ({ sessionId: "s", cwd: mine }), runner: fakeRunner(), dedupFile: path.join(dir, "dedup.json") });
+	const stores = openStores(dir);
+	const triggers = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: stores.jobs, getSession: () => ({ sessionId: "s", cwd: mine }), runner: fakeRunner(), dedupFile: path.join(dir, "dedup.json") });
 	const host: ToolHost = {
-		scheduler,
+		stores,
+		owner: () => ownerViewOf({ sessionId: "s", cwd: mine }, undefined),
 		triggers,
 		session: () => ({ sessionId: "s", cwd: mine }),
 		createJob: (input, scope) => createLoopJob(host, input, scope),
@@ -32,7 +34,7 @@ function fixture() {
 		confirmTool: async () => undefined, // hop 0 with a user present: approvals granted
 		refreshBadge: () => undefined,
 	};
-	return { dir, mine, other, scheduler, triggers, host };
+	return { dir, mine, other, stores, triggers, host };
 }
 
 test("a cron expression that parses but never matches is refused at creation, the way /cron set refuses it", async () => {
@@ -44,9 +46,8 @@ test("a cron expression that parses but never matches is refused at creation, th
 			() => createLoopJob(f.host, { schedule: { kind: "cron", expr: "0 0 30 2 *" }, prompt: "p", stateful: true }),
 			/0 0 30 2 \* has no next run/,
 		);
-		assert.deepEqual(f.scheduler.store.load(), [], "and nothing was written");
+		assert.deepEqual(f.stores.jobs.load(), [], "and nothing was written");
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -67,9 +68,8 @@ test("a recipe installed in a conversation pi has not saved makes a project-owne
 		const kept = await createLoopJob(f.host, { ...input, name: "saved" }, installScope(saved));
 		assert.deepEqual(kept.createdBy, { sessionId: "s", cwd: f.mine });
 		assert.equal(kept.owner, undefined);
-		assert.equal(f.scheduler.store.load().find((j) => j.name === "unsaved")?.createdBy, undefined, "and so it is stored");
+		assert.equal(f.stores.jobs.load().find((j) => j.name === "unsaved")?.createdBy, undefined, "and so it is stored");
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -79,19 +79,18 @@ test("checkJobInput refuses what createLoopJob refuses, and creates nothing", as
 	const f = fixture();
 	try {
 		const session = { sessionId: "s", cwd: f.mine };
-		const existing = f.scheduler.store.load();
+		const existing = f.stores.jobs.load();
 		assert.throws(() => checkJobInput({ schedule: { kind: "every", ms: 60_000 }, prompt: "  ", stateful: true }, existing, session), /cron action cannot be empty/);
 		assert.throws(() => checkJobInput({ schedule: { kind: "cron", expr: "0 0 30 2 *" }, prompt: "p", stateful: true }, existing, session), /has no next run/);
 		assert.throws(() => checkJobInput({ schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, name: "bad name" }, existing, session), /name must be/);
 		assert.throws(() => checkJobInput({ schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: false }, existing, { sessionId: undefined, cwd: f.mine }), /persistent chat session/);
 		assert.throws(() => checkJobInput({ schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, cwd: "sub" }, existing, { sessionId: "s", cwd: "" }), /absolute directory/);
 		assert.equal(checkJobInput({ schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, cwd: "sub" }, existing, session), path.join(f.mine, "sub"), "and says where the job would run");
-		assert.deepEqual(f.scheduler.store.load(), [], "nothing was written");
-		await f.scheduler.store.add({ id: "cron-taken", name: "taken", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: f.mine, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
-		assert.throws(() => checkJobInput({ schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, name: "taken" }, f.scheduler.store.load(), session), /already exists/);
+		assert.deepEqual(f.stores.jobs.load(), [], "nothing was written");
+		await f.stores.jobs.add({ id: "cron-taken", name: "taken", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: f.mine, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
+		assert.throws(() => checkJobInput({ schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, name: "taken" }, f.stores.jobs.load(), session), /already exists/);
 		await assert.rejects(() => createLoopJob(f.host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, name: "taken" }), /already exists/, "the create refuses the same");
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -101,13 +100,12 @@ test("a loop made without a name gets one from its prompt, and says it", async (
 		const create = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_create")!;
 		const first = await create.execute("i", { schedule: "every 5m", action: "Check the open pull requests", stateful: true }, undefined, undefined, ctx);
 		const second = await create.execute("i", { schedule: "every 5m", action: "check open pull requests", stateful: true }, undefined, undefined, ctx);
-		assert.deepEqual(f.scheduler.store.load().map((j) => j.name), ["check-open-pull", "check-open-pull-2"]);
+		assert.deepEqual(f.stores.jobs.load().map((j) => j.name), ["check-open-pull", "check-open-pull-2"]);
 		assert.match(first.content[0].text, /"check-open-pull"/, "the reply names it");
 		assert.equal(second.details.name, "check-open-pull-2");
 		const named = await createLoopJob(f.host, { schedule: { kind: "every", ms: 60_000 }, prompt: "anything", stateful: true, name: "mine" });
 		assert.equal(named.name, "mine", "a name given is kept");
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -126,11 +124,10 @@ test("with no session project a job's cwd must be absolute: a relative one has n
 			() => createLoopJob(nowhere, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true }),
 			/no project directory for this job: pass cwd/,
 		);
-		assert.deepEqual(f.scheduler.store.load(), [], "and neither job was written");
+		assert.deepEqual(f.stores.jobs.load(), [], "and neither job was written");
 		const absolute = await createLoopJob(nowhere, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, cwd: f.other });
 		assert.equal(absolute.cwd, f.other);
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -140,15 +137,14 @@ test("a job's relative cwd resolves against the session's project when there is 
 		const job = await createLoopJob(f.host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, cwd: "sub" });
 		assert.equal(job.cwd, path.join(f.mine, "sub"));
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
 test("the model-facing tools show this project's automation, not the whole machine's", async () => {
 	const f = fixture();
 	try {
-		await f.scheduler.store.add({ id: "cron-mine", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "mine", cwd: f.mine, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
-		await f.scheduler.store.add({ id: "cron-secret", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "client name in here", cwd: f.other, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
+		await f.stores.jobs.add({ id: "cron-mine", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "mine", cwd: f.mine, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
+		await f.stores.jobs.add({ id: "cron-secret", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "client name in here", cwd: f.other, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
 		await f.triggers.store.add({ condition: "c1", action: "a1", cwd: f.mine });
 		await f.triggers.store.add({ condition: "c2", action: "other project", cwd: f.other });
 		const tools = automationTools({ hop: 0, actor: "tool" }, f.host);
@@ -164,7 +160,6 @@ test("the model-facing tools show this project's automation, not the whole machi
 		assert.match(String(rules.content[0].text), /rules: 1/);
 		assert.doesNotMatch(String(rules.content[0].text), /other project/);
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -180,25 +175,23 @@ test("removing all trigger rules only clears this project", async () => {
 		assert.equal(left.length, 1);
 		assert.equal(left[0].cwd, f.other, "another project's rule survives");
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
 test("a sub-agent cannot remove a cron job, and another project's job needs its exact id", async () => {
 	const f = fixture();
 	try {
-		await f.scheduler.store.add({ id: "cron-other", name: "nightly", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: f.other, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
+		await f.stores.jobs.add({ id: "cron-other", name: "nightly", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: f.other, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
 		// hop 0 (a user is present): a name that belongs to another project still resolves, but only
 		// because the tool falls back to an exact-id match — a bare name of another project does not.
 		const atHop0 = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_remove")!;
 		const byName = await atHop0.execute("i", { ref: "nightly" }, undefined, undefined, ctx);
 		assert.equal(byName.isError, true, "another project's job is not reachable by name");
-		assert.equal(f.scheduler.store.load().length, 1);
+		assert.equal(f.stores.jobs.load().length, 1);
 
 		// A sub-agent is not offered the tool: nobody can approve a removal in an unattended run.
 		assert.equal(automationTools({ hop: 1, actor: "sub-agent" }, f.host).find((t) => t.name === "cron_remove"), undefined);
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -206,19 +199,19 @@ test("cron_remove's description promises only the deletion the store performs", 
 	const f = fixture();
 	try {
 		const job = await createLoopJob(f.host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, cwd: f.mine });
-		f.scheduler.store.writeState(job.id, "- 2026-09-12: saw nothing new");
-		const transcript = path.join(f.scheduler.store.sessionDirFor(job.id), "run-1.jsonl");
+		f.stores.jobs.writeState(job.id, "- 2026-09-12: saw nothing new");
+		const transcript = path.join(f.stores.jobs.sessionDirFor(job.id), "run-1.jsonl");
 		fs.writeFileSync(transcript, "{}\n");
 
 		// One call, one question: the dialog is the confirmation, not a preview call before it.
 		const asked: string[] = [];
 		const remove = automationTools({ hop: 0, actor: "tool" }, { ...f.host, confirmTool: async (c, req, hop) => (asked.push(req.label), f.host.confirmTool(c, req, hop)) }).find((t) => t.name === "cron_remove")!;
 		await remove.execute("i", { ref: job.id }, undefined, undefined, ctx);
-		assert.equal(f.scheduler.store.load().length, 0, "the job is gone");
+		assert.equal(f.stores.jobs.load().length, 0, "the job is gone");
 		assert.deepEqual(asked, [`remove cron job "${job.name}"`], "after one question, naming the loop as a person knows it");
 		assert.equal("confirm" in (remove.parameters as any).properties, false, "and there is no preview step to call first");
 		// The tool passes no `purge`, so both of these outlive it — `/cron gc --purge` is what clears them.
-		assert.ok(fs.existsSync(f.scheduler.store.statePath(job.id)), "the loop's notes are still on disk");
+		assert.ok(fs.existsSync(f.stores.jobs.statePath(job.id)), "the loop's notes are still on disk");
 		assert.ok(fs.existsSync(transcript), "and so is its transcript");
 
 		// This description is what the model repeats to the user in the sentence before it asks them to
@@ -235,7 +228,7 @@ test("cron_remove's description promises only the deletion the store performs", 
 		const second = await createLoopJob(f.host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, cwd: f.mine });
 		const out = await remove.execute("i", { ref: second.id }, undefined, undefined, ctx);
 		assert.match(out.content[0].text, /its loop state and run transcripts are kept; \/cron gc --purge clears them/);
-		assert.equal((out.details as any).state_path, f.scheduler.store.statePath(second.id));
+		assert.equal((out.details as any).state_path, f.stores.jobs.statePath(second.id));
 
 		// A plain job has neither, so it is not told about notes it never had.
 		const plain = await createLoopJob(f.host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: false, cwd: f.mine });
@@ -243,14 +236,13 @@ test("cron_remove's description promises only the deletion the store performs", 
 		assert.doesNotMatch(plainOut.content[0].text, /loop state/);
 		assert.equal((plainOut.details as any).state_path, undefined);
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
 test("a sub-agent cannot ask for the machine-wide view, and cannot disable another project's automation", async () => {
 	const f = fixture();
 	try {
-		await f.scheduler.store.add({ id: "cron-elsewhere", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "secret", cwd: f.other, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
+		await f.stores.jobs.add({ id: "cron-elsewhere", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "secret", cwd: f.other, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
 		const rule = await f.triggers.store.add({ condition: "other project condition", action: "a", cwd: f.other });
 
 		const subHost: ToolHost = { ...f.host, confirmTool: async () => "denied: nobody can approve this" };
@@ -265,22 +257,21 @@ test("a sub-agent cannot ask for the machine-wide view, and cannot disable anoth
 		// Disabling another project's automation is a control-plane action, so it is refused too.
 		const setCron = sub.find((t) => t.name === "set_cron_job_state")!;
 		assert.equal((await setCron.execute("i", { ref: "cron-elsewhere", enabled: false }, undefined, undefined, ctx)).isError, true);
-		assert.equal(f.scheduler.store.load().find((j) => j.id === "cron-elsewhere")!.enabled, true);
+		assert.equal(f.stores.jobs.load().find((j) => j.id === "cron-elsewhere")!.enabled, true);
 		const setTrig = sub.find((t) => t.name === "set_trigger_state")!;
 		assert.equal((await setTrig.execute("i", { id: rule.id, enabled: false }, undefined, undefined, ctx)).isError, true);
 		assert.equal(f.triggers.store.load().find((r) => r.id === rule.id)!.enabled, true);
 
 		// Ordinals never resolve in the model-facing tools: the model's list is not the user's. This
 		// project has one job and one rule, so "1" is a position that would resolve if it were taken.
-		await f.scheduler.store.add({ id: "cron-mine", schedule: { kind: "every", ms: 60_000 }, stateful: false, prompt: "p", cwd: f.mine, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
+		await f.stores.jobs.add({ id: "cron-mine", schedule: { kind: "every", ms: 60_000 }, stateful: false, prompt: "p", cwd: f.mine, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
 		const mineRule = await f.triggers.store.add({ condition: "this project condition", action: "a", cwd: f.mine });
 		const atHop0 = automationTools({ hop: 0, actor: "tool" }, f.host);
 		assert.equal((await atHop0.find((t) => t.name === "cron_remove")!.execute("i", { ref: "1" }, undefined, undefined, ctx)).isError, true);
 		assert.equal((await atHop0.find((t) => t.name === "remove_trigger")!.execute("i", { id: "1" }, undefined, undefined, ctx)).isError, true);
-		assert.ok(f.scheduler.store.load().some((j) => j.id === "cron-mine"), "the job at position 1 is still there");
+		assert.ok(f.stores.jobs.load().some((j) => j.id === "cron-mine"), "the job at position 1 is still there");
 		assert.ok(f.triggers.store.load().some((r) => r.id === mineRule.id), "and so is the rule at position 1");
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -306,40 +297,37 @@ test("an id the tools cannot find, or a step they refuse, ends with what to do n
 			assert.equal(String(out.content[0].text), "denied: nobody can approve this", `enabled: ${enabled}`);
 		}
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
 test("cron_list counts this project's new findings, and the machine's only with all_projects", async () => {
 	const f = fixture();
 	try {
-		await f.scheduler.inbox.append({ source: "cron:a", text: "mine", run_id: "r1", job_id: "a", cwd: f.mine });
-		await f.scheduler.inbox.append({ source: "cron:b", text: "other", run_id: "r2", job_id: "b", cwd: f.other });
-		await f.scheduler.inbox.append({ source: "cron:c", text: "other again", run_id: "r3", job_id: "c", cwd: f.other });
+		await f.stores.inbox.append({ source: "cron:a", text: "mine", run_id: "r1", job_id: "a", cwd: f.mine });
+		await f.stores.inbox.append({ source: "cron:b", text: "other", run_id: "r2", job_id: "b", cwd: f.other });
+		await f.stores.inbox.append({ source: "cron:c", text: "other again", run_id: "r3", job_id: "c", cwd: f.other });
 		const cronList = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_list")!;
 		const last = async (args: object) => String((await cronList.execute("i", args, undefined, undefined, ctx)).content[0].text).split("\n").at(-1);
 		assert.equal(await last({}), "inbox: 1 new finding");
 		assert.equal(await last({ all_projects: true }), "inbox: 3 new findings");
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
 test("cron_list says a plain job is running when a run has claimed its row, in the text and in the details", async () => {
 	const f = fixture();
 	try {
-		const job = await f.scheduler.store.add({ id: "cron-held", name: "held", schedule: { kind: "cron", expr: "0 9 * * *" } as const, stateful: false, sessionId: "s", prompt: "p", cwd: f.mine, enabled: true, catchUp: false, createdAt: new Date().toISOString(), runCount: 1, skippedOverlap: 0 });
+		const job = await f.stores.jobs.add({ id: "cron-held", name: "held", schedule: { kind: "cron", expr: "0 9 * * *" } as const, stateful: false, sessionId: "s", prompt: "p", cwd: f.mine, enabled: true, catchUp: false, createdAt: new Date().toISOString(), runCount: 1, skippedOverlap: 0 });
 		const cronList = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_list")!;
 		const list = async () => await cronList.execute("i", {}, undefined, undefined, ctx);
-		f.scheduler.requests.append(plainJobRow(job, "run-claimed", `cron:${job.id}`, "", { pid: 1, instance: "host", version: "0" }));
+		f.stores.requests.append(plainJobRow(job, "run-claimed", `cron:${job.id}`, "", { pid: 1, instance: "host", version: "0" }));
 		assert.doesNotMatch(String((await list()).content[0].text), /running_run_id/, "a queued row is not a run");
-		assert.equal(f.scheduler.requests.claim("s", "run-claimed", { id: "run-claimed", pid: 4242, started_at: new Date().toISOString() } as any), true);
+		assert.equal(f.stores.requests.claim("s", "run-claimed", { id: "run-claimed", pid: 4242, started_at: new Date().toISOString() } as any), true);
 		const out = await list();
 		assert.match(String(out.content[0].text), /^  running_run_id: run-claimed$/m);
 		assert.doesNotMatch(String(out.content[0].text), /^  queued: /m, "a claimed row is running, not waiting");
 		assert.equal((out.details as any).jobs.find((j: any) => j.id === "cron-held").running_run_id, "run-claimed");
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -347,8 +335,10 @@ test("cron_list says how many runs in a row a loop has failed, so a playbook nee
 	const f = fixture();
 	try {
 		const base = { schedule: { kind: "cron", expr: "0 9 * * *" } as const, stateful: true, prompt: "p", cwd: f.mine, enabled: true, catchUp: false, createdAt: new Date().toISOString(), runCount: 3, skippedOverlap: 0 };
-		await f.scheduler.store.add({ ...base, id: "cron-failing", name: "failing", lastError: "boom", consecutiveFailures: 2 });
-		await f.scheduler.store.add({ ...base, id: "cron-fine", name: "fine" });
+		await f.stores.jobs.add({ ...base, id: "cron-failing", name: "failing" });
+		await f.stores.jobs.add({ ...base, id: "cron-fine", name: "fine" });
+		// A loop's streak is the failed runs at the end of its run log.
+		for (const n of [1, 2]) f.stores.jobs.appendRun({ runId: `run-fail-${n}`, jobId: "cron-failing", stateful: true, cwd: f.mine, pid: 1, startedAt: new Date(Date.now() - (3 - n) * 60_000).toISOString(), finishedAt: new Date(Date.now() - (3 - n) * 60_000).toISOString(), ok: false, error: "boom", findings: 0, droppedFindings: 0, stateUpdated: false });
 		const cronList = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_list")!;
 		const listed = await cronList.execute("i", {}, undefined, undefined, ctx);
 		const byId = new Map(listed.details.jobs.map((j: any) => [j.id, j]));
@@ -357,7 +347,6 @@ test("cron_list says how many runs in a row a loop has failed, so a playbook nee
 		const text = String(listed.content[0].text);
 		assert.match(text.split("cron-failing")[1].split("\n- ")[0], /consecutive_failures: 2/, "the model sees the streak next to the error");
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -365,9 +354,9 @@ test("cron_list promises no next run for a plain job of a session that is not op
 	const f = fixture();
 	try {
 		const base = { schedule: { kind: "cron", expr: "0 9 * * *" } as const, stateful: false, prompt: "p", cwd: f.mine, enabled: true, catchUp: false, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 };
-		await f.scheduler.store.add({ ...base, id: "cron-asleep", name: "theirs", sessionId: "01a09f6d-0e1e-7000-8000-000000000001" });
-		await f.scheduler.store.add({ ...base, id: "cron-mine", name: "mine", sessionId: "s" });
-		await f.scheduler.store.add({ ...base, id: "cron-loop", name: "loop", stateful: true });
+		await f.stores.jobs.add({ ...base, id: "cron-asleep", name: "theirs", sessionId: "01a09f6d-0e1e-7000-8000-000000000001" });
+		await f.stores.jobs.add({ ...base, id: "cron-mine", name: "mine", sessionId: "s" });
+		await f.stores.jobs.add({ ...base, id: "cron-loop", name: "loop", stateful: true });
 		const cronList = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_list")!;
 		const listed = await cronList.execute("i", {}, undefined, undefined, ctx);
 		const byId = new Map(listed.details.jobs.map((j: any) => [j.id, j]));
@@ -381,7 +370,6 @@ test("cron_list promises no next run for a plain job of a session that is not op
 		assert.match(text, /session 01a09f6d-0e1e — resume it to run \(no next run here\)/, "and the model is told what would wake it");
 		assert.doesNotMatch(text.split("cron-asleep")[1].split("\n- ")[0], /next_run/, "no next_run line under the asleep job");
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -423,7 +411,6 @@ test("a job keeps the chat's built-in tools as its declared tools, borrows no tr
 		const narrowed = await createLoopJob(host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, tools: ["bash", "read", "mcp_hub_search"] });
 		assert.deepEqual(narrowed.tools, ["read", "mcp_hub_search"]);
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -434,9 +421,9 @@ test("cron_create and new_trigger say so while nothing runs in the background, a
 	const mine = path.join(dir, "mine");
 	fs.mkdirSync(mine);
 	const reason = "pi-loops is stopped — /pi-loops start";
-	const scheduler = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "s", cwd: mine }), leases: { heldEpoch: () => 1, holderOf: () => process.pid, hostPaused: () => reason } });
-	const triggers = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: scheduler.store, getSession: () => ({ sessionId: "s", cwd: mine }), runner: fakeRunner(), dedupFile: path.join(dir, "dedup.json") });
-	const host: ToolHost = { scheduler, triggers, session: () => ({ sessionId: "s", cwd: mine }), createJob: (input, scope) => createLoopJob(host, input, scope), cronControlAudit: () => "audit-1", confirmTool: async () => undefined, refreshBadge: () => undefined };
+	const stores = openStores(dir);
+	const triggers = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: stores.jobs, getSession: () => ({ sessionId: "s", cwd: mine }), runner: fakeRunner(), dedupFile: path.join(dir, "dedup.json") });
+	const host: ToolHost = { stores, owner: () => ownerViewOf({ sessionId: "s", cwd: mine }, { heldEpoch: () => 1, holderOf: () => process.pid, hostPaused: () => reason }), triggers, session: () => ({ sessionId: "s", cwd: mine }), createJob: (input, scope) => createLoopJob(host, input, scope), cronControlAudit: () => "audit-1", confirmTool: async () => undefined, refreshBadge: () => undefined };
 	try {
 		const tools = automationTools({ hop: 0, actor: "tool" }, host);
 		const loop = await tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 5m", action: "watch", stateful: true }, undefined, undefined, ctx);
@@ -446,7 +433,6 @@ test("cron_create and new_trigger say so while nothing runs in the background, a
 		const plain = await tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 5m", action: "ping" }, undefined, undefined, ctx);
 		assert.doesNotMatch(String(plain.content[0].text), /PAUSED/, "this chat's own plain job runs in this window, paused or not");
 	} finally {
-		await scheduler.stop();
 	}
 });
 
@@ -463,7 +449,6 @@ test("cron_create tells the model a plain job's turns are capped, ask in a windo
 		const skill = fs.readFileSync(path.join(process.cwd(), "skills", "pi-loops", "SKILL.md"), "utf8");
 		assert.ok(skill.includes("Its turns run with the chat's built-in tools under the dangerous-command guard: in an open window a dangerous command or a tool outside them asks the user first, and in the background it is refused. In the background they also run without this window's -e extensions or flags"), "SKILL.md says the same");
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -471,11 +456,11 @@ test("cron_list reports a queued prompt", async () => {
 	const f = fixture();
 	try {
 		const base = { schedule: { kind: "cron", expr: "0 9 * * *" } as const, stateful: false, prompt: "p", cwd: f.mine, enabled: true, catchUp: false, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0, sessionId: "s" };
-		await f.scheduler.store.add({ ...base, id: "cron-waiting", name: "waiting" });
-		await f.scheduler.store.add({ ...base, id: "cron-idle", name: "idle" });
+		await f.stores.jobs.add({ ...base, id: "cron-waiting", name: "waiting" });
+		await f.stores.jobs.add({ ...base, id: "cron-idle", name: "idle" });
 		// The clock fired two minutes ago and pi has been busy since: the prompt waits in the conversation's queue.
 		const row = plainJobRow({ id: "cron-waiting", sessionId: "s", prompt: "p", cwd: f.mine, model: undefined, thinking: undefined }, "run-1", "cron:cron-waiting", "", { pid: 1, instance: "w", version: "0" }, Date.now() - 2 * 60_000);
-		f.scheduler.requests.append(row);
+		f.stores.requests.append(row);
 		const cronList = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_list")!;
 		assert.match(cronList.description, /`queued`/, "the model is told the field exists");
 		const listed = await cronList.execute("i", {}, undefined, undefined, ctx);
@@ -486,7 +471,6 @@ test("cron_list reports a queued prompt", async () => {
 		assert.match(text.split("cron-waiting")[1].split("\n- ")[0], new RegExp(`\n  queued: 2m \\(since ${row.created_at.replace(/[+.]/g, "\\$&")}\\)(?:\n|$)`));
 		assert.doesNotMatch(text.split("cron-idle")[1].split("\n- ")[0], /queued/);
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -534,7 +518,6 @@ test("with a person in their own turn, new_trigger asks through pi's select and 
 		assert.equal(rules[0].fireOnce, true);
 		assert.equal(rules[0].condition, "~/build.done appears");
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -552,7 +535,6 @@ test("new_trigger stores a condition the model wrote as \"when …\" the way /ne
 			assert.match(row, /^ 1\. dyn-\w+(?: \[[^\]]*\])? when the build finishes -> tell me the build is ready/, `${label}: ${row}`);
 			if (label === "the Watch card") assert.match(f.selects[0].title, /\nWaits for: the build finishes\n/, label);
 		} finally {
-			await f.scheduler.stop();
 		}
 	}
 });
@@ -563,7 +545,6 @@ test("a condition that names a routine (the daily build, a cron file) stays a tr
 		const out = await f.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "when the daily build fails", action: "post the daily error report", promote_to_chat: false }, undefined, undefined, f.person);
 		assert.match(String(out.content[0].text), /^created dynamic trigger dyn-/, "a routine word in the condition and in the action no longer routes to cron_create");
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -583,7 +564,6 @@ test("Cancel, Esc, a timeout and an abort all return cancelled in the same call 
 			}
 			assert.deepEqual(f.bytes(), before, "byte for byte");
 		} finally {
-			await f.scheduler.stop();
 		}
 	}
 });
@@ -599,7 +579,6 @@ test("a question nobody answers for thirty minutes says it timed out", async (t)
 		assert.equal(String(out.content[0].text), cancelledText("timed out"));
 		assert.deepEqual(f.triggers.store.load(), []);
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -612,7 +591,6 @@ test("the answer is promote_to_chat and fire_once for a rule, and stateful and v
 		assert.equal(made.promoteToChat, false);
 		assert.equal(made.fireOnce, false);
 	} finally {
-		await rule.scheduler.stop();
 	}
 	const f = askFixture();
 	try {
@@ -627,22 +605,19 @@ test("the answer is promote_to_chat and fire_once for a rule, and stateful and v
 		const checked = askFixture(pick("Set it up · inbox · with checks"));
 		try {
 			await checked.tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 1h", action: "look" }, undefined, undefined, checked.person);
-			assert.deepEqual(checked.scheduler.store.load().map((j) => [j.stateful, j.verify]), [[true, true]]);
+			assert.deepEqual(checked.stores.jobs.load().map((j) => [j.stateful, j.verify]), [[true, true]]);
 		} finally {
-			await checked.scheduler.stop();
 		}
 		const unchecked = askFixture(pick("Set it up · inbox"));
 		try {
 			await unchecked.tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 1h", action: "look", verify: true }, undefined, undefined, unchecked.person);
 			assert.equal(unchecked.selects[0].options[0], "Set it up · inbox · with checks", "the model's verify is the first option");
-			assert.deepEqual(unchecked.scheduler.store.load().map((j) => [j.stateful, j.verify]), [[true, undefined]], "and the person can turn it off");
+			assert.deepEqual(unchecked.stores.jobs.load().map((j) => [j.stateful, j.verify]), [[true, undefined]], "and the person can turn it off");
 		} finally {
-			await unchecked.scheduler.stop();
 		}
-		const jobs = f.scheduler.store.load();
+		const jobs = f.stores.jobs.load();
 		assert.deepEqual(jobs.map((j) => [j.stateful, j.sessionId]), [[true, undefined], [false, "s"]]);
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -656,9 +631,8 @@ test("a schedule that cannot be parsed, or a job that would be refused, gives an
 		assert.equal(never.isError, true);
 		assert.match(String(never.content[0].text), /has no next run/);
 		assert.equal(f.selects.length, 0, "nobody was asked");
-		assert.deepEqual(f.scheduler.store.load(), []);
+		assert.deepEqual(f.stores.jobs.load(), []);
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -671,7 +645,6 @@ test("a sub-agent has no new_trigger; a scheduled turn and a pi with no dialog k
 		assert.deepEqual(automationTools({ hop: 0, actor: "tool" }, sub.host).map((t) => t.name).sort(), ["cron_create", "cron_list", "cron_remove", "list_triggers", "new_trigger", "remove_trigger", "set_cron_job_state", "set_trigger_state"]);
 		assert.equal(sub.selects.length, 0);
 	} finally {
-		await sub.scheduler.stop();
 	}
 	for (const [label, f, ctxOf] of [
 		["a scheduled turn", askFixture(undefined, { scheduled: true }), (p: any) => p],
@@ -685,7 +658,6 @@ test("a sub-agent has no new_trigger; a scheduled turn and a pi with no dialog k
 			assert.match(String(job.content[0].text), /^created cron job cron-/, label);
 			assert.equal(f.selects.length, 0, `${label}: nobody waited on`);
 		} finally {
-			await f.scheduler.stop();
 		}
 	}
 });
@@ -702,7 +674,6 @@ test("the create tools tell the model what a `Watch for:` message is, and what n
 		const sub = automationTools({ hop: 1, actor: "sub-agent" }, f.host);
 		assert.doesNotMatch(sub.find((t) => t.name === "cron_create")!.description, /Watch for:/, "a sub-agent never sees such a message");
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -718,9 +689,8 @@ test("a watch the person is asked about runs in this project: a cwd outside it i
 		fs.mkdirSync(path.join(f.mine, "sub"));
 		const inside = await cron.execute("i", { schedule: "every 5m", action: "a", cwd: "sub" }, undefined, undefined, f.person);
 		assert.match(String(inside.content[0].text), /^created cron job cron-/, "a subdirectory is this project");
-		assert.equal(f.scheduler.store.load()[0].cwd, path.join(f.mine, "sub"));
+		assert.equal(f.stores.jobs.load()[0].cwd, path.join(f.mine, "sub"));
 	} finally {
-		await f.scheduler.stop();
 	}
 });
 
@@ -738,6 +708,5 @@ test("cron_create names the schedule words with the times they mean, and SKILL.m
 		assert.match(skill, /pi-loops inbox list --json/);
 		assert.match(skill, /pi-loops inbox dismiss <id> --reason <text> --json/);
 	} finally {
-		await f.scheduler.stop();
 	}
 });

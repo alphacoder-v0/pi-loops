@@ -5,7 +5,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { createHostRuntime, type HostRuntime } from "../src/host-runtime.ts";
-import { LoopScheduler } from "../src/scheduler.ts";
 import { mapNotification } from "../src/mcp.ts";
 import { buildPeriodicCheckTrigger } from "../src/triggers.ts";
 import { fakeRunner } from "./fake-runner.ts";
@@ -108,21 +107,15 @@ test("a quiet queue is decided again when a row's backoff ends, with no file cha
 import { stamp } from "../src/schedule.ts";
 
 
-test("the host keeps running while pis open and close", async () => {
+test("the host runs a due loop on its tick", async () => {
 	const dir = tmp("pi-loops-hostrt-");
 	const fake = fakeRunner();
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fake, mcpTools: () => [], log: () => undefined });
 	try {
-		await host.scheduler.store.add({ id: "cron-kept", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: dir, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
-		// A window opens and ticks, closes, and another opens: none of it reaches the host.
-		for (const sessionId of ["s1", "s2"]) {
-			const pi = new LoopScheduler({ dir, runner: fakeRunner(), kind: "interactive", getSession: () => ({ sessionId, cwd: dir }), owns: (job) => !job.stateful });
-			await pi.tick();
-			await pi.stop();
-		}
+		await host.stores.jobs.add({ id: "cron-kept", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: dir, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		await host.drain(5000);
-		assert.equal(fake.calls.length, 1, "the host ran the loop the windows left alone");
+		assert.equal(fake.calls.length, 1, "the host ran the loop");
 	} finally {
 		await host.stop();
 	}
@@ -136,20 +129,20 @@ test("the host runs loops and queues a promotion for the creating session when a
 	const logs: string[] = [];
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "", model: "default/model" }), runner: fake, mcpTools: () => [], log: (m) => void logs.push(m) });
 	try {
-		await host.scheduler.store.add({ id: "cron-hosted", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: proj, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await host.stores.jobs.add({ id: "cron-hosted", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: proj, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		const end = Date.now() + 5000;
-		while (host.scheduler.store.listRuns("cron-hosted").length < 1 && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
-		assert.equal(host.scheduler.store.listRuns("cron-hosted")[0]?.ok, true);
+		while (host.stores.jobs.listRuns("cron-hosted").length < 1 && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
+		assert.equal(host.stores.jobs.listRuns("cron-hosted")[0]?.ok, true);
 		assert.equal(fake.calls[0].cwd, proj);
 		assert.equal(fake.calls[0].model, "default/model", "an unpinned loop runs on the host's default model");
-		assert.equal(host.scheduler.inbox.listNew().length, 1, "findings still reach the inbox");
+		assert.equal(host.stores.inbox.listNew().length, 1, "findings still reach the inbox");
 
 		const rule = await host.triggers.store.add({ condition: "c", action: "a", cwd: proj, promoteToChat: true });
 		process.env.FAKE_PI_REPLY = `matched ${rule.id}: done`;
 		const out = await host.triggers.handle(buildPeriodicCheckTrigger(proj, 1), "sub_agent");
 		assert.equal(out?.promoted, false);
-		const promoted = host.scheduler.inbox.listNew().find((e) => e.source === "trigger:local:dynamic");
+		const promoted = host.stores.inbox.listNew().find((e) => e.source === "trigger:local:dynamic");
 		assert.ok(promoted, "no chat here: the promotion lands in the inbox");
 		assert.equal(promoted?.cwd, proj);
 
@@ -165,7 +158,7 @@ test("the host runs loops and queues a promotion for the creating session when a
 		const closed = await host.triggers.store.add({ condition: "c", action: "a", cwd: proj, promoteToChat: true, sessionId: "closed" });
 		process.env.FAKE_PI_REPLY = `matched ${closed.id}: for later`;
 		await host.triggers.handle(buildPeriodicCheckTrigger(proj, 1), "sub_agent", [closed]);
-		assert.equal(host.scheduler.inbox.listNew().find((e) => e.text.includes("for later"))?.session_id, "closed");
+		assert.equal(host.stores.inbox.listNew().find((e) => e.text.includes("for later"))?.session_id, "closed");
 		assert.equal(new RequestStore(dir).list("closed").length, 0, "and no row waits for it");
 
 		// Tools handed to a sub-session created by the host act in that run's cwd, not the host's.
@@ -174,7 +167,7 @@ test("the host runs loops and queues a promotion for the creating session when a
 		await assert.rejects(create.execute("id", { schedule: "every 5m", action: "chat me" }, undefined, undefined, { hasUI: false } as any), /not a background process/, "no chat here: a plain (inject) job cannot be created");
 		const res = await create.execute("id", { schedule: "every 5m", action: "follow up", stateful: true }, undefined, undefined, { hasUI: false } as any);
 		assert.equal(res.isError, undefined);
-		const created = host.scheduler.store.load().find((j) => j.prompt === "follow up")!;
+		const created = host.stores.jobs.load().find((j) => j.prompt === "follow up")!;
 		assert.equal(created.cwd, proj);
 		assert.equal(created.model, "pinned/model");
 		assert.equal(host.triggers.store.listAudit(1)[0].type, "cron_control_plane", "control-plane operations by sub-agents are audited where /triggers audit shows them");
@@ -209,12 +202,12 @@ test("the host leaves a plain job's tick owed instead of consuming it", async ()
 	const createdAt = new Date(Date.now() - 120_000).toISOString();
 	try {
 		// A plain job (the default mode) and a one-shot: neither can be delivered without a chat.
-		await host.scheduler.store.add({ id: "cron-plain", schedule: { kind: "every", ms: 60_000 }, stateful: false, prompt: "tell me in the chat", cwd: proj, sessionId: "s1", enabled: true, catchUp: true, createdAt, runCount: 0, skippedOverlap: 0 });
-		await host.scheduler.store.add({ id: "cron-once", schedule: { kind: "once", at: Date.now() - 60_000 }, stateful: false, prompt: "one shot", cwd: proj, sessionId: "s1", enabled: true, catchUp: true, createdAt, runCount: 0, skippedOverlap: 0 });
+		await host.stores.jobs.add({ id: "cron-plain", schedule: { kind: "every", ms: 60_000 }, stateful: false, prompt: "tell me in the chat", cwd: proj, sessionId: "s1", enabled: true, catchUp: true, createdAt, runCount: 0, skippedOverlap: 0 });
+		await host.stores.jobs.add({ id: "cron-once", schedule: { kind: "once", at: Date.now() - 60_000 }, stateful: false, prompt: "one shot", cwd: proj, sessionId: "s1", enabled: true, catchUp: true, createdAt, runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		await host.drain(5000);
 
-		const jobs = host.scheduler.store.load();
+		const jobs = host.stores.jobs.load();
 		const plain = jobs.find((j) => j.id === "cron-plain")!;
 		assert.equal(plain.runCount, 0, "an undeliverable job is not a completed run");
 		assert.equal(plain.lastFiredAt, undefined, "and its tick stays owed for the next interactive pi");
@@ -222,16 +215,6 @@ test("the host leaves a plain job's tick owed instead of consuming it", async ()
 		assert.ok(jobs.some((j) => j.id === "cron-once"), "a one-shot is not deleted unfired");
 		assert.equal(fake.calls.length, 0);
 
-		// An interactive scheduler on the same store still queues them for its chat.
-		const pi = new LoopScheduler({ dir, runner: fake, kind: "interactive", getSession: () => ({ sessionId: "s1", cwd: proj }) });
-		try {
-			await pi.tick();
-			await pi.drain(5000);
-			assert.equal(new RequestStore(dir).list("s1").length, 2, "the chat that owns them gets both");
-			assert.equal(pi.store.load().find((j) => j.id === "cron-plain")!.runCount, 1);
-		} finally {
-			await pi.stop();
-		}
 	} finally {
 		await host.stop();
 	}
@@ -243,7 +226,7 @@ test("the host audits its cron runs, so /triggers audit is not blank for the una
 	fs.mkdirSync(proj);
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
 	try {
-		await host.scheduler.store.add({ id: "cron-audited", name: "nightly", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: proj, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await host.stores.jobs.add({ id: "cron-audited", name: "nightly", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: proj, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		await host.drain(10_000);
 
@@ -283,7 +266,7 @@ test("the host fires run_start/run_end around each loop run, in the run's own pr
 	fs.writeFileSync(path.join(dir, "hooks.toml"), `${rule("run_start")}\n${rule("run_end")}\n`);
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "", model: "default/model" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
 	try {
-		await host.scheduler.store.add(dueJob("cron-hooked", "nightly", proj));
+		await host.stores.jobs.add(dueJob("cron-hooked", "nightly", proj));
 		await tickHost(host);
 		await host.drain(10_000);
 		const [startLine, endLine] = await waitForLines(events, 2);
@@ -303,7 +286,7 @@ test("the host fires run_start/run_end around each loop run, in the run's own pr
 
 		// The event the issue is about: last night's loop failed and nobody was watching.
 		process.env.FAKE_PI_FAIL = "1";
-		await host.scheduler.store.add(dueJob("cron-broken", "flaky", proj));
+		await host.stores.jobs.add(dueJob("cron-broken", "flaky", proj));
 		await tickHost(host);
 		await host.drain(10_000);
 		const failed = JSON.parse((await waitForLines(events, 4)).at(-1)!);
@@ -332,7 +315,7 @@ test("a project's own hooks.toml runs in the host only for a directory pi alread
 
 	const untrusted = hosted(false);
 	try {
-		await untrusted.host.scheduler.store.add(dueJob("cron-untrusted", "nightly", untrusted.proj));
+		await untrusted.host.stores.jobs.add(dueJob("cron-untrusted", "nightly", untrusted.proj));
 		await tickHost(untrusted.host);
 		await untrusted.host.drain(10_000);
 		await untrusted.host.stop(); // drains the hook queue: whatever was going to run has run by now
@@ -344,7 +327,7 @@ test("a project's own hooks.toml runs in the host only for a directory pi alread
 
 	const trusted = hosted(true);
 	try {
-		await trusted.host.scheduler.store.add(dueJob("cron-trusted", "nightly", trusted.proj));
+		await trusted.host.stores.jobs.add(dueJob("cron-trusted", "nightly", trusted.proj));
 		await tickHost(trusted.host);
 		await trusted.host.drain(10_000);
 		await waitForLines(trusted.ran, 1);
@@ -352,22 +335,6 @@ test("a project's own hooks.toml runs in the host only for a directory pi alread
 	} finally {
 		await trusted.host.stop();
 	}
-});
-
-test("an interactive pi fires the same run events the host does", async () => {
-	// The point of the separate pair: whether a job ran under the host or under a pi you left open
-	// is an accident of who held the clock, so both must fire run_start/run_end and neither may
-	// overload agent_* — a rule about your own turns must not start seeing automation.
-	const { HOOK_EVENTS } = await import("../src/hooks.ts");
-	assert.ok(HOOK_EVENTS.includes("run_start" as any) && HOOK_EVENTS.includes("run_end" as any));
-	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
-	// The interactive side is not importable by tests (issue #8), so this asserts the wiring exists
-	// rather than exercising it: both callbacks fire, and neither uses the conversation's events.
-	const onRunStart = source.slice(source.indexOf("onRunStart:"), source.indexOf("onCatchUp:"));
-	const onRunFinished = source.slice(source.indexOf("onRunFinished:"), source.indexOf("onInboxChanged:"));
-	assert.match(onRunStart, /fireRunHook\(runStartEvent\(/);
-	assert.match(onRunFinished, /fireRunHook\(runEndEvent\(/);
-	for (const half of [onRunStart, onRunFinished]) assert.equal(/event: "agent_(start|end)"/.test(half), false);
 });
 
 /** A real pi session file the host may hold: written once, ten minutes ago, its lease free. */
@@ -426,7 +393,7 @@ test("a rule's promotion for a closed creating conversation is appended to it, a
 		const appended = entries.find((e) => e.type === "custom_message" && e.customType === "pi-loops:trigger");
 		assert.match(String(appended?.content), /^\[Trigger [^\]]+\] .*while you were away/s, "it is in the conversation, where a resume shows it");
 		// Every match is also a finding (docs/triggers.md), and the delivery adds no second one.
-		assert.deepEqual(host.scheduler.inbox.listNew().map((e) => [e.job_id, e.session_id]), [[rule.id, sessionId]], "and one finding in the inbox, the check's own");
+		assert.deepEqual(host.stores.inbox.listNew().map((e) => [e.job_id, e.session_id]), [[rule.id, sessionId]], "and one finding in the inbox, the check's own");
 		assert.equal(new LeaseStore(dir).read(sessionId)?.holder, null, "the host held it for that one write");
 		assert.equal(host.triggers.store.listAudit(50, (r) => r.state === "appended" && r.details?.session_id === sessionId).length, 1, "and the audit says so, for the since-you-looked count");
 	} finally {
@@ -453,7 +420,7 @@ test("a rule's result for a closed creating conversation goes to the window open
 		const requests = new RequestStore(dir);
 		assert.match(requests.list("B")[0]?.payload?.text ?? "", /CI is red/, "queued for the window open in the project");
 		assert.deepEqual([requests.list(a), requests.list("P")], [[], []], "not for the closed conversation, nor the pi -p run");
-		assert.deepEqual(host.scheduler.inbox.listNew().map((e) => e.session_id), [a], "one finding, for the conversation that made the rule");
+		assert.deepEqual(host.stores.inbox.listNew().map((e) => e.session_id), [a], "one finding, for the conversation that made the rule");
 		// A rule nobody's conversation made (imported, or a loop's run): the same window.
 		const orphan = await host.triggers.store.add({ condition: "c2", action: "a2", cwd: dir, promoteToChat: true });
 		process.env.FAKE_PI_REPLY = `matched ${orphan.id}: for whoever is here`;
@@ -481,7 +448,7 @@ test("a rule's result for a closed conversation written moments ago waits in its
 		const rule = await host.triggers.store.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true, sessionId });
 		process.env.FAKE_PI_REPLY = `matched ${rule.id}: the build is green`;
 		await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent", [rule]);
-		assert.equal(host.scheduler.inbox.listNew().length, 1, "one finding, the check's: the queued row is not split off into a second");
+		assert.equal(host.stores.inbox.listNew().length, 1, "one finding, the check's: the queued row is not split off into a second");
 		assert.equal(new RequestStore(dir).list(sessionId).length, 1, "queued for the conversation");
 		const old = new Date(Date.now() - 10 * 60_000);
 		fs.utimesSync(file, old, old);
@@ -504,7 +471,7 @@ test("results queued for a conversation whose file is gone go to the inbox, mark
 		fs.rmSync(file);
 		await tickHost(host);
 		assert.equal(new RequestStore(dir).list(sessionId).length, 0);
-		const filed = host.scheduler.inbox.listNew();
+		const filed = host.stores.inbox.listNew();
 		assert.deepEqual(filed.map((e) => [e.text, e.session_id, e.source]), [["the deploy finished", sessionId, "trigger:local:dynamic"]]);
 		assert.equal(host.triggers.store.listAudit(10, (r) => r.type === "request" && r.state === "dead").length, 1, "and the audit says why");
 	} finally {
@@ -545,11 +512,11 @@ test("a closed conversation's plain job that keeps failing waits out its pause: 
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined });
 	try {
 		const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
-		await host.scheduler.store.add({ id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: ago(10 * 60_000), runCount: 3, skippedOverlap: 0, consecutiveFailures: 3, lastCompletedAt: ago(30_000) });
+		await host.stores.jobs.add({ id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: ago(10 * 60_000), runCount: 3, skippedOverlap: 0, consecutiveFailures: 3, lastCompletedAt: ago(30_000) });
 		await tickHost(host);
 		await host.drain(5000);
 		assert.deepEqual(turns, [], "no turn 30 seconds after the third failure");
-		await host.scheduler.store.update("cron-held", (j) => {
+		await host.stores.jobs.update("cron-held", (j) => {
 			j.lastCompletedAt = ago(61_000);
 		});
 		await tickHost(host);
@@ -574,17 +541,17 @@ test("a held turn runs in the closed conversation's file and stops once a window
 	};
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined });
 	try {
-		await host.scheduler.store.add({ id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await host.stores.jobs.add({ id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		await host.drain(5000);
 		assert.deepEqual(seen[0], { kind: "held", sessionFile: file, before: true }, "the turn runs in that conversation's own file, holding it");
 		assert.deepEqual(seen[1], { after: false }, "the window's acquisition is what the turn sees");
 		// The slot was counted when its row was written, as a window counts it; what is owed is the row.
-		const job = host.scheduler.store.load()[0];
+		const job = host.stores.jobs.load()[0];
 		assert.deepEqual([job.runCount, !!job.lastFiredAt, job.owedSlot, job.consecutiveFailures], [1, true, undefined, undefined]);
 		const [row] = new RequestStore(dir).list(sessionId);
 		assert.deepEqual([row.source, row.run, row.attempts, row.not_before], ["cron:cron-held", undefined, 0, undefined], "its row is owed to the window now holding the conversation: no claim, no attempt");
-		const [record] = host.scheduler.store.allRuns();
+		const [record] = host.stores.jobs.allRuns();
 		assert.deepEqual([record.runId, record.aborted, record.stoppedBy, record.error], [row.id, true, undefined, "taken back"]);
 	} finally {
 		await host.stop();
@@ -613,14 +580,14 @@ test("a held turn is the conversation's own: its model, its session for the tool
 	};
 	host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "", model: "host/default" }), runner, mcpTools: () => [], log: () => undefined });
 	try {
-		await host.scheduler.store.add({ id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, model: "old/pinned", thinking: "high", enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
-		await host.scheduler.store.add({ id: "cron-elsewhere", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: other, enabled: false, catchUp: false, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
+		await host.stores.jobs.add({ id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, model: "old/pinned", thinking: "high", enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await host.stores.jobs.add({ id: "cron-elsewhere", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: other, enabled: false, catchUp: false, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		await host.drain(5000);
 		assert.deepEqual([seen.model, seen.thinking], [undefined, undefined], "the conversation keeps the model and thinking level it is on; the job's 0.22 capture is ignored");
 		assert.equal(seen.parentSessionId, sessionId, "the conversation is the turn's parent session");
 		assert.equal(seen.created.isError, undefined, `a plain job can be made from the turn: ${seen.created.content?.[0]?.text}`);
-		const made = host.scheduler.store.load().find((j) => j.prompt === "remind me again")!;
+		const made = host.stores.jobs.load().find((j) => j.prompt === "remind me again")!;
 		assert.equal(made.sessionId, sessionId, "and is bound to this conversation");
 		assert.equal(seen.listed.details.scope, "machine", "all_projects lists the machine, as in a window");
 		assert.equal(seen.denied.isError, true);
@@ -659,7 +626,7 @@ test("a row for a closed session lands without waiting for the tick", { timeout:
 	const dir = tmp("pi-loops-hostrt-");
 	let ticks = 0;
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
-	const ticker = new Ticker({ names: [...RUNTIME_RIDERS, "scheduler"] as const, riders: { ...host.riders, scheduler: async () => { ticks++; await host.scheduler.tick(); } }, log: () => undefined });
+	const ticker = new Ticker({ names: [...RUNTIME_RIDERS, "count"] as const, riders: { ...host.riders, count: async () => { ticks++; } }, log: () => undefined });
 	try {
 		const { sessionId, file } = closedConversation(dir);
 		host.start(); // watchers start here; the ticker makes its first pass at once
@@ -775,7 +742,7 @@ test("a stop row aborts the held turn running in that conversation", { timeout: 
 	};
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined });
 	try {
-		await host.scheduler.store.add({ id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await host.stores.jobs.add({ id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		assert.equal(await until(() => started, 5000), true, "the held turn is running");
 		const leases = new LeaseStore(dir);
@@ -788,7 +755,7 @@ test("a stop row aborts the held turn running in that conversation", { timeout: 
 		await host.drain(5000);
 		assert.deepEqual(requests.list(sessionId), [], "the stop row is done");
 		assert.equal(host.triggers.store.listAudit(1, (r) => r.type === "request" && r.traceId === stop.id)[0]?.state, "done");
-		assert.equal(host.scheduler.store.listRuns("cron-held")[0]?.ok, false, "the stopped turn is recorded");
+		assert.equal(host.stores.jobs.listRuns("cron-held")[0]?.ok, false, "the stopped turn is recorded");
 		assert.equal(leases.read(sessionId)?.holder, null, "and the conversation given back");
 	} finally {
 		await host.stop();
@@ -822,14 +789,14 @@ test("Stop this run on a held turn: the stop goes through the conversation's que
 		createdBy: () => ({ pid: process.pid, instance: "host", version: "0" }),
 	});
 	try {
-		await host.scheduler.store.add({ id: "cron-held", schedule: { kind: "every", ms: 3_600_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 3_700_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await host.stores.jobs.add({ id: "cron-held", schedule: { kind: "every", ms: 3_600_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 3_700_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		assert.equal(await until(() => started && !!host.heldTurn(sessionId), 5000), true);
 		const runId = host.heldTurn(sessionId)!.runId;
 		assert.deepEqual(stop(runId), { stopping: "row" });
 		assert.deepEqual([rows[0].kind, rows[0].source, rows[0].mode, rows[0].target], ["stop", "person", "none", { id: runId }]);
 		await host.drain(5000);
-		const record = host.scheduler.store.listRuns("cron-held")[0];
+		const record = host.stores.jobs.listRuns("cron-held")[0];
 		assert.deepEqual([record?.runId, record?.aborted, record?.stoppedBy, record?.stoppedFrom, record?.error], [runId, true, "person", "page", "stopped by a person"]);
 		assert.equal(host.triggers.store.listAudit(1, (r) => r.type === "request" && r.traceId === rows[0].id)[0]?.state, "done", "the request audit row says the stop acted");
 		assert.deepEqual(stop(runId), { finished: true }, "a second stop finds nothing running");
@@ -857,7 +824,7 @@ test("a held turn a person stopped runs exactly once: no successor row, no owed 
 	const prompts: string[] = [];
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: runnerUntilStopped(prompts), mcpTools: () => [], log: () => undefined });
 	try {
-		await host.scheduler.store.add(heldJob(sessionId, dir));
+		await host.stores.jobs.add(heldJob(sessionId, dir));
 		await tickHost(host);
 		assert.equal(await until(() => prompts.length === 1, 5000), true);
 		const requests = new RequestStore(dir);
@@ -865,7 +832,7 @@ test("a held turn a person stopped runs exactly once: no successor row, no owed 
 		host.ring(sessionId);
 		await host.drain(5000);
 		assert.deepEqual(requests.list(sessionId), [], "no successor row asks the stopped prompt again");
-		const job = host.scheduler.store.load()[0];
+		const job = host.stores.jobs.load()[0];
 		assert.equal(job.owedSlot, undefined, "the slot is spent");
 		assert.equal(job.runCount, 1, "the slot was counted when its row was written, as a window counts it");
 		assert.equal(job.lastError, undefined, "and not a failure: no failing mark, nothing under failures in pi-loops status");
@@ -893,7 +860,7 @@ test("a stop read by the held turn's own first drain stops it", { timeout: 30_00
 	};
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: runnerUntilStopped(prompts), mcpTools: () => [], log });
 	try {
-		await host.scheduler.store.add(heldJob(sessionId, dir));
+		await host.stores.jobs.add(heldJob(sessionId, dir));
 		await tickHost(host);
 		assert.equal(await until(() => stop !== undefined, 5000), true, "the turn began");
 		assert.ok(stop);
@@ -901,7 +868,7 @@ test("a stop read by the held turn's own first drain stops it", { timeout: 30_00
 		assert.equal(host.triggers.store.listAudit(1, (r) => r.type === "request" && r.traceId === stop.id)[0]?.state, "done", "the stop named the run");
 		assert.equal(prompts.length, 0, "stopped before the model was asked");
 		assert.deepEqual(requests.list(sessionId), []);
-		const job = host.scheduler.store.load()[0];
+		const job = host.stores.jobs.load()[0];
 		assert.deepEqual([job.owedSlot, !!job.lastFiredAt, job.runCount, job.consecutiveFailures], [undefined, true, 1, undefined], "done, not owed: the slot is spent, and a stop is no failure");
 		assert.deepEqual(host.triggers.store.listAudit(5, (r) => r.type === "request" && r.state === "stopped").length, 1, "the row left as stopped, with its audit line");
 	} finally {
@@ -919,7 +886,7 @@ test("the background process removes a person row for a conversation that is gon
 		assert.equal(fs.existsSync(path.join(dir, "leases", "nolease.json")), false);
 		await tickHost(host);
 		assert.deepEqual(store.list("nolease"), [], "the row is gone from the queue");
-		assert.deepEqual(host.scheduler.inbox.listNew(), [], "a person's message never goes to the inbox");
+		assert.deepEqual(host.stores.inbox.listNew(), [], "a person's message never goes to the inbox");
 		const audit = host.triggers.store.listAudit(5).find((a) => a.traceId === "p1");
 		assert.deepEqual([audit?.state, (audit?.details as any)?.reason], ["stale", "its conversation is gone"]);
 	} finally {
@@ -938,7 +905,7 @@ test("a held turn of a job with no name is named by its short run id, never by t
 	};
 	host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined });
 	try {
-		await host.scheduler.store.add({ id: "cron-53f86ab39270e599468d9b2c5e1909b1", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await host.stores.jobs.add({ id: "cron-53f86ab39270e599468d9b2c5e1909b1", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		await host.drain(5000);
 		assert.equal(during.length, 1);
@@ -961,7 +928,7 @@ test("a conversation open in the page is never held for a plain job's turn, and 
 		};
 		host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined, pageHolds: (id) => pageHasIt && id === sessionId });
 		try {
-			await host.scheduler.store.add({ id: "cron-held", name: "remind", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+			await host.stores.jobs.add({ id: "cron-held", name: "remind", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 			await tickHost(host);
 			await host.drain(5000);
 			if (pageHasIt) {
@@ -990,13 +957,13 @@ test("Stop this run on a loop run, through the page's wiring: aborted at once, a
 	const appended: unknown[] = [];
 	const stop = stopRunFrom("person", false, { runs: host.runs, heldTurn: (sid) => host.heldTurn(sid), ring: (sid) => host.ring(sid), leases: () => new LeaseStore(dir).list(), append: (row) => void appended.push(row), createdBy: () => ({ pid: 1, instance: "host", version: "0" }) });
 	try {
-		await host.scheduler.store.add({ id: "cron-loop", schedule: { kind: "every", ms: 3_600_000 }, stateful: true, prompt: "watch", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 3_700_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await host.stores.jobs.add({ id: "cron-loop", schedule: { kind: "every", ms: 3_600_000 }, stateful: true, prompt: "watch", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 3_700_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
-		assert.equal(await until(() => host.scheduler.runningRuns().length === 1, 5000), true);
-		const { runId } = host.scheduler.runningRuns()[0];
+		assert.equal(await until(() => host.runs.all().length === 1, 5000), true);
+		const { runId } = host.runs.all()[0];
 		assert.deepEqual(stop(runId), { stopping: "run" });
 		await host.drain(5000);
-		const record = host.scheduler.store.listRuns("cron-loop")[0];
+		const record = host.stores.jobs.listRuns("cron-loop")[0];
 		assert.deepEqual([record?.stoppedBy, record?.stoppedFrom], ["person", "page"]);
 		assert.deepEqual(appended, [], "a loop run needs no request row");
 		assert.ok(logs.some((l) => l.includes("cron-loop: stopped by you (from the page)")), logs.join("\n"));
@@ -1019,7 +986,7 @@ test("a lane's rows are not buried as a conversation that is gone: a loop's queu
 		await new Promise((r) => setTimeout(r, 100));
 		await tickHost(host);
 		assert.deepEqual(store.list(lane).map((r) => r.id), ["t-lane"], "the row is still queued");
-		assert.equal(host.scheduler.inbox.list().length, 0, "and no dead letter says its conversation is gone");
+		assert.equal(host.stores.inbox.list().length, 0, "and no dead letter says its conversation is gone");
 	} finally {
 		await host.stop();
 	}
@@ -1039,7 +1006,7 @@ test("the background closes a claim whose process is gone, by what the run log a
 		const store = new RequestStore(dir);
 		const by = { pid: process.pid, instance: "test", version: "0" };
 		const turn = (id: string) => ({ ...ruleResultRow(sessionId, `[Trigger ${id}] go`, { traceId: id, sourceLabel: "x", cwd: dir }, by), source: "push:srv:key" as const, wake: "turn" as const, mode: "unattended" as const });
-		const record = (runId: string, over: Record<string, unknown>) => host.scheduler.store.appendRun({ runId, jobId: "", stateful: false, cwd: dir, pid: 999_999_999, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), ok: false, findings: 0, ...over } as any);
+		const record = (runId: string, over: Record<string, unknown>) => host.stores.jobs.appendRun({ runId, jobId: "", stateful: false, cwd: dir, pid: 999_999_999, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), ok: false, findings: 0, ...over } as any);
 		for (const id of ["t-aborted", "t-ended", "t-unwritten", "t-cut"]) {
 			store.append(turn(id));
 			assert.equal(store.claim(sessionId, id, { id: `run-${id}`, pid: 999_999_999, started_at: new Date().toISOString() }), true);
@@ -1058,9 +1025,9 @@ test("the background closes a claim whose process is gone, by what the run log a
 		assert.deepEqual([left["t-aborted"].run, left["t-aborted"].attempts], [undefined, 0], "aborted by no person: owed again, and no attempt counted");
 		assert.deepEqual([left["t-cut"].run, left["t-cut"].attempts, left["t-cut"].last_error], [undefined, 1, "the process running it stopped"], "no record: the run was cut off, and that is an attempt");
 		// The closing wrote the record that the dead process did not.
-		const cut = host.scheduler.store.allRuns().filter((r) => r.runId === "run-t-cut");
+		const cut = host.stores.jobs.allRuns().filter((r) => r.runId === "run-t-cut");
 		assert.deepEqual(cut.map((r) => [r.interrupted, r.ok, r.error, r.pid]), [[true, false, "the process running it stopped", 999_999_999]]);
-		assert.equal(host.scheduler.inbox.list().length, 0);
+		assert.equal(host.stores.inbox.list().length, 0);
 	} finally {
 		await host.stop();
 	}

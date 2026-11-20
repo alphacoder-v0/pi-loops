@@ -14,7 +14,7 @@ import * as path from "node:path";
 import { Type, type TSchema } from "typebox";
 import { previewRedacted } from "./redact.ts";
 import { computeNext, formatLocal, formatSchedule, parseSchedule, stamp } from "./schedule.ts";
-import type { LoopScheduler, SessionSnapshot } from "./scheduler.ts";
+import type { SessionSnapshot } from "./job-owner.ts";
 import { removeJob } from "./stores.ts";
 import type { Stores } from "./stores.ts";
 import type { RunList } from "./run-list.ts";
@@ -44,12 +44,11 @@ export interface ControlPlaneRequest {
 
 /** What the tools need from whoever hosts them (the extension, a sub-session, the headless host). */
 export interface ToolHost {
-	stores?: Stores;
-	scheduler?: LoopScheduler;
+	stores: Stores;
 	runs?: RunList;
 	triggers: TriggerRuntime;
 	session(): SessionSnapshot;
-	owner?(): OwnerView;
+	owner(): OwnerView;
 	createJob(input: CreateJobInput, scope?: JobScope): Promise<LoopJob>;
 	/** The cron_control_plane audit; returns the entry id. */
 	cronControlAudit(op: "add" | "enable" | "disable" | "remove", actor: "slash" | "tool" | "sub-agent", before?: LoopJob, after?: LoopJob): string;
@@ -66,11 +65,11 @@ export interface ToolHost {
 	scheduledTurn?(): boolean;
 }
 
-type ToolStoresHost = Pick<ToolHost, "stores"> & { scheduler?: LoopScheduler };
-const jobsOf = (host: ToolStoresHost): JobStore => host.stores?.jobs ?? host.scheduler!.store;
-const requestsOf = (host: ToolStoresHost): RequestStore => host.stores?.requests ?? host.scheduler!.requests;
-const inboxOf = (host: ToolStoresHost): Inbox => host.stores?.inbox ?? host.scheduler!.inbox;
-const ownerOf = (host: Pick<ToolHost, "owner"> & { scheduler?: LoopScheduler }) => host.owner?.() ?? host.scheduler!.ownerView();
+type ToolStoresHost = Pick<ToolHost, "stores">;
+const jobsOf = (host: ToolStoresHost): JobStore => host.stores.jobs;
+const requestsOf = (host: ToolStoresHost): RequestStore => host.stores.requests;
+const inboxOf = (host: ToolStoresHost): Inbox => host.stores.inbox;
+const ownerOf = (host: Pick<ToolHost, "owner">) => host.owner();
 
 export interface CreateJobInput {
 	schedule: LoopJob["schedule"];
@@ -538,7 +537,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		async execute(_id, params) {
 			const listCwd = host.session().cwd;
 			const everywhere = params.all_projects === true && scope.hop === 0;
-			const all = host.stores ? listedJobs(host.stores) : jobsOf(host).load();
+			const all = listedJobs(host.stores);
 			const jobs = everywhere ? all : all.filter((j) => sameProject(j.cwd, listCwd));
 			const newFindings = everywhere ? inboxOf(host).newCount() : inProject(inboxOf(host).listNew(), listCwd, sameProject).length;
 			const text = `${renderCronJobsForTool(jobs, host)}\ninbox: ${plural(newFindings, "new finding")}`;
@@ -570,7 +569,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			// schedule and the action: one question, where a preview call used to make it two.
 			const denied = await host.confirmTool(ctx, { label: `remove cron job ${label}`, tool: "cron_remove", reason: "remove a scheduled job", preview: `${formatSchedule(job.schedule)} · ${previewRedacted(job.prompt, 120)}`, args: params }, scope.hop);
 			if (denied) return { content: [{ type: "text", text: denied }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, audit_entry_id: undefined as string | undefined } };
-			const { aborted } = host.stores ? await removeJob(host.stores, host.runs, job.id) : await host.scheduler!.removeJob(job.id);
+			const { aborted } = await removeJob(host.stores, host.runs, job.id);
 			const auditEntryId = host.cronControlAudit("remove", scope.actor, job, undefined);
 			// The slash command says where a loop's notes went; a tool-driven removal has to say it too,
 			// or the person who asked the agent to delete a job is the only one left guessing. The prose
@@ -601,7 +600,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			}
 			const at = stamp();
 			const updated = (params.enabled ? await jobsOf(host).enable(job.id) : await jobsOf(host).disable(job.id, { code: "person", why: "disabled by a person", at })) ?? job;
-			if (params.enabled) host.stores?.clock.clear(job.id, at);
+			if (params.enabled) host.stores.clock.clear(job.id, at);
 			const auditEntryId = host.cronControlAudit(params.enabled ? "enable" : "disable", scope.actor, job, updated);
 			return {
 				content: [{ type: "text", text: `updated cron job ${updated.id}\nstate: ${updated.enabled ? "enabled" : "disabled"}\nschedule: ${formatSchedule(updated.schedule)}\naction: ${previewRedacted(updated.prompt, 120)}` }],

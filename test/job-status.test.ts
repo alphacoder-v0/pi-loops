@@ -15,7 +15,7 @@ test("[status-runs-loop] Loop runs keep the highest successful or failed ordinal
 	const history = runHistory([record({ runId: "a", ok: true, ordinal: 2 }), record({ runId: "b", ok: false, ordinal: 7 }), record({ runId: "c", aborted: true, ordinal: 9 })]).get("cron-job");
 	assert.equal(jobStatus(job(), { runs: 8 }, [], history, Date.parse(at)).runs, 8);
 	assert.equal(jobStatus(job(), { runs: 0 }, [], history, Date.parse(at)).runs, 7);
-	// Main counts no run a person stopped (src/scheduler.ts returns before runCount++).
+	// 0.24.2 counted no run a person stopped (it returned before runCount++).
 	const stopped = runHistory([record({ runId: "a", ok: true, ordinal: 2 }), record({ runId: "d", aborted: true, stoppedBy: "person", ordinal: 3 })]).get("cron-job");
 	assert.equal(jobStatus(job(), { runs: 0 }, [], stopped, Date.parse(at)).runs, 2, "a person's stop is not a run");
 });
