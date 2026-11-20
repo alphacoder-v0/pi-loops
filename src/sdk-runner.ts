@@ -14,7 +14,8 @@ import type { Model } from "@earendil-works/pi-ai";
 import { envFlag } from "./config.ts";
 import { realpathish } from "./paths.ts";
 import { previewRedacted } from "./redact.ts";
-import { type ParentRuntimeFlags, type RunnerResult, type SubagentRequest, type SubagentRunner, failedRun } from "./runner.ts";
+import { type GuardDeps, type GuardReport, GuardSeats } from "./guard.ts";
+import { type ParentRuntimeFlags, type RunnerResult, type SubagentRequest, type SubagentRunner, failedRun, opensExisting } from "./runner.ts";
 import { subagentGuardExtension } from "./subagent-guard.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { projectNeedsTrust } from "./trust.ts";
@@ -49,6 +50,12 @@ export interface InProcessRunnerDeps {
 	ownDir: string;
 	/** Command prefixes the dangerous-command gate lets through (`[danger] allow`). */
 	allowCommands?: () => readonly string[];
+	/**
+	 * The guard's seats and what it files questions with: one per process, shared by the runner and
+	 * the extension it adds to every sub-session. Without it no run has a seat, so a dangerous call is
+	 * refused and nobody is asked.
+	 */
+	guard?: { seats: GuardSeats; deps: GuardDeps };
 	/**
 	 * Today's automation spend and the cap it must stay under — `budgetState` from `job-status.ts`, read
 	 * *while* a run is in flight rather than only before it is dispatched. A callback, not the
@@ -86,7 +93,7 @@ export function isInsideDir(dir: string, p: string): boolean {
  * an untrusted cwd must be pinned to false or its `.pi/extensions` would run. pi-loops itself is
  * filtered out of the extension set; the sub-session gets the automation tools as customTools.
  */
-export function subSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "allowCommands">): SubSessionResources {
+export function subSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "allowCommands" | "guard">): SubSessionResources {
 	const trusted = deps.isTrusted(req.cwd);
 	const settingsManager = SettingsManager.create(req.cwd, deps.agentDir, { projectTrusted: trusted });
 	const f = deps.parentFlags;
@@ -121,10 +128,20 @@ export function subSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pic
 			// loaded, which the next run needs (pi-mcp-adapter's runtime tool calls, say). The shared runtime lives
 			// as long as this loaded set, so it is never invalidated; each run's own ExtensionRunner still is.
 			base.runtime.invalidate = () => {};
-			return { ...base, extensions: [...base.extensions.filter((e) => !isInsideDir(ownDir, e.resolvedPath) && !isInsideDir(ownDir, e.path)), subagentGuardExtension(deps.log, deps.allowCommands?.() ?? [])] };
+			const guard = deps.guard ?? seatlessGuard(deps);
+			return { ...base, extensions: [...base.extensions.filter((e) => !isInsideDir(ownDir, e.resolvedPath) && !isInsideDir(ownDir, e.path)), subagentGuardExtension(guard.seats, guard.deps)] };
 		},
 	});
 	return { settingsManager, loader, trusted };
+}
+
+/** The guard of a runner made with no `guard`: no seat is ever entered, so it reads no inbox and files nothing. */
+function seatlessGuard(deps: Pick<InProcessRunnerDeps, "log" | "allowCommands">): { seats: GuardSeats; deps: GuardDeps } {
+	const inbox: GuardDeps["inbox"] = {
+		list: () => [],
+		fileOnce: () => Promise.reject(new Error("this runner has no inbox for questions")),
+	};
+	return { seats: new GuardSeats(), deps: { inbox, allowCommands: () => deps.allowCommands?.() ?? [], hop: 1, now: Date.now, log: deps.log } };
 }
 
 export interface SubSessionResources {
@@ -193,7 +210,7 @@ export function resourceStamp(cwd: string, agentDir: string): string {
 	return files.map(at).join(",");
 }
 
-export async function sharedSubSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "notice" | "allowCommands">): Promise<{ resources: SubSessionResources; done: () => void }> {
+export async function sharedSubSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "notice" | "allowCommands" | "guard">): Promise<{ resources: SubSessionResources; done: () => void }> {
 	// Loops and checks: saved trust for this exact directory only. A held turn's owner trust goes to its own loader.
 	const trusted = deps.isTrusted(req.cwd);
 	// Worth saying out loud once per project: pi's trust prompt offers "trust the parent folder",
@@ -306,7 +323,7 @@ const heldResources = new Map<string, HeldEntry>();
  * another turn of the same conversation, never a loop's throwaway session or someone else's chat.
  * Released after an hour idle, past `HELD_RESOURCES_MAX`, and when the host stops.
  */
-export async function heldSubSessionResources(req: Pick<SubagentRequest, "cwd" | "sessionFile" | "trusted">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "allowCommands">): Promise<{ resources: SubSessionResources; done: () => void }> {
+export async function heldSubSessionResources(req: Pick<SubagentRequest, "cwd" | "sessionFile" | "trusted">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "allowCommands" | "guard">): Promise<{ resources: SubSessionResources; done: () => void }> {
 	const trusted = !!req.trusted || deps.isTrusted(req.cwd);
 	const key = JSON.stringify([req.sessionFile, req.cwd, trusted, deps.agentDir, deps.ownDir, deps.parentFlags]);
 	let entry = heldResources.get(key);
@@ -430,6 +447,22 @@ export function resolveRunModel(
 /** `active` with its built-in tools replaced by `builtins`; every other tool is left as it is. */
 export function keepBuiltins(active: string[], builtins: string[]): string[] {
 	return [...new Set([...active.filter((t) => !PI_BUILTIN_TOOL_NAMES.includes(t)), ...builtins])];
+}
+
+/**
+ * The tools of a request that has a guard seat: its own, narrowed by the seat's cap, so the run gets
+ * no tool that the turn that asked did not have. Each list is the intersection when both name one,
+ * and the one list when one does. When both `tools` and `builtinTools` are left, a built-in that
+ * `builtinTools` leaves out is taken out of `tools`. A request with no seat keeps its own.
+ */
+export function cappedTools(req: Pick<SubagentRequest, "tools" | "builtinTools" | "guard">): { tools?: string[]; builtinTools?: string[] } {
+	const cap = req.guard?.cap;
+	if (!cap) return { tools: req.tools, builtinTools: req.builtinTools };
+	const narrow = (a?: readonly string[], b?: readonly string[]): string[] | undefined => (a && b ? a.filter((x) => b.includes(x)) : a ? [...a] : b ? [...b] : undefined);
+	const tools = narrow(req.tools, cap.tools);
+	const builtinTools = narrow(req.builtinTools, cap.builtin_tools);
+	if (tools && builtinTools) return { tools: tools.filter((t) => !PI_BUILTIN_TOOL_NAMES.includes(t) || builtinTools.includes(t)) };
+	return { tools, builtinTools };
 }
 
 export function subSessionTools(req: Pick<SubagentRequest, "tools">, parentTools: string[] | undefined, customTools: Array<{ name: string }>): string[] | undefined {
@@ -631,10 +664,12 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 	// spending right now and not only against what the run log has already been told.
 	const inFlight = createInFlightCosts();
 
-	return async (req: SubagentRequest): Promise<RunnerResult> => {
+	/** `out.guard` is set in the `finally`, after the result is made: the guard's report covers the whole run. */
+	const runOnce = async (req: SubagentRequest, out: { guard?: GuardReport }): Promise<RunnerResult> => {
 		let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
 		let unsubscribe: (() => void) | undefined;
 		let releaseHeld: (() => void) | undefined;
+		let leaveSeat: (() => GuardReport) | undefined;
 		let timedOut = false;
 		let takenBack = false;
 		let budgetStopMessage: string | undefined;
@@ -718,20 +753,23 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			// and the run reaching here, because the runs admitted with it are spending in parallel.
 			// Setting up is not free either — loading a project's packages shells out to npm/git.
 			if (overBudget()) return stoppedResult();
+			// The transcript to resume is gone: the run fails here.
+			if (req.resume !== undefined && !fs.existsSync(req.resume)) return failedRun(`the transcript to resume is gone: ${req.resume}`);
+			const existing = opensExisting(req);
 			let model: Model<any> | undefined;
 			try {
 				const parent = deps.getParentModel();
 				// Only a pinned model needs the catalogue; the parent's model is already resolved.
 				let resolved: ReturnType<typeof resolveRunModel> = { model: parent };
 				if (req.model) resolved = resolveRunModel(req.model, parent, await modelRuntime());
-				else if (req.sessionFile) resolved = { model: undefined }; // a conversation keeps the model it was using
+				else if (existing) resolved = { model: undefined }; // a conversation or a transcript keeps the model it was using
 				if (resolved.error) return failedRun(resolved.error);
 				model = resolved.model;
 				if (resolved.warning) {
 					telemetry.warning = resolved.warning;
 					deps.log?.(resolved.warning);
 				}
-				if (!model && !req.sessionFile) return failedRun("no model is available for the sub-agent (the session has none and the job pins none)");
+				if (!model && !existing) return failedRun("no model is available for the sub-agent (the session has none and the job pins none)");
 			} catch (err: any) {
 				return failedRun(`model runtime: ${err?.message ?? err}`);
 			}
@@ -746,16 +784,19 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			releaseHeld = () => void load.then((h) => h.done()).catch(() => undefined);
 			const resources = await untilStopped(load.then((h) => h.resources));
 			if (resources === STOPPED) return stoppedResult();
+			const allowed = cappedTools(req);
+			// This request's own manager: the guard knows the run by this object, not by its file's path.
+			const sessionManager = existing ? SessionManager.open(existing) : req.sessionDir ? SessionManager.create(req.cwd, req.sessionDir) : SessionManager.inMemory(req.cwd);
 			const created = await untilStopped(
 				createAgentSession({
 					cwd: req.cwd,
 					agentDir: deps.agentDir,
 					model,
-					thinkingLevel: (req.thinking ?? (req.sessionFile ? undefined : deps.getParentThinking())) as Thinking,
-					tools: subSessionTools(req, deps.getParentTools?.(), customTools),
+					thinkingLevel: (req.thinking ?? (existing ? undefined : deps.getParentThinking())) as Thinking,
+					tools: subSessionTools(allowed, deps.getParentTools?.(), customTools),
 					customTools,
 					resourceLoader: resources.loader,
-					sessionManager: req.sessionFile ? SessionManager.open(req.sessionFile) : req.sessionDir ? SessionManager.create(req.cwd, req.sessionDir) : SessionManager.inMemory(req.cwd),
+					sessionManager,
 					settingsManager: resources.settingsManager,
 					modelRuntime: await modelRuntime(),
 					sessionStartEvent: { type: "session_start", reason: "new" },
@@ -765,10 +806,12 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			session = created.session;
 			// The built-in tools of the chat the job was made in, and no more: a run in the background has
 			// no `--tools` of its own. Extension, MCP and automation tools stay as they are.
-			if (req.builtinTools && !req.tools) session.setActiveToolsByName(keepBuiltins(session.getActiveToolNames(), req.builtinTools));
-			// A held turn opens a conversation that already has a history and a cost: measure from here.
-			if (req.sessionFile) baseline = { messages: session.messages.length, stats: session.getSessionStats() };
+			if (allowed.builtinTools && !allowed.tools) session.setActiveToolsByName(keepBuiltins(session.getActiveToolNames(), allowed.builtinTools));
+			// A held turn or a resumed run opens a session that already has a history and a cost: measure from here.
+			if (existing) baseline = { messages: session.messages.length, stats: session.getSessionStats() };
 			if (session.sessionFile) req.onSessionFile?.(session.sessionFile);
+			// Before the prompt: the guard finds this run by its session manager from the first call on.
+			if (req.guard && deps.guard && session.sessionFile) leaveSeat = deps.guard.seats.enter(sessionManager, session.sessionFile, req.guard).leave;
 
 			// Nobody else watches this session, so what the run had to do to get through is only
 			// visible here: silent provider retries and context compactions.
@@ -826,6 +869,13 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			req.signal?.removeEventListener("abort", onAbort);
 			if (session) disposeSubSession(session, deps.log);
 			releaseHeld?.();
+			if (leaveSeat) out.guard = leaveSeat();
 		}
+	};
+
+	return async (req: SubagentRequest): Promise<RunnerResult> => {
+		const out: { guard?: GuardReport } = {};
+		const result = await runOnce(req, out);
+		return out.guard ? { ...result, guard: out.guard } : result;
 	};
 }

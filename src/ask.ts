@@ -119,14 +119,8 @@ export interface AskFields {
 	answer?: Answer | UnreadableAnswer;
 }
 
-/** Lands as three fields at the end of `RunRecord` in src/store.ts at M5a.7. M5a writes `cause: "answer"` only. */
-export interface RunRecordM5a extends RunRecord {
-	cause?: "slot" | "run" | "wake" | "answer" | "check" | "push";
-	/** The session file this run resumed. */
-	resumed?: string;
-	/** Whether the granted call was made. Present only for a run that had a grant. */
-	grant_used?: boolean;
-}
+/** The run record, with `cause`, `resumed` and `grant_used`. The name stays for src/answers.ts and test/ask.test.ts. */
+export type RunRecordM5a = RunRecord;
 
 /** The whole command of a question fits a finding with its frame (design 8.1). */
 export const ASK_COMMAND_MAX_CHARS = 300;
@@ -882,7 +876,7 @@ const ERROR_MAX_CHARS = 200;
  * `transcript.check` is `there` and `transcript.prompt` is false; otherwise the careful sentence.
  * For a finding that is no question there is no ending.
  */
-export function closeOutcome(finding: Finding, record: RunRecordM5a, transcript: TranscriptFacts | undefined): StepInput["C3"] {
+export function closeOutcome(finding: Finding, record: RunRecord, transcript: TranscriptFacts | undefined): StepInput["C3"] {
 	const question = finding.ask !== undefined;
 	const ended = record.ok && !record.aborted && !record.interrupted;
 	if (ended && (!question || record.grant_used === true)) return { to: "done" };

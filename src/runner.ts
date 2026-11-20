@@ -7,6 +7,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { GuardReport, GuardSeed } from "./guard.ts";
 
 export interface RunnerUsage {
 	input: number;
@@ -40,9 +41,27 @@ export interface RunnerResult {
 	sessionFile?: string;
 	/** Kept for run records: 0 on success, 1 on failure (there is no child process any more). */
 	exitCode?: number;
+	/** What the guard knew at the end. Absent for a run with no seat, and for a run that failed before its session existed. */
+	guard?: GuardReport;
 }
 
-export interface SubagentRequest {
+/**
+ * A request opens an existing session in one of two ways, and never both: `sessionFile` (a held
+ * turn's conversation) or `resume` (an answer's transcript). The union makes the two together a
+ * compile error.
+ *
+ * `sessionFile`: a held turn runs `prompt` in this existing conversation instead of a new
+ * transcript. Its own model and thinking level are kept unless the request pins them.
+ *
+ * `resume`: an answer's run opens this transcript in place of a new one, and keeps its `kind`, so a
+ * resumed loop run shares the loaded resources of its directory and gets the `customTools` of a loop
+ * run. Its model and thinking level are the transcript's own unless the request pins them, and its
+ * cost is its own, not the transcript's. A `resume` whose file is not there fails the run before any
+ * session is made.
+ */
+export type Reopen = { readonly sessionFile?: string; readonly resume?: undefined } | { readonly sessionFile?: undefined; readonly resume: string };
+
+interface RequestFields {
 	cwd: string;
 	prompt: string;
 	/** "provider/id"; undefined → the interactive session's current model. */
@@ -73,11 +92,6 @@ export interface SubagentRequest {
 	parentCwd?: string;
 	kind: "loop" | "checker" | "trigger" | "held";
 	/**
-	 * A held turn: run `prompt` in this existing conversation instead of a new transcript. Its own
-	 * model and thinking level are kept unless the request pins them.
-	 */
-	sessionFile?: string;
-	/**
 	 * Asked on every agent event but streaming deltas: false means the conversation was taken back
 	 * (a window opened it), and the turn stops there.
 	 */
@@ -87,7 +101,16 @@ export interface SubagentRequest {
 	traceId?: string;
 }
 
+export type SubagentRequest = RequestFields &
+	Reopen & {
+		/** This run's seat in the guard. The runner enters it with the session file once the session exists, and leaves it when the run ends. */
+		readonly guard?: GuardSeed;
+	};
+
 export type SubagentRunner = (req: SubagentRequest) => Promise<RunnerResult>;
+
+/** The existing file a request opens: a held turn's conversation, or a resumed transcript. */
+export const opensExisting = (req: Pick<SubagentRequest, "sessionFile" | "resume">): string | undefined => req.sessionFile ?? req.resume;
 
 export function failedRun(message: string, extra: Partial<RunnerResult> = {}): RunnerResult {
 	return { ok: false, exitCode: 1, timedOut: false, text: "", errorMessage: message, usage: { input: 0, output: 0, cost: 0, turns: 0 }, ...extra };
