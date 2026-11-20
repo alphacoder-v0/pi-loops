@@ -16,6 +16,7 @@ import { realpathish } from "./paths.ts";
 import { previewRedacted } from "./redact.ts";
 import { type GuardDeps, type GuardReport, GuardSeats } from "./guard.ts";
 import { type ParentRuntimeFlags, type RunnerResult, type SubagentRequest, type SubagentRunner, failedRun, opensExisting } from "./runner.ts";
+import type { ToolLimit } from "./ask.ts";
 import { subagentGuardExtension } from "./subagent-guard.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { projectNeedsTrust } from "./trust.ts";
@@ -449,20 +450,58 @@ export function keepBuiltins(active: string[], builtins: string[]): string[] {
 	return [...new Set([...active.filter((t) => !PI_BUILTIN_TOOL_NAMES.includes(t)), ...builtins])];
 }
 
+/** Whether `file` is a regular file itself: not a link, a FIFO or a directory. */
+function regularFile(file: string): boolean {
+	try {
+		return fs.lstatSync(file).isFile();
+	} catch {
+		return false; // gone since the check above
+	}
+}
+
+/** The tools a run is made with, then `keep`: the cut of its active tools, which only takes tools away. */
+export interface RunTools {
+	tools?: string[];
+	builtinTools?: string[];
+	keep(active: readonly string[]): string[];
+}
+
 /**
- * The tools of a request that has a guard seat: its own, narrowed by the seat's cap, so the run gets
- * no tool that the turn that asked did not have. Each list is the intersection when both name one,
- * and the one list when one does. When both `tools` and `builtinTools` are left, a built-in that
- * `builtinTools` leaves out is taken out of `tools`. A request with no seat keeps its own.
+ * The tools of a run. A request with a guard seat has the tools of its cap and nothing of its own:
+ * a list is the allowlist or the built-ins the session is made with (when both are lists, a built-in
+ * the built-ins leave out is taken out of the allowlist); `within` cuts what the session gives, after
+ * it is made. A request with no seat keeps its own `tools` and `builtinTools`.
  */
-export function cappedTools(req: Pick<SubagentRequest, "tools" | "builtinTools" | "guard">): { tools?: string[]; builtinTools?: string[] } {
+export function capTools(req: Pick<SubagentRequest, "tools" | "builtinTools" | "guard">): RunTools {
 	const cap = req.guard?.cap;
-	if (!cap) return { tools: req.tools, builtinTools: req.builtinTools };
-	const narrow = (a?: readonly string[], b?: readonly string[]): string[] | undefined => (a && b ? a.filter((x) => b.includes(x)) : a ? [...a] : b ? [...b] : undefined);
-	const tools = narrow(req.tools, cap.tools);
-	const builtinTools = narrow(req.builtinTools, cap.builtin_tools);
-	if (tools && builtinTools) return { tools: tools.filter((t) => !PI_BUILTIN_TOOL_NAMES.includes(t) || builtinTools.includes(t)) };
-	return { tools, builtinTools };
+	if (!cap) return { tools: req.tools, builtinTools: req.builtinTools, keep: (active) => [...active] };
+	const list = (limit: ToolLimit): string[] | undefined => (Array.isArray(limit) ? [...limit] : undefined);
+	const within = (limit: ToolLimit): readonly string[] | undefined => (limit !== "session" && !Array.isArray(limit) ? (limit as { within: readonly string[] }).within : undefined);
+	const builtins = list(cap.builtinTools);
+	const allow = list(cap.tools);
+	const tools = allow && builtins ? allow.filter((t) => !PI_BUILTIN_TOOL_NAMES.includes(t) || builtins.includes(t)) : allow;
+	const cutAll = within(cap.tools);
+	const cutBuiltins = within(cap.builtinTools);
+	return {
+		...(tools ? { tools } : {}),
+		...(builtins && !tools ? { builtinTools: builtins } : {}),
+		keep: (active) => active.filter((t) => (!cutAll || cutAll.includes(t)) && (!cutBuiltins || !PI_BUILTIN_TOOL_NAMES.includes(t) || cutBuiltins.includes(t))),
+	};
+}
+
+/**
+ * A request as it runs: a seated one takes its cwd, timeout, model and thinking level from its cap,
+ * whatever else it names. A model or a thinking level the cap does not pin is the transcript's own
+ * when the request opens one, and the request's (the session's) for a new one.
+ */
+export function asCapped(req: SubagentRequest): SubagentRequest {
+	const cap = req.guard?.cap;
+	if (!cap) return req;
+	const existing = opensExisting(req) !== undefined;
+	const model = cap.model ?? (existing ? undefined : req.model);
+	const thinking = cap.thinking ?? (existing ? undefined : req.thinking);
+	const { model: _model, thinking: _thinking, ...rest } = req;
+	return { ...rest, cwd: cap.cwd, timeoutMs: cap.timeoutMs, ...(model === undefined ? {} : { model }), ...(thinking === undefined ? {} : { thinking }) } as SubagentRequest;
 }
 
 export function subSessionTools(req: Pick<SubagentRequest, "tools">, parentTools: string[] | undefined, customTools: Array<{ name: string }>): string[] | undefined {
@@ -754,7 +793,7 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			// Setting up is not free either — loading a project's packages shells out to npm/git.
 			if (overBudget()) return stoppedResult();
 			// The transcript to resume is gone: the run fails here.
-			if (req.resume !== undefined && !fs.existsSync(req.resume)) return failedRun(`the transcript to resume is gone: ${req.resume}`);
+			if (req.resume !== undefined && !fs.existsSync(req.resume.file)) return failedRun(`the transcript to resume is gone: ${req.resume.file}`);
 			const existing = opensExisting(req);
 			let model: Model<any> | undefined;
 			try {
@@ -784,9 +823,13 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			releaseHeld = () => void load.then((h) => h.done()).catch(() => undefined);
 			const resources = await untilStopped(load.then((h) => h.resources));
 			if (resources === STOPPED) return stoppedResult();
-			const allowed = cappedTools(req);
+			const allowed = capTools(req);
+			// The file `laneTranscript` chose may have been swapped since: just before pi opens it, it is
+			// still a regular file and no link; once open, it is still the session it was chosen for.
+			if (req.resume !== undefined && !regularFile(req.resume.file)) return failedRun(`the transcript to resume is no longer a regular file: ${req.resume.file}`);
 			// This request's own manager: the guard knows the run by this object, not by its file's path.
 			const sessionManager = existing ? SessionManager.open(existing) : req.sessionDir ? SessionManager.create(req.cwd, req.sessionDir) : SessionManager.inMemory(req.cwd);
+			if (req.resume !== undefined && sessionManager.getSessionId() !== req.resume.sessionId) return failedRun(`the transcript to resume opened as another session (${sessionManager.getSessionId()}, not ${req.resume.sessionId}): ${req.resume.file}`);
 			const created = await untilStopped(
 				createAgentSession({
 					cwd: req.cwd,
@@ -807,6 +850,10 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			// The built-in tools of the chat the job was made in, and no more: a run in the background has
 			// no `--tools` of its own. Extension, MCP and automation tools stay as they are.
 			if (allowed.builtinTools && !allowed.tools) session.setActiveToolsByName(keepBuiltins(session.getActiveToolNames(), allowed.builtinTools));
+			// A cap's `within`: of what the session gives, only these.
+			const active = session.getActiveToolNames();
+			const kept = allowed.keep(active);
+			if (kept.length !== active.length) session.setActiveToolsByName(kept);
 			// A held turn or a resumed run opens a session that already has a history and a cost: measure from here.
 			if (existing) baseline = { messages: session.messages.length, stats: session.getSessionStats() };
 			if (session.sessionFile) req.onSessionFile?.(session.sessionFile);
@@ -875,7 +922,7 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 
 	return async (req: SubagentRequest): Promise<RunnerResult> => {
 		const out: { guard?: GuardReport } = {};
-		const result = await runOnce(req, out);
+		const result = await runOnce(asCapped(req), out);
 		return out.guard ? { ...result, guard: out.guard } : result;
 	};
 }

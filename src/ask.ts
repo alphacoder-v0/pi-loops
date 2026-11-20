@@ -42,8 +42,8 @@ export interface Call {
 }
 
 /**
- * What the asking turn was capped to, copied at Q1. The answer's run gets no more than this, and no
- * more than its job declares now (`answerCap`). It is a ceiling, never a source of a tool.
+ * What the asking turn was capped to, copied at Q1 (`recordedCap`). Untrusted text: it only narrows
+ * the cap of the answer's run (`narrowCap`), and is never a run's cap itself nor a source of a tool.
  */
 export interface AskCap {
 	cwd: string;
@@ -58,12 +58,17 @@ export interface AskCap {
 /** A question about one blocked call. `repo` (owner decision 4) comes with stage 9, as a second member of this union. */
 export interface Ask {
 	kind: "call";
-	/** `askId(session_file, call.tool_call_id)`. */
+	/** `askId(session_id, call.tool_call_id)`. */
 	id: string;
 	/** Where the answer row goes. Always `laneOf` of the finding that carries the ask. */
 	lane: LaneId;
-	/** The session the answer resumes, and the one E3 reads. */
-	session_file: string;
+	/**
+	 * pi's session id of the run that asked, as its `SessionManager` gave it (`getSessionId`), which pi
+	 * writes into the header of the transcript. `laneTranscript` finds that transcript in the lane's
+	 * own directory by it; E3 reads it, and the answer resumes it. Absent on a question an older
+	 * version wrote (it named a path): such a question is never resumed, and E3 refuses it.
+	 */
+	session_id?: string;
 	title: string;
 	call: Call;
 	run?: AskCap;
@@ -133,9 +138,9 @@ export const NO_HOLDS_MS = 14 * 24 * 3_600_000;
 
 const hex32 = (seed: string): string => createHash("sha256").update(seed).digest("hex").slice(0, 32);
 
-/** `ask-` and 32 hex of SHA-256(`<session file> | <tool call id>`). One blocked call, one id. */
-export function askId(sessionFile: string, toolCallId: string): string {
-	return `ask-${hex32(`${sessionFile} | ${toolCallId}`)}`;
+/** `ask-` and 32 hex of SHA-256(`<session id> | <tool call id>`). One blocked call, one id. */
+export function askId(sessionId: string, toolCallId: string): string {
+	return `ask-${hex32(`${sessionId} | ${toolCallId}`)}`;
 }
 
 /** The id of the finding of an ask (Q1 files it with `fileOnce`). */
@@ -223,8 +228,10 @@ function readCap(raw: unknown): AskCap | undefined {
 
 function readAsk(raw: unknown): Ask | undefined {
 	if (!isObject(raw) || raw.kind !== "call") return undefined;
-	const { id, lane, session_file, title, created_at } = raw;
-	if (!isString(id) || !isString(lane) || !isString(session_file) || !isString(title) || !isString(created_at)) return undefined;
+	const { id, lane, session_id, title, created_at } = raw;
+	if (!isString(id) || !isString(lane) || !isString(title) || !isString(created_at)) return undefined;
+	// A question an older version wrote names a path and no session id: it is still a question, never resumed.
+	if (session_id !== undefined && !isString(session_id)) return undefined;
 	const call = readCall(raw.call);
 	if (!call) return undefined;
 	let run: AskCap | undefined;
@@ -233,7 +240,7 @@ function readAsk(raw: unknown): Ask | undefined {
 		// A cap of the wrong shape cannot be narrowed by: the whole ask reads as absent, never as uncapped.
 		if (!run) return undefined;
 	}
-	return { kind: "call", id, lane, session_file, title, call, ...(run ? { run } : {}), created_at };
+	return { kind: "call", id, lane, ...(session_id === undefined ? {} : { session_id }), title, call, ...(run ? { run } : {}), created_at };
 }
 
 function readClaim(raw: unknown): AnswerClaim | undefined {
@@ -447,7 +454,7 @@ function notRun(write: (set: AnswerWrite["set"], beside?: Beside, text?: string)
  */
 function besideEntry(finding: Finding, what: Beside, text: string | undefined, lane: LaneId | undefined): NewFinding {
 	const origin = { source: finding.source, run_id: finding.run_id, cwd: finding.cwd, job_id: finding.job_id, session_id: finding.session_id };
-	if (what === "again") return defined({ ...origin, text: finding.text, kind: finding.kind, transcript: finding.transcript, ask: finding.ask, lane });
+	if (what === "again") return defined({ ...origin, text: finding.text, kind: finding.kind, transcript: finding.transcript, transcript_id: finding.transcript_id, ask: finding.ask, lane });
 	return defined({ ...origin, text: text ?? "", kind: "news" as const, lane });
 }
 
@@ -576,15 +583,15 @@ function callWords(call: Call): string {
  * `Run \`<command>\`? (<reason>) · waits: <who> went on without it · if not: it stays undone`,
  * which `findingKind` reads as a checkpoint.
  */
-export function questionFinding(call: Call, asked: { lane: LaneId; sessionFile: string; cap: AskCap }, origin: AskOrigin, at: string): { id: string; entry: NewFinding } {
+export function questionFinding(call: Call, asked: { lane: LaneId; sessionId: string; sessionFile: string; cap: ResolvedCap }, origin: AskOrigin, at: string): { id: string; entry: NewFinding } {
 	const ask: Ask = {
 		kind: "call",
-		id: askId(asked.sessionFile, call.tool_call_id),
+		id: askId(asked.sessionId, call.tool_call_id),
 		lane: asked.lane,
-		session_file: asked.sessionFile,
+		session_id: asked.sessionId,
 		title: call.command !== undefined ? `${origin.who} asks to run a command` : `${origin.who} asks to use ${call.tool}`,
 		call,
-		run: asked.cap,
+		run: recordedCap(asked.cap),
 		created_at: at,
 	};
 	const text = `${call.command !== undefined ? `Run \`${call.command}\`` : `Use ${call.tool}`}? (${call.reason}) · waits: ${origin.who} went on without it · if not: it stays undone`;
@@ -716,10 +723,11 @@ export function decideSay(finding: Finding | undefined, word: "yes" | "no", from
 }
 
 /**
- * What E3 found in the session file of a question. `there`: an assistant tool call whose id is
+ * What E3 found in the transcript of a question. `there`: an assistant tool call whose id is
  * `call.tool_call_id`, whose name is `call.tool`, whose `arguments` hash to `call.input_sha256`,
- * followed by a tool result for that id with `isError: true`. `outside`: the file the ask names is
- * not a transcript of the lane the finding is in.
+ * followed by a tool result for that id with `isError: true`. `file-gone`: the lane's own directory
+ * has no one transcript whose header names the ask's session id (`laneTranscript`). `outside`: the
+ * ask names a session that is not this conversation lane's own.
  */
 export type CallCheck = "there" | "file-gone" | "outside" | "no-call" | "another-tool" | "another-input" | "no-error-result";
 
@@ -764,6 +772,27 @@ export interface MeetFacts {
 	 */
 	blocked?: string;
 	at: string;
+	/** The inbox as it is under `inbox.lock`: who may carry a question (`carriesAsk`). Absent: only the question's own finding. */
+	inbox?: readonly Finding[];
+}
+
+/**
+ * Whether `finding` is a finding the question it carries may be answered on: the one Q1 filed
+ * (`askFindingId`), or the successor a cancel filed (`again`) of such a finding whose answer is
+ * cancelled. A copy of a question under another id is neither, so one question gets one grant at a
+ * time.
+ */
+export function carriesAsk(finding: Finding & { ask: Ask }, inbox: readonly Finding[]): boolean {
+	const seen = new Set<string>();
+	let current: Finding & { ask: Ask } = finding;
+	for (;;) {
+		if (current.id === askFindingId(current.ask.id)) return true;
+		seen.add(current.id);
+		const id = current.id;
+		const before = inbox.find((f): f is Finding & { ask: Ask } => f.ask?.id === finding.ask.id && !seen.has(f.id) && f.answer?.state === "cancelled" && besideId(f.id, "again") === id);
+		if (!before) return false;
+		current = before;
+	}
 }
 
 /** What the executor does with one `ans-` row. The first case that matches applies, in this order. */
@@ -807,7 +836,7 @@ const sameClaim = (a: AnswerClaim, b: AnswerClaim): boolean => a.id === b.id && 
  * `finding` the finding `row.payload.finding` names, as it is under `inbox.lock`.
  *
  * E1, for a row with or without a `run`: no finding; not a real yes; a row whose id is not
- * `answerRowId(finding.id)`; a row in a lane that is not the finding's; an `UnreadableAnswer`; for
+ * `answerRowId(finding.id)`; a question on a finding that does not carry it (`carriesAsk`); a row in a lane that is not the finding's; an `UnreadableAnswer`; for
  * a row with no `run`, a state that is not `pending`; for a row with a `run`, an answer that has a
  * claim that is not this `run` (a forged or older claim is `stale`, never W1).
  *
@@ -822,6 +851,7 @@ export function meetAnswerRow(row: Row, finding: Finding | undefined, facts: Mee
 	if (!finding) return { case: "E1", why: "the finding is missing" };
 	if (!realYes(finding)) return { case: "E1", why: "the finding is not a yes from a person" };
 	if (row.id !== answerRowId(finding.id)) return { case: "E1", why: "the row is not the finding's" };
+	if (finding.ask && !carriesAsk(finding as Finding & { ask: Ask }, facts.inbox ?? [])) return { case: "E1", why: "the finding is not its question's" };
 	if (facts.lane.lane !== row.lane || !facts.ownProject) return { case: "E1", why: "the row is not in the finding's lane" };
 	const answer = finding.answer;
 	if (!answer || answer.state === "unreadable") return { case: "E1", why: "the answer cannot be read" };
@@ -898,13 +928,16 @@ export type RestoredRow = ClaimedRow & { readonly [restored]: true };
 /**
  * H1. For each finding whose `lane` is one of `lanes`: `pending` with no `ans-` row in the lane:
  * the row of `answerRow`; `started` with none: that row with `run` = `answer.run`. A row that is
- * there is left as it is, whatever its `run`. It reads `finding.lane` and no job.
+ * there is left as it is, whatever its `run`. It reads `finding.lane` and no job. A question on a
+ * finding that does not carry it (`carriesAsk`) gets no row: E1 would remove it.
  */
 export function repairRows(findings: readonly Finding[], lanes: ReadonlyMap<LaneId, readonly Row[]>, ctx: { at: string; self: Row["created_by"] }): Array<UnclaimedRow | RestoredRow> {
 	const out: Array<UnclaimedRow | RestoredRow> = [];
 	for (const finding of findings) {
 		const answer = finding.answer;
 		if (finding.lane === undefined || !answer || (answer.state !== "pending" && answer.state !== "started")) continue;
+		// A copy of a question meets E1: a row put back for it would be taken away again at every tick.
+		if (finding.ask && !carriesAsk(finding as Finding & { ask: Ask }, findings)) continue;
 		const rows = lanes.get(finding.lane);
 		if (!rows || rows.some((r) => r.id === answerRowId(finding.id))) continue;
 		const row = answerRow(finding, finding.lane, ctx.at, ctx.self);
@@ -913,29 +946,110 @@ export function repairRows(findings: readonly Finding[], lanes: ReadonlyMap<Lane
 	return out;
 }
 
-/** Two lists as one ceiling: the intersection when both name one, the one list when one does. */
-function narrowList(a: readonly string[] | undefined, b: readonly string[] | undefined): string[] | undefined {
-	if (a && b) return a.filter((x) => b.includes(x));
-	return a ? [...a] : b ? [...b] : undefined;
-}
+/**
+ * What a run may have of one kind of tool. `session`: every one its session gives, as pi-loops gives
+ * them to a run today. A list: only these, as a job declares them. `within`: every one its session
+ * gives that is also in the list, which only cuts what the session gives and never adds to it.
+ */
+export type ToolLimit = "session" | readonly string[] | { readonly within: readonly string[] };
 
 /**
- * The cap of an answer's run: `declared` (the job as `jobs.json` has it now; for a check, nothing
- * declared) narrowed by `asked` (the cap of the turn that asked). `cwd` is `declared`'s. `tools`
- * is the intersection when both name a list, and the one list when one does. A model or a thinking
- * level is the transcript's own unless `declared` pins one.
+ * The cap of a seated run, with every field resolved: no field can be absent, so none means "no
+ * limit". Made by `resolveCap` alone, narrowed by `narrowCap` alone, and the only cap the runner
+ * takes (`SubagentRequest.guard.cap`).
  */
-export function answerCap(declared: Pick<LoopJob, "cwd" | "model" | "thinking" | "tools" | "builtinTools" | "timeoutMs"> | { cwd: string }, asked: AskCap | undefined): AskCap {
-	const job: Partial<Pick<LoopJob, "cwd" | "model" | "thinking" | "tools" | "builtinTools" | "timeoutMs">> = declared;
-	const timeouts = [job.timeoutMs, asked?.timeout_ms].filter((t): t is number => t !== undefined);
-	return defined({
+export interface ResolvedCap {
+	readonly cwd: string;
+	/** The model the job pins, or null: a resumed transcript keeps its own, a new session takes the session's. */
+	readonly model: string | null;
+	/** The thinking level the job pins, or null, as `model`. */
+	readonly thinking: string | null;
+	/** The allowlist over every tool (built-in, MCP, automation). */
+	readonly tools: ToolLimit;
+	/** The built-in tools, when `tools` is no list. */
+	readonly builtinTools: ToolLimit;
+	readonly timeoutMs: number;
+}
+
+/** What `resolveCap` reads of a job: a loop as `jobs.json` has it now, or a check's project and its rules' pins. */
+export type DeclaredCap = Pick<LoopJob, "cwd"> & Partial<Pick<LoopJob, "model" | "thinking" | "tools" | "builtinTools" | "timeoutMs">>;
+
+/**
+ * The cap of a run of `declared`, resolved against the code's defaults: the run's timeout when the
+ * job declares none (`DEFAULT_RUN_TIMEOUT_MS` for a loop), the session's tools when it declares no
+ * list, no pinned model or thinking level when it pins none.
+ */
+export function resolveCap(declared: DeclaredCap, defaultTimeoutMs: number): ResolvedCap {
+	return {
 		cwd: declared.cwd,
-		model: job.model,
-		thinking: job.thinking,
-		tools: narrowList(job.tools, asked?.tools),
-		builtin_tools: narrowList(job.builtinTools, asked?.builtin_tools),
-		timeout_ms: timeouts.length ? Math.min(...timeouts) : undefined,
-	});
+		model: declared.model ?? null,
+		thinking: declared.thinking ?? null,
+		tools: declared.tools ? [...declared.tools] : "session",
+		builtinTools: declared.builtinTools ? [...declared.builtinTools] : "session",
+		timeoutMs: declared.timeoutMs ?? defaultTimeoutMs,
+	};
+}
+
+/** The names a limit lets through, when it names any: what a question records, and what the guard's turn reads. */
+export function limitNames(limit: ToolLimit): readonly string[] | undefined {
+	return limit === "session" ? undefined : Array.isArray(limit) ? limit : (limit as { within: readonly string[] }).within;
+}
+
+/** A limit cut by a recorded list: a list stays a list and only loses names; `session` becomes `within` the list. */
+function cutLimit(limit: ToolLimit, asked: readonly string[] | undefined): ToolLimit {
+	if (!asked) return limit;
+	if (limit === "session") return { within: [...asked] };
+	const names = limitNames(limit)!.filter((name) => asked.includes(name));
+	return Array.isArray(limit) ? names : { within: names };
+}
+
+/** Why `narrowCap` refuses an answer's run. */
+export type CapRefusal = { readonly refused: "another-cwd"; readonly asked: string; readonly cwd: string };
+
+/**
+ * The narrowing of a cap by the cap a question recorded (untrusted: it can only take away), one
+ * row per field. Every field of `ResolvedCap` has its row, so a new field cannot be left out.
+ */
+const NARROW: { readonly [K in keyof ResolvedCap]: (cap: ResolvedCap, asked: AskCap) => ResolvedCap[K] | CapRefusal } = {
+	cwd: (cap, asked) => (asked.cwd === cap.cwd ? cap.cwd : { refused: "another-cwd", asked: asked.cwd, cwd: cap.cwd }),
+	model: (cap) => cap.model,
+	thinking: (cap) => cap.thinking,
+	tools: (cap, asked) => cutLimit(cap.tools, asked.tools),
+	builtinTools: (cap, asked) => cutLimit(cap.builtinTools, asked.builtin_tools),
+	timeoutMs: (cap, asked) => (asked.timeout_ms !== undefined && asked.timeout_ms > 0 ? Math.min(cap.timeoutMs, asked.timeout_ms) : cap.timeoutMs),
+};
+
+const isRefusal = (value: unknown): value is CapRefusal => typeof value === "object" && value !== null && "refused" in value;
+
+/**
+ * The cap of an answer's run: `cap` (the job's now, from `resolveCap`) narrowed by `asked` (the cap
+ * the question recorded) through `NARROW`: the cwd must be the same, or the run is refused; tools
+ * and built-ins are cut to the recorded lists; the timeout is the smaller; the model and the
+ * thinking level are the job's.
+ */
+export function narrowCap(cap: ResolvedCap, asked: AskCap | undefined): ResolvedCap | CapRefusal {
+	if (!asked) return cap;
+	const out: Record<string, unknown> = {};
+	for (const key of Object.keys(NARROW) as Array<keyof ResolvedCap>) {
+		const value = NARROW[key](cap, asked);
+		if (isRefusal(value)) return value;
+		out[key] = value;
+	}
+	return out as unknown as ResolvedCap;
+}
+
+/** The cap a question records at Q1: what the asking turn had, as a ceiling for its answer. */
+export function recordedCap(cap: ResolvedCap): AskCap {
+	const tools = limitNames(cap.tools);
+	const builtins = limitNames(cap.builtinTools);
+	return {
+		cwd: cap.cwd,
+		...(cap.model === null ? {} : { model: cap.model }),
+		...(cap.thinking === null ? {} : { thinking: cap.thinking }),
+		...(tools ? { tools: [...tools] } : {}),
+		...(builtins ? { builtin_tools: [...builtins] } : {}),
+		timeout_ms: cap.timeoutMs,
+	};
 }
 
 /* ====================================================================================================

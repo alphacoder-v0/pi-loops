@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { type AskOrigin, type Call, type Grant, askFindingId, askId, callKey, inputHash } from "../src/ask.ts";
+import { type AskOrigin, type Call, type DeclaredCap, type Grant, type ResolvedCap, askFindingId, askId, callKey, inputHash, resolveCap } from "../src/ask.ts";
 import { type GuardDeps, type GuardSeed, type GuardTurn, GuardSeats, guardCall, guardTurn, judgeCall } from "../src/guard.ts";
 import { Inbox, type InboxEntry as Finding } from "../src/inbox.ts";
 import { tmp } from "./tmp.ts";
@@ -20,6 +20,9 @@ const bash = (command: string, extra: Partial<{ toolCallId: string; parentToolCa
 const pushKey = callKey("bash", inputHash({ command: PUSH }));
 const callOf = (command: string, reason: string): Call => ({ tool: "bash", tool_call_id: "call-0", command, input_sha256: inputHash({ command }), reason });
 const grantOf = (command: string, reason = PUSH_REASON): Grant => ({ finding: "inb-0", ask: "ask-granted", call: callOf(command, reason) }) as unknown as Grant;
+/** A run's own SessionManager, as the guard sees it: an object with its session id. */
+const sm = (id: string) => ({ getSessionId: () => id });
+const capOf = (declared: DeclaredCap): ResolvedCap => resolveCap(declared, 900_000);
 const turn = (over: Partial<GuardTurn> = {}): GuardTurn => ({ unattended: true, hop: 1, resumable: true, lane: LANE, open: new Map(), refused: new Map(), asked: 0, ...over });
 
 test("[Q1] judgeCall: the policy passes a call, whatever the inbox says", () => {
@@ -80,7 +83,7 @@ test("[Q1] [not-as-written] a command the card would not show as itself is not a
 });
 
 test("guardTurn: one lane's new questions and the nos of the last 14 days, and the grant until it is used", () => {
-	const ask = (id: string, lane: string, command: string) => ({ kind: "call", id, lane, session_file: "/s.jsonl", title: "t", call: callOf(command, "r"), created_at: "2026-11-01T00:00:00.000Z" });
+	const ask = (id: string, lane: string, command: string) => ({ kind: "call", id, lane, session_id: "s", title: "t", call: callOf(command, "r"), created_at: "2026-11-01T00:00:00.000Z" });
 	const finding = (over: Partial<Finding>): Finding => ({ id: "inb-x", created_at: "2026-11-01T00:00:00.000Z", status: "new", kind: "checkpoint", source: "s", run_id: "r", cwd: "/proj", text: "t", verified: null, dismiss_reason: null, ...over }) as Finding;
 	const findings = [
 		finding({ ask: ask("ask-1", LANE, "a") as Finding["ask"] }),
@@ -90,7 +93,7 @@ test("guardTurn: one lane's new questions and the nos of the last 14 days, and t
 		finding({ status: "claimed", ask: ask("ask-5", LANE, "e") as Finding["ask"] }),
 	];
 	const seats = new GuardSeats();
-	const { seat } = seats.enter({}, "/s.jsonl", { lane: LANE, origin: ORIGIN, cap: { cwd: "/proj", tools: ["bash"] }, grant: grantOf(PUSH) });
+	const { seat } = seats.enter(sm("s"), "/s.jsonl", { lane: LANE, origin: ORIGIN, cap: capOf({ cwd: "/proj", tools: ["bash"] }), grant: grantOf(PUSH) });
 	const t = guardTurn(seat, findings, 1, NOW);
 	assert.deepEqual([...t.open], [[callKey("bash", inputHash({ command: "a" })), "ask-1"]], "another lane's question and a claimed one are not open here");
 	assert.deepEqual([...t.refused], [[callKey("bash", inputHash({ command: "c" })), "2026-11-15"]], "a no older than 14 days no longer holds");
@@ -103,17 +106,17 @@ test("guardTurn: one lane's new questions and the nos of the last 14 days, and t
 
 test("GuardSeats: one seat per session, found by the session object and not by its file; the report names the grant only for a run that had one", () => {
 	const seats = new GuardSeats();
-	const seed: GuardSeed = { lane: LANE, origin: ORIGIN, cap: { cwd: "/proj" } };
-	const session = {};
+	const seed: GuardSeed = { lane: LANE, origin: ORIGIN, cap: capOf({ cwd: "/proj" }) };
+	const session = sm("a");
 	const a = seats.enter(session, "/a.jsonl", seed);
 	assert.throws(() => seats.enter(session, "/a.jsonl", seed), /already has the guard's seat/);
 	assert.equal(seats.of(session), a.seat);
-	assert.equal(seats.of({}), undefined, "another session with the same file has no seat");
+	assert.equal(seats.of(sm("a")), undefined, "another session with the same file and id has no seat");
 	assert.equal(seats.of(undefined), undefined);
 	a.seat.asked.push("ask-1");
 	assert.deepEqual(a.leave(), { asked: ["ask-1"] });
 	assert.equal(seats.of(session), undefined, "a run that left has no seat");
-	const b = seats.enter({}, "/b.jsonl", { ...seed, grant: grantOf(PUSH) });
+	const b = seats.enter(sm("b"), "/b.jsonl", { ...seed, grant: grantOf(PUSH) });
 	assert.deepEqual(b.leave(), { grant_used: false, asked: [] });
 });
 
@@ -135,14 +138,14 @@ function world(allow: string[] = []) {
 test("[Q1] guardCall: a blocked call files one question, with the derived id and the hash of the input it saw", async () => {
 	const w = world();
 	const seats = new GuardSeats();
-	const { seat, leave } = seats.enter({}, "/runs/s1.jsonl", { lane: LANE, origin: ORIGIN, cap: { cwd: "/proj", tools: ["bash", "read"] } });
+	const { seat, leave } = seats.enter(sm("s1"), "/runs/s1.jsonl", { lane: LANE, origin: ORIGIN, cap: capOf({ cwd: "/proj", tools: ["bash", "read"] }) });
 	const first = await guardCall(bash(PUSH, { toolCallId: "call-1" }), seat, w.deps);
 	assert.equal(first?.block, true);
 	assert.match(first!.reason, /^asked a person: git push --force on main\/master\. pi-loops did not run this/);
-	const ask = askId("/runs/s1.jsonl", "call-1");
+	const ask = askId("s1", "call-1");
 	const filed = w.inbox.list();
 	assert.deepEqual(filed.map((f) => f.id), [askFindingId(ask)]);
-	assert.deepEqual([filed[0].ask?.id, filed[0].ask?.lane, filed[0].lane, filed[0].ask?.session_file, filed[0].ask?.call.input_sha256, filed[0].ask?.run?.tools], [ask, LANE, LANE, "/runs/s1.jsonl", inputHash({ command: PUSH }), ["bash", "read"]]);
+	assert.deepEqual([filed[0].ask?.id, filed[0].ask?.lane, filed[0].lane, filed[0].ask?.session_id, filed[0].ask?.call.input_sha256, filed[0].ask?.run?.tools], [ask, LANE, LANE, "s1", inputHash({ command: PUSH }), ["bash", "read"]]);
 
 	const again = await guardCall(bash(PUSH, { toolCallId: "call-2" }), seat, w.deps);
 	assert.match(again!.reason, /^asked a person:/, "the same call later in the turn is told it is asked");
@@ -153,7 +156,7 @@ test("[Q1] guardCall: a blocked call files one question, with the derived id and
 
 test("[Q1] guardCall: a nested call is refused with the words of the guard before questions, and files nothing", async () => {
 	const w = world();
-	const { seat } = new GuardSeats().enter({}, "/runs/s1.jsonl", { lane: LANE, origin: ORIGIN, cap: { cwd: "/proj" } });
+	const { seat } = new GuardSeats().enter(sm("s1"), "/runs/s1.jsonl", { lane: LANE, origin: ORIGIN, cap: capOf({ cwd: "/proj" }) });
 	const out = await guardCall(bash(PUSH, { toolCallId: "call-1/1", parentToolCallId: "call-1" }), seat, w.deps);
 	assert.match(out!.reason, /^refused by pi-loops: git push --force on main\/master\. This run is unattended, so commands that can destroy data or the machine are not allowed/);
 	assert.deepEqual([w.inbox.list().length, seat.asked], [0, []]);
@@ -170,7 +173,7 @@ test("[Q1] guardCall: with no seat a dangerous call is refused and nobody is ask
 
 test("[Q1] guardCall: a no that holds refuses with its date, and a failed filing refuses: a call is never let through on an error", async () => {
 	const w = world();
-	const { seat } = new GuardSeats().enter({}, "/runs/s1.jsonl", { lane: LANE, origin: ORIGIN, cap: { cwd: "/proj" } });
+	const { seat } = new GuardSeats().enter(sm("s1"), "/runs/s1.jsonl", { lane: LANE, origin: ORIGIN, cap: capOf({ cwd: "/proj" }) });
 	await guardCall(bash(PUSH), seat, w.deps);
 	const dismissed = { ...w.inbox.list()[0], status: "dismissed", dismissed_at: "2026-11-19T09:00:00.000Z" };
 	const failing: GuardDeps = { ...w.deps, inbox: { list: () => [dismissed as Finding], fileOnce: () => Promise.reject(new Error("disk full")) } };
@@ -185,19 +188,19 @@ test("[Q1] guardCall: a no that holds refuses with its date, and a failed filing
 test("[Q1] guardCall: a grant is used once; a policy allow of the granted call spends it without reading the inbox", async () => {
 	const w = world();
 	const seats = new GuardSeats();
-	const granted = seats.enter({}, "/runs/s2.jsonl", { lane: LANE, origin: ORIGIN, cap: { cwd: "/proj" }, grant: grantOf(PUSH) });
+	const granted = seats.enter(sm("s2"), "/runs/s2.jsonl", { lane: LANE, origin: ORIGIN, cap: capOf({ cwd: "/proj" }), grant: grantOf(PUSH) });
 	assert.equal(await guardCall(bash(PUSH, { toolCallId: "call-a" }), granted.seat, w.deps), undefined, "the granted call goes through");
 	assert.equal(w.reads(), 0, "and reads no inbox");
 	const second = await guardCall(bash(PUSH, { toolCallId: "call-b" }), granted.seat, w.deps);
 	assert.match(second!.reason, /^asked a person:/, "a second identical call is not granted: it is asked about");
-	assert.deepEqual(granted.leave(), { grant_used: true, asked: [askId("/runs/s2.jsonl", "call-b")] });
+	assert.deepEqual(granted.leave(), { grant_used: true, asked: [askId("s2", "call-b")] });
 
 	const allowed = world([PUSH]);
-	const policy = seats.enter({}, "/runs/s3.jsonl", { lane: LANE, origin: ORIGIN, cap: { cwd: "/proj" }, grant: grantOf(PUSH) });
+	const policy = seats.enter(sm("s3"), "/runs/s3.jsonl", { lane: LANE, origin: ORIGIN, cap: capOf({ cwd: "/proj" }), grant: grantOf(PUSH) });
 	assert.equal(await guardCall(bash(PUSH), policy.seat, allowed.deps), undefined);
 	assert.deepEqual([policy.leave(), allowed.reads()], [{ grant_used: true, asked: [] }, 0], "[danger] allow ran the granted call: the grant counts as used");
 
-	const unused = seats.enter({}, "/runs/s4.jsonl", { lane: LANE, origin: ORIGIN, cap: { cwd: "/proj" }, grant: grantOf(PUSH) });
+	const unused = seats.enter(sm("s4"), "/runs/s4.jsonl", { lane: LANE, origin: ORIGIN, cap: capOf({ cwd: "/proj" }), grant: grantOf(PUSH) });
 	assert.equal(await guardCall(bash("ls"), unused.seat, w.deps), undefined);
 	assert.deepEqual(unused.leave(), { grant_used: false, asked: [] }, "another call the policy passes leaves the grant unused");
 });
@@ -207,7 +210,7 @@ test("[review-F1] a nested call never uses a grant: it is refused before the gra
 	assert.deepEqual(judgeCall(nested, turn({ granted: grantOf(PUSH) }), cfg), { kind: "refuse", reason: PUSH_REASON, whyNot: { why: "no-transcript" } });
 	assert.deepEqual(judgeCall(nested, turn({ granted: grantOf(PUSH) }), { allowCommands: [PUSH] }), { kind: "allow" }, "the policy passes it, and the grant stays");
 	const w = world();
-	const { seat, leave } = new GuardSeats().enter({}, "/runs/s5.jsonl", { lane: LANE, origin: ORIGIN, cap: { cwd: "/proj" }, grant: grantOf(PUSH) });
+	const { seat, leave } = new GuardSeats().enter(sm("s5"), "/runs/s5.jsonl", { lane: LANE, origin: ORIGIN, cap: capOf({ cwd: "/proj" }), grant: grantOf(PUSH) });
 	const out = await guardCall(nested, seat, w.deps);
 	assert.match(out!.reason, /^refused by pi-loops: git push --force on main\/master\. This run is unattended/);
 	assert.deepEqual([leave(), w.inbox.list().length], [{ grant_used: false, asked: [] }, 0], "the grant is unused and nothing is filed");

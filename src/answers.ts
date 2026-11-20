@@ -8,6 +8,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
+	type Ask,
 	type Answerer,
 	type CallCheck,
 	type FinalState,
@@ -35,7 +36,9 @@ import { type Inbox, type InboxEntry as Finding, UNDER_INBOX_LOCK } from "./inbo
 import { type ConversationId, type Lane, type LaneId, parseLane } from "./lane.ts";
 import type { LockOptions } from "./lock.ts";
 import type { ClaimedRow, RequestStore, Row, UnclaimedRow } from "./requests.ts";
+import type { Resume } from "./runner.ts";
 import { stamp } from "./schedule.ts";
+import { laneTranscript } from "./session-head.ts";
 import type { JobStore } from "./store.ts";
 import type { TriggerStore } from "./triggers.ts";
 
@@ -52,12 +55,15 @@ export interface AnswersDeps {
 	sessionFile(id: ConversationId): string | undefined;
 	/** The entries of a session file, or undefined when the file is gone. */
 	entries(file: string): readonly unknown[] | undefined;
-	/** Where a check lane's transcripts are: `sessionDirFor(triggerSessionKey(cwd))`. */
+	/** Where a check lane's transcripts are: `checkSessionDir` of src/trigger-runtime.ts, from the resolved path of `cwd`. */
 	checkSessionDir(cwd: string): string;
 	/** `checkLane` of src/trigger-runtime.ts, given as a function so that this module does not import that module. */
 	checkLaneOf(cwd: string): LaneId | undefined;
-	/** C2: `run_end` for `record`, on a lane that fires hooks. It makes a hook runner from the record when the run's own is gone (F2 after a restart). */
-	runEnd(record: RunRecordM5a): void;
+	/**
+	 * C2: `run_end` for `record`, on `lane`, a loop's lane. It makes a hook runner for the loop the lane
+	 * names when the run's own is gone (F2 after a restart), and fires nothing for a record of another job.
+	 */
+	runEnd(record: RunRecordM5a, lane: LaneId): void;
 	/** This process, as the `created_by` of a row it appends. */
 	self(): Row["created_by"];
 	now(): number;
@@ -70,9 +76,10 @@ export interface AnswerExecutor {
 	 * Why E4 waits in this lane now, asked before the locks, for the finding as read then: the loop's
 	 * job is disabled (a parked loop among them), the directory missing, the budget, no free slot,
 	 * another run of the lane, the transcript held by a live pi, a window or the page holds the
-	 * conversation. undefined: E4 may start.
+	 * conversation. `transcript` is pi's session id of the transcript the run would resume, when
+	 * `laneTranscript` found it in the lane's own directory. undefined: E4 may start.
 	 */
-	blocked(lane: Lane, finding: Finding | undefined): string | undefined;
+	blocked(lane: Lane, finding: Finding | undefined, transcript?: string): string | undefined;
 	/** Whether the process of the claim is there and still runs the row. A claim of this process whose run left the list is not live. */
 	live(row: ClaimedRow): boolean;
 	/** E4a, inside both locks: a slot, then the claim with `lock`. undefined: no slot, or the row left. The run is in the list from here. */
@@ -87,8 +94,12 @@ export interface AnswerStart {
 	/** The finding as E4b wrote it: `started`, with this claim. */
 	readonly finding: Finding;
 	readonly grant?: Grant;
-	/** The transcript to open: the ask's session file, or the finding's `transcript` when it is there and is the lane's own. Absent: a new session with the finding's text (never for a question). */
-	readonly resume?: string;
+	/**
+	 * The transcript to open: the one in the lane's own directory whose header names the ask's
+	 * `session_id`, or for another finding its `transcript_id` (`laneTranscript`). Absent: a new
+	 * session with the finding's text (never for a question: E3 refuses one with no transcript).
+	 */
+	readonly resume?: Resume;
 	/** The `jobId` of this run's record: the loop's id, the check lane's id, or for a conversation the finding's `job_id` or the empty string. */
 	readonly jobId: string;
 }
@@ -124,12 +135,6 @@ export interface Answers {
 	repair(executes: (lane: Lane) => boolean, now: number): Promise<string[]>;
 }
 
-/** `file` is `dir` or under it. */
-function inside(file: string, dir: string): boolean {
-	const rel = path.relative(path.resolve(dir), path.resolve(file));
-	return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
-}
-
 /** Whether a user message of `entries` carries `[Trigger <rowId>] `: the prompt of an answer's run was written. */
 function holdsPrompt(entries: readonly unknown[], rowId: string): boolean {
 	const head = `[Trigger ${rowId}] `;
@@ -159,21 +164,31 @@ export function createAnswers(deps: AnswersDeps): Answers {
 		return file !== undefined && fs.existsSync(file);
 	};
 
-	/** Whether `file` is a transcript of `lane`: a loop's sessions, the project's check sessions, the conversation's own file. */
-	const laneOwns = (lane: Lane, file: string, finding: Finding): boolean => {
+	/**
+	 * The transcript of `lane` whose header names `sessionId`, in the lane's own directory as pi-loops
+	 * derives it from the lane: a loop's sessions, the check sessions of the project the lane is, the
+	 * directory of the conversation's own file for its own id. Never a path from the inbox.
+	 */
+	const laneOwns = (lane: Lane, sessionId: string, finding: Finding): string | undefined => {
 		if (lane.kind === "conversation") {
-			const own = deps.sessionFile(lane.id);
-			return own !== undefined && path.resolve(own) === path.resolve(file);
+			const own = sessionId === lane.id ? deps.sessionFile(lane.id) : undefined;
+			return own === undefined ? undefined : laneTranscript(path.dirname(own), sessionId);
 		}
-		const dir = lane.kind === "loop" ? jobs.sessionDirFor(lane.id.slice(1)) : deps.checkSessionDir(finding.cwd);
-		return inside(file, dir);
+		if (lane.kind === "check" && deps.checkLaneOf(finding.cwd) !== lane.id) return undefined;
+		return laneTranscript(lane.kind === "loop" ? jobs.sessionDirFor(lane.id.slice(1)) : deps.checkSessionDir(finding.cwd), sessionId);
 	};
 
-	/** E3's check, and what C3 reads: the ask's transcript, read once, outside every lock. */
-	const transcriptFacts = (lane: Lane, finding: Finding & { ask: NonNullable<Finding["ask"]> }, rowId: string): TranscriptFacts => {
-		const file = finding.ask.session_file;
-		if (!laneOwns(lane, file, finding)) return { check: "outside", prompt: false };
-		const entries = deps.entries(file);
+	/** The session id of the transcript an answer to `finding` resumes: the ask's, or the run's that filed it. */
+	const transcriptIdOf = (finding: Finding): string | undefined => (finding.ask ? finding.ask.session_id : finding.transcript_id);
+
+	/** E3's check, and what C3 reads: the ask's transcript, found by `laneOwns` and read once, outside every lock. */
+	const transcriptFacts = (lane: Lane, finding: Finding & { ask: Ask }, rowId: string): TranscriptFacts => {
+		const id = finding.ask.session_id;
+		// A question an older version wrote names a path, not a session: nothing proves its call now.
+		if (id === undefined) return { check: "no-call", prompt: false };
+		if (lane.kind === "conversation" && id !== lane.id) return { check: "outside", prompt: false };
+		const file = laneOwns(lane, id, finding);
+		const entries = file === undefined ? undefined : deps.entries(file);
 		if (!entries) return { check: "file-gone", prompt: false };
 		return { check: blockedCall(entries, finding.ask.call), prompt: holdsPrompt(entries, rowId) };
 	};
@@ -235,10 +250,10 @@ export function createAnswers(deps: AnswersDeps): Answers {
 		}
 
 		// C2: a loop's run fires hooks.
-		if (lane?.kind === "loop") deps.runEnd(record);
+		if (lane?.kind === "loop") deps.runEnd(record, lane.id);
 
 		// C3: the transcript is read before the lock; the step is decided on the finding under it.
-		const transcript = lane && seen?.ask ? transcriptFacts(lane, seen as Finding & { ask: NonNullable<Finding["ask"]> }, row.id) : undefined;
+		const transcript = lane && seen?.ask ? transcriptFacts(lane, seen as Finding & { ask: Ask }, row.id) : undefined;
 		const state = await inbox.section((tx): FinalState | "none" => {
 			const finding = tx.find(findingId);
 			if (!finding) return "none";
@@ -326,9 +341,11 @@ export function createAnswers(deps: AnswersDeps): Answers {
 			const seen = inbox.list().find((f) => f.id === findingId);
 			const fact = seen ? laneFact(seen, all, sessionFileThere) : NO_LANE;
 			const ownProject = lane.kind !== "check" || (seen !== undefined && deps.checkLaneOf(seen.cwd) === lane.id);
-			const proof = seen?.ask ? { ask: seen.ask.id, check: transcriptFacts(lane, seen as Finding & { ask: NonNullable<Finding["ask"]> }, rowId).check as CallCheck } : undefined;
-			const resume = seen?.ask ? seen.ask.session_file : seen?.transcript && fs.existsSync(seen.transcript) && laneOwns(lane, seen.transcript, seen) ? seen.transcript : undefined;
-			const blocked = executor.blocked(lane, seen);
+			const proof = seen?.ask ? { ask: seen.ask.id, check: transcriptFacts(lane, seen as Finding & { ask: Ask }, rowId).check as CallCheck } : undefined;
+			const resumeId = seen ? transcriptIdOf(seen) : undefined;
+			const resumeFile = seen && resumeId !== undefined ? laneOwns(lane, resumeId, seen) : undefined;
+			const resume: Resume | undefined = resumeFile === undefined || resumeId === undefined ? undefined : { file: resumeFile, sessionId: resumeId };
+			const blocked = executor.blocked(lane, seen, resume?.sessionId);
 			const at = stamp(now);
 
 			type Inside =
@@ -340,7 +357,7 @@ export function createAnswers(deps: AnswersDeps): Answers {
 				if (!row || !isAnswerRow(row) || row.payload?.finding !== findingId) return { out: { met: "nothing" } };
 				const finding = tx.find(findingId);
 				const live = row.run ? executor.live(row) : false;
-				const met = meetAnswerRow(row, finding, { lane: fact, ownProject, ...(proof ? { proof } : {}), live, ...(blocked === undefined ? {} : { blocked }), at });
+				const met = meetAnswerRow(row, finding, { lane: fact, ownProject, ...(proof ? { proof } : {}), live, ...(blocked === undefined ? {} : { blocked }), at, inbox: tx.list() });
 				const cwd = finding?.cwd ?? row.payload?.cwd ?? "";
 				switch (met.case) {
 					case "E1": {
@@ -396,7 +413,7 @@ export function createAnswers(deps: AnswersDeps): Answers {
 				const claim = inner.finish.run;
 				if (inner.runEnd && lane.kind === "loop") {
 					const record = jobs.listRuns(undefined, Number.MAX_SAFE_INTEGER).find((r) => r.runId === claim.id);
-					if (record) deps.runEnd(record);
+					if (record) deps.runEnd(record, lane.id);
 				}
 				requests.removeIf(lane.id, rowId, (r) => r.run?.id === claim.id);
 				return { met: "F3", state: inner.state };

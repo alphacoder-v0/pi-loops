@@ -1,4 +1,4 @@
-import { answerCap, askedLines } from "./ask.ts";
+import { askedLines, resolveCap } from "./ask.ts";
 import { type EngineSinks, applyFate, plainJobRow, plainRunId } from "./engine.ts";
 import { findingKind, composeCheckerPrompt, composeLoopPrompt, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
 import type { ClaimedRow, Row, UnclaimedRow } from "./requests.ts";
@@ -75,8 +75,8 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 		const thinking = job.thinking ?? session.thinking;
 		const abort = running?.ctrl.signal;
 		const source = `cron:${job.name ?? job.id.slice(0, "cron-".length + 8)}`;
-		// The guard's seat: a dangerous call files a question in this lane. The cap is the job's as jobs.json has it.
-		const guard = { lane: row.lane, origin: { source, run_id: runId, cwd: job.cwd, job_id: job.id, ...(job.createdBy?.sessionId ? { session_id: job.createdBy.sessionId } : {}), who: job.name ?? job.id }, cap: answerCap(job, undefined) };
+		// The guard's seat: a dangerous call files a question in this lane. The cap is the job's as jobs.json has it, and the runner runs it.
+		const guard = { lane: row.lane, origin: { source, run_id: runId, cwd: job.cwd, job_id: job.id, ...(job.createdBy?.sessionId ? { session_id: job.createdBy.sessionId } : {}), who: job.name ?? job.id }, cap: resolveCap(job, DEFAULT_RUN_TIMEOUT_MS) };
 		let result: RunnerResult;
 		try {
 			result = await deps.runner({
@@ -116,7 +116,7 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 						text: finding.text, run_id: runId, job_id: job.id, cwd: job.cwd,
 						kind: findingKind(finding.text), verified: finding.verified,
 						verified_reason: finding.reason, session_id: job.createdBy?.sessionId,
-						transcript: result.sessionFile, lane: row.lane,
+						transcript: result.sessionFile, transcript_id: result.sessionId, lane: row.lane,
 					});
 					findings.push(finding.text);
 				} catch (error) { deps.sinks.log(`loop ${job.id}: inbox append failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
@@ -142,7 +142,7 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 			...(byPerson ? { stoppedBy: "person" as const, stoppedFrom: running?.stoppedFrom ?? "cli" } : {}),
 		};
 		// As main, before the record: the newest transcripts are kept, and those a finding points at.
-		try { deps.stores.jobs.pruneSessions(job.id, undefined, deps.stores.inbox.pinnedTranscripts({ job: job.id })); }
+		try { deps.stores.jobs.pruneSessions(job.id, undefined, deps.stores.inbox.pinnedTranscripts({ job: job.id }, deps.stores.jobs.sessionDirFor(job.id))); }
 		catch (error) { deps.sinks.log(`loop ${job.id}: transcript pruning failed: ${error instanceof Error ? error.message : String(error)}`, "info", job); }
 		await closeLoopRun(row, deps, now(), record);
 		if (findings.length) deps.sinks.filed?.();

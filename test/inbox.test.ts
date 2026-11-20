@@ -267,7 +267,7 @@ test("pi-loops inbox --json fields do not gain lane", () => {
 
 const AT = "2026-11-20T00:00:00.000+00:00";
 const CALL = { tool: "bash", tool_call_id: "call-1", command: "git push --force origin main", input_sha256: "a".repeat(64), reason: "git push --force on main/master" };
-const ASK = { kind: "call", id: `ask-${"b".repeat(32)}`, lane: "@cron-abc", session_file: "/s/a.jsonl", title: "nightly asks to run a command", call: CALL, created_at: AT };
+const ASK = { kind: "call", id: `ask-${"b".repeat(32)}`, lane: "@cron-abc", session_id: "0199aaaa-0000-7000-8000-0000000000a1", title: "nightly asks to run a command", call: CALL, created_at: AT };
 const CLAIM = { id: "ans-1", pid: 1, started_at: AT };
 
 /** The lines a rewrite must keep as they are: a pending answer, an answer a newer version wrote, an ask of another shape, and fields nobody here reads. */
@@ -388,9 +388,29 @@ test("[pins] pinnedTranscripts keeps the transcripts of new findings and of open
 		f("check-done", { job_id: "rule-1", lane: "@check-abc", answer: { state: "done", run: CLAIM, at: AT } }),
 	];
 	fs.writeFileSync(inbox.file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
-	assert.deepEqual([...inbox.pinnedTranscripts({ job: "j" })].sort(), ["/t/new.jsonl", "/t/pending.jsonl", "/t/started.jsonl"]);
-	assert.deepEqual([...inbox.pinnedTranscripts("j")].sort(), ["/t/new.jsonl", "/t/pending.jsonl", "/t/started.jsonl"], "a job's id as before");
-	assert.deepEqual([...inbox.pinnedTranscripts({ lane: "@check-abc" })], ["/t/check-pending.jsonl"]);
+	assert.deepEqual([...inbox.pinnedTranscripts({ job: "j" }, "/t")].sort(), ["/t/new.jsonl", "/t/pending.jsonl", "/t/started.jsonl"]);
+	assert.deepEqual([...inbox.pinnedTranscripts("j", "/t")].sort(), ["/t/new.jsonl", "/t/pending.jsonl", "/t/started.jsonl"], "a job's id as before");
+	assert.deepEqual([...inbox.pinnedTranscripts({ lane: "@check-abc" }, "/t")], ["/t/check-pending.jsonl"]);
+});
+
+test("[pins-by-id] pinnedTranscripts finds a finding's transcript in the lane's directory by its session id, never by the path the finding names", () => {
+	const root = tmp("pi-loops-pins-");
+	const inbox = new Inbox(path.join(root, "loops"));
+	const lane = path.join(root, "sessions", "j");
+	const header = (file: string, id: string) => (fs.mkdirSync(path.dirname(file), { recursive: true }), fs.writeFileSync(file, `${JSON.stringify({ type: "session", id })}\n`), file);
+	const runs = header(path.join(lane, "run.jsonl"), "sid-run");
+	const asked = header(path.join(lane, "asked.jsonl"), "sid-asked");
+	const elsewhere = header(path.join(root, "elsewhere", "conv.jsonl"), "sid-elsewhere");
+	fs.symlinkSync(elsewhere, path.join(lane, "link.jsonl"));
+	const f = (n: string, over: Record<string, unknown>) => ({ id: findingId(n), created_at: AT, status: "new", kind: "news", source: "cron:j", run_id: "r", cwd: "/p", text: n, verified: null, dismiss_reason: null, job_id: "j", ...over });
+	const lines = [
+		f("run", { transcript: "/hand/edited.jsonl", transcript_id: "sid-run" }),
+		f("asked", { transcript: elsewhere, ask: { ...ASK, session_id: "sid-asked" } }),
+		f("through-a-link", { transcript: path.join(lane, "link.jsonl"), transcript_id: "sid-elsewhere" }),
+	];
+	fs.mkdirSync(path.dirname(inbox.file), { recursive: true });
+	fs.writeFileSync(inbox.file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+	assert.deepEqual([...inbox.pinnedTranscripts({ job: "j" }, lane)].sort(), [asked, runs].sort(), "the files whose headers name the ids; not a named path, and not a symlink");
 });
 
 test("[lock] UNDER_INBOX_LOCK is five seconds, and the claim lock is that value", () => {

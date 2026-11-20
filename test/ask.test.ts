@@ -10,10 +10,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type AnswerExecutor, type AnswerStart, type Answers, type AnswersDeps, type MeetOutcome, createAnswers } from "../src/answers.ts";
-import { type Call, type ProtocolWrite, type RunRecordM5a, PROTOCOL, WHY, answerRow, answerRowId, besideId, inputHash, isAnswerRow, noRowId, questionFinding } from "../src/ask.ts";
+import { type Call, type ProtocolWrite, type RunRecordM5a, PROTOCOL, WHY, answerRow, answerRowId, besideId, inputHash, isAnswerRow, noRowId, questionFinding, resolveCap } from "../src/ask.ts";
 import { Inbox, type InboxEntry as Finding, type InboxSection, type NewFinding, type Sync, UNDER_INBOX_LOCK } from "../src/inbox.ts";
 import { type Lane, type LaneId, parseLane } from "../src/lane.ts";
 import { type ClaimedRow, type Listed, type Row, RequestStore } from "../src/requests.ts";
@@ -27,6 +28,8 @@ const LOOP = "@cron-a1";
 const CONV = "01a1dce4-8ad1-77c0-89b0-475ccfeaf683";
 const CHECK = "@check-proj-1a2b3c4d";
 const PERSON = { by: "terminal", session: CONV } as const;
+/** pi's session id of a loop's or a check's run that asked. */
+const SID = "0199aaaa-0000-7000-8000-0000000000a1";
 const NOW = Date.parse("2026-11-20T02:00:00.000Z");
 const COMMAND = "git push --force origin main";
 const CALL: Call = { tool: "bash", tool_call_id: "call-1", command: COMMAND, input_sha256: inputHash({ command: COMMAND }), reason: "git push --force on main/master" };
@@ -216,8 +219,8 @@ async function world(): Promise<World> {
 }
 
 /** A transcript that holds `call`, blocked: the call and an error result. `spoil` takes one of them away or changes it. */
-function writeTranscript(file: string, call: Call, spoil?: "no-call" | "another-tool" | "another-input" | "no-error-result"): void {
-	const lines: unknown[] = [{ type: "session", id: "s1" }];
+function writeTranscript(file: string, call: Call, spoil?: "no-call" | "another-tool" | "another-input" | "no-error-result", id = SID): void {
+	const lines: unknown[] = [{ type: "session", id }];
 	if (spoil !== "no-call") {
 		const name = spoil === "another-tool" ? "powershell" : call.tool;
 		const args = spoil === "another-input" ? { command: "ls" } : { command: call.command };
@@ -239,9 +242,11 @@ async function ask(w: World, lane: "loop" | "conversation" | "check", opts: { sp
 		file = path.join(w.dir, "conversations", `${CONV}.jsonl`);
 		w.conversations.set(CONV, file);
 	}
-	writeTranscript(file, CALL, opts.spoil);
+	// pi's session id of the run that asked: a conversation's own id in its lane.
+	const sessionId = lane === "conversation" ? CONV : SID;
+	writeTranscript(file, CALL, opts.spoil, sessionId);
 	const origin = { source: lane === "loop" ? `cron:${JOB}` : lane, run_id: "r0", cwd: w.cwd, ...(lane === "loop" ? { job_id: JOB } : {}), who: "the loop" };
-	const { id, entry } = questionFinding(CALL, { lane: laneId, sessionFile: file, cap: { cwd: w.cwd } }, origin, stamp(NOW));
+	const { id, entry } = questionFinding(CALL, { lane: laneId, sessionId, sessionFile: file, cap: resolveCap({ cwd: w.cwd }, 900_000) }, origin, stamp(NOW));
 	return w.inbox.fileOnce(entry, id);
 }
 
@@ -272,7 +277,7 @@ async function run(w: World, start: AnswerStart, how: { ok?: boolean; grantUsed?
 		row: start.row.id,
 		cause: "answer",
 		...(how.aborted ? { aborted: true as const } : {}),
-		...(start.resume ? { resumed: start.resume } : {}),
+		...(start.resume ? { resumed: start.resume.file } : {}),
 		...(start.grant ? { grant_used: how.grantUsed ?? true } : {}),
 	};
 	await w.answers.close(start.row, NOW, record);
@@ -588,7 +593,7 @@ test("[E3] a question whose blocked call is not proved is refused: one case per 
 			setup: async () => {
 				const w = await world();
 				f = await ask(w, "loop", check === "outside" ? { outside: true } : check === "file-gone" ? {} : { spoil: check });
-				if (check === "file-gone") fs.rmSync(f.ask!.session_file);
+				if (check === "file-gone") fs.rmSync(f.transcript!);
 				await yes(w, f);
 				return w;
 			},
@@ -619,7 +624,7 @@ test("[E4] the claim, then started; the living process runs it once; a stop afte
 			assert.equal(met.met, "E4");
 			const start = (met as Extract<MeetOutcome, { met: "E4" }>).start;
 			assert.equal(start.grant?.call.tool_call_id, CALL.tool_call_id);
-			assert.equal(start.resume, f.ask!.session_file);
+			assert.deepEqual(start.resume, { file: f.transcript!, sessionId: SID });
 			assert.equal(start.jobId, JOB);
 			assert.equal(start.finding.answer?.state, "started");
 			assert.deepEqual(await meetRow(w, f), { met: "W1" }, "a second meet starts nothing");
@@ -871,7 +876,7 @@ test("[C1] one record per run id, with cause, resumed and grant_used", async () 
 		const records = w.jobs.listRuns(undefined, Number.MAX_SAFE_INTEGER) as RunRecordM5a[];
 		assert.equal(records.length, 1);
 		assert.equal(records[0].cause, "answer");
-		assert.equal(records[0].resumed, f.ask!.session_file);
+		assert.equal(records[0].resumed, f.transcript!);
 		assert.equal(records[0].grant_used, true);
 		assert.equal(records[0].ok, true, "the record the run wrote is the one a later F2 reads");
 		assert.equal(find(w, f.id)?.answer?.state, "done");
@@ -900,7 +905,7 @@ test("[C3] done needs grant_used; an unused grant is unfinished with the ending 
 	const w = await world();
 	const f = await ask(w, "loop");
 	const start = await started(w, f);
-	fs.appendFileSync(f.ask!.session_file, `${JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: `[Trigger ${start.row.id}] run it` }] } })}\n`);
+	fs.appendFileSync(f.transcript!, `${JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: `[Trigger ${start.row.id}] run it` }] } })}\n`);
 	await run(w, start, { ok: false });
 	const a = find(w, f.id)?.answer;
 	assert.equal(a?.state === "unfinished" && a.ending, "The command may or may not have run.");
@@ -1078,4 +1083,85 @@ test("[removed-job] one write; the queued answer meets E2; the running one in th
 			assert.equal(w.starts.has(queued.id), false);
 		},
 	});
+});
+
+/** Rewrites the line of finding `id` in `inbox.jsonl` by hand, as a person or another writer can. */
+function handEdit(w: World, id: string, edit: (line: Record<string, unknown>) => void): void {
+	const lines = fs.readFileSync(w.inbox.file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+	for (const line of lines) if (line.id === id) edit(line);
+	fs.writeFileSync(w.inbox.file, `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
+}
+
+test("[lane-transcript] a question whose session is only a FIFO, a symlink, a directory or a file with another header in the lane's directory, or a path a hand-edited finding names, is refused by E3: nothing is resumed and nothing blocks", { timeout: 30_000 }, async () => {
+	const cases = ["symlink", "fifo", "directory", "another-header", "named-fifo"] as const;
+	for (const kind of cases) {
+		const w = await world();
+		// The proving transcript is outside the lane's directory: only the entry below could lead to it.
+		const f = await ask(w, "loop", { outside: true });
+		const lane = w.jobs.sessionDirFor(JOB);
+		const entry = path.join(lane, `${SID}.jsonl`);
+		if (kind === "symlink") fs.symlinkSync(f.transcript!, entry);
+		if (kind === "fifo" || kind === "named-fifo") execFileSync("mkfifo", [entry]);
+		if (kind === "directory") fs.mkdirSync(entry);
+		if (kind === "another-header") writeTranscript(entry, CALL, undefined, "0199ffff-0000-7000-8000-0000000000f1");
+		// A finding written by hand: an older version's question that names the FIFO as its session file.
+		if (kind === "named-fifo") handEdit(w, f.id, (line) => {
+			const ask = line.ask as Record<string, unknown>;
+			delete ask.session_id;
+			ask.session_file = entry;
+			line.transcript = entry;
+		});
+		await yes(w, f);
+		assert.deepEqual(await meetRow(w, f), { met: "E3", exit: "refused" }, kind);
+		const a = find(w, f.id)?.answer;
+		assert.equal(a?.state, "not_run", kind);
+		assert.equal(a?.state === "not_run" && a.why, kind === "named-fifo" ? "the blocked call is not in the run's transcript" : "the run that asked is gone", kind);
+		assert.deepEqual([w.starts.size, w.jobs.listRuns().length], [0, 0], `${kind}: nothing runs`);
+	}
+});
+
+test("[lane-transcript] two transcripts in the lane's directory whose headers name the question's session: no transcript, and the answer is refused", async () => {
+	const w = await world();
+	const f = await ask(w, "loop");
+	writeTranscript(path.join(w.jobs.sessionDirFor(JOB), "copy.jsonl"), CALL);
+	await yes(w, f);
+	assert.deepEqual(await meetRow(w, f), { met: "E3", exit: "refused" });
+	assert.equal(find(w, f.id)?.answer?.state, "not_run");
+	assert.equal(w.starts.size, 0);
+});
+
+test("[lane-transcript] a yes to a run's finding resumes the transcript its transcript_id names in the lane's directory, and never a path the finding names", { timeout: 30_000 }, async () => {
+	const w = await world();
+	const lane = w.jobs.sessionDirFor(JOB);
+	const own = path.join(lane, "run.jsonl");
+	writeTranscript(own, CALL, undefined, "0199eeee-0000-7000-8000-0000000000e1");
+	const g = await news(w, { transcript: "/hand/edited.jsonl", transcript_id: "0199eeee-0000-7000-8000-0000000000e1" });
+	assert.deepEqual((await started(w, g)).resume, { file: own, sessionId: "0199eeee-0000-7000-8000-0000000000e1" }, "the lane's file whose header names the id");
+
+	const v = await world();
+	const fifo = path.join(v.jobs.sessionDirFor(JOB), "fifo.jsonl");
+	execFileSync("mkfifo", [fifo]);
+	const elsewhere = path.join(v.dir, "elsewhere", "conv.jsonl");
+	writeTranscript(elsewhere, CALL, undefined, CONV);
+	fs.symlinkSync(elsewhere, path.join(v.jobs.sessionDirFor(JOB), "link.jsonl"));
+	const named = await news(v, { transcript: fifo });
+	const linked = await news(v, { text: "another", transcript: elsewhere, transcript_id: CONV });
+	assert.equal((await started(v, named)).resume, undefined, "a path with no id: a new session, and the FIFO is never opened");
+	assert.equal((await started(v, linked)).resume, undefined, "an id only a symlink in the lane's directory leads to: a new session");
+});
+
+test("[copied-ask] a copy of a question under another id is E1: a yes to it starts nothing, and the question's own finding still runs once", async () => {
+	const w = await world();
+	const f = await ask(w, "loop");
+	const { id: _id, created_at: _at, status: _status, ...copy } = f;
+	const forged = await w.inbox.append({ ...copy, text: f.text });
+	assert.notEqual(forged.id, f.id);
+	assert.equal(forged.ask?.id, f.ask!.id, "the same ask");
+	await yes(w, forged);
+	assert.deepEqual(await meetRow(w, forged), { met: "E1", exit: "stale" });
+	assert.equal(w.starts.size, 0, "the copy starts nothing");
+	await yes(w, f);
+	await settle(w);
+	assert.equal(w.starts.get(f.id), 1, "the question's own finding runs once");
+	assert.equal(find(w, f.id)?.answer?.state, "done");
 });

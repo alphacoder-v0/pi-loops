@@ -4,12 +4,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { test } from "node:test";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { answerCap } from "../src/ask.ts";
+import { resolveCap } from "../src/ask.ts";
 import { GuardSeats } from "../src/guard.ts";
 import type { SubagentRequest } from "../src/runner.ts";
 import { createInProcessRunner } from "../src/sdk-runner.ts";
 import { openStores } from "../src/stores.ts";
-import { closeLoopRun, closeSteps, ensureRecord, runLoop, stoppedTogether, aloneIn } from "../src/loop-run.ts";
+import { DEFAULT_RUN_TIMEOUT_MS, closeLoopRun, closeSteps, ensureRecord, runLoop, stoppedTogether, aloneIn } from "../src/loop-run.ts";
 import type { LoopRunDeps, ProcessStop, RunRecordM4b } from "../src/loop-run.ts";
 import { type EngineSinks } from "../src/engine.ts";
 import { RequestStore, type ClaimedRow, type UnclaimedRow } from "../src/requests.ts";
@@ -237,7 +237,7 @@ test("[guard-seated] a loop run whose model asks for a dangerous command files o
 		await run("run-00000000000000000000000000000001");
 
 		assert.deepEqual(requests.map((req) => [req.kind, req.guard?.lane]), [["loop", `@${job.id}`], ["checker", undefined]], "the loop's request has a seat in its lane; the checker's has none");
-		assert.deepEqual(requests[0].guard?.cap, answerCap(job, undefined), "the cap is the job's as jobs.json has it");
+		assert.deepEqual(requests[0].guard?.cap, resolveCap(job, DEFAULT_RUN_TIMEOUT_MS), "the cap is the job's as jobs.json has it");
 		assert.deepEqual(requests[0].guard?.origin, { source: "cron:nightly", run_id: "run-00000000000000000000000000000001", cwd, job_id: job.id, who: "nightly" });
 		const questions = stores.inbox.list().filter((f) => f.ask);
 		assert.equal(questions.length, 1, "one question: the checker's blocked call files none");
@@ -265,7 +265,7 @@ test("[seated-tools] a job's tools are the same seated as before; only a job tha
 	try {
 		const toolsSent = async (job: LoopJob, seated: boolean): Promise<string[]> => {
 			const before = fs.existsSync(modelLog) ? fs.readFileSync(modelLog, "utf8").trim().split("\n").length : 0;
-			const guard = seated ? { lane: `@${job.id}` as const, origin: { source: "cron:x", run_id: "r", cwd, who: "x" }, cap: answerCap(job, undefined) } : undefined;
+			const guard = seated ? { lane: `@${job.id}` as const, origin: { source: "cron:x", run_id: "r", cwd, who: "x" }, cap: resolveCap(job, DEFAULT_RUN_TIMEOUT_MS) } : undefined;
 			await real({ cwd, prompt: "list nothing", tools: job.tools, builtinTools: job.builtinTools, timeoutMs: 20_000, hop: 1, kind: "loop", ...(guard ? { guard } : {}) });
 			const body = JSON.parse(fs.readFileSync(modelLog, "utf8").trim().split("\n")[before]);
 			return (body.tools ?? []).map((t: any) => t.function?.name).sort();

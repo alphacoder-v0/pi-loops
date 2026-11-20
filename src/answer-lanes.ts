@@ -5,7 +5,7 @@
  * A conversation's `ans-` rows wait here: its executor comes with the conversation's lease (M5a.9).
  */
 import * as path from "node:path";
-import { type AskCap, type AskOrigin, answerCap, answerPrompt, isAnswerRow } from "./ask.ts";
+import { type AskOrigin, type ResolvedCap, answerPrompt, isAnswerRow, limitNames, narrowCap, resolveCap } from "./ask.ts";
 import type { AnswerExecutor, AnswerStart, Answers, MeetOutcome } from "./answers.ts";
 import { answerClaimLive } from "./engine.ts";
 import { budgetState, loopWait } from "./job-status.ts";
@@ -33,20 +33,23 @@ export interface AnswerLaneDeps {
 	holder(): { readonly pid: number; readonly procStart: string | undefined };
 	budgetCap(): number | undefined;
 	cwdExists(cwd: string): boolean;
-	/** Whether a live pi has this session file open. A transcript that is held is not resumed. */
-	transcriptHeld(file: string): boolean;
-	/** Where a check lane's transcripts are: `sessionDirFor(triggerSessionKey(cwd))`. */
+	/** Whether a live pi has the transcript with this session id open. A transcript that is held is not resumed. */
+	transcriptHeld(sessionId: string): boolean;
+	/** Where a check lane's transcripts are: `checkSessionDir` of src/trigger-runtime.ts. */
 	checkSessionDir(cwd: string): string;
+	/** The cap of the check of project `cwd`, as its own run has it: `checkCap` of src/trigger-runtime.ts. */
+	checkCap(cwd: string): ResolvedCap;
 	/** `run_start`, for a loop lane (design 2.1: which runs fire hooks). */
 	started(job: LoopJob, row: ClaimedRow): void;
 	log(message: string, level?: "info" | "warning", job?: Pick<LoopJob, "cwd">): void;
 	readonly now?: () => number;
 }
 
-/** Where an answer's run sits: its lane's kind, its cap, and the directory of a new transcript. */
+/** Where an answer's run sits: its lane's kind, its cap, and the directory of a new transcript. `refused`: the cap refuses the run, which runs nothing. */
 type AnswerSeat =
-	| { readonly lane: "loop"; readonly job: LoopJob; readonly cap: AskCap; readonly sessionDir: string }
-	| { readonly lane: "check"; readonly cwd: string; readonly cap: AskCap; readonly sessionDir: string };
+	| { readonly lane: "loop"; readonly job: LoopJob; readonly cap: ResolvedCap; readonly sessionDir: string }
+	| { readonly lane: "check"; readonly cwd: string; readonly cap: ResolvedCap; readonly sessionDir: string }
+	| { readonly lane: "refused"; readonly job?: LoopJob; readonly why: string };
 
 /** The lanes this module runs: a loop's and a project's checks. */
 type RunLane = Extract<Lane, { kind: "loop" | "check" }>;
@@ -79,7 +82,7 @@ export function createAnswerLanes(deps: AnswerLaneDeps): AnswerLanes {
 		const self = deps.holder();
 		const live = (row: ClaimedRow): boolean => answerClaimLive(row, self, listed);
 		return {
-			blocked: (_lane, finding) => {
+			blocked: (_lane, finding, transcript) => {
 				if (stopped) return "pi-loops is stopping";
 				const job = loopOf(stores.book().jobs, lane);
 				// A removed loop is E2's, before any hold.
@@ -90,7 +93,6 @@ export function createAnswerLanes(deps: AnswerLaneDeps): AnswerLanes {
 				if (gate !== undefined) return gate;
 				const going = runs.all().some((run) => (job !== undefined && run.jobId === job.id) || run.answer?.lane === lane.id) || stores.requests.list(lane.id).some((row) => row.run !== undefined && live(row as ClaimedRow));
 				if (going) return lane.kind === "loop" ? "another run of the loop is going" : "another answer of this project is running";
-				const transcript = finding?.ask?.session_file ?? finding?.transcript;
 				if (transcript !== undefined && deps.transcriptHeld(transcript)) return "a pi has its transcript open";
 				return undefined;
 			},
@@ -117,15 +119,19 @@ export function createAnswerLanes(deps: AnswerLaneDeps): AnswerLanes {
 		};
 	}
 
-	/** The seat of a run E4 started: its loop as `jobs.json` has it now, or the finding's project. undefined: the loop was removed since. */
+	/**
+	 * The seat of a run E4 started: its loop as `jobs.json` has it now, or the finding's project, with
+	 * the cap `resolveCap` makes of it, narrowed by the cap the question recorded. undefined: the loop
+	 * was removed since.
+	 */
 	function seatOf(lane: RunLane, start: AnswerStart): AnswerSeat | undefined {
 		const asked = start.finding.ask?.run;
-		if (lane.kind === "check") {
-			const cwd = start.finding.cwd;
-			return { lane: "check", cwd, cap: answerCap({ cwd }, asked), sessionDir: deps.checkSessionDir(cwd) };
-		}
-		const job = loopOf(stores.book().jobs, lane);
-		return job && { lane: "loop", job, cap: answerCap(job, asked), sessionDir: stores.jobs.sessionDirFor(job.id) };
+		const job = lane.kind === "loop" ? loopOf(stores.book().jobs, lane) : undefined;
+		if (lane.kind === "loop" && !job) return undefined;
+		const cwd = job?.cwd ?? start.finding.cwd;
+		const cap = narrowCap(job ? resolveCap(job, DEFAULT_RUN_TIMEOUT_MS) : deps.checkCap(cwd), asked);
+		if ("refused" in cap) return { lane: "refused", ...(job ? { job } : {}), why: `the question was asked in ${cap.asked}, and this run would be in ${cap.cwd}` };
+		return job ? { lane: "loop", job, cap, sessionDir: stores.jobs.sessionDirFor(job.id) } : { lane: "check", cwd, cap, sessionDir: deps.checkSessionDir(cwd) };
 	}
 
 	async function drain(lane: Lane, at: number): Promise<MeetOutcome[]> {
@@ -195,10 +201,13 @@ async function runAnswer(start: AnswerStart, seat: AnswerSeat | undefined, deps:
 	const runId = row.run.id;
 	const running = deps.runs.get(runId);
 	const signal = running?.ctrl.signal ?? AbortSignal.abort();
-	const job = seat?.lane === "loop" ? seat.job : undefined;
+	const job = seat?.lane === "loop" || seat?.lane === "refused" ? seat.job : undefined;
+	const capOf = seat && seat.lane !== "refused" ? seat.cap : undefined;
 	try {
 		let result: RunnerResult;
-		if (!seat || signal.aborted) {
+		if (seat?.lane === "refused") {
+			result = failedRun(`refused: ${seat.why}`);
+		} else if (!seat || signal.aborted) {
 			result = failedRun("aborted", { stopReason: "aborted" });
 		} else {
 			if (job) {
@@ -210,13 +219,12 @@ async function runAnswer(start: AnswerStart, seat: AnswerSeat | undefined, deps:
 			const origin: AskOrigin = job
 				? { source: `cron:${job.name ?? job.id.slice(0, "cron-".length + 8)}`, run_id: runId, cwd: job.cwd, job_id: job.id, ...(job.createdBy?.sessionId ? { session_id: job.createdBy.sessionId } : {}), who: job.name ?? job.id }
 				: { source: finding.source, run_id: runId, cwd: cap.cwd, who: `the check of ${path.basename(cap.cwd) || cap.cwd}` };
-			// A resumed transcript keeps its own model unless the job pins one; a new one starts on the process's.
-			const model = cap.model ?? (start.resume === undefined ? session.model : undefined);
-			const thinking = cap.thinking ?? (start.resume === undefined ? session.thinking : undefined);
+			// The runner runs the cap: a resumed transcript keeps its own model unless the job pins one; a new one starts on the process's.
 			try {
 				result = await deps.runner({
-					cwd: cap.cwd, prompt: answerPrompt(finding, row.id, now()), model, thinking, tools: cap.tools, builtinTools: cap.builtin_tools,
-					timeoutMs: cap.timeout_ms ?? DEFAULT_RUN_TIMEOUT_MS, signal, hop: deps.hop + 1, parentSessionId: session.sessionId, parentCwd: session.cwd,
+					cwd: cap.cwd, prompt: answerPrompt(finding, row.id, now()), model: cap.model ?? session.model, thinking: cap.thinking ?? session.thinking,
+					...(limitNames(cap.tools) ? { tools: [...limitNames(cap.tools)!] } : {}), ...(limitNames(cap.builtinTools) ? { builtinTools: [...limitNames(cap.builtinTools)!] } : {}),
+					timeoutMs: cap.timeoutMs, signal, hop: deps.hop + 1, parentSessionId: session.sessionId, parentCwd: session.cwd,
 					kind: job ? "loop" : "trigger", jobId: start.jobId, runId,
 					...(start.resume !== undefined ? { resume: start.resume } : { sessionDir: seat.sessionDir }),
 					guard: { lane: row.lane, origin, cap, ...(start.grant ? { grant: start.grant } : {}) },
@@ -232,13 +240,13 @@ async function runAnswer(start: AnswerStart, seat: AnswerSeat | undefined, deps:
 		const parsed = parseRunOutput(result.text);
 		const stillThere = !job || deps.stores.book().jobs.some((candidate) => candidate.id === job.id);
 		const filed: string[] = [];
-		if (result.ok && stillThere && seat) {
+		if (result.ok && stillThere && capOf) {
 			for (const text of parsed.findings) {
 				try {
 					await deps.stores.inbox.append({
 						source: job ? `cron:${job.name ?? job.id.slice(0, "cron-".length + 8)}` : finding.source,
-						text, run_id: runId, job_id: job?.id ?? finding.job_id, cwd: seat.cap.cwd, kind: findingKind(text),
-						session_id: job ? job.createdBy?.sessionId : finding.session_id, transcript: result.sessionFile, lane: row.lane,
+						text, run_id: runId, job_id: job?.id ?? finding.job_id, cwd: capOf.cwd, kind: findingKind(text),
+						session_id: job ? job.createdBy?.sessionId : finding.session_id, transcript: result.sessionFile, transcript_id: result.sessionId, lane: row.lane,
 					});
 					filed.push(text);
 				} catch (error) { deps.log(`answer ${runId.slice(0, 12)}: inbox append failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
@@ -248,16 +256,16 @@ async function runAnswer(start: AnswerStart, seat: AnswerSeat | undefined, deps:
 		const byPerson = aborted && signal.reason === STOPPED_BY_PERSON;
 		const requestedBy = row.payload?.requested_by ?? finding.claimed_by;
 		const record: RunRecord = {
-			runId, row: row.id, jobId: start.jobId, jobName: job?.name, stateful: parseLane(row.lane)?.kind === "loop",cwd: seat?.cap.cwd ?? finding.cwd,
+			runId, row: row.id, jobId: start.jobId, jobName: job?.name, stateful: parseLane(row.lane)?.kind === "loop", cwd: capOf?.cwd ?? finding.cwd,
 			pid: row.run.pid, startedAt: row.run.started_at, finishedAt: stamp(now()), ok: result.ok, exitCode: result.exitCode,
 			error: result.ok ? undefined : byPerson ? STOPPED_BY_PERSON : redact(result.errorMessage ?? "unknown error"),
 			findings: filed.length, droppedFindings: parsed.droppedFindings, stateUpdated: false,
-			model: result.model ?? seat?.cap.model, usage: result.usage, warning: result.warning, retries: result.retries, compactions: result.compactions,
+			model: result.model ?? capOf?.model ?? undefined, usage: result.usage, warning: result.warning, retries: result.retries, compactions: result.compactions,
 			summary: previewRedacted(filed[0] ?? stripProtocolTags(result.text), 400) || undefined,
 			sessionId: result.sessionId, sessionFile: result.sessionFile,
 			forSession: job ? job.createdBy?.sessionId : finding.session_id,
 			cause: "answer",
-			...(start.resume !== undefined ? { resumed: start.resume } : {}),
+			...(start.resume !== undefined ? { resumed: start.resume.file } : {}),
 			...(result.guard?.grant_used !== undefined ? { grant_used: result.guard.grant_used } : {}),
 			...(requestedBy ? { requestedBy: { sessionId: requestedBy } } : {}),
 			...(aborted ? { aborted: true as const } : {}),

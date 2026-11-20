@@ -3,6 +3,7 @@
  * the name someone gave it, the first thing the person or pi-loops said, and how many messages there are.
  */
 import * as fs from "node:fs";
+import * as path from "node:path";
 import type { DynamicTriggerRule } from "./triggers.ts";
 import type { LoopJob } from "./store.ts";
 import { TURN_TYPE } from "./mark.ts";
@@ -24,22 +25,72 @@ export interface SessionHead {
 const HEAD_BYTES = 64 * 1024;
 
 export function readSessionHead(file: string, bytes: number = HEAD_BYTES): SessionHead | undefined {
-	let text: string;
-	let readBytes = 0;
 	try {
 		const fd = fs.openSync(file, "r");
 		try {
-			const buf = Buffer.alloc(bytes);
-			// `bytes` is a byte window, so the decision to cut is the byte count read, not the
-			// decoded string's length: a multi-byte character makes those differ.
-			readBytes = fs.readSync(fd, buf, 0, bytes, 0);
-			text = buf.toString("utf8", 0, readBytes);
+			return headOf(fd, bytes);
 		} finally {
 			fs.closeSync(fd);
 		}
 	} catch {
 		return undefined;
 	}
+}
+
+/** The header window `laneTranscript` reads: the first line of a session file is short. */
+const LANE_HEAD_BYTES = 16 * 1024;
+const NO_FOLLOW_NO_WAIT = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
+
+/**
+ * The transcripts of one lane's own directory, by the session id each header names. Only an entry
+ * that `lstat` gives as a regular file is opened, without following a link and without waiting, and
+ * only for its header: a symlink, a FIFO or a directory is never opened. An id that two files name
+ * maps to undefined: it proves neither. `dir` is the lane's directory as pi-loops derives it from the
+ * lane, never a path from a finding.
+ */
+export function laneTranscripts(dir: string): Map<string, string | undefined> {
+	const out = new Map<string, string | undefined>();
+	let names: string[];
+	try {
+		names = fs.readdirSync(dir);
+	} catch {
+		return out; // no directory: no transcript
+	}
+	for (const name of names) {
+		const file = path.join(dir, name);
+		let id: string | undefined;
+		try {
+			const st = fs.lstatSync(file);
+			if (!st.isFile()) continue;
+			const fd = fs.openSync(file, NO_FOLLOW_NO_WAIT);
+			try {
+				// The entry changed between lstat and open: not the file lstat saw.
+				const opened = fs.fstatSync(fd);
+				if (!opened.isFile() || opened.ino !== st.ino || opened.dev !== st.dev) continue;
+				id = headOf(fd, LANE_HEAD_BYTES)?.id;
+			} finally {
+				fs.closeSync(fd);
+			}
+		} catch {
+			continue; // gone or unreadable since the listing: no transcript of this lane
+		}
+		if (id === undefined) continue;
+		out.set(id, out.has(id) ? undefined : file);
+	}
+	return out;
+}
+
+/** The one transcript in `dir` whose header names `sessionId`; undefined when none or more than one does. */
+export function laneTranscript(dir: string, sessionId: string): string | undefined {
+	return laneTranscripts(dir).get(sessionId);
+}
+
+function headOf(fd: number, bytes: number): SessionHead | undefined {
+	const buf = Buffer.alloc(bytes);
+	// `bytes` is a byte window, so the decision to cut is the byte count read, not the
+	// decoded string's length: a multi-byte character makes those differ.
+	const readBytes = fs.readSync(fd, buf, 0, bytes, 0);
+	const text = buf.toString("utf8", 0, readBytes);
 	const lines = text.split("\n");
 	let header: { type?: unknown; id?: unknown; cwd?: unknown; timestamp?: unknown };
 	try {

@@ -12,6 +12,7 @@ import { realpathish } from "./paths.ts";
 import { sameProject, withinProject } from "./paths.ts";
 import { capRedacted, previewRedacted } from "./redact.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
+import { type ResolvedCap, resolveCap } from "./ask.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import type { JobStore } from "./store.ts";
 import type { Inbox } from "./inbox.ts";
@@ -140,12 +141,34 @@ export const MAX_PENDING_PUSHES = 32;
  * one shared budget of 40 — and each project's prune deleted the other's evidence. So the readable
  * basename keeps its place and a short digest of the resolved path makes it unique. Resolved the way
  * everything else here compares paths (`realpathish`), so a worktree reached through a symlink is
- * still the same project.
+ * still the same project. The name is the resolved path's too: a project reached through a symlink
+ * keeps its checks' transcripts where the checks of its real path keep them.
  */
 export function triggerSessionKey(cwd: string): string {
-	const base = path.basename(cwd || "unknown").replace(/[^A-Za-z0-9._-]/g, "_") || "unknown";
-	const digest = createHash("sha256").update(realpathish(cwd || "unknown")).digest("hex").slice(0, 8);
+	const real = realpathish(cwd || "unknown");
+	const base = path.basename(real).replace(/[^A-Za-z0-9._-]/g, "_") || "unknown";
+	const digest = createHash("sha256").update(real).digest("hex").slice(0, 8);
 	return `triggers-${base}-${digest}`;
+}
+
+/**
+ * A project's check session directory: where its checks write their transcripts, and where an answer
+ * in its check lane finds them. The one source for both, from the resolved path of `cwd`.
+ */
+export function checkSessionDir(jobs: Pick<JobStore, "sessionDirFor">, cwd: string): string {
+	return jobs.sessionDirFor(triggerSessionKey(cwd));
+}
+
+/**
+ * The cap of a project's check, the one source for the check's own run and for the run of an answer
+ * in its check lane: the longest timeout its rules name, else `runTimeoutMs` (`[triggers]
+ * run_timeout_secs`); the model and thinking level of the first rule that pins a model.
+ */
+export function checkCap(cwd: string, rules: readonly Pick<DynamicTriggerRule, "timeoutMs" | "model" | "thinking">[], runTimeoutMs: number): ResolvedCap {
+	// A thinking level belongs to the model it was chosen for: both come from one rule.
+	const withModel = rules.find((r) => r.model);
+	const timeoutMs = rules.reduce((max, r) => Math.max(max, r.timeoutMs ?? 0), 0) || runTimeoutMs;
+	return resolveCap({ cwd, ...(withModel?.model ? { model: withModel.model } : {}), ...(withModel?.thinking ? { thinking: withModel.thinking } : {}), timeoutMs }, runTimeoutMs);
 }
 
 /**
@@ -312,6 +335,11 @@ export class TriggerRuntime {
 	 * at `~/proj/src` or through a symlink to it: comparing the cwd strings silently diverted those
 	 * promotions to the inbox.
 	 */
+	/** The cap of the check of project `cwd` as its enabled rules have it now: what an answer in its check lane runs under (`checkCap`). */
+	checkCapOf(cwd: string): ResolvedCap {
+		return checkCap(cwd, this.rulesFor(cwd), this.runTimeoutMs);
+	}
+
 	private rulesFor(cwd: string | undefined): DynamicTriggerRule[] {
 		const all = this.store.load().filter((r) => r.enabled);
 		return cwd ? all.filter((r) => withinProject(r.cwd, cwd)) : all;
@@ -665,20 +693,17 @@ export class TriggerRuntime {
 		this.store.appendAudit({ cwd, type: "trigger_result", traceId: trigger.traceId, state: "running", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { rule_count: rules.length, cwd, ...(prechecked?.length ? { prechecked } : {}), ...envelopeOf(trigger) } });
 
 		// The check runs with the model the rules were created under, not whatever the process that
-		// happens to own the timer is using. Both come from the first rule that recorded a model,
-		// because a thinking level belongs to the model it was chosen for: pairing them with a level
-		// from some other rule is how a check asks for a budget the model does not have.
-		const withModel = rules.find((r) => r.model);
-		const model = withModel?.model ?? session.model;
-		const thinking = withModel?.thinking ?? session.thinking;
+		// happens to own the timer is using (`checkCap`), and with the longest per-rule timeout.
+		const cap = checkCap(cwd, rules, this.runTimeoutMs);
+		const model = cap.model ?? session.model;
+		const thinking = cap.thinking ?? session.thinking;
+		const timeoutMs = cap.timeoutMs;
 		const lane = checkLane(cwd);
 		let result: RunnerResult;
 		try {
-			// A check runs every rule of the project, so the longest per-rule cap wins.
-			const timeoutMs = rules.reduce((max, r) => Math.max(max, r.timeoutMs ?? 0), 0) || this.runTimeoutMs;
 			// The guard's seat: a dangerous call files a question in the project's check lane.
-			const guard = lane === undefined ? undefined : { lane, origin: { source: `trigger:${trigger.sourceLabel}`, run_id: trigger.traceId, cwd, who: `the check of ${path.basename(cwd) || cwd}` }, cap: { cwd, ...(withModel?.model ? { model: withModel.model } : {}), ...(withModel?.thinking ? { thinking: withModel.thinking } : {}), timeout_ms: timeoutMs } };
-			result = await this.runner({ cwd, prompt, model, thinking, timeoutMs, signal: ctrl.signal, sessionDir: this.jobStore.sessionDirFor(triggerSessionKey(cwd)), hop: this.hop + 1, parentSessionId: session.sessionId, parentCwd: session.cwd, kind: "trigger", traceId: trigger.traceId, ...(guard ? { guard } : {}) });
+			const guard = lane === undefined ? undefined : { lane, origin: { source: `trigger:${trigger.sourceLabel}`, run_id: trigger.traceId, cwd, who: `the check of ${path.basename(cwd) || cwd}` }, cap };
+			result = await this.runner({ cwd, prompt, model, thinking, timeoutMs, signal: ctrl.signal, sessionDir: checkSessionDir(this.jobStore, cwd), hop: this.hop + 1, parentSessionId: session.sessionId, parentCwd: session.cwd, kind: "trigger", traceId: trigger.traceId, ...(guard ? { guard } : {}) });
 		} catch (err: any) {
 			result = failedRun(err?.message ?? String(err));
 		} finally {
@@ -689,7 +714,7 @@ export class TriggerRuntime {
 		// to be the one the transcripts were written under, or the prune looks in a directory that
 		// does not exist and silently keeps everything.
 		// A transcript a finding points at, or an open answer resumes, is kept.
-		this.jobStore.pruneSessions(triggerSessionKey(cwd), TRIGGER_SESSIONS_KEPT, lane === undefined ? undefined : this.inbox?.pinnedTranscripts({ lane }));
+		this.jobStore.pruneSessions(triggerSessionKey(cwd), TRIGGER_SESSIONS_KEPT, lane === undefined ? undefined : this.inbox?.pinnedTranscripts({ lane }, checkSessionDir(this.jobStore, cwd)));
 
 		const summary = result.text.trim();
 		// A check killed by the run timeout (or aborted) has usually already *executed* the matching
@@ -710,7 +735,7 @@ export class TriggerRuntime {
 			const source = `trigger:${trigger.sourceLabel}`;
 			for (const [forSession, group] of byCreator(matchedRules)) {
 				try {
-					const there = await this.inbox.appendOnce({ source, text: summary, run_id: trigger.traceId, job_id: group[0].id, cwd, session_id: forSession, lane, transcript: result.sessionFile }, { run_id: trigger.traceId, source, session_id: forSession }, { unlessRepeat: true });
+					const there = await this.inbox.appendOnce({ source, text: summary, run_id: trigger.traceId, job_id: group[0].id, cwd, session_id: forSession, lane, transcript: result.sessionFile, transcript_id: result.sessionId }, { run_id: trigger.traceId, source, session_id: forSession }, { unlessRepeat: true });
 					inboxDecision = there.run_id === trigger.traceId ? "filed" : (inboxDecision ?? "repeat");
 				} catch (err: any) {
 					this.log(`trigger ${trigger.traceId.slice(0, 8)}: inbox append failed: ${err?.message ?? err}`);

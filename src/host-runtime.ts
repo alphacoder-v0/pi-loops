@@ -19,7 +19,7 @@ import { type EngineSinks, laneClaimLive, promotionTarget, promotionView, ruleRe
 import type { ClaimedRow, Row } from "./requests.ts";
 import { type AnswerLanes, createAnswerLanes } from "./answer-lanes.ts";
 import { type Answers, createAnswers } from "./answers.ts";
-import { parseLane } from "./lane.ts";
+import { type LaneId, parseLane } from "./lane.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { type BackgroundExecutor, createBackgroundExecutor } from "./background-executor.ts";
 import { RunList } from "./run-list.ts";
@@ -36,9 +36,9 @@ import { runClockTick, type TickScope } from "./clock.ts";
 import { FAILING_AFTER, failurePause } from "./backoff.ts";
 import { computeDue } from "./schedule.ts";
 import { type ToolHost, automationTools, createLoopJob } from "./tools.ts";
-import { TriggerRuntime, checkLane, promotionToInbox, triggerSessionKey } from "./trigger-runtime.ts";
+import { TriggerRuntime, checkLane, checkSessionDir, promotionToInbox } from "./trigger-runtime.ts";
 import { auditCronFinish, auditCronStart, controlPlanePreflight } from "./triggers.ts";
-import { readSessionHead, shortSessionId } from "./session-head.ts";
+import { shortSessionId } from "./session-head.ts";
 import { DEAD_SESSION_MARKER } from "./convert-v2.ts";
 
 export interface HostRuntimeDeps {
@@ -142,11 +142,12 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	 */
 	const runHooks = new Map<string, HookRunner>();
 
-	function hookRunnerFor(job: LoopJob, runId: string): HookRunner | undefined {
+	function hookRunnerFor(job: LoopJob, runId: string, opts: { projectHooks: boolean } = { projectHooks: true }): HookRunner | undefined {
 		// A model can pick a job's cwd (`cron_create` takes one) and nobody is here to answer a trust
 		// prompt, so a project's own hooks.toml needs pi's saved trust for that exact directory —
-		// the same bar the host puts in front of a project's MCP servers.
-		const trusted = !!deps.isProjectTrusted?.(job.cwd);
+		// the same bar the host puts in front of a project's MCP servers. A job that is gone has no
+		// project to trust: only the user's own hooks.
+		const trusted = opts.projectHooks && !!deps.isProjectTrusted?.(job.cwd);
 		const runner = new HookRunner({
 			loopsDir: dir,
 			projectCwd: job.cwd,
@@ -165,7 +166,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		if (!trusted) {
 			const kept = runner.hooks.filter((h) => h.source === "user");
 			if (kept.length !== runner.hooks.length) {
-				log(`hooks: ignoring ${runner.hooks.length - kept.length} project hook rule(s) in ${job.cwd}: pi has not trusted that directory`);
+				log(`hooks: ignoring ${runner.hooks.length - kept.length} project hook rule(s) in ${job.cwd}: ${opts.projectHooks ? "pi has not trusted that directory" : "the job is gone"}`);
 				runner.hooks.length = 0;
 				runner.hooks.push(...kept);
 			}
@@ -241,14 +242,22 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	/**
 	 * C2 of an answer's closing in a loop lane: `run_end`. A run closed by the process that ran it has
 	 * the hook runner its `run_start` made; one closed after a restart (F2) has none, so it is made here
-	 * from the record, from hooks.toml as the loop's other runs read it.
+	 * for the loop the lane names, from hooks.toml as the loop's other runs read it. A record whose
+	 * `jobId` is not that loop's fires nothing: the run log is read, and a record in it names any job.
 	 */
-	const answerRunEnd = (record: RunRecord): void => {
+	const answerRunEnd = (record: RunRecord, lane: LaneId): void => {
+		const parsed = parseLane(lane);
+		const jobId = parsed?.kind === "loop" ? parsed.id.slice(1) : undefined;
+		if (jobId === undefined || record.jobId !== jobId) {
+			log(`answer ${record.runId.slice(0, 12)}: run_end not fired, the record names ${record.jobId} and the lane is ${lane}`);
+			return;
+		}
 		if (runHooks.has(record.runId)) return loopFinished(record);
 		// A record written for a process that died names no job's name: the loop's own, as its hooks know it.
-		const job = stores.book().jobs.find((candidate) => candidate.id === record.jobId);
+		const job = stores.book().jobs.find((candidate) => candidate.id === jobId);
 		const named = record.jobName === undefined && job?.name !== undefined ? { ...record, jobName: job.name } : record;
-		hookRunnerFor(job ?? ({ id: record.jobId, name: record.jobName, cwd: record.cwd } as LoopJob), record.runId);
+		// A removed job's record names a cwd nobody vouches for now: its run_end loads no project hooks.
+		hookRunnerFor(job ?? ({ id: jobId, name: record.jobName, cwd: record.cwd } as LoopJob), record.runId, { projectHooks: job !== undefined });
 		loopFinished(named);
 	};
 	const loopLog = (message: string, level?: "info" | "warning", job?: Pick<LoopJob, "cwd">): void => { log(redact(message)); if (level !== "info") notice(message, job?.cwd); };
@@ -273,8 +282,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			log: loopLog,
 		},
 	});
-	/** A check lane's transcripts: where its checks keep them. */
-	const checkSessionDir = (cwd: string): string => stores.jobs.sessionDirFor(triggerSessionKey(cwd));
+	/** A check lane's transcripts: where its checks keep them (`checkSessionDir`, the one source). */
+	const checkDir = (cwd: string): string => checkSessionDir(stores.jobs, cwd);
 	/** The answer protocol over this directory's stores (src/answers.ts). */
 	const answers: Answers = createAnswers({
 		inbox: stores.inbox,
@@ -283,18 +292,15 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		audit: stores.rules,
 		sessionFile: (id) => leases.read(id)?.sessionFile,
 		entries: (file) => (fs.existsSync(file) ? sessionFileEntries(file) : undefined),
-		checkSessionDir,
+		checkSessionDir: checkDir,
 		checkLaneOf: checkLane,
 		runEnd: answerRunEnd,
 		self: createdBy,
 		now: Date.now,
 		log,
 	});
-	/** A transcript a live pi has open: a window or the page holds the conversation its header names. */
-	const transcriptHeld = (file: string): boolean => {
-		const id = readSessionHead(file, 4096)?.id;
-		return id !== undefined && parseLane(id)?.kind === "conversation" && (liveHolderPid(leases, id) !== undefined || !!deps.pageHolds?.(id));
-	};
+	/** A transcript a live pi has open: a window or the page holds the conversation of its session id. No file is read. */
+	const transcriptHeld = (id: string): boolean => parseLane(id)?.kind === "conversation" && (liveHolderPid(leases, id) !== undefined || !!deps.pageHolds?.(id));
 	const answerLanes: AnswerLanes = createAnswerLanes({
 		answers,
 		stores,
@@ -307,7 +313,9 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		budgetCap: () => deps.config().dailyBudgetUsd,
 		cwdExists: fs.existsSync,
 		transcriptHeld,
-		checkSessionDir,
+		checkSessionDir: checkDir,
+		// The cap of a check's answer is the check's own, from the same function (`checkCap`).
+		checkCap: (cwd) => triggers.checkCapOf(cwd),
 		started: loopStarted,
 		log: loopLog,
 	});

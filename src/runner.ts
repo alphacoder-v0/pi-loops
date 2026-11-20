@@ -56,10 +56,17 @@ export interface RunnerResult {
  * `resume`: an answer's run opens this transcript in place of a new one, and keeps its `kind`, so a
  * resumed loop run shares the loaded resources of its directory and gets the `customTools` of a loop
  * run. Its model and thinking level are the transcript's own unless the request pins them, and its
- * cost is its own, not the transcript's. A `resume` whose file is not there fails the run before any
- * session is made.
+ * cost is its own, not the transcript's. `resume.sessionId` is the session `laneTranscript` chose the
+ * file for: a file that is not there, or is no longer a regular file, fails the run before any session
+ * is made, and a file that opens as another session fails it before any prompt.
  */
-export type Reopen = { readonly sessionFile?: string; readonly resume?: undefined } | { readonly sessionFile?: undefined; readonly resume: string };
+export type Reopen = { readonly sessionFile?: string; readonly resume?: undefined } | { readonly sessionFile?: undefined; readonly resume: Resume };
+
+/** The transcript an answer's run resumes, and pi's session id it must open as. */
+export interface Resume {
+	readonly file: string;
+	readonly sessionId: string;
+}
 
 interface RequestFields {
 	cwd: string;
@@ -110,7 +117,7 @@ export type SubagentRequest = RequestFields &
 export type SubagentRunner = (req: SubagentRequest) => Promise<RunnerResult>;
 
 /** The existing file a request opens: a held turn's conversation, or a resumed transcript. */
-export const opensExisting = (req: Pick<SubagentRequest, "sessionFile" | "resume">): string | undefined => req.sessionFile ?? req.resume;
+export const opensExisting = (req: Pick<SubagentRequest, "sessionFile" | "resume">): string | undefined => req.sessionFile ?? req.resume?.file;
 
 export function failedRun(message: string, extra: Partial<RunnerResult> = {}): RunnerResult {
 	return { ok: false, exitCode: 1, timedOut: false, text: "", errorMessage: message, usage: { input: 0, output: 0, cost: 0, turns: 0 }, ...extra };

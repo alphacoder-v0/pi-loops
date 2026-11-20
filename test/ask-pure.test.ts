@@ -15,7 +15,6 @@ import {
 	type MeetFacts,
 	type StepInput,
 	type StepRefusal,
-	answerCap,
 	answerRow,
 	answerRowId,
 	answerStatus,
@@ -24,6 +23,7 @@ import {
 	askId,
 	besideId,
 	blockedCall,
+	carriesAsk,
 	canonicalJson,
 	closeOutcome,
 	decideSay,
@@ -34,12 +34,16 @@ import {
 	meetAnswerRow,
 	noRow,
 	noRowId,
+	narrowCap,
 	questionFinding,
+	recordedCap,
+	resolveCap,
 	readAskFields,
 	repairRows,
 } from "../src/ask.ts";
 import { ASKS_OPEN_PER_LANE, askedLines } from "../src/ask.ts";
 import type { InboxEntry as Finding } from "../src/inbox.ts";
+import type { ResolvedCap } from "../src/ask.ts";
 import { BACKOFF_MS } from "../src/backoff.ts";
 import type { ClaimedRow, Row } from "../src/requests.ts";
 import type { RunRecord } from "../src/store.ts";
@@ -50,7 +54,9 @@ const SELF: Row["created_by"] = { pid: 4242, instance: "test", version: "0.24.3"
 const LOOP = "@cron-a1";
 const CHECK = "@check-proj-1a2b3c4d";
 const CONV = "01a1dce4-8ad1-77c0-89b0-475ccfeaf683";
-const ID = `inb-${"a".repeat(32)}`;
+/** pi's session id of the run that asked, and the finding Q1 filed for its call. */
+const SID = "0199aaaa-0000-7000-8000-000000000001";
+const ID = askFindingId(askId(SID, "call-1"));
 const CLAIM: AnswerClaim = { id: "run-1", pid: 4242, started_at: AT };
 const OTHER_CLAIM: AnswerClaim = { id: "run-2", pid: 4242, started_at: AT };
 const CALL: Call = { tool: "bash", tool_call_id: "call-1", command: "git push --force origin main", input_sha256: inputHash({ command: "git push --force origin main" }), reason: "git push --force on main/master" };
@@ -65,7 +71,7 @@ function base(over: Partial<Finding> = {}): Finding {
 }
 
 function question(over: Partial<Finding> = {}): Finding {
-	const ask = { kind: "call" as const, id: askId("/s/a.jsonl", CALL.tool_call_id), lane: LOOP, session_file: "/s/a.jsonl", title: "nightly asks to run a command", call: CALL, created_at: AT };
+	const ask = { kind: "call" as const, id: askId(SID, CALL.tool_call_id), lane: LOOP, session_id: SID, title: "nightly asks to run a command", call: CALL, created_at: AT };
 	return base({ ask, text: "Run `git push --force origin main`? (git push --force on main/master) · waits: nightly went on without it · if not: it stays undone", ...over });
 }
 
@@ -80,6 +86,7 @@ const ARMS: Record<Exclude<AnswerFrom, "none">, Answer> = {
 const FROM: readonly (AnswerFrom | "unreadable")[] = ["none", "pending", "started", "done", "unfinished", "not_run", "cancelled", "unreadable"];
 
 /** A finding at `state`: `new` with no answer for `none`, else a real yes with that answer. */
+const atState = (state: AnswerFrom | "unreadable", over: Partial<Finding> = {}): Finding => at(state, over);
 function at(state: AnswerFrom | "unreadable", over: Partial<Finding> = {}): Finding {
 	if (state === "none") return question(over);
 	const answer = state === "unreadable" ? { state: "unreadable" as const, raw: { state: "later" } } : ARMS[state];
@@ -194,17 +201,17 @@ test("[V1] a cancel: cancelled and the successor, open again with the same text 
 });
 
 test("each derived id is stable for one input and differs for another", () => {
-	assert.match(askId("/s/a.jsonl", "c1"), /^ask-[0-9a-f]{32}$/);
-	assert.equal(askId("/s/a.jsonl", "c1"), askId("/s/a.jsonl", "c1"));
-	assert.notEqual(askId("/s/a.jsonl", "c1"), askId("/s/a.jsonl", "c2"));
-	assert.notEqual(askId("/s/a.jsonl", "c1"), askId("/s/b.jsonl", "c1"));
+	assert.match(askId("s-a", "c1"), /^ask-[0-9a-f]{32}$/);
+	assert.equal(askId("s-a", "c1"), askId("s-a", "c1"));
+	assert.notEqual(askId("s-a", "c1"), askId("s-a", "c2"));
+	assert.notEqual(askId("s-a", "c1"), askId("s-b", "c1"));
 	assert.match(askFindingId("ask-1"), /^inb-[0-9a-f]{32}$/);
 	assert.equal(askFindingId("ask-1"), askFindingId("ask-1"));
 	assert.notEqual(askFindingId("ask-1"), askFindingId("ask-2"));
 	assert.equal(besideId(ID, "again"), besideId(ID, "again"));
 	assert.equal(new Set([besideId(ID, "again"), besideId(ID, "outcome"), besideId(ID, "not-run"), besideId(`inb-${"b".repeat(32)}`, "again")]).size, 4);
-	assert.equal(answerRowId(ID), `ans-${"a".repeat(32)}`, "the 32 hex of the finding's id");
-	assert.equal(noRowId(ID), `no-${"a".repeat(32)}`);
+	assert.equal(answerRowId(ID), `ans-${ID.slice(4)}`, "the 32 hex of the finding's id");
+	assert.equal(noRowId(ID), `no-${ID.slice(4)}`);
 	assert.match(answerRowId("hand written"), /^ans-[0-9a-f]{32}$/, "an id of another shape is hashed");
 	assert.equal(answerRowId("hand written"), answerRowId("hand written"));
 	assert.notEqual(answerRowId("hand written"), answerRowId("hand written 2"));
@@ -214,14 +221,14 @@ test("each derived id is stable for one input and differs for another", () => {
 });
 
 test("[Q1] the finding of a blocked call: derived id, the ask, and a checkpoint text", () => {
-	const made = questionFinding(CALL, { lane: LOOP, sessionFile: "/s/a.jsonl", cap: { cwd: "/proj", tools: ["bash"] } }, { source: "cron:cron-a1", run_id: "r1", cwd: "/proj", job_id: "cron-a1", who: "nightly" }, AT);
-	assert.equal(made.id, askFindingId(askId("/s/a.jsonl", "call-1")));
+	const made = questionFinding(CALL, { lane: LOOP, sessionId: SID, sessionFile: "/s/a.jsonl", cap: resolveCap({ cwd: "/proj", tools: ["bash"] }, 900_000) }, { source: "cron:cron-a1", run_id: "r1", cwd: "/proj", job_id: "cron-a1", who: "nightly" }, AT);
+	assert.equal(made.id, askFindingId(askId(SID, "call-1")));
 	assert.equal(made.entry.text, "Run `git push --force origin main`? (git push --force on main/master) · waits: nightly went on without it · if not: it stays undone");
 	assert.equal(made.entry.kind, "checkpoint");
 	assert.equal(made.entry.transcript, "/s/a.jsonl");
 	assert.equal(made.entry.lane, LOOP);
-	assert.deepEqual(made.entry.ask, { kind: "call", id: askId("/s/a.jsonl", "call-1"), lane: LOOP, session_file: "/s/a.jsonl", title: "nightly asks to run a command", call: CALL, run: { cwd: "/proj", tools: ["bash"] }, created_at: AT });
-	assert.equal(questionFinding(CALL, { lane: LOOP, sessionFile: "/s/a.jsonl", cap: { cwd: "/proj" } }, { source: "s", run_id: "r2", cwd: "/proj", who: "x" }, LATER).id, made.id, "one blocked call, one finding");
+	assert.deepEqual(made.entry.ask, { kind: "call", id: askId(SID, "call-1"), lane: LOOP, session_id: SID, title: "nightly asks to run a command", call: CALL, run: { cwd: "/proj", tools: ["bash"], timeout_ms: 900_000 }, created_at: AT }, "the session id the run's SessionManager gave, and no path");
+	assert.equal(questionFinding(CALL, { lane: LOOP, sessionId: SID, sessionFile: "/elsewhere/b.jsonl", cap: resolveCap({ cwd: "/proj" }, 900_000) }, { source: "s", run_id: "r2", cwd: "/proj", who: "x" }, LATER).id, made.id, "one blocked call, one finding, whatever its file is called");
 });
 
 test("laneOf: a finding's lane, else its job's lane as jobs.json has it now, else none", () => {
@@ -261,7 +268,7 @@ test("answerStatus for every state, read from the finding; a pending answer says
 
 const fact: LaneFact = { there: true, lane: LOOP };
 function facts(over: Partial<MeetFacts> = {}): MeetFacts {
-	return { lane: fact, ownProject: true, proof: { ask: askId("/s/a.jsonl", CALL.tool_call_id), check: "there" }, live: false, at: LATER, ...over };
+	return { lane: fact, ownProject: true, proof: { ask: askId(SID, CALL.tool_call_id), check: "there" }, live: false, at: LATER, ...over };
 }
 const queued = (finding: Finding = at("pending")): Row => answerRow(finding, LOOP, AT, SELF);
 const claimed = (run: AnswerClaim = CLAIM, attempts = 0): ClaimedRow => ({ ...queued(), kind: "input", run, attempts });
@@ -291,7 +298,7 @@ test("[E2] a queued yes in a removed loop's lane is not_run, also while the lane
 
 test("[E3] a question whose call is not proved is not_run; each check gives its reason and nothing runs", () => {
 	for (const check of ["file-gone", "outside", "no-call", "another-tool", "another-input", "no-error-result"] as const) {
-		const met = meetAnswerRow(queued(), at("pending"), facts({ proof: { ask: askId("/s/a.jsonl", CALL.tool_call_id), check } }));
+		const met = meetAnswerRow(queued(), at("pending"), facts({ proof: { ask: askId(SID, CALL.tool_call_id), check } }));
 		assert.ok(met.case === "E3" && met.check === check, check);
 		assert.ok(met.case === "E3" && met.write.set.answer?.state === "not_run");
 	}
@@ -304,7 +311,7 @@ test("[E4] a queued yes starts: a grant for a question, none for a plain finding
 	const plain = at("pending", { ask: undefined });
 	assert.deepEqual(meetAnswerRow(queued(plain), plain, facts({ proof: undefined })), { case: "E4" });
 	assert.deepEqual(meetAnswerRow(queued(), at("pending"), facts({ blocked: "the loop is disabled" })), { case: "hold", why: "the loop is disabled" });
-	assert.equal(meetAnswerRow(queued(), at("pending"), facts({ blocked: "the loop is disabled", proof: { ask: askId("/s/a.jsonl", CALL.tool_call_id), check: "no-call" } })).case, "E3", "a blocked lane holds E4 only");
+	assert.equal(meetAnswerRow(queued(), at("pending"), facts({ blocked: "the loop is disabled", proof: { ask: askId(SID, CALL.tool_call_id), check: "no-call" } })).case, "E3", "a blocked lane holds E4 only");
 });
 
 test("[W1] a live claim waits beside pending, started and a final state, before F1", () => {
@@ -346,6 +353,8 @@ test("[deleted-conversation-blocked-lane] the deleted conversation applies while
 });
 
 test("[H1] repairRows puts back a missing row for pending and started, and nothing else", () => {
+	// Findings of a run, not questions: a question is answered on its own finding only (see [copied-ask]).
+	const at = (state: AnswerFrom | "unreadable", over: Partial<Finding> = {}): Finding => atState(state, { ask: undefined, ...over });
 	const open = [
 		at("pending", { id: `inb-${"1".repeat(32)}` }),
 		at("started", { id: `inb-${"2".repeat(32)}` }),
@@ -362,6 +371,7 @@ test("[H1] repairRows puts back a missing row for pending and started, and nothi
 	assert.equal(rows[0].run, undefined, "pending: an unclaimed row");
 	assert.deepEqual(rows[1].run, CLAIM, "started: the claim the finding records");
 	assert.equal(rows[2].lane, "@cron-gone", "the lane is read from the finding, with no job");
+	assert.deepEqual(repairRows([atState("pending", { id: `inb-${"c".repeat(32)}` })], new Map([[LOOP, []]]), { at: LATER, self: SELF }), [], "a copy of a question gets no row: E1 would take it away at every tick");
 });
 
 test("answerRow and noRow: the payload names the finding, and a no tells only a conversation", () => {
@@ -418,10 +428,43 @@ test("readAskFields: a strict ask and answered_by; an answer it cannot read is k
 	assert.deepEqual(readAskFields({ answer: ARMS.unfinished }), { answer: ARMS.unfinished });
 });
 
-test("answerCap: the job now, narrowed by the asking turn; the model is the job's", () => {
-	assert.deepEqual(answerCap({ cwd: "/now", tools: ["bash", "read"], timeoutMs: 60_000, model: "a/b" }, { cwd: "/then", tools: ["bash", "edit"], timeout_ms: 30_000, model: "c/d" }), { cwd: "/now", model: "a/b", tools: ["bash"], timeout_ms: 30_000 });
-	assert.deepEqual(answerCap({ cwd: "/now" }, { cwd: "/then", builtin_tools: ["read"] }), { cwd: "/now", builtin_tools: ["read"] });
-	assert.deepEqual(answerCap({ cwd: "/now" }, undefined), { cwd: "/now" });
+test("[resolved-cap] resolveCap: every field resolved from the job and the code's defaults; a ResolvedCap cannot be built with a field missing", () => {
+	assert.deepEqual(resolveCap({ cwd: "/now" }, 900_000), { cwd: "/now", model: null, thinking: null, tools: "session", builtinTools: "session", timeoutMs: 900_000 });
+	assert.deepEqual(resolveCap({ cwd: "/now", tools: ["bash"], builtinTools: ["read"], timeoutMs: 60_000, model: "a/b", thinking: "high" }, 900_000), { cwd: "/now", model: "a/b", thinking: "high", tools: ["bash"], builtinTools: ["read"], timeoutMs: 60_000 });
+	// @ts-expect-error a ResolvedCap has no field that may be left out: here timeoutMs
+	const missing: ResolvedCap = { cwd: "/now", model: null, thinking: null, tools: "session", builtinTools: "session" };
+	assert.equal(missing.timeoutMs, undefined);
+});
+
+test("[resolved-cap] narrowCap: the job now, narrowed field by field by what the question recorded; it never widens", () => {
+	const job = resolveCap({ cwd: "/now" }, 900_000);
+	assert.equal((narrowCap(job, { cwd: "/now", timeout_ms: 2e9 }) as ResolvedCap).timeoutMs, 900_000, "a job with no timeout and an ask of 2e9 ms: the default");
+	assert.equal((narrowCap(job, { cwd: "/now", timeout_ms: 30_000 }) as ResolvedCap).timeoutMs, 30_000, "the smaller");
+	assert.deepEqual(narrowCap(job, { cwd: "/then" }), { refused: "another-cwd", asked: "/then", cwd: "/now" }, "another cwd is refused");
+	const listed = resolveCap({ cwd: "/now", tools: ["bash", "read"], builtinTools: ["read"], model: "a/b" }, 900_000);
+	const narrowed = narrowCap(listed, { cwd: "/now", tools: ["bash", "edit", "mcp_evil"], builtin_tools: ["read", "write"], model: "c/d", thinking: "max" }) as ResolvedCap;
+	assert.deepEqual([narrowed.tools, narrowed.builtinTools, narrowed.model, narrowed.thinking], [["bash"], ["read"], "a/b", null], "a tool the job does not give is not added; the model is the job's");
+	const cut = narrowCap(job, { cwd: "/now", tools: ["read", "grep"], builtin_tools: ["read"] }) as ResolvedCap;
+	assert.deepEqual([cut.tools, cut.builtinTools], [{ within: ["read", "grep"] }, { within: ["read"] }], "a job that gives the session's tools is only cut by the list: within never adds");
+	assert.equal(narrowCap(listed, undefined), listed);
+	assert.deepEqual(recordedCap(narrowed), { cwd: "/now", model: "a/b", tools: ["bash"], builtin_tools: ["read"], timeout_ms: 900_000 });
+	assert.deepEqual(recordedCap(job), { cwd: "/now", timeout_ms: 900_000 });
+});
+
+test("[copied-ask] a question is answered only on the finding Q1 filed, or on the successor a cancel filed", () => {
+	const copy = at("pending", { id: `inb-${"c".repeat(32)}` });
+	assert.deepEqual(meetAnswerRow(queued(copy), copy, facts()), { case: "E1", why: "the finding is not its question's" }, "a copy of one ask under another id is E1 and starts nothing");
+	const cancelled = at("cancelled");
+	const again = at("pending", { id: besideId(ID, "again") });
+	assert.equal(carriesAsk(again as Finding & { ask: NonNullable<Finding["ask"]> }, [cancelled, again]), true);
+	assert.equal(meetAnswerRow(queued(again), again, facts({ inbox: [cancelled, again] })).case, "E4", "the question open again after a cancel");
+	assert.equal(meetAnswerRow(queued(again), again, facts({ inbox: [at("pending"), again] })).case, "E1", "a successor whose question was not cancelled is a copy");
+});
+
+test("[legacy-ask] a question an older version wrote, with a path and no session id, is still a question", () => {
+	const { session_id: _sid, ...rest } = question().ask!;
+	const legacy = { ...rest, session_file: "/s/a.jsonl" };
+	assert.deepEqual(readAskFields({ ask: legacy }).ask, rest, "read as a question with no session id; the path is not kept");
 });
 
 test("keptByRotation: new, open, unreadable, and a no that still holds", () => {
@@ -451,7 +494,7 @@ test("[C1] [C3] [C4] [V2] [removed-job] [K1] [K2] PROTOCOL orders the writes of 
 });
 
 test("[asked-lines] askedLines: at most ASKS_OPEN_PER_LANE lines, the newest, oldest first; each line screened, redacted and on one line", () => {
-	const question = (n: number, command: string): Finding => ({ id: `inb-${String(n).padStart(32, "0")}`, source: "cron:a", text: "t", created_at: `2026-11-${String(10 + n).padStart(2, "0")}T00:00:00.000Z`, status: "new", kind: "checkpoint", cwd: "/p", ask: { kind: "call", id: `ask-${n}`, lane: LOOP, session_file: "/s.jsonl", title: "t", call: { tool: "bash", tool_call_id: `c${n}`, command, input_sha256: "h", reason: "r" }, created_at: `2026-11-${String(10 + n).padStart(2, "0")}T00:00:00.000Z` } } as unknown as Finding);
+	const question = (n: number, command: string): Finding => ({ id: `inb-${String(n).padStart(32, "0")}`, source: "cron:a", text: "t", created_at: `2026-11-${String(10 + n).padStart(2, "0")}T00:00:00.000Z`, status: "new", kind: "checkpoint", cwd: "/p", ask: { kind: "call", id: `ask-${n}`, lane: LOOP, session_id: "s", title: "t", call: { tool: "bash", tool_call_id: `c${n}`, command, input_sha256: "h", reason: "r" }, created_at: `2026-11-${String(10 + n).padStart(2, "0")}T00:00:00.000Z` } } as unknown as Finding);
 	const token = `ghp_${"a".repeat(36)}`;
 	const findings = [1, 2, 3].map((n) => question(n, `git push --force origin b${n}`)).concat([
 		question(4, `echo hi\ngit push --force origin main`),

@@ -12,7 +12,8 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, createAgentSession } from "@earendil-works/pi-coding-agent";
-import { type Grant, askId, blockedCall, inputHash } from "../src/ask.ts";
+import { type Grant, type ResolvedCap, askId, blockedCall, inputHash, resolveCap } from "../src/ask.ts";
+import { laneTranscript } from "../src/session-head.ts";
 import { GuardSeats, type GuardSeed } from "../src/guard.ts";
 import { Inbox } from "../src/inbox.ts";
 import type { SubagentRequest } from "../src/runner.ts";
@@ -124,7 +125,7 @@ function guardedRunner(root: string, model: Awaited<ReturnType<typeof standIn>>,
 	return { runner, inbox, dropParentModel: () => (parentModel = undefined) };
 }
 
-const seed = (cwd: string, grant?: Grant): GuardSeed => ({ lane: LANE, origin: { source: "cron:a1", run_id: "run-1", cwd, job_id: "cron-a1", who: "the loop a1" }, cap: { cwd }, ...(grant ? { grant } : {}) });
+const seed = (cwd: string, grant?: Grant): GuardSeed => ({ lane: LANE, origin: { source: "cron:a1", run_id: "run-1", cwd, job_id: "cron-a1", who: "the loop a1" }, cap: resolveCap({ cwd }, 20_000), ...(grant ? { grant } : {}) });
 
 test("[reopen-probe] the real guard files the question of a blocked call; the transcript proves it to E3; an extension that changes the input first makes E3 refuse", { timeout: 30_000 }, async () => {
 	const root = tmp("pi-loops-reopen-");
@@ -143,7 +144,8 @@ test("[reopen-probe] the real guard files the question of a blocked call; the tr
 			const asked = inbox.list();
 			assert.equal(asked.length, 1, `${expected}: one question`);
 			const ask = asked[0].ask!;
-			assert.equal(ask.session_file, file, "the question names the run's transcript");
+			assert.equal(ask.session_id, result.sessionId, "the question names the run's session by the id its SessionManager gave");
+			assert.equal(laneTranscript(sessionDir, ask.session_id!), file, "and the lane's directory has that transcript by its header");
 			assert.match(ask.id, /^ask-/);
 			assert.deepEqual(result.guard, { asked: [ask.id] }, "the runner reports what its guard asked");
 			assert.equal(blockedCall(lines(file), ask.call), expected, expected === "there" ? "the stored call is the asked one" : "the stored call is not the one the guard hashed: E3 refuses it");
@@ -171,13 +173,14 @@ test("[reopen-probe] a resumed run opens the same transcript with the transcript
 		const first = await runner({ cwd, prompt: "PROMPT-ONE please run it", timeoutMs: 20_000, hop: 1, kind: "loop", sessionDir, guard: seed(cwd) });
 		const file = first.sessionFile!;
 		const finding = inbox.list()[0];
-		assert.equal(finding.ask?.id, askId(file, finding.ask!.call.tool_call_id));
+		assert.equal(finding.ask?.id, askId(first.sessionId!, finding.ask!.call.tool_call_id));
+		assert.equal(laneTranscript(sessionDir, finding.ask!.session_id!), file, "the transcript is found in the lane's directory by its header");
 		const grant = { finding: finding.id, ask: finding.ask!.id, call: finding.ask!.call } as unknown as Grant;
 		assert.equal(grant.call.input_sha256, inputHash({ command: asked }));
 
 		dropParentModel(); // only the transcript can name a model now
 		const before = lines(model.requests).length;
-		const resumed = await runner({ cwd, prompt: "PROMPT-TWO a person said yes", timeoutMs: 20_000, hop: 1, kind: "loop", resume: file, guard: seed(cwd, grant) });
+		const resumed = await runner({ cwd, prompt: "PROMPT-TWO a person said yes", timeoutMs: 20_000, hop: 1, kind: "loop", resume: { file, sessionId: first.sessionId! }, guard: seed(cwd, grant) });
 		assert.equal(resumed.ok, true, resumed.errorMessage ?? "");
 		assert.equal(resumed.sessionFile, file, "the same transcript");
 		assert.equal(resumed.model, "fake/fake-model", "the transcript's own model");
@@ -188,11 +191,11 @@ test("[reopen-probe] a resumed run opens the same transcript with the transcript
 		assert.deepEqual(resumed.guard, { grant_used: true, asked: [] }, "the granted call ran");
 		assert.equal(inbox.list().length, 1, "and asked nothing");
 
-		const other = await runner({ cwd, prompt: "PROMPT-THREE a person said yes", timeoutMs: 20_000, hop: 1, kind: "loop", resume: file, guard: seed(cwd, grant) });
+		const other = await runner({ cwd, prompt: "PROMPT-THREE a person said yes", timeoutMs: 20_000, hop: 1, kind: "loop", resume: { file, sessionId: first.sessionId! }, guard: seed(cwd, grant) });
 		assert.equal(other.guard?.grant_used, false, "another call is not the granted one");
 		assert.equal(other.guard?.asked.length, 1, "it is asked about");
 
-		const gone = await runner({ cwd, prompt: "PROMPT-TWO", timeoutMs: 20_000, hop: 1, kind: "loop", resume: path.join(root, "gone.jsonl"), guard: seed(cwd, grant) });
+		const gone = await runner({ cwd, prompt: "PROMPT-TWO", timeoutMs: 20_000, hop: 1, kind: "loop", resume: { file: path.join(root, "gone.jsonl"), sessionId: first.sessionId! }, guard: seed(cwd, grant) });
 		assert.deepEqual([gone.ok, gone.guard], [false, undefined], "a resume whose file is gone fails before any session");
 		assert.match(gone.errorMessage!, /the transcript to resume is gone/);
 	} finally {
@@ -203,10 +206,10 @@ test("[reopen-probe] a resumed run opens the same transcript with the transcript
 test("a request opens an existing session one way only: sessionFile or resume", () => {
 	const base = { cwd: "/p", prompt: "x", timeoutMs: 1, hop: 1, kind: "loop" } as const;
 	const held: SubagentRequest = { ...base, sessionFile: "/a.jsonl" };
-	const resumed: SubagentRequest = { ...base, resume: "/a.jsonl" };
+	const resumed: SubagentRequest = { ...base, resume: { file: "/a.jsonl", sessionId: "s" } };
 	// @ts-expect-error resume and sessionFile together do not compile
-	const both: SubagentRequest = { ...base, sessionFile: "/a.jsonl", resume: "/a.jsonl" };
-	assert.deepEqual([held.sessionFile, resumed.resume, both.kind], ["/a.jsonl", "/a.jsonl", "loop"]);
+	const both: SubagentRequest = { ...base, sessionFile: "/a.jsonl", resume: { file: "/a.jsonl", sessionId: "s" } };
+	assert.deepEqual([held.sessionFile, resumed.resume?.file, both.kind], ["/a.jsonl", "/a.jsonl", "loop"]);
 });
 
 test("[review-F2] a session the runner did not seat has no seat, even when its file is a seated run's file", { timeout: 30_000 }, async () => {
@@ -227,7 +230,7 @@ test("[review-F2] a session the runner did not seat has no seat, even when its f
 		const finding = inbox.list()[0];
 		const grant = { finding: finding.id, ask: finding.ask!.id, call: finding.ask!.call } as unknown as Grant;
 		// The seated run waits in `sleep 2` while a held turn with no seat opens the same file.
-		const seated = runner({ cwd, prompt: "PROMPT-SLOW a person said yes", timeoutMs: 20_000, hop: 1, kind: "loop", resume: file, guard: seed(cwd, grant) });
+		const seated = runner({ cwd, prompt: "PROMPT-SLOW a person said yes", timeoutMs: 20_000, hop: 1, kind: "loop", resume: { file, sessionId: first.sessionId! }, guard: seed(cwd, grant) });
 		await new Promise((resolve) => setTimeout(resolve, 700));
 		const before = lines(model.requests).length;
 		const impostor = await runner({ cwd, prompt: "PROMPT-IMPOSTOR", timeoutMs: 20_000, hop: 1, kind: "held", sessionFile: file });
@@ -248,11 +251,14 @@ test("[review-F3] a run with a seat gets no tool its cap leaves out, whatever th
 	fs.mkdirSync(cwd, { recursive: true });
 	const model = await standIn(root, [{ match: "PROMPT-CAP", tool: "bash", args: { command: PUSH } }]);
 	try {
+		const capOf = (over: Partial<ResolvedCap>): ResolvedCap => ({ ...resolveCap({ cwd }, 20_000), ...over });
 		const cases: Array<[string, Partial<SubagentRequest>, GuardSeed["cap"]]> = [
-			["no tools asked, the cap names read", {}, { cwd, tools: ["read"] }],
-			["bash asked, the cap names read", { tools: ["read", "bash"] }, { cwd, tools: ["read"] }],
-			["bash asked, the cap's built-ins are read", { tools: ["read", "bash"] }, { cwd, builtin_tools: ["read"] }],
-			["built-ins asked, the cap's built-ins are read", { builtinTools: ["read", "bash"] }, { cwd, builtin_tools: ["read"] }],
+			["no tools asked, the cap names read", {}, capOf({ tools: ["read"] })],
+			["bash asked, the cap names read", { tools: ["read", "bash"] }, capOf({ tools: ["read"] })],
+			["bash asked, the cap's built-ins are read", { tools: ["read", "bash"] }, capOf({ builtinTools: ["read"] })],
+			["built-ins asked, the cap's built-ins are read", { builtinTools: ["read", "bash"] }, capOf({ builtinTools: ["read"] })],
+			["bash asked, the session's tools within read and grep", { tools: ["read", "bash"] }, capOf({ tools: { within: ["read", "grep"] } })],
+			["the session's built-ins within read and grep", {}, capOf({ builtinTools: { within: ["read", "grep"] } })],
 		];
 		for (const [name, asked, cap] of cases) {
 			const { runner, inbox } = guardedRunner(path.join(root, name.replace(/\W+/g, "-")), model);
@@ -261,7 +267,41 @@ test("[review-F3] a run with a seat gets no tool its cap leaves out, whatever th
 			const offered = (lines(model.requests)[before].tools ?? []).map((t: any) => t.function?.name);
 			assert.ok(offered.includes("read"), `${name}: the cap's tool is there (${offered})`);
 			assert.equal(offered.includes("bash"), false, `${name}: the model is not offered bash (${offered})`);
+			assert.equal(offered.includes("grep"), false, `${name}: a within names grep, which the session does not give, and does not add it (${offered})`);
 			assert.deepEqual([result.guard?.asked, inbox.list().length], [[], 0], `${name}: nothing reaches the guard to ask about`);
+		}
+	} finally {
+		model.fake.kill();
+	}
+});
+
+test("[resume-swap] a resume whose file became a symlink, or opens as another session, is refused before any prompt and writes to no file", { timeout: 30_000 }, async () => {
+	const root = tmp("pi-loops-swap-");
+	const cwd = path.join(root, "proj");
+	const sessionDir = path.join(root, "sessions");
+	fs.mkdirSync(cwd, { recursive: true });
+	const model = await standIn(root, [{ match: "PROMPT-SWAP", tool: "bash", args: { command: "echo hi" } }]);
+	try {
+		const { runner } = guardedRunner(root, model);
+		const a = await runner({ cwd, prompt: "PROMPT-ONE the lane's run", timeoutMs: 20_000, hop: 1, kind: "loop", sessionDir, guard: seed(cwd) });
+		const other = await runner({ cwd, prompt: "PROMPT-ONE another conversation", timeoutMs: 20_000, hop: 1, kind: "loop", sessionDir: path.join(root, "elsewhere"), guard: seed(cwd) });
+		const copy = path.join(root, "elsewhere", "copy-of-a.jsonl");
+		fs.copyFileSync(a.sessionFile!, copy);
+		const cases: Array<[string, string, RegExp]> = [
+			["a symlink to another conversation", path.join(sessionDir, "link-other.jsonl"), /no longer a regular file/],
+			["a symlink to a copy of the lane's own session, outside the lane", path.join(sessionDir, "link-copy.jsonl"), /no longer a regular file/],
+			["a regular file that opens as another session", other.sessionFile!, /opened as another session/],
+		];
+		fs.symlinkSync(other.sessionFile!, cases[0][1]);
+		fs.symlinkSync(copy, cases[1][1]);
+		for (const [name, file, why] of cases) {
+			const sizes = [a.sessionFile!, other.sessionFile!, copy].map((f) => fs.statSync(f).size);
+			const before = lines(model.requests).length;
+			const out = await runner({ cwd, prompt: "PROMPT-SWAP a person said yes", timeoutMs: 20_000, hop: 1, kind: "loop", resume: { file, sessionId: a.sessionId! }, guard: seed(cwd) });
+			assert.equal(out.ok, false, name);
+			assert.match(out.errorMessage ?? "", why, name);
+			assert.equal(lines(model.requests).length, before, `${name}: no prompt reached the model`);
+			assert.deepEqual([a.sessionFile!, other.sessionFile!, copy].map((f) => fs.statSync(f).size), sizes, `${name}: no file was written`);
 		}
 	} finally {
 		model.fake.kill();

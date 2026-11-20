@@ -7,11 +7,12 @@ import * as path from "node:path";
 import { JobStore } from "../src/store.ts";
 import { Inbox } from "../src/inbox.ts";
 import { attentionFrom } from "../src/activity.ts";
-import { MAX_PENDING_PUSHES, TRIGGER_SESSIONS_KEPT, TriggerRuntime, promotionSummaryBody, promotionToInbox, triggerSessionKey, checkLane } from "../src/trigger-runtime.ts";
+import { MAX_PENDING_PUSHES, TRIGGER_SESSIONS_KEPT, TriggerRuntime, checkCap, checkSessionDir, promotionSummaryBody, promotionToInbox, triggerSessionKey, checkLane } from "../src/trigger-runtime.ts";
 import { parseLane } from "../src/lane.ts";
 import { type Trigger, TriggerStore, buildPeriodicCheckTrigger, extractDynamicRuleIds } from "../src/triggers.ts";
 import type { RunnerResult, SubagentRequest } from "../src/runner.ts";
 import { fakeRunner } from "./fake-runner.ts";
+import { resolveCap } from "../src/ask.ts";
 
 /** A runner that matches whatever rules the prompt actually contains, so parallel checks differ. */
 function matchingRunner(extra: Partial<RunnerResult> = {}) {
@@ -771,7 +772,7 @@ test("[guard-seated] a check runs with a seat in its project's check lane; its r
 		process.env.FAKE_PI_REPLY = `matched ${rule.id}. it is there`;
 		const out = await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
 		const lane = checkLane(dir)!;
-		assert.deepEqual(runner.calls[0].guard, { lane, origin: { source: "trigger:local:dynamic", run_id: out!.trigger.traceId, cwd: dir, who: `the check of ${path.basename(dir)}` }, cap: { cwd: dir, timeout_ms: runner.calls[0].timeoutMs } });
+		assert.deepEqual(runner.calls[0].guard, { lane, origin: { source: "trigger:local:dynamic", run_id: out!.trigger.traceId, cwd: dir, who: `the check of ${path.basename(dir)}` }, cap: resolveCap({ cwd: dir }, runner.calls[0].timeoutMs) });
 		const [finding] = inbox.list();
 		assert.ok(out!.sessionFile, "the check wrote a transcript");
 		assert.equal(finding.transcript, out!.sessionFile, "the finding points at it");
@@ -1040,4 +1041,21 @@ test("what a promotion files in the inbox names the project's check lane, and a 
 	const [withProject, without] = inbox.list();
 	assert.deepEqual([withProject.lane, withProject.session_id, withProject.text], [checkLane(dir), "s1", "the build is red"]);
 	assert.equal("lane" in without, false);
+});
+
+test("[check-dir-symlink] a project reached through a symlink keeps its check transcripts in its real path's directory; a real path's directory keeps its name", () => {
+	const root = tmp("pi-loops-trt-link-");
+	const real = path.join(root, "real-proj");
+	fs.mkdirSync(real);
+	const link = path.join(root, "link-proj");
+	fs.symlinkSync(real, link);
+	assert.equal(triggerSessionKey(link), triggerSessionKey(real), "one directory for one project");
+	assert.match(triggerSessionKey(real), /^triggers-real-proj-[0-9a-f]{8}$/, "named for the real directory, as before");
+	const jobs = new JobStore(root);
+	assert.equal(checkSessionDir(jobs, link), checkSessionDir(jobs, real));
+});
+
+test("[check-cap] checkCap: the longest timeout the rules name, else run_timeout_secs; the model and thinking level of the first rule that pins a model", () => {
+	assert.deepEqual(checkCap("/p", [], 60_000), resolveCap({ cwd: "/p" }, 60_000));
+	assert.deepEqual(checkCap("/p", [{ timeoutMs: 30_000 }, { timeoutMs: 120_000, model: "a/b", thinking: "high" }, { model: "c/d" }], 60_000), resolveCap({ cwd: "/p", model: "a/b", thinking: "high", timeoutMs: 120_000 }, 60_000));
 });

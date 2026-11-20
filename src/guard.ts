@@ -7,7 +7,7 @@
  * it with no SDK. `GuardSeats` finds a run's place in the guard by its session file: the guard is
  * one handler per loaded extension set, shared by every run of a directory.
  */
-import { type AskCap, type AskOrigin, type Call, ASK_COMMAND_MAX_CHARS, ASKS_OPEN_PER_LANE, ASKS_PER_TURN, type Grant, NO_HOLDS_MS, callKey, inputHash, questionFinding } from "./ask.ts";
+import { type AskOrigin, type Call, ASK_COMMAND_MAX_CHARS, ASKS_OPEN_PER_LANE, ASKS_PER_TURN, type Grant, NO_HOLDS_MS, type ResolvedCap, callKey, inputHash, limitNames, questionFinding } from "./ask.ts";
 import { dangerousCommandReason } from "./danger.ts";
 import type { Inbox, InboxEntry as Finding } from "./inbox.ts";
 import { cardText } from "./redact.ts";
@@ -160,8 +160,8 @@ function unattendedMessage(reason: string): string {
 export interface GuardSeed {
 	readonly lane: LaneId;
 	readonly origin: AskOrigin;
-	/** The cap of this turn, copied onto each question it opens. */
-	readonly cap: AskCap;
+	/** The cap of this turn: the runner runs it as this says, and `recordedCap` of it goes onto each question it opens. */
+	readonly cap: ResolvedCap;
 	/** The run of an answer row to a question: the one call it admits. */
 	readonly grant?: Grant;
 }
@@ -173,13 +173,16 @@ export interface GuardReport {
 	asked: string[];
 }
 
-/** One run's place in the guard: its seed, its session file, and the two things that change during the run. */
+/** One run's place in the guard: its seed, its session, and the two things that change during the run. */
 export interface GuardSeat {
 	readonly seed: GuardSeed;
+	/** pi's session id of the run, from its own `SessionManager`: what a question records to find its transcript again. */
+	readonly sessionId: string;
+	/** The run's transcript, for a person to open from the finding. No answer reads it by this path. */
 	readonly sessionFile: string;
-	/** `seed.lane` and `seed.cap`, beside the session file: what `questionFinding` copies onto an ask. */
+	/** `seed.lane` and `seed.cap`, beside the session: what `questionFinding` copies onto an ask. */
 	readonly lane: LaneId;
-	readonly cap: AskCap;
+	readonly cap: ResolvedCap;
 	asked: string[];
 	grantUsed: boolean;
 }
@@ -195,9 +198,9 @@ export class GuardSeats {
 	private readonly seats = new WeakMap<object, GuardSeat>();
 
 	/** A run takes its seat once its session exists, before its prompt. One seat per session: a second `enter` for one that has a seat throws. */
-	enter(session: object, sessionFile: string, seed: GuardSeed): { seat: GuardSeat; leave(): GuardReport } {
+	enter(session: { getSessionId(): string }, sessionFile: string, seed: GuardSeed): { seat: GuardSeat; leave(): GuardReport } {
 		if (this.seats.has(session)) throw new Error(`a run already has the guard's seat for ${sessionFile}`);
-		const seat: GuardSeat = { seed, sessionFile, lane: seed.lane, cap: seed.cap, asked: [], grantUsed: false };
+		const seat: GuardSeat = { seed, sessionId: session.getSessionId(), sessionFile, lane: seed.lane, cap: seed.cap, asked: [], grantUsed: false };
 		this.seats.set(session, seat);
 		return {
 			seat,
@@ -226,8 +229,8 @@ export function guardTurn(seat: GuardSeat | undefined, findings: readonly Findin
 	return {
 		unattended: true,
 		hop,
-		...(seat?.cap.tools ? { tools: seat.cap.tools } : {}),
-		...(seat?.cap.builtin_tools ? { builtinTools: seat.cap.builtin_tools } : {}),
+		...(seat && limitNames(seat.cap.tools) ? { tools: limitNames(seat.cap.tools) } : {}),
+		...(seat && limitNames(seat.cap.builtinTools) ? { builtinTools: limitNames(seat.cap.builtinTools) } : {}),
 		resumable: seat !== undefined,
 		...(seat ? { lane: seat.lane } : {}),
 		...(seat?.seed.grant && !seat.grantUsed ? { granted: seat.seed.grant } : {}),

@@ -337,7 +337,7 @@ test("a held turn stops soon after a window takes its conversation back, even wh
 test("a resume whose transcript is gone fails before the run sets anything up", { timeout: 15_000 }, async () => {
 	const cwd = tmp("pi-loops-proj-");
 	const { runner, started } = stalledRunner();
-	const result = await runner({ cwd, prompt: "tick", timeoutMs: 5_000, hop: 1, kind: "loop", resume: path.join(cwd, "gone.jsonl") });
+	const result = await runner({ cwd, prompt: "tick", timeoutMs: 5_000, hop: 1, kind: "loop", resume: { file: path.join(cwd, "gone.jsonl"), sessionId: "s" } });
 	assert.equal(result.ok, false);
 	assert.match(result.errorMessage!, /the transcript to resume is gone/);
 	assert.deepEqual(started, [], "no tools, no resources, no session: a grant never reaches a session that does not hold the question");

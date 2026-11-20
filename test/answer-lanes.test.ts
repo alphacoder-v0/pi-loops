@@ -11,7 +11,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { type AnswerExecutor, type Answerer } from "../src/answers.ts";
-import { WHY, answerRowId, besideId } from "../src/ask.ts";
+import { type Call, type ResolvedCap, WHY, answerRowId, besideId, inputHash, questionFinding, resolveCap } from "../src/ask.ts";
+import { DEFAULT_RUN_TIMEOUT_MS } from "../src/loop-run.ts";
 import { loadConfig } from "../src/config.ts";
 import { plainJobRow, plainRunId } from "../src/engine.ts";
 import { GuardSeats } from "../src/guard.ts";
@@ -26,7 +27,7 @@ import { createInProcessRunner } from "../src/sdk-runner.ts";
 import type { LoopJob, RunRecord } from "../src/store.ts";
 import { openStores } from "../src/stores.ts";
 import { RUNTIME_RIDERS } from "../src/ticker.ts";
-import { checkLane, triggerSessionKey } from "../src/trigger-runtime.ts";
+import { checkLane, checkSessionDir, triggerSessionKey } from "../src/trigger-runtime.ts";
 import { tmp } from "./tmp.ts";
 
 const FAKE_MODEL = path.join(path.dirname(new URL(import.meta.url).pathname), "downstream", "fake-model.mjs");
@@ -39,13 +40,14 @@ const USAGE = { input: 1, output: 1, cost: 0.01, turns: 1 };
 const lines = (file: string): any[] => fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
 
 /** pi-loops in the background over a fresh loops directory, with `runner`. `tick` runs every rider of one tick, in order, at `now`. */
-function world(makeRunner: (inbox: ReturnType<typeof openStores>["inbox"]) => SubagentRunner) {
+function world(makeRunner: (inbox: ReturnType<typeof openStores>["inbox"]) => SubagentRunner, opts: { config?: string; isProjectTrusted?: (cwd: string) => boolean } = {}) {
 	const dir = tmp("pi-loops-answer-lanes-");
 	const cwd = path.join(dir, "proj");
 	fs.mkdirSync(cwd, { recursive: true });
+	if (opts.config) fs.writeFileSync(path.join(dir, "config.toml"), opts.config);
 	const stores = openStores(dir);
 	const logs: string[] = [];
-	const host = createHostRuntime({ dir, stores, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: makeRunner(stores.inbox), mcpTools: () => [], log: (line) => void logs.push(line) });
+	const host = createHostRuntime({ dir, stores, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: makeRunner(stores.inbox), mcpTools: () => [], log: (line) => void logs.push(line), ...(opts.isProjectTrusted ? { isProjectTrusted: opts.isProjectTrusted } : {}) });
 	const tick = async (now = Date.now()): Promise<void> => {
 		for (const name of RUNTIME_RIDERS) await host.riders[name](now, { startedAt: 0, tickMs: 30_000 });
 	};
@@ -110,7 +112,7 @@ test("[answer-loop] a yes to a loop's question resumes the run that asked: the g
 		const question = w.stores.inbox.list().find((f) => f.ask);
 		assert.ok(question, "the loop's run asked about its call");
 		assert.equal(question.ask!.lane, LANE);
-		const file = question.ask!.session_file;
+		const file = question.transcript!;
 		assert.equal(fs.existsSync(path.join(w.cwd, "marker.txt")), false, "nothing ran before the yes");
 
 		const said = await w.host.answers.say(question.id, "yes", PERSON);
@@ -149,11 +151,11 @@ test("[answer-check] a yes to a check's question resumes the check's transcript 
 		const lane = checkLane(w.cwd)!;
 		const sessionDir = w.stores.jobs.sessionDirFor(triggerSessionKey(w.cwd));
 		// What a rule check's request is (src/trigger-runtime.ts): its project's check lane and session directory.
-		const asked = await model.real({ cwd: w.cwd, prompt: "PROMPT-ONE check the release", timeoutMs: 20_000, sessionDir, hop: 1, kind: "trigger", traceId: "trace-1", guard: { lane, origin: { source: "trigger:release-rule", run_id: "trace-1", cwd: w.cwd, who: "the check of proj" }, cap: { cwd: w.cwd, timeout_ms: 20_000 } } });
+		const asked = await model.real({ cwd: w.cwd, prompt: "PROMPT-ONE check the release", timeoutMs: 20_000, sessionDir, hop: 1, kind: "trigger", traceId: "trace-1", guard: { lane, origin: { source: "trigger:release-rule", run_id: "trace-1", cwd: w.cwd, who: "the check of proj" }, cap: resolveCap({ cwd: w.cwd }, 20_000) } });
 		assert.equal(asked.ok, true, asked.errorMessage ?? "");
 		const question = w.stores.inbox.list().find((f) => f.ask)!;
 		assert.equal(question.ask!.lane, lane);
-		const file = question.ask!.session_file;
+		const file = question.transcript!;
 		assert.equal(path.dirname(file), sessionDir);
 
 		assert.equal((await w.host.answers.say(question.id, "yes", PERSON)).said, "Y1");
@@ -388,6 +390,146 @@ test("[answer-f2-hooks] a loop's answer that a restarted process closes as F2 fi
 		assert.deepEqual(fired.map((e) => [e.event, e.run_id, e.run_job, e.run_ok]), [["run_end", loopRow, "release", false]], "one run_end, the loop's, for the run that died");
 		assert.equal(w.find(checkFinding.id)!.answer?.state, "unfinished");
 		assert.equal(s.answerCalls().length, 0, "nothing ran again");
+	} finally {
+		await w.host.stop();
+	}
+});
+
+/** A question of the loop's run `sid`, filed as Q1 files it with `cap`, and its transcript in the loop's session directory proving the blocked call. */
+async function questionOf(w: ReturnType<typeof world>, sid: string, cap: ResolvedCap): Promise<InboxEntry> {
+	const call: Call = { tool: "bash", tool_call_id: "call-1", command: CMD, input_sha256: inputHash({ command: CMD }), reason: "eval" };
+	const file = path.join(w.stores.jobs.sessionDirFor(JOB), `${sid}.jsonl`);
+	const entries = [
+		{ type: "session", id: sid, cwd: w.cwd },
+		{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: call.tool_call_id, name: "bash", arguments: { command: CMD } }] } },
+		{ type: "message", message: { role: "toolResult", toolCallId: call.tool_call_id, isError: true, content: [] } },
+	];
+	fs.writeFileSync(file, `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`);
+	const { id, entry } = questionFinding(call, { lane: LANE, sessionId: sid, sessionFile: file, cap }, { source: `cron:${JOB}`, run_id: "r0", cwd: w.cwd, job_id: JOB, who: "release" }, stamp(Date.now()));
+	return w.stores.inbox.fileOnce(entry, id);
+}
+
+test("[resolved-cap] a question that recorded a 2e9 ms timeout gets the job's default; one asked in another directory is refused and runs nothing", async () => {
+	const s = scripted();
+	const w = world(() => s.runner);
+	try {
+		await w.stores.jobs.add(loopJob(w.cwd));
+		const long = await questionOf(w, "0199aaaa-0000-7000-8000-0000000000a1", { ...resolveCap({ cwd: w.cwd }, DEFAULT_RUN_TIMEOUT_MS), timeoutMs: 2e9 });
+		assert.equal(long.ask?.run?.timeout_ms, 2e9);
+		assert.equal((await w.host.answers.say(long.id, "yes", PERSON)).said, "Y1");
+		await w.tick();
+		const [req] = s.answerCalls();
+		assert.deepEqual([req?.timeoutMs, req?.guard?.cap.timeoutMs], [DEFAULT_RUN_TIMEOUT_MS, DEFAULT_RUN_TIMEOUT_MS], "a job with no timeout: the code's default, not the question's");
+		s.release();
+		await w.host.drain(5_000);
+
+		const moved = await questionOf(w, "0199aaaa-0000-7000-8000-0000000000a2", resolveCap({ cwd: path.join(w.dir, "elsewhere") }, DEFAULT_RUN_TIMEOUT_MS));
+		assert.equal((await w.host.answers.say(moved.id, "yes", PERSON)).said, "Y1");
+		await w.tick();
+		await w.host.drain(5_000);
+		assert.equal(s.answerCalls().length, 1, "the question asked in another directory runs nothing");
+		const answer = w.find(moved.id)!.answer;
+		assert.equal(answer?.state, "unfinished");
+		assert.match(answer?.state === "unfinished" ? answer.why : "", /^refused: the question was asked in .*elsewhere, and this run would be in /);
+		assert.equal(answer?.state === "unfinished" && answer.ending, "The command was not run.");
+	} finally {
+		await w.host.stop();
+	}
+});
+
+test("[answer-run-end] run_end after a restart with a record whose jobId is not the lane's job fires no hook", async () => {
+	const s = scripted();
+	const w = world(() => s.runner);
+	const events = path.join(w.dir, "events.jsonl");
+	fs.writeFileSync(path.join(w.dir, "hooks.toml"), ['[[hook]]', 'event = "run_end"', `command = "cat \\"$PI_HOOK_PAYLOAD\\" >> ${events}; echo >> ${events}"`, ""].join("\n"));
+	try {
+		await w.stores.jobs.add(loopJob(w.cwd, { name: "release" }));
+		await w.stores.jobs.add(loopJob(w.cwd, { id: "cron-ffffffffffffffffffffffffffffffff", name: "other" }));
+		const rowId = await startedByDeadProcess(w, await yesTo(w, "the build is red"), LANE);
+		const run = w.stores.requests.list(LANE).find((r) => r.id === rowId)!.run!;
+		// The run log names the run of this lane's row under another loop's id.
+		w.stores.jobs.appendRun({ runId: run.id, jobId: "cron-ffffffffffffffffffffffffffffffff", jobName: "other", stateful: true, cwd: w.cwd, pid: run.pid, startedAt: run.started_at, finishedAt: stamp(Date.now()), ok: true, findings: 0, droppedFindings: 0, stateUpdated: false, cause: "answer" } as RunRecord);
+
+		await w.tick();
+		await w.host.stop();
+		assert.equal(fs.existsSync(events), false, "no run_end: the record is not of the loop the lane names");
+		assert.equal(w.logs.some((line) => line.includes("run_end not fired")), true);
+		assert.equal(w.find(answerRowIdFinding(w, rowId))?.answer?.state, "done", "the answer still closes");
+	} finally {
+		await w.host.stop();
+	}
+});
+
+const answerRowIdFinding = (w: ReturnType<typeof world>, rowId: string): string => w.stores.inbox.list().find((f) => answerRowId(f.id) === rowId)!.id;
+
+test("[check-cap] an answer to a check's finding runs with the check's own cap: [triggers] run_timeout_secs and the rule's pinned model", async () => {
+	const s = scripted();
+	const w = world(() => s.runner, { config: "[triggers]\nrun_timeout_secs = 60\n" });
+	try {
+		await w.stores.rules.add({ condition: "the deploy is stuck", action: "say so", cwd: w.cwd, model: "fake/pinned", thinking: "high", fireOnce: false });
+		const lane = checkLane(w.cwd)!;
+		const finding = await w.stores.inbox.append({ source: "trigger:deploy-rule", text: "the deploy is stuck", run_id: "trace-1", cwd: w.cwd, kind: "news", lane });
+		assert.equal((await w.host.answers.say(finding.id, "yes", PERSON)).said, "Y1");
+		await w.tick();
+		const [req] = s.answerCalls();
+		assert.ok(req, "the answer runs");
+		assert.deepEqual([req.timeoutMs, req.model, req.thinking], [60_000, "fake/pinned", "high"], "the check's timeout and pinned model, not a loop's defaults");
+		assert.deepEqual(req.guard?.cap, w.host.triggers.checkCapOf(w.cwd), "the one cap a check of the project runs under");
+		s.release();
+		await w.host.drain(5_000);
+	} finally {
+		await w.host.stop();
+	}
+});
+
+test("[check-dir-symlink] an answer to a check's question from a project reached through a symlink finds the transcript its check wrote under the real path", async () => {
+	const s = scripted();
+	const w = world(() => s.runner);
+	try {
+		const link = path.join(w.dir, "link");
+		fs.symlinkSync(w.cwd, link);
+		const lane = checkLane(link)!;
+		assert.equal(lane, checkLane(w.cwd), "one check lane");
+		const sid = "0199aaaa-0000-7000-8000-0000000000c1";
+		const call: Call = { tool: "bash", tool_call_id: "call-1", command: CMD, input_sha256: inputHash({ command: CMD }), reason: "eval" };
+		const file = path.join(checkSessionDir(w.stores.jobs, w.cwd), `${sid}.jsonl`);
+		const entries = [
+			{ type: "session", id: sid, cwd: w.cwd },
+			{ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: call.tool_call_id, name: "bash", arguments: { command: CMD } }] } },
+			{ type: "message", message: { role: "toolResult", toolCallId: call.tool_call_id, isError: true, content: [] } },
+		];
+		fs.writeFileSync(file, `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`);
+		const { id, entry } = questionFinding(call, { lane, sessionId: sid, sessionFile: file, cap: resolveCap({ cwd: link }, DEFAULT_RUN_TIMEOUT_MS) }, { source: "trigger:release-rule", run_id: "trace-1", cwd: link, who: "the check of link" }, stamp(Date.now()));
+		const question = await w.stores.inbox.fileOnce(entry, id);
+		assert.equal((await w.host.answers.say(question.id, "yes", PERSON)).said, "Y1");
+		await w.tick();
+		const [req] = s.answerCalls();
+		assert.deepEqual(req?.resume, { file, sessionId: sid }, "the check's transcript under the real path is resumed");
+		s.release();
+		await w.host.drain(5_000);
+		assert.equal(w.find(question.id)!.answer?.state, "unfinished", "it ran: the stand-in made no call, so the grant is unused");
+	} finally {
+		await w.host.stop();
+	}
+});
+
+test("[removed-job-hooks] run_end of an answer whose loop was removed loads no project hooks: only the user's own fire", async () => {
+	const s = scripted();
+	const w = world(() => s.runner, { config: "allow_project_hooks = true\n", isProjectTrusted: () => true });
+	const userEvents = path.join(w.dir, "user-events.jsonl");
+	const projectEvents = path.join(w.dir, "project-events.jsonl");
+	const rule = (file: string) => ['[[hook]]', 'event = "run_end"', `command = "cat \\"$PI_HOOK_PAYLOAD\\" >> ${file}; echo >> ${file}"`, ""].join("\n");
+	fs.writeFileSync(path.join(w.dir, "hooks.toml"), rule(userEvents));
+	fs.mkdirSync(path.join(w.cwd, ".pi"), { recursive: true });
+	fs.writeFileSync(path.join(w.cwd, ".pi", "hooks.toml"), rule(projectEvents));
+	try {
+		await w.stores.jobs.add(loopJob(w.cwd, { name: "release" }));
+		const rowId = await startedByDeadProcess(w, await yesTo(w, "the build is red"), LANE);
+		await w.stores.jobs.remove(JOB);
+		await w.tick();
+		await w.host.stop();
+		assert.deepEqual((fs.existsSync(userEvents) ? lines(userEvents) : []).map((e) => [e.event, e.run_id]), [["run_end", rowId]], "the user's hook fires");
+		assert.equal(fs.existsSync(projectEvents), false, "the removed job's project hook does not");
 	} finally {
 		await w.host.stop();
 	}

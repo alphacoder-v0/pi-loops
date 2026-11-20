@@ -15,6 +15,7 @@ import { type LockOptions, withFileLock, withFileLockSync, writeFileAtomic } fro
 import { INBOX_TEXT_MAX_CHARS, type FindingKind, capChars } from "./protocol.ts";
 import { newId } from "./store.ts";
 import { stamp } from "./schedule.ts";
+import { laneTranscripts } from "./session-head.ts";
 
 export type InboxStatus = "new" | "claimed" | "dismissed";
 
@@ -62,8 +63,14 @@ export interface InboxEntry {
 	verified_reason?: string;
 	/** When it was dismissed — what decides whether the loop's next run is shown the reason. */
 	dismissed_at?: string;
-	/** The transcript of the run that filed this finding (RunRecord.sessionFile). */
+	/** The transcript of the run that filed this finding (RunRecord.sessionFile), for a person to open. */
 	transcript?: string;
+	/**
+	 * pi's session id of that transcript (RunRecord.sessionId), from the header pi wrote. An answer's
+	 * run finds the transcript to resume by it in its lane's own directory (`laneTranscript`), never
+	 * by `transcript`. Absent on a finding an older version wrote: its answer starts a new session.
+	 */
+	transcript_id?: string;
 	/**
 	 * Set by the engine's dead letter alone: a prompt that never reached its conversation. The text
 	 * says so too, but the text is anyone's to write, and a claim of this finding carries it out.
@@ -266,6 +273,7 @@ export class Inbox {
 			dismissed_at: entry.dismissed_at,
 			...(entry.session_id === undefined ? {} : { session_id: entry.session_id }),
 			...(entry.transcript === undefined ? {} : { transcript: entry.transcript }),
+			...(entry.transcript_id === undefined ? {} : { transcript_id: entry.transcript_id }),
 			...(entry.undelivered ? { undelivered: true as const } : {}),
 			...(entry.lane === undefined ? {} : { lane: entry.lane }),
 			...(entry.ask === undefined ? {} : { ask: entry.ask }),
@@ -355,14 +363,21 @@ export class Inbox {
 	}
 
 	/**
-	 * The transcripts a prune must keep: those of `new` findings, and those of findings whose answer
-	 * is `pending` or `started` (the answer's run resumes them, and its checks read them). By job for
-	 * a loop, by lane for a check, whose findings name a rule in `job_id`. A string is a job's id.
+	 * The transcripts in `dir` a prune must keep: those of `new` findings, and those of findings whose
+	 * answer is `pending` or `started` (the answer's run resumes them, and its checks read them). By
+	 * job for a loop, by lane for a check, whose findings name a rule in `job_id`. A string is a job's
+	 * id. `dir` is that lane's own directory: a finding's transcript is the one there whose header
+	 * names its session id (`laneTranscripts`). A finding an older version wrote names only a path,
+	 * which is kept by that name and never opened.
 	 */
-	pinnedTranscripts(of: string | { job: string } | { lane: LaneId }): Set<string> {
+	pinnedTranscripts(of: string | { job: string } | { lane: LaneId }, dir: string): Set<string> {
 		const mine = typeof of === "string" ? (e: InboxEntry) => e.job_id === of : "job" in of ? (e: InboxEntry) => e.job_id === of.job : (e: InboxEntry) => e.lane === of.lane;
 		const open = (e: InboxEntry) => e.status === "new" || e.answer?.state === "pending" || e.answer?.state === "started";
-		return new Set(this.list().filter((e) => e.transcript && mine(e) && open(e)).map((e) => path.resolve(e.transcript!)));
+		const pinned = this.list().filter((e) => mine(e) && open(e));
+		const ids = pinned.flatMap((e) => (e.ask ? (e.ask.session_id ?? []) : (e.transcript_id ?? [])));
+		const named = pinned.flatMap((e) => (!(e.ask ? e.ask.session_id : e.transcript_id) && e.transcript ? [path.resolve(e.transcript)] : []));
+		const there = ids.length ? laneTranscripts(dir) : new Map<string, string | undefined>();
+		return new Set([...ids.flatMap((id) => (there.get(id) ? [path.resolve(there.get(id)!)] : [])), ...named]);
 	}
 
 	/** Count of new entries; 0 on any error (badge path must never throw). */
@@ -486,6 +501,7 @@ function readFinding(raw: any): InboxEntry | undefined {
 		verified_reason: str("verified_reason", "verifiedReason"),
 		dismissed_at: str("dismissed_at"),
 		transcript: str("transcript"),
+		...(typeof raw.transcript_id === "string" ? { transcript_id: raw.transcript_id } : {}),
 		...(raw.undelivered === true ? { undelivered: true as const } : {}),
 		...(typeof raw.lane === "string" ? { lane: raw.lane } : {}),
 		...readAskFields(raw),
