@@ -6,6 +6,7 @@ import { tmp } from "./tmp.ts";
 import { RETIRED_FILES, convertStores } from "../src/convert-v2.ts";
 import { JobStore, JobsNotConverted } from "../src/store.ts";
 import { RequestStore } from "../src/requests.ts";
+import { clockStore } from "../src/stores.ts";
 
 /** A loops directory as an older version left it: the retired files, and files that stay. */
 function seeded(): { dir: string; kept: Record<string, string> } {
@@ -180,6 +181,43 @@ test("[convert-put-back] A version 2 file put back while pi-loops runs is read a
 	assert.equal(fs.readFileSync(path.join(dir, "jobs.json"), "utf8"), before, "nothing of it is lost before the start converts it");
 	convertStores(dir);
 	assert.equal((await store.update("cron-convert", (job) => { job.name = "renamed"; }))?.name, "renamed");
+});
+
+test("[convert-malformed] A hand-edited version 2 file converts, twice, without throwing: a field that is not what it says is dropped alone, an owed run goes only to the job's own lane", () => {
+	const dir = tmp("pi-loops-convert-");
+	const slot = new Date(Date.now() - 60_000).toISOString();
+	writeV2(dir, [
+		v2Loop(dir, { id: "cron-number-error", enabled: false, lastError: 5 }),
+		v2Loop(dir, { id: "cron-bad-fields", runCount: 4, skippedOverlap: 1.5, lastDueAt: slot, lastFiredAt: "yesterday", cwdMissingSince: 7, lastError: { text: "x" }, interruptions: -100, owedSlot: slot }),
+		v2Loop(dir, { id: "cron-escape", stateful: false, sessionId: "../../evil", owedSlot: slot }),
+		v2Loop(dir, { id: "cron-other-lane", stateful: false, sessionId: "@cron-victim", owedSlot: slot, tools: ["bash"] }),
+		v2Loop(dir, { id: "cron-marker", running: "not a marker", owedSlot: 12345 }),
+		null as any, 42 as any, { name: "no id" },
+	]);
+	const said: string[] = [];
+	for (let start = 0; start < 2; start++) assert.doesNotThrow(() => convertStores(dir, (line) => void said.push(line)), `start ${start + 1}`);
+	assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "jobs.json"), "utf8")).version, 3);
+	const jobs = new JobStore(dir).load();
+	assert.deepEqual(jobs.map((job) => job.id), ["cron-number-error", "cron-bad-fields", "cron-escape", "cron-other-lane", "cron-marker"]);
+	assert.deepEqual(jobs[0].disabled?.code, "person", "a reason that is not text is no reason");
+	const clock = clockStore(dir).read().jobs;
+	assert.deepEqual(clock["cron-bad-fields"], { slot, runs: 4 }, "the good fields of a cursor stay when others are dropped");
+	const requests = new RequestStore(dir);
+	assert.deepEqual(requests.list("@cron-bad-fields").map((row) => row.attempts), [0], "an attempt count that is not one starts at 0");
+	assert.equal(fs.existsSync(path.join(dir, "requests")) && fs.readdirSync(path.join(dir, "requests")).some((name) => name.includes("victim") || name.includes("evil")), false, "no row for a lane that is not the job's own conversation");
+	assert.equal(requests.list("@cron-marker").length, 0, "a slot that is not a stamp owes nothing");
+	assert.ok(said.some((line) => /cron-escape: its owed run is not queued/.test(line)) && said.some((line) => /cron-other-lane: its owed run is not queued/.test(line)));
+	assert.ok(said.some((line) => /3 entries with no id left out/.test(line)));
+});
+
+test("[convert-version-text] A version that is not a number is not converted: the file stays as it is, and its jobs read as definitions.", () => {
+	const dir = tmp("pi-loops-convert-");
+	const text = JSON.stringify({ version: "3", jobs: [{ ...v2Loop(dir), runCount: undefined, skippedOverlap: undefined, enabled: false, disabled: { code: "cwd-missing", why: "disabled: cwd /gone", at: "2026-01-05T08:00:00.000Z" } }] });
+	fs.writeFileSync(path.join(dir, "jobs.json"), text);
+	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, rows: 0 });
+	assert.equal(fs.readFileSync(path.join(dir, "jobs.json"), "utf8"), text);
+	assert.equal(fs.existsSync(path.join(dir, "jobs.json.v2.bak")), false);
+	assert.equal(new JobStore(dir).load()[0].disabled?.why, "disabled: cwd /gone");
 });
 
 test("[convert-unreadable] A jobs.json that does not parse is left as it is, for the store to say what is wrong with it.", () => {

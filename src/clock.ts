@@ -70,7 +70,7 @@ export interface Clock {
 /** The file belongs to a newer version and must not be replaced. */
 export class ClockNewer extends Error {}
 
-function validStamp(value: unknown): value is string { return typeof value === "string" && Number.isFinite(Date.parse(value)); }
+export function validStamp(value: unknown): value is string { return typeof value === "string" && Number.isFinite(Date.parse(value)); }
 
 /** Drop malformed entries while preserving the valid jobs in the clock file. */
 export function validEntry(value: unknown): JobClock | undefined {

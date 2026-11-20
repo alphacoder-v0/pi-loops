@@ -404,7 +404,7 @@ export class JobStore {
 		// pi-loops runs on one machine: the stamp is dropped here and gone on the next write.
 		for (const j of parsed.jobs) delete (j as { host?: unknown }).host;
 		// A version 2 file here was put back after the start converted it: read as definitions, written never.
-		if (typeof parsed.version !== "number" || parsed.version < JOBS_FILE_VERSION) return { jobs: (parsed.jobs as unknown as V2Job[]).map((job) => fromV2(job).job), v2: true };
+		if (typeof parsed.version === "number" && parsed.version < JOBS_FILE_VERSION) return { jobs: (parsed.jobs as unknown as V2Job[]).map((job) => fromV2(job).job), v2: true };
 		return { jobs: parsed.jobs, v2: false };
 	}
 

@@ -1,11 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { DEAD_AFTER_ATTEMPTS } from "./backoff.ts";
 import { plainJobRow, plainRunId } from "./engine.ts";
-import { loopLane } from "./lane.ts";
+import { loopLane, parseLane } from "./lane.ts";
 import { pidAlive, withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { RequestStore } from "./requests.ts";
-import type { JobClock, RunClose } from "./clock.ts";
+import { type JobClock, type RunClose, validStamp } from "./clock.ts";
+import { stamp } from "./schedule.ts";
 import { clockStore } from "./stores.ts";
 import { DISABLED_BY_PERSON, type Disabled, JOBS_FILE_VERSION, JobStore, type LoopJob, type RunningMarker } from "./store.ts";
 
@@ -56,26 +58,32 @@ export const DEAD_SESSION_MARKER = "no longer exists (/cron gc removes it)";
 export function fromV2(job: V2Job): { job: LoopJob; clock: JobClock } {
 	const {
 		lastDueAt, lastFiredAt, runCount, lastCompletedAt, lastError, running: _running,
-		skippedOverlap: _skippedOverlap, consecutiveFailures: _consecutiveFailures,
+		skippedOverlap, consecutiveFailures: _consecutiveFailures,
 		owedSlot: _owedSlot, interruptions: _interruptions, cwdMissingSince: _cwdMissingSince,
 		clearedAt, ...definition
 	} = job as V2Job & { clearedAt?: unknown };
+	// A hand-edited file may hold anything: each field is kept only when it is what it says, and a
+	// field that is not is dropped alone, so the rest of the cursor stays readable (src/clock.ts validEntry).
+	const due = validStamp(lastDueAt) ? lastDueAt : undefined;
+	const fired = validStamp(lastFiredAt) ? lastFiredAt : undefined;
+	const error = typeof lastError === "string" ? lastError : undefined;
+	const noteAt = due ?? (validStamp(job.createdAt) ? job.createdAt : undefined);
 	let disabled: Disabled | undefined;
 	if (!job.enabled) {
-		const why = lastError ?? DISABLED_BY_PERSON;
+		const why = error ?? DISABLED_BY_PERSON;
 		const code: Disabled["code"] = why.endsWith(DEAD_SESSION_MARKER) ? "session-gone" : why.startsWith("disabled: cwd ") ? "cwd-missing" : why.startsWith("parked: ") ? "interrupted" : why.startsWith("disabled: ") ? "schedule" : "person";
-		disabled = { code, why, at: lastCompletedAt ?? lastFiredAt ?? job.createdAt };
+		const at = [lastCompletedAt, lastFiredAt, job.createdAt].find(validStamp) ?? stamp(0);
+		disabled = { code, why, at };
 	}
 	return {
 		job: { ...definition, enabled: job.enabled, ...(disabled ? { disabled } : {}) },
 		clock: {
-			...(lastDueAt ? { slot: lastDueAt } : {}),
-			...(lastFiredAt ? { fired: lastFiredAt } : {}),
-			// A hand-edited file may hold anything: a count that is not one starts the cursor at 0.
+			...(due ? { slot: due } : {}),
+			...(fired ? { fired } : {}),
 			runs: Number.isInteger(runCount) && runCount >= 0 ? runCount : 0,
-			...(job.skippedOverlap ? { collapsed: job.skippedOverlap } : {}),
-			...(job.lastError && job.enabled ? { note: { at: lastDueAt ?? job.createdAt, text: job.lastError } } : {}),
-			...(typeof clearedAt === "string" ? { cleared: clearedAt } : {}),
+			...(Number.isInteger(skippedOverlap) && skippedOverlap > 0 ? { collapsed: skippedOverlap } : {}),
+			...(error && job.enabled && noteAt ? { note: { at: noteAt, text: error } } : {}),
+			...(validStamp(clearedAt) ? { cleared: clearedAt } : {}),
 		},
 	};
 }
@@ -154,8 +162,10 @@ function convertJobs(dir: string, log: (line: string) => void): { jobs: number; 
 		try { parsed = JSON.parse(text) as typeof parsed; }
 		catch { return { jobs: 0, rows: 0 }; }
 		if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.jobs)) return { jobs: 0, rows: 0 };
-		if (typeof parsed.version === "number" && parsed.version >= JOBS_FILE_VERSION) return { jobs: 0, rows: 0 };
-		const jobs = (parsed.jobs as unknown[]).filter((job): job is V2Job => !!job && typeof job === "object" && typeof (job as V2Job).id === "string");
+		// Only a file that says it is version 2 or older is converted: a version that is not a number is not one this code wrote.
+		if (typeof parsed.version !== "number" || parsed.version >= JOBS_FILE_VERSION) return { jobs: 0, rows: 0 };
+		const jobs = (parsed.jobs as unknown[]).filter((job): job is V2Job => !!job && typeof job === "object" && !Array.isArray(job) && typeof (job as V2Job).id === "string");
+		const dropped = parsed.jobs.length - jobs.length;
 		const requests = new RequestStore(dir);
 		const store = new JobStore(dir);
 		const records = store.allRuns();
@@ -165,9 +175,13 @@ function convertJobs(dir: string, log: (line: string) => void): { jobs: number; 
 		const owed: Array<{ job: V2Job; lane: string; slot: string; attempts: number }> = [];
 		for (const job of jobs) {
 			const entry = { ...fromV2(job).clock };
-			if (job.cwdMissingSince) entry.cwdMissing = job.cwdMissingSince;
-			const marker = job.running;
-			let slot = job.owedSlot;
+			if (validStamp(job.cwdMissingSince)) entry.cwdMissing = job.cwdMissingSince;
+			// The lane its owed run goes to: the loop's own, or the conversation a plain job names when that is a conversation's id.
+			const lane = job.stateful ? loopLane(job.id) : typeof job.sessionId === "string" && parseLane(job.sessionId)?.kind === "conversation" ? job.sessionId : undefined;
+			const running = job.running as unknown;
+			const marker = running && typeof running === "object" && typeof (running as RunningMarker).runId === "string" && Number.isInteger((running as RunningMarker).pid) && validStamp((running as RunningMarker).startedAt) ? running as RunningMarker : undefined;
+			const lastDue = validStamp(job.lastDueAt) ? job.lastDueAt : undefined;
+			let slot = validStamp(job.owedSlot) ? job.owedSlot : undefined;
 			if (marker) {
 				const record = records.find((r) => r.runId === marker.runId);
 				if (record) entry.runs = Math.max(entry.runs, record.ordinal ?? entry.runs + 1);
@@ -175,14 +189,15 @@ function convertJobs(dir: string, log: (line: string) => void): { jobs: number; 
 					const recycled = Number.isFinite(booted) && Date.parse(marker.startedAt) < booted - 60_000;
 					const alive = marker.pid === process.pid || (!recycled && pidAlive(marker.pid));
 					if (alive) log(`cron ${job.name ?? job.id}: an older pi-loops process still runs it; its record will come`);
-					else if (job.stateful) slot ??= job.lastDueAt ?? marker.startedAt;
-					else if (job.sessionId && !promptWritten(requests, job.sessionId, marker.runId)) slot ??= job.lastDueAt ?? marker.startedAt;
-					else if (job.sessionId && !requests.list(job.sessionId).some((row) => row.id === marker.runId)) entry.runs++;
+					else if (job.stateful) slot ??= lastDue ?? marker.startedAt;
+					else if (lane && !promptWritten(requests, lane, marker.runId)) slot ??= lastDue ?? marker.startedAt;
+					else if (lane && !requests.list(lane).some((row) => row.id === marker.runId)) entry.runs++;
 				}
 			}
 			entries[job.id] = entry;
-			const lane = job.stateful ? loopLane(job.id) : job.sessionId;
-			if (slot && lane) owed.push({ job, lane, slot, attempts: job.interruptions ?? 0 });
+			const interrupted = job.interruptions as unknown;
+			if (slot && lane) owed.push({ job, lane, slot, attempts: Number.isInteger(interrupted) && (interrupted as number) > 0 ? Math.min(interrupted as number, DEAD_AFTER_ATTEMPTS) : 0 });
+			else if (slot) log(`cron ${job.name ?? job.id}: its owed run is not queued: it names no conversation pi-loops can write to`);
 		}
 		clockStore(dir).seed(entries);
 		// Step 2: the owed slots, each a row of its lane.
@@ -195,7 +210,7 @@ function convertJobs(dir: string, log: (line: string) => void): { jobs: number; 
 		// Step 5: the version 2 text kept beside, then the definitions as version 3.
 		writeFileAtomic(`${jobsFile}.v2.bak`, text);
 		writeFileAtomic(jobsFile, `${JSON.stringify({ version: JOBS_FILE_VERSION, jobs: jobs.map((job) => { const { host: _host, ...rest } = job as V2Job & { host?: unknown }; return fromV2(rest as V2Job).job; }) }, null, 2)}\n`);
-		log(`jobs.json: version 2 converted to version 3 (${jobs.length} job(s), ${rows} owed run(s) queued); the version 2 file is jobs.json.v2.bak`);
+		log(`jobs.json: version 2 converted to version 3 (${jobs.length} job(s), ${rows} owed run(s) queued${dropped ? `, ${dropped} entr${dropped === 1 ? "y" : "ies"} with no id left out` : ""}); the version 2 file is jobs.json.v2.bak`);
 		return { jobs: jobs.length, rows };
 	});
 }
