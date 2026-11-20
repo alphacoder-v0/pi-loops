@@ -9,16 +9,16 @@ import { type JobHistory, runHistory } from "./job-status.ts";
 import { type LoopSettlement, INTERRUPTED, loopEnd, oneShotDoneV3, runEnd, settleLoop } from "./settle.ts";
 import type { SessionSnapshot } from "./job-owner.ts";
 import type { Stores } from "./stores.ts";
-import { type Disabled, type LoopJobV3, type ProcessStop, type RunRecord } from "./store.ts";
+import { type Disabled, type LoopJob, type ProcessStop, type RunRecord } from "./store.ts";
 
 export const DEFAULT_RUN_TIMEOUT_MS = 15 * 60_000;
 
 export interface LoopSinks {
-	started(job: LoopJobV3, row: ClaimedRow): void;
+	started(job: LoopJob, row: ClaimedRow): void;
 	finished(record: RunRecordM4b): void;
 	filed?(): void;
-	retired?(job: LoopJobV3, reason: string): void;
-	log(message: string, level?: "info" | "warning", job?: Pick<LoopJobV3, "cwd">): void;
+	retired?(job: LoopJob, reason: string): void;
+	log(message: string, level?: "info" | "warning", job?: Pick<LoopJob, "cwd">): void;
 }
 
 export type RunRecordM4b = RunRecord & { row?: string; stop?: ProcessStop };
@@ -42,7 +42,7 @@ export interface LoopRowPayload extends NonNullable<ClaimedRow["payload"]> {
 	requested_by?: string;
 }
 
-export async function runLoop(row: ClaimedRow, job: LoopJobV3, deps: LoopRunDeps): Promise<void> {
+export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps): Promise<void> {
 	const now = deps.now ?? Date.now;
 	const started = new Date(row.run.started_at).getTime();
 	const payload = row.payload as LoopRowPayload | undefined;
@@ -156,16 +156,21 @@ export async function runLoop(row: ClaimedRow, job: LoopJobV3, deps: LoopRunDeps
 	}
 }
 
-/** The ordinal of the run that ends now. A run log that cannot be read leaves it out; the closing counts the run from what it can read. */
+/**
+ * The ordinal of the run that ends now: one more than the count so far, which is the highest of the
+ * run log's ordinals and the cursor's count (a directory 0.24.2 left brings its count in the cursor,
+ * and its run log may be gone). A run log that cannot be read leaves it out; the closing counts the
+ * run from what it can read.
+ */
 function nextOrdinal(jobId: string, deps: Pick<LoopRunDeps, "stores" | "sinks">): number | undefined {
-	try { return (deps.stores.history().get(jobId)?.ordinal ?? 0) + 1; }
+	try { return Math.max(deps.stores.history().get(jobId)?.ordinal ?? 0, deps.stores.clock.read().jobs[jobId]?.runs ?? 0) + 1; }
 	catch (error) {
 		deps.sinks.log(`loop ${jobId}: run history read failed: ${error instanceof Error ? error.message : String(error)}`, "info");
 		return undefined;
 	}
 }
 
-function runChecker(job: LoopJobV3, runId: string, makerState: string | undefined, findings: string[], signal: AbortSignal | undefined, model: string | undefined, thinking: string | undefined, deps: LoopRunDeps, now: () => number): Promise<{ record: NonNullable<RunRecord["checker"]>; reviewed: Array<{ text: string; verified?: boolean; reason?: string }> }> {
+function runChecker(job: LoopJob, runId: string, makerState: string | undefined, findings: string[], signal: AbortSignal | undefined, model: string | undefined, thinking: string | undefined, deps: LoopRunDeps, now: () => number): Promise<{ record: NonNullable<RunRecord["checker"]>; reviewed: Array<{ text: string; verified?: boolean; reason?: string }> }> {
 	return (async () => {
 		const started = now();
 		let result: RunnerResult;
@@ -227,7 +232,7 @@ export type Fate =
 	| { readonly do: "owed" }
 	| { readonly do: "retry"; readonly attempts: number; readonly why: string; readonly wait?: false }
 	| { readonly do: "dead"; readonly attempts: number; readonly why: string };
-export type ClosedM4b = { readonly end: ReturnType<typeof runEnd>; readonly outcome: "removed" | "waiting" | "failed" | "dead"; readonly job?: LoopJobV3 };
+export type ClosedM4b = { readonly end: ReturnType<typeof runEnd>; readonly outcome: "removed" | "waiting" | "failed" | "dead"; readonly job?: LoopJob };
 export type CloseStep =
 	| { readonly write: "run-end"; readonly record: RunRecordM4b }
 	| { readonly write: "clock"; readonly job: string; readonly close: RunClose }
@@ -235,7 +240,7 @@ export type CloseStep =
 	| { readonly write: "successor"; readonly row: UnclaimedRow };
 export type RowStep = { readonly write: "row"; readonly fate: Fate };
 export type ClosePlan = readonly [...CloseStep[], RowStep];
-export interface CloseInput { readonly row: ClaimedRow; readonly job: LoopJobV3 | undefined; readonly record: RunRecordM4b; readonly history: JobHistory; readonly self: Row["created_by"]; readonly now: number }
+export interface CloseInput { readonly row: ClaimedRow; readonly job: LoopJob | undefined; readonly record: RunRecordM4b; readonly history: JobHistory; readonly self: Row["created_by"]; readonly now: number }
 
 export function closeSteps(input: CloseInput): ClosePlan {
 	const { row, job, record, history, self, now } = input;
@@ -272,10 +277,10 @@ export async function closeLoopRun(row: ClaimedRow, deps: Pick<LoopRunDeps, "sto
 		recorded = false;
 	}
 	const jobId = record.jobId;
-	let job: LoopJobV3 | undefined;
+	let job: LoopJob | undefined;
 	try { job = deps.stores.book().jobs.find((candidate) => candidate.id === jobId); }
 	catch (error) { fail("jobs read", error); }
-	let history: JobHistory = { ordinal: 0, streak: 0, spent: new Set<string>() };
+	let history: JobHistory = { ordinal: 0, streak: 0, interrupted: [], spent: new Set<string>() };
 	// A run whose record could not be written still counts, as main counts it in its own field.
 	try { history = (recorded ? deps.stores.history() : runHistory([...deps.stores.jobs.allRuns(), record])).get(jobId) ?? history; }
 	catch (error) { fail("run history read", error); }
@@ -291,7 +296,7 @@ export async function closeLoopRun(row: ClaimedRow, deps: Pick<LoopRunDeps, "sto
 				case "run-end": deps.sinks.finished(step.record); break;
 				case "clock": deps.stores.clock.closeRun(step.job, step.close); break;
 				case "disable":
-					closedJob = (await deps.stores.jobs.disable(step.job, step.disabled)) as LoopJobV3 | undefined;
+					closedJob = (await deps.stores.jobs.disable(step.job, step.disabled)) as LoopJob | undefined;
 					if (step.disabled.code === "interrupted" && job) deps.sinks.log(`cron ${job.name ?? job.id}: parked after ${row.attempts + 1} interrupted runs`, undefined, job);
 					break;
 				case "successor": deps.stores.requests.appendIfAbsent(step.row); break;
@@ -301,7 +306,7 @@ export async function closeLoopRun(row: ClaimedRow, deps: Pick<LoopRunDeps, "sto
 		}
 	}
 	if (job?.schedule.kind === "once") {
-		let current: LoopJobV3 | undefined;
+		let current: LoopJob | undefined;
 		try { current = deps.stores.book().jobs.find((candidate) => candidate.id === jobId); }
 		catch (error) { fail("jobs read", error); }
 		if (current) {

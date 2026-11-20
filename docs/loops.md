@@ -425,7 +425,7 @@ audit like any other.
 an `every <dur>` job's interval restarts from now, and a `cron` job's next run is unchanged — the
 expression says when it runs, not the last run. A disabled plain job is refused rather than run: its
 prompt would land in whichever chat is open now rather than the one it was written for, and a job the
-dead-session sweep parked has to keep the marker `/cron gc` collects it by. A plain job's `/cron run`
+dead-session sweep turned off has to keep the reason `/cron gc` collects it by. A plain job's `/cron run`
 is your own turn: it runs uncapped and goes before anything the clock queued. Left queued when you
 quit, it waits for a window, and the job's
 schedule goes on in the background as if it were not there.
@@ -479,8 +479,8 @@ not finish, so its `<loop-state>` and `<inbox>` tags are not trusted.
 running, so this is how you actually go quiet; `/pi-loops stop` pauses every loop and check on the
 machine until `/pi-loops start`.
 
-If a loop is stuck showing `running` after a process was killed and its pid reused, `/cron clear
-<ref>` releases the marker (it asks first).
+A loop shows `running` while a live process holds the claim on its run's row; the claim is closed
+when that process is gone, so there is nothing to release by hand. `/cron clear <ref>` says so.
 
 `/cron remove` takes a name of this project, a number from its listing, or the exact id of a job
 anywhere — the rule `cron_remove` follows, because a removal cannot be undone and a name this

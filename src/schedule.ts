@@ -369,8 +369,10 @@ export function cronLatestBetween(fields: CronFields, since: number, now: number
 export interface DueInput {
 	schedule: Schedule;
 	createdAt: number;
-	lastDueAt?: number;
-	lastFiredAt?: number;
+	/** The last slot the schedule fired or owes. */
+	due?: number;
+	/** When the last run started. */
+	fired?: number;
 }
 
 /**
@@ -390,8 +392,8 @@ export function clampFuture(stamp: number | undefined, now: number, slackMs = 60
  * for a week comes back owing exactly one run.
  */
 export function computeDue(rawInput: DueInput, now: number): number | undefined {
-	// Every stamp here comes off disk and may predate a clock correction. A future `lastDueAt` or
-	// `lastFiredAt` is simply not evidence about the past, so it is dropped. A future `createdAt`
+	// Every stamp here comes off disk and may predate a clock correction. A future `due` or
+	// `fired` is simply not evidence about the past, so it is dropped. A future `createdAt`
 	// cannot be dropped (it is the fallback), and clamping it to `now` on every call would keep the
 	// job permanently "just created" until the real clock caught up — so it is treated as a day old,
 	// which makes the job due once and then run from its own real stamps.
@@ -399,17 +401,17 @@ export function computeDue(rawInput: DueInput, now: number): number | undefined 
 	const input: DueInput = {
 		...rawInput,
 		createdAt,
-		lastDueAt: clampFuture(rawInput.lastDueAt, now),
-		lastFiredAt: clampFuture(rawInput.lastFiredAt, now),
+		due: clampFuture(rawInput.due, now),
+		fired: clampFuture(rawInput.fired, now),
 	};
 	const { schedule } = input;
 	switch (schedule.kind) {
 		case "cron": {
-			const since = input.lastDueAt ?? input.createdAt;
+			const since = input.due ?? input.createdAt;
 			return cronLatestBetween(parseCron(schedule.expr), since, now);
 		}
 		case "every": {
-			const base = input.lastFiredAt ?? input.createdAt;
+			const base = input.fired ?? input.createdAt;
 			if (now - base < schedule.ms) return undefined;
 			const k = Math.floor((now - base) / schedule.ms);
 			return base + k * schedule.ms;
@@ -421,7 +423,7 @@ export function computeDue(rawInput: DueInput, now: number): number | undefined 
 			// The *raw* stamps are what count here, not the clamped ones: a stamp from the future is
 			// no use for arithmetic, but it is still proof the scheduler acted, and discarding it
 			// would make a one-shot that already ran come due a second time.
-			if (rawInput.lastFiredAt !== undefined || rawInput.lastDueAt !== undefined) return undefined;
+			if (rawInput.fired !== undefined || rawInput.due !== undefined) return undefined;
 			return schedule.at <= now ? schedule.at : undefined;
 		}
 	}
@@ -436,11 +438,11 @@ export function computeNext(input: DueInput, now: number): number | undefined {
 		case "every": {
 			// The first step after now, counted from the base. Worked out, not walked: a base far in
 			// the past (a hand-edited `createdAt`) is as cheap as one a minute ago.
-			const base = input.lastFiredAt ?? input.createdAt;
+			const base = input.fired ?? input.createdAt;
 			return base + schedule.ms * Math.max(1, Math.floor((now - base) / schedule.ms) + 1);
 		}
 		case "once":
-			return input.lastFiredAt === undefined && schedule.at > now ? schedule.at : undefined;
+			return input.fired === undefined && schedule.at > now ? schedule.at : undefined;
 	}
 }
 
@@ -453,15 +455,15 @@ const LAST_STAMP_MS = 8.64e15 - 86_400_000;
 /**
  * The first time after `now` that a job's schedule names, as a stamp, or undefined: its schedule
  * is unusable, an `every` job has no usable time to count from, the time is past the last one
- * that has a stamp, or it is a one-shot that has fired or whose time has passed. It takes a job
- * as `jobs.json` holds it and uses the scheduler's evaluator (`computeNext`), so a reader of that
- * file needs no file in between. It does not look at `enabled`, and it does not say whether a run
+ * that has a stamp, or it is a one-shot that has fired or whose time has passed. It takes a job's
+ * schedule and creation as `jobs.json` holds them and its last fire (`fired`) as the lists show it,
+ * and uses the clock's evaluator (`computeNext`), so a reader of that file needs no file in between. It does not look at `enabled`, and it does not say whether a run
  * is due now: those are the caller's questions (`nextRunOf` in src/job-edit.ts answers the second).
  */
-export function nextRunStamp(job: { schedule?: unknown; createdAt?: unknown; lastFiredAt?: unknown }, now: number): string | undefined {
+export function nextRunStamp(job: { schedule?: unknown; createdAt?: unknown; fired?: unknown }, now: number): string | undefined {
 	if (!isValidSchedule(job.schedule)) return undefined;
 	const createdAt = typeof job.createdAt === "string" ? Date.parse(job.createdAt) : NaN;
-	const fired = typeof job.lastFiredAt === "string" ? Date.parse(job.lastFiredAt) : NaN;
-	const at = computeNext({ schedule: job.schedule, createdAt, lastFiredAt: Number.isFinite(fired) ? fired : undefined }, now);
+	const fired = typeof job.fired === "string" ? Date.parse(job.fired) : NaN;
+	const at = computeNext({ schedule: job.schedule, createdAt, fired: Number.isFinite(fired) ? fired : undefined }, now);
 	return at === undefined || !Number.isFinite(at) || Math.abs(at) > LAST_STAMP_MS ? undefined : stamp(at);
 }

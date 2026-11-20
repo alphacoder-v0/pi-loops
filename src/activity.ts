@@ -9,6 +9,7 @@ import { ruleResultText, splitFinding } from "./inbox-card.ts";
 import { failingJobs } from "./job-health.ts";
 import { redact } from "./redact.ts";
 import { runCardFor, runCardsHere } from "./run-card.ts";
+import type { ListedJob } from "./job-status.ts";
 import type { LoopJob, RunRecord } from "./store.ts";
 import type { AuditRecord } from "./triggers.ts";
 
@@ -171,7 +172,7 @@ export function activityFrom(input: ActivityInput): { items: ActivityItem[]; mor
 /** The title's counts, the hidden tab's notifications and the budget line, from the same files. */
 export function attentionFrom(input: {
 	findings: readonly InboxEntry[];
-	jobs: readonly LoopJob[];
+	jobs: readonly ListedJob[];
 	cwd?: string;
 	inProject: (entryCwd: string, cwd: string) => boolean;
 	budget?: { spent: number; cap: number; over: boolean };
@@ -189,7 +190,7 @@ export function attentionFrom(input: {
 			.slice(-NEW_DECISIONS_LIMIT)
 			.reverse()
 			.map((f) => ({ id: f.id, cwd: f.cwd, headline: clip(splitFinding(clip(f.text, 500), "checkpoint").headline, 120) })),
-		failing: failingJobs([...input.jobs]).map((j) => ({ jobId: j.id, ...(j.name ? { name: j.name } : {}), streak: j.consecutiveFailures ?? 0, key: `${j.id}:${(j.runCount ?? 0) - (j.consecutiveFailures ?? 0)}` })),
+		failing: failingJobs([...input.jobs]).map((j) => ({ jobId: j.id, ...(j.name ? { name: j.name } : {}), streak: j.status.streak, key: `${j.id}:${j.status.runs - j.status.streak}` })),
 		...(input.budget?.over ? { budget: { day: input.day, spent: input.budget.spent, cap: input.budget.cap } } : {}),
 	};
 }

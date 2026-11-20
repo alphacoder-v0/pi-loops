@@ -8,11 +8,11 @@ import { withFileLockSync, writeFileAtomic } from "../src/lock.ts";
 import { RequestStore, type Row } from "../src/requests.ts";
 import { stamp } from "../src/schedule.ts";
 import { runEnd } from "../src/settle.ts";
-import type { LoopJobV3, RunRecord } from "../src/store.ts";
+import type { LoopJob, RunRecord } from "../src/store.ts";
 
 const base = Date.parse("2026-01-02T03:04:05.000Z");
 const self = { pid: process.pid, instance: "scene", version: "test" };
-const job: LoopJobV3 = { id: "cron-scene", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "work", cwd: "/", enabled: true, catchUp: true, createdAt: stamp(base - 120_000), runCount: 0, skippedOverlap: 0 };
+const job: LoopJob = { id: "cron-scene", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "work", cwd: "/", enabled: true, catchUp: true, createdAt: stamp(base - 120_000), runCount: 0, skippedOverlap: 0 };
 const emptyClock = (): ClockFile => ({ v: 1, jobs: {} });
 function fixture() {
 	const dir = tmp("pi-loops-clock-scene-");

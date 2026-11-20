@@ -261,7 +261,7 @@ playbook 拷到 `.agents/skills/<name>/`，通过 `.git/info/exclude` 排除在�
 /cron trace ci 2                    第 2 新那次运行的 transcript：prompt、工具调用、结果、回复
 /cron scheduler                     当前窗口、它的会话、pi-loops 状态（`/cron status` 是 `/cron` 的别名）
 /cron cost [today|7d|all]           自动化花了多少，按任务分，对照 [limits] daily_budget_usd
-/cron disable --all                 本项目全停（--all-projects 停整台机器）；/cron clear <ref> 清掉死进程留下的 running 标记
+/cron disable --all                 本项目全停（--all-projects 停整台机器）；/cron clear <ref> 不再需要：运行进程不在了，它的认领会自动关闭
 /cron gc                            清掉会话已消失的任务（本项目；--all 才跨项目）
 /pi-loops [start|stop]             查看、启动或停止后台运行的 pi-loops
 /cron snapshot                      把「只有这个进程知道的状态」写进会话：哪些 MCP 连上了、暴露了什么工具、
@@ -529,6 +529,7 @@ pi-loops，旧版窗口不会替换新版 pi-loops。升级前请关闭所有 pi
 | 路径 | 内容 |
 |---|---|
 | `~/.pi/agent/loops/jobs.json` | 所有任务（全局；`PI_LOOPS_DIR` 可改根目录） |
+| `~/.pi/agent/loops/clock.json` | 每个任务上次运行的时间和运行次数 |
 | `~/.pi/agent/loops/state/<id>.md` | loop 状态，纯 Markdown，可以 `cat`、可以手改 |
 | `~/.pi/agent/loops/inbox.jsonl` | 全局 inbox，追加式，坏行跳过不删；超 1 MB 丢掉最旧的已分诊条目（new 的永不丢） |
 | `~/.pi/agent/loops/runs.jsonl` | run log，超 1 MB 自动保留后半 |
@@ -591,11 +592,11 @@ src/register-pi.mjs         在 pi 之外解析 pi 包的 node --import 钩子�
 src/pi-resolver.mjs         这个钩子去哪里找
 
 存储
-src/store.ts                jobs.json、state/*.md、runs.jsonl、sessions/
+src/store.ts                jobs.json（第 3 版，只存定义）、state/*.md、runs.jsonl、sessions/
 src/inbox.ts                inbox.jsonl
 src/archive.ts              .pisession 归档：无依赖 tar 读写、导出、导入改写
 src/lock.ts                 文件锁、原子写、pid 存活
-src/convert-v2.ts           旧版本留在 loops 目录里的文件，每次启动时清除；只有这个模块提到它们
+src/convert-v2.ts           旧版本留在 loops 目录里的东西：每次启动时把第 2 版 jobs.json 转成第 3 版（游标写进 clock.json），并清除不再使用的文件；第 2 版的结构（`V2Job`、`fromV2`）放在这里，存储和归档导入通过它读取
 src/paths.ts                realpathish：解析到最深的那个存在的祖先，所以还不存在的路径按它父目录的方式解析
 src/snapshot.ts             pi_loops_snapshot 的指纹，以及什么样的变化才值得写一条新条目
 src/config.ts               config.toml 与环境变量覆盖

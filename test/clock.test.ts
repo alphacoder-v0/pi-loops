@@ -9,14 +9,14 @@ type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
 import { plainRunId } from "../src/engine.ts";
 import { withFileLockSync, writeFileAtomic } from "../src/lock.ts";
 import { stamp } from "../src/schedule.ts";
-import { advanceClock, applyTick, ClockNewer, ClockStore, cursorMove, decideTick, decideRunNow, firedOf, tickClock, wanted, validEntry, v2Clock, type ClockFile, type Mine, type TickInput, type TickStores, writeSlot, commitSlot } from "../src/clock.ts";
-import { JobStore, type LoopJobV3 } from "../src/store.ts";
+import { advanceClock, applyTick, ClockNewer, ClockStore, cursorMove, decideTick, decideRunNow, firedOf, tickClock, wanted, validEntry, type ClockFile, type Mine, type TickInput, type TickStores, writeSlot, commitSlot } from "../src/clock.ts";
+import { JobStore, type LoopJob } from "../src/store.ts";
 
 const now = Date.parse("2026-01-02T03:04:05.000Z");
-const job = (over: Partial<LoopJobV3> = {}): LoopJobV3 => ({ id: "cron-job", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "work", cwd: "/", enabled: true, catchUp: true, createdAt: stamp(now - 120_000), ...over });
+const job = (over: Partial<LoopJob> = {}): LoopJob => ({ id: "cron-job", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "work", cwd: "/", enabled: true, catchUp: true, createdAt: stamp(now - 120_000), ...over });
 const file = (jobs: ClockFile["jobs"] = {}): ClockFile => ({ v: 1, jobs });
 const self = { pid: 1, instance: "test", version: "1" };
-const input = (jobs: LoopJobV3[], mine = new Map<string, Mine>(jobs.map((j) => [j.id, { kind: "loop" }])), startedAt = now): TickInput => ({ jobs, clock: file(), view: { now, startedAt, tickMs: 30_000, catchUp: true, budgetOver: false, kind: "background", self, mine, read: new Map(jobs.map((j) => [j.id, { rows: [], history: undefined, cwdMissing: false }])) } });
+const input = (jobs: LoopJob[], mine = new Map<string, Mine>(jobs.map((j) => [j.id, { kind: "loop" }])), startedAt = now): TickInput => ({ jobs, clock: file(), view: { now, startedAt, tickMs: 30_000, catchUp: true, budgetOver: false, kind: "background", self, mine, read: new Map(jobs.map((j) => [j.id, { rows: [], history: undefined, cwdMissing: false }])) } });
 const row = (id: string, lane = "@cron-job"): CountedRow => ({ v: 3, id, lane, kind: "input", source: "cron:cron-job", mode: "unattended", wake: "turn", collapse_key: "cron:cron-job", created_at: stamp(now), created_by: self, attempts: 0 });
 const stores = (dir: string): { requests: RequestStore; clock: ClockStore; deps: TickStores } => {
 	const requests = new RequestStore(dir);
@@ -76,26 +76,22 @@ test("[clock-entry-dropped] Invalid clock entries read as absent while valid ent
 	assert.equal(validEntry({ runs: 0, note: { at: "bad", text: "no" } }), undefined);
 });
 
-test("[kept-enable-clears] ClockStore and v2Clock share close, reset and clear semantics.", async () => {
+test("[kept-enable-clears] The clock closes, resets and clears: an enable drops the note, as main's enable cleared the error.", () => {
 	const dir = tmp();
-	const fileClock = new ClockStore({ file: path.join(dir, "clock.json"), lock: path.join(dir, "clock.lock") }, { locked: withFileLockSync, write: writeFileAtomic });
-	const jobs = new JobStore(dir);
-	await jobs.add({ id: "cron-job", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: dir, enabled: true, catchUp: true, createdAt: stamp(now), runCount: 1, skippedOverlap: 0, lastDueAt: stamp(now - 60_000), lastError: "previous failure" });
-	const clocks = [fileClock, v2Clock(jobs)];
-	for (const clock of clocks) {
-		clock.closeRun("cron-job", { ordinal: 3, fired: stamp(now) });
-		clock.reset("cron-job", stamp(now + 60_000));
-		assert.equal(clock.advance({ job: "cron-job", read: { slot: stamp(now + 60_000), fired: stamp(now) }, fires: false }), "moved");
-		clock.clear("cron-job", stamp(now + 120_000));
-	}
-	assert.equal(fileClock.read().jobs["cron-job"].runs, 3);
-	assert.equal(fileClock.read().jobs["cron-job"].slot, stamp(now + 60_000));
-	assert.equal(fileClock.read().jobs["cron-job"].cleared, stamp(now + 120_000));
-	const saved = jobs.load()[0];
-	assert.equal(saved.runCount, 3);
-	assert.equal(saved.lastDueAt, stamp(now + 60_000));
-	assert.equal((saved as any).clearedAt, stamp(now + 120_000));
-	assert.equal(saved.lastError, undefined);
+	const clock = new ClockStore({ file: path.join(dir, "clock.json"), lock: path.join(dir, "clock.lock") }, { locked: withFileLockSync, write: writeFileAtomic });
+	clock.seed({ "cron-job": { slot: stamp(now - 60_000), runs: 1, note: { at: stamp(now - 60_000), text: "missed a slot" } } });
+	clock.closeRun("cron-job", { ordinal: 3, fired: stamp(now) });
+	clock.reset("cron-job", stamp(now + 60_000));
+	assert.equal(clock.advance({ job: "cron-job", read: { slot: stamp(now + 60_000), fired: stamp(now) }, fires: false }), "moved");
+	assert.equal(clock.read().jobs["cron-job"].note?.text, "missed a slot");
+	clock.clear("cron-job", stamp(now + 120_000));
+	const saved = clock.read().jobs["cron-job"];
+	assert.deepEqual([saved.runs, saved.slot, saved.cleared, saved.note], [3, stamp(now + 60_000), stamp(now + 120_000), undefined]);
+	clock.cwdMissing("cron-job", stamp(now));
+	clock.countCollapse("cron-job");
+	assert.deepEqual([clock.read().jobs["cron-job"].cwdMissing, clock.read().jobs["cron-job"].collapsed], [stamp(now), 1]);
+	clock.cwdMissing("cron-job", undefined);
+	assert.equal(clock.read().jobs["cron-job"].cwdMissing, undefined, "a directory that is back clears the first look");
 	const seeded = new ClockStore({ file: path.join(dir, "seed.json"), lock: path.join(dir, "seed.lock") }, { locked: withFileLockSync, write: writeFileAtomic });
 	seeded.seed({ x: { slot: stamp(now), runs: 2 } });
 	assert.equal(seeded.read().jobs.x.runs, 2);
@@ -194,23 +190,24 @@ test("[T1-no-gate] applyTick writes the row and clock without an event log.", ()
 	assert.equal(fs.existsSync(path.join(dir, "events.jsonl")), false);
 });
 
-test("tickClock reads only jobs.json v2, writes the due row, and advances its cursor there.", async () => {
+test("tickClock writes the due row and advances its cursor in clock.json; jobs.json is not written.", async () => {
 	const dir = tmp();
-	const stored = { id: "cron-job", schedule: { kind: "every" as const, ms: 60_000 }, stateful: true, prompt: "work", cwd: dir, enabled: true, catchUp: true, createdAt: stamp(now - 120_000), runCount: 0, skippedOverlap: 0 };
+	const stored = { id: "cron-job", schedule: { kind: "every" as const, ms: 60_000 }, stateful: true, prompt: "work", cwd: dir, enabled: true, catchUp: true, createdAt: stamp(now - 120_000) };
 	const jobs = new JobStore(dir);
 	await jobs.add(stored);
+	const before = fs.readFileSync(jobs.jobsFile, "utf8");
 	const requests = new RequestStore(dir);
-	const clock = v2Clock(jobs);
+	const clock = new ClockStore({ file: path.join(dir, "clock.json"), lock: path.join(dir, "clock.lock") }, { locked: withFileLockSync, write: writeFileAtomic });
 	const result = tickClock({ kind: "background", self, startedAt: now, tickMs: 30_000, catchUp: true, budgetOver: false, mine: () => ({ kind: "loop" }) }, {
-		book: () => ({ jobs: [job()], clock: file() }),
+		book: () => ({ jobs: jobs.load(), clock: clock.read() }),
 		history: () => new Map(), requests, clock,
 		proof: () => ({ has: () => false, older: () => false, heldRunWrote: () => false, ran: () => undefined }),
 		cwdExists: () => true, heldEpoch: () => undefined,
 	}, now);
 	assert.equal(result[0].decision.do, "row");
 	assert.equal(requests.list("@cron-job").length, 1);
-	assert.equal(jobs.load()[0].lastDueAt, result[0].decision.do === "row" ? result[0].decision.slot : undefined);
-	assert.equal(fs.existsSync(path.join(dir, "clock.json")), false);
+	assert.equal(clock.read().jobs["cron-job"]?.slot, result[0].decision.do === "row" ? result[0].decision.slot : undefined);
+	assert.equal(fs.readFileSync(jobs.jobsFile, "utf8"), before, "the definitions are not written by a tick");
 });
 
 test("wanted names only due jobs and avoids non-owned or disabled lanes.", () => {
@@ -248,15 +245,14 @@ test("[T3-cursor] A slot that is not later than the cursor is not decided again:
 	assert.deepEqual(again, { do: "pass", job: loop.id, why: "not-due" });
 });
 
-test("[cron-set-wins] A schedule reset wins over a tick that read the old cursor.", async () => {
+test("[cron-set-wins] A schedule reset wins over a tick that read the old cursor.", () => {
 	const dir = tmp();
-	const jobs = new JobStore(dir);
-	await jobs.add({ id: "cron-job", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: dir, enabled: true, catchUp: true, createdAt: stamp(now), runCount: 0, skippedOverlap: 0, lastDueAt: stamp(now - 60_000) });
-	const clock = v2Clock(jobs);
+	const clock = new ClockStore({ file: path.join(dir, "clock.json"), lock: path.join(dir, "clock.lock") }, { locked: withFileLockSync, write: writeFileAtomic });
+	clock.seed({ "cron-job": { slot: stamp(now - 60_000), runs: 0 } });
 	const stale = { job: "cron-job", read: { slot: stamp(now - 60_000) }, slot: stamp(now), fires: false };
 	clock.reset("cron-job", stamp(now + 60_000));
 	assert.equal(clock.advance(stale), "lost");
-	assert.equal(jobs.load()[0].lastDueAt, stamp(now + 60_000));
+	assert.equal(clock.read().jobs["cron-job"].slot, stamp(now + 60_000));
 });
 
 test("[kept-skipped-overlaps] Only a queued plain prompt or running loop row increments skipped overlap.", () => {

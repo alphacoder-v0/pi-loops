@@ -23,7 +23,7 @@ import { RunList } from "./run-list.ts";
 import type { OwnerView, SessionSnapshot } from "./job-owner.ts";
 import { DEFAULT_RUN_TIMEOUT_MS } from "./loop-run.ts";
 import { stamp } from "./schedule.ts";
-import { budgetState } from "./job-status.ts";
+import { budgetState, jobCounts } from "./job-status.ts";
 import { SubagentSlots } from "./slots.ts";
 import { type LoopJob, newId } from "./store.ts";
 import { RUNTIME_RIDERS, type Riders, type TickFacts } from "./ticker.ts";
@@ -36,6 +36,7 @@ import { type ToolHost, automationTools, createLoopJob } from "./tools.ts";
 import { TriggerRuntime, promotionToInbox } from "./trigger-runtime.ts";
 import { auditCronFinish, auditCronStart, controlPlanePreflight } from "./triggers.ts";
 import { shortSessionId } from "./session-head.ts";
+import { DEAD_SESSION_MARKER } from "./convert-v2.ts";
 
 export interface HostRuntimeDeps {
 	dir: string;
@@ -124,7 +125,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const ownerView: OwnerView = { holdsOwn: false, hostRuns: (sessionId) => canHold(sessionId) };
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
-	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: stores.inbox, audit: triggers.store, ledger: stores.jobs, self: createdBy });
+	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: stores.inbox, audit: triggers.store, ledger: stores.jobs, counts: (id) => jobCounts(stores.history().get(id), stores.clock.read().jobs[id]?.cleared), self: createdBy });
 
 	/* ------------------------------------------------------ lifecycle hooks */
 
@@ -187,6 +188,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		requests,
 		leases,
 		jobs: stores.jobs,
+		runsOf: (id) => stores.clock.read().jobs[id]?.runs ?? 0,
 		runs,
 		runner: deps.runner,
 		sinks,
@@ -432,14 +434,13 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		for (const job of book.jobs) {
 			if (job.stateful || !job.sessionId || !canHold(job.sessionId) || !job.enabled) continue;
 			let due: number | undefined;
-			try { due = computeDue({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastDueAt: book.clock.jobs[job.id]?.slot ? Date.parse(book.clock.jobs[job.id].slot!) : undefined, lastFiredAt: book.clock.jobs[job.id]?.fired ? Date.parse(book.clock.jobs[job.id].fired!) : undefined }, now); }
+			try { due = computeDue({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), due: book.clock.jobs[job.id]?.slot ? Date.parse(book.clock.jobs[job.id].slot!) : undefined, fired: book.clock.jobs[job.id]?.fired ? Date.parse(book.clock.jobs[job.id].fired!) : undefined }, now); }
 			catch (error) { log(`cron ${job.name ?? job.id}: ${error instanceof Error ? error.message : String(error)}`); continue; }
 			if (due === undefined && !background.owes(job, now)) continue;
 			if (due !== undefined && budget.over) continue;
 			const history = stores.history().get(job.id);
-			const legacy = stores.jobs.load().find((candidate) => candidate.id === job.id);
-			const streak = legacy?.consecutiveFailures ?? history?.streak ?? 0;
-			const failedAt = history?.failed?.at ?? legacy?.lastCompletedAt;
+			const streak = history?.streak ?? 0;
+			const failedAt = history?.failed?.at;
 			if (streak >= FAILING_AFTER && failedAt && now - Date.parse(failedAt) < failurePause(streak)) continue;
 			const permit = slots.acquire();
 			if (!permit) continue;
@@ -469,7 +470,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			lastDeadSessionScan = now;
 			for (const job of stores.jobs.load()) {
 				if (!job.enabled || job.stateful || !job.sessionId || deps.sessionExists(job.sessionId)) continue;
-				const why = `disabled: session ${shortSessionId(job.sessionId)} no longer exists (/cron gc removes it)`;
+				const why = `disabled: session ${shortSessionId(job.sessionId)} ${DEAD_SESSION_MARKER}`;
 				await stores.jobs.disable(job.id, { code: "session-gone", why, at: stamp(now) });
 				log(`cron ${job.name ?? job.id}: disabled, its session ${shortSessionId(job.sessionId)} no longer exists`);
 			}

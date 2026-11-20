@@ -315,7 +315,7 @@ const STATE = {
 	queue: { steering: [], followUp: [] },
 	// The shape a real session has: pi-loops writes a snapshot, and rendering it is where the page broke.
 	runtime: { version: "0.0.0", scheduler: { running: true, leader: true, runs: 0, checks: 0 }, counts: {}, mcp: [{ name: "hub", state: "connected", kind: "stdio", tools: ["a"] }], hooks: { count: 1, events: ["run_end"] }, tools: ["read"], at: new Date().toISOString() },
-	automation: { installed: true, dir: "/loops", jobs: [{ id: "cron-a", name: "nightly", schedule: "0 9 * * *", stateful: true, enabled: true, prompt: "check", runCount: 3, running: false }], rules: [], inboxNew: 2 },
+	automation: { installed: true, dir: "/loops", jobs: [{ id: "cron-a", name: "nightly", schedule: "0 9 * * *", stateful: true, enabled: true, prompt: "check", runs: 3, running: false }], rules: [], inboxNew: 2 },
 	piAlive: true,
 };
 
@@ -462,8 +462,8 @@ test("a job with the wrong types in it does not blank the sidebar", { timeout: 2
 	const automation = {
 		installed: true, dir: "/loops",
 		jobs: [
-			{ id: 1234, schedule: "0 9 * * *", enabled: true, prompt: 7, runCount: '<img src=x onerror="alert(1)">', lastError: 500 },
-			{ id: "cron-b", name: "healthy", schedule: "every 5m", enabled: true, prompt: "ok", runCount: 1 },
+			{ id: 1234, schedule: "0 9 * * *", enabled: true, prompt: 7, runs: '<img src=x onerror="alert(1)">', lastError: 500 },
+			{ id: "cron-b", name: "healthy", schedule: "every 5m", enabled: true, prompt: "ok", runs: 1 },
 		],
 		rules: [{ enabled: true, fireOnce: false, action: "notify" }], // no condition at all
 		inboxNew: '<b>x</b>',
@@ -487,7 +487,7 @@ test("a job's whole prompt is one click away, and stays open across a redraw", {
 	const prompt = "THE_WHOLE_PROMPT_" + "z".repeat(300) + "_END";
 	const automation = {
 		installed: true, dir: "/loops", inboxNew: 0, rules: [],
-		jobs: [{ id: "cron-long", name: "long-prompt", schedule: "every 5m", enabled: true, prompt, runCount: 1, cwd: "/work/api" }],
+		jobs: [{ id: "cron-long", name: "long-prompt", schedule: "every 5m", enabled: true, prompt, runs: 1, cwd: "/work/api" }],
 	};
 	const dom = stubDom({ ...STATE, automation }, { messages: [] });
 	await new Function(pageScript())();
@@ -509,8 +509,8 @@ test("a job's skipped overlaps are shown when there are any, and not when there 
 	const automation = {
 		installed: true, dir: "/loops", inboxNew: 0, rules: [],
 		jobs: [
-			{ id: "cron-behind", name: "behind", schedule: "every 5m", enabled: true, prompt: "p", runCount: 9, cwd: "/work/api", skippedOverlap: 3 },
-			{ id: "cron-caught-up", name: "caught-up", schedule: "every 5m", enabled: true, prompt: "p", runCount: 9, cwd: "/work/api" },
+			{ id: "cron-behind", name: "behind", schedule: "every 5m", enabled: true, prompt: "p", runs: 9, cwd: "/work/api", collapsed: 3 },
+			{ id: "cron-caught-up", name: "caught-up", schedule: "every 5m", enabled: true, prompt: "p", runs: 9, cwd: "/work/api" },
 		],
 	};
 	const dom = stubDom({ ...STATE, automation }, { messages: [] });
@@ -547,7 +547,7 @@ test("a job with a last error says so before it is opened", { timeout: 20_000 },
 	// card go quiet about a failing job. A one-line hint in the summary puts that back.
 	const automation = {
 		installed: true, dir: "/loops", inboxNew: 0, rules: [],
-		jobs: [{ id: "cron-err", name: "failing", schedule: "every 5m", enabled: true, prompt: "p", runCount: 1, lastError: "boom" }],
+		jobs: [{ id: "cron-err", name: "failing", schedule: "every 5m", enabled: true, prompt: "p", runs: 1, lastError: "boom" }],
 	};
 	const dom = stubDom({ ...STATE, automation }, { messages: [] });
 	await new Function(pageScript())();
@@ -2243,10 +2243,10 @@ test("what the machine has that this project does not is counted, apart", { time
 	const automation = {
 		installed: true, dir: "/loops", inboxNew: 0, rules: [],
 		jobs: [
-			{ id: "cron-a", name: "nightly-report", ref: "nightly-report", schedule: "0 9 * * *", enabled: true, prompt: "check", runCount: 3 },
-			{ id: "cron-b", name: "here", schedule: "every 5m", enabled: true, prompt: "ok", runCount: 1, next: Date.now() + 60_000 },
+			{ id: "cron-a", name: "nightly-report", ref: "nightly-report", schedule: "0 9 * * *", enabled: true, prompt: "check", runs: 3 },
+			{ id: "cron-b", name: "here", schedule: "every 5m", enabled: true, prompt: "ok", runs: 1, next: Date.now() + 60_000 },
 			// A plain job of another session: the server sends no `next` and says what would wake it.
-			{ id: "cron-c", name: "theirs", schedule: "0 9 * * *", enabled: true, prompt: "digest", runCount: 4, asleep: "session 01a09f6d — resume it to run" },
+			{ id: "cron-c", name: "theirs", schedule: "0 9 * * *", enabled: true, prompt: "digest", runs: 4, asleep: "session 01a09f6d — resume it to run" },
 		],
 		// Everything the machine has that this project does not: counted, because a list that silently
 		// drops things is worse than a longer list — and counted apart, because /cron counts jobs and
@@ -2285,8 +2285,8 @@ test("a next run in April does not render as a time of day", { timeout: 20_000 }
 	const automation = {
 		installed: true, dir: "/loops", inboxNew: 0, rules: [], elsewhere: 0,
 		jobs: [
-			{ id: "cron-soon", name: "in-an-hour", ref: "in-an-hour", schedule: "every 45m", enabled: true, prompt: "p", runCount: 1, next: soon.toISOString() },
-			{ id: "cron-far", name: "new-year", ref: "new-year", schedule: "0 9 1 1 *", enabled: true, prompt: "p", runCount: 1, next: distant.toISOString() },
+			{ id: "cron-soon", name: "in-an-hour", ref: "in-an-hour", schedule: "every 45m", enabled: true, prompt: "p", runs: 1, next: soon.toISOString() },
+			{ id: "cron-far", name: "new-year", ref: "new-year", schedule: "0 9 1 1 *", enabled: true, prompt: "p", runs: 1, next: distant.toISOString() },
 		],
 	};
 	const dom = stubDom({ ...STATE, automation }, { messages: [] });
@@ -2307,7 +2307,7 @@ test("a job name and an approval title cannot reorder the lines they are drawn o
 	// see what is scheduled — and so did the title of a dialog asking you to approve a command.
 	const automation = {
 		installed: true, dir: "/loops", inboxNew: 0, elsewhere: { jobs: 0, rules: 0 },
-		jobs: [{ id: "cron-a", name: "backup‮ live evil", ref: "cron-a", schedule: "every 5m", enabled: true, prompt: "run it", runCount: 0 }],
+		jobs: [{ id: "cron-a", name: "backup‮ live evil", ref: "cron-a", schedule: "every 5m", enabled: true, prompt: "run it", runs: 0 }],
 		rules: [{ id: "dyn-a", condition: "build ⁦fails⁩", action: "tell me", enabled: true, fireOnce: false }],
 	};
 	const dom = stubDom({ ...STATE, automation }, { messages: [] });
@@ -2369,8 +2369,8 @@ test("a disabled job or rule says so in words, not only by being faint", { timeo
 	const automation = {
 		...STATE.automation,
 		jobs: [
-			{ id: "cron-a", name: "nightly", schedule: "0 9 * * *", stateful: true, enabled: false, prompt: "check", runCount: 9, running: false },
-			{ id: "cron-b", name: "hourly", schedule: "every 1h", stateful: false, enabled: true, prompt: "look", runCount: 2, running: false },
+			{ id: "cron-a", name: "nightly", schedule: "0 9 * * *", stateful: true, enabled: false, prompt: "check", runs: 9, running: false },
+			{ id: "cron-b", name: "hourly", schedule: "every 1h", stateful: false, enabled: true, prompt: "look", runs: 2, running: false },
 		],
 		rules: [
 			{ id: "dyn-1", enabled: false, fireOnce: true, condition: "a deploy fails", action: "tell me" },
@@ -4702,7 +4702,7 @@ const allUnder = (root: any): any[] => [root, ...(root.children ?? []).flatMap((
 const loopSlot = () => (globalThis as any).document.getElementById("auto").querySelectorAll("[data-loopx]")[0];
 const buttonIn = (root: any, label: string) => allUnder(root).find((e) => e.tag === "button" && e._text === label);
 const press = (b: any) => b.onclick({ preventDefault() {}, stopPropagation() {} });
-const loopState = (job: Record<string, unknown>, rules: unknown[] = []) => ({ ...STATE, automation: { ...STATE.automation, jobs: [{ id: "cron-aaaaaaaa", name: "pr-watch", schedule: "every 15m", stateful: true, enabled: true, prompt: "watch", runCount: 12, ...job }], rules } });
+const loopState = (job: Record<string, unknown>, rules: unknown[] = []) => ({ ...STATE, automation: { ...STATE.automation, jobs: [{ id: "cron-aaaaaaaa", name: "pr-watch", schedule: "every 15m", stateful: true, enabled: true, prompt: "watch", runs: 12, ...job }], rules } });
 
 test("a running loop row has Stop this run; the confirm opens inline, survives a redraw, and Keep running closes it with nothing sent", { timeout: 20_000 }, async () => {
 	const state = loopState({ running: true, run: { runId: LOOP_RUN, since: new Date(Date.now() - 120_000).toISOString() } });
@@ -4791,7 +4791,7 @@ test("a loop row shows its 30-day signal and one suggestion; Keep and the sugges
 });
 
 test("a loop row is its name, schedule and run on one line; the 30-day line only when it is not zero", { timeout: 20_000 }, async () => {
-	const zero = { signal: { findings30d: 0, claimed30d: 0, dismissed30d: 0, quietStreak: 0 }, runCount: 0 };
+	const zero = { signal: { findings30d: 0, claimed30d: 0, dismissed30d: 0, quietStreak: 0 }, runs: 0 };
 	const dom = await startPage(loopState({ ...zero, name: undefined, label: "cron-5f1c0a2b" }), {});
 	try {
 		const html = String((globalThis as any).document.getElementById("auto").innerHTML);
@@ -4804,7 +4804,7 @@ test("a loop row is its name, schedule and run on one line; the 30-day line only
 	} finally {
 		dom.dispose();
 	}
-	const some = await startPage(loopState({ signal: { findings30d: 3, claimed30d: 1, dismissed30d: 0, quietStreak: 0 }, runCount: 4 }), {});
+	const some = await startPage(loopState({ signal: { findings30d: 3, claimed30d: 1, dismissed30d: 0, quietStreak: 0 }, runs: 4 }), {});
 	try {
 		assert.doesNotMatch(String((globalThis as any).document.getElementById("auto").innerHTML), /runs 4/, "the activity strip counts runs, not the row");
 		assert.equal(allUnder(loopSlot()).find((e: any) => e.className === "signal")?._text, "3 findings in 30 days · 1 claimed");
@@ -5015,7 +5015,7 @@ test("the cost badge takes no room until something is spent, at every width", { 
 test("a Loops row says each thing once: no prompt peek for a named loop, no quiet under an error, no id or cwd, a rule named by its condition", { timeout: 20_000 }, async () => {
 	const rule = { id: "dyn-1", condition: "~/build.done appears", action: "run cargo test", enabled: true, fireOnce: true };
 	const long = { ...rule, id: "dyn-2", condition: "x".repeat(100) };
-	const named = await startPage(loopState({ prompt: "watch the open PRs", lastFiredAt: new Date().toISOString(), cwd: "/home/u/api", signal: { findings30d: 0, claimed30d: 0, dismissed30d: 0, quietStreak: 4 }, lastError: "model refused" }, [rule, long]), {});
+	const named = await startPage(loopState({ prompt: "watch the open PRs", fired: new Date().toISOString(), cwd: "/home/u/api", signal: { findings30d: 0, claimed30d: 0, dismissed30d: 0, quietStreak: 4 }, lastError: "model refused" }, [rule, long]), {});
 	try {
 		const html = (globalThis as any).document.getElementById("auto").innerHTML;
 		const job = html.slice(html.indexOf('data-key="job:'), html.indexOf('data-key="rule:'));

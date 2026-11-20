@@ -22,7 +22,9 @@ import { LOOP_STATE_MAX_CHARS, capChars } from "./protocol.ts";
 import { pathOnlyCondition } from "./path-precheck.ts";
 import { previewRedacted } from "./redact.ts";
 import { computeNext, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
-import { type JobStore, newId, type LoopJob } from "./store.ts";
+import type { Clock, ClockFile, RunClose } from "./clock.ts";
+import { fromArchiveCarry, fromV2, toArchiveJob, type V2Job } from "./convert-v2.ts";
+import { DISABLED_BY_PERSON, type JobStore, newId, type LoopJob } from "./store.ts";
 import { type DynamicTriggerRule, type TriggerStore, newRuleId } from "./triggers.ts";
 
 export const ARCHIVE_SCHEMA = "pi-loops.session_export.v1";
@@ -162,6 +164,8 @@ export interface ExportInput {
 	sessionFile: string;
 	cwd: string;
 	jobs: LoopJob[];
+	/** The cursors of `jobs` (`clock.json`): an archive carries each job's run count and last fire, as 0.24.2's did. */
+	clock: ClockFile;
 	rules: DynamicTriggerRule[];
 	/** loop state per job id */
 	states: Record<string, string>;
@@ -224,7 +228,7 @@ export function exportSession(input: ExportInput): ExportSummary {
 		{ name: MANIFEST_PATH, data: Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`) },
 		{ name: SESSION_PATH, data: sessionBytes },
 	];
-	if (jobs.length) entries.push({ name: CRON_PATH, data: Buffer.from(`${JSON.stringify({ version: 1, jobs }, null, 2)}\n`) });
+	if (jobs.length) entries.push({ name: CRON_PATH, data: Buffer.from(`${JSON.stringify({ version: 1, jobs: jobs.map((job) => toArchiveJob(job, input.clock.jobs[job.id])) }, null, 2)}\n`) });
 	if (rules.length) entries.push({ name: TRIGGERS_PATH, data: Buffer.from(`${JSON.stringify({ version: 1, rules }, null, 2)}\n`) });
 	for (const [id, text] of states) entries.push({ name: `${LOOPS_DIR}${id}.md`, data: Buffer.from(`${capChars(text, LOOP_STATE_MAX_CHARS)}\n`) });
 	for (const e of entries) if (e.name !== SESSION_PATH && e.data.length > MAX_SIDECAR_BYTES) throw new Error(`${e.name} exceeds the 2 MiB sidecar cap`);
@@ -279,6 +283,8 @@ export interface ImportSummary {
 	originalSessionId: string;
 	entryCount: number;
 	jobs: LoopJob[];
+	/** What each imported job's cursor starts from, by its (possibly regenerated) id: its run count and last fire. */
+	carry: Record<string, RunClose>;
 	rules: DynamicTriggerRule[];
 	/** loop state per (possibly regenerated) job id */
 	states: Record<string, string>;
@@ -362,6 +368,7 @@ export function importSession(input: ImportInput): ImportSummary {
 	const dedup = new Dedup(input);
 	const idMap = new Map<string, string>();
 	const jobs: LoopJob[] = [];
+	const carry: Record<string, RunClose> = {};
 	const originallyEnabledJobs: string[] = [];
 	const cronBytes = files.get(CRON_PATH);
 	if (cronBytes) {
@@ -388,22 +395,21 @@ export function importSession(input: ImportInput): ImportSummary {
 			// with the fresh import session would make every import look new and double the automation.
 			// A job the project owns stays the project's; one with no owner at all is from before
 			// `createdBy` and counts as the exporting conversation's.
-			const { host: _legacyHost, owner: _owner, createdBy: _createdBy, ...rawJob } = raw as typeof raw & { host?: unknown };
+			const { host: _legacyHost, owner: _owner, createdBy: _createdBy, disabled: _disabled, ...rawJob } = fromV2(raw as unknown as V2Job).job as LoopJob & { host?: unknown };
 			const projectOwned = raw.owner === "project";
+			const enabled = raw.enabled && input.activate;
 			const job: LoopJob = {
 				...rawJob,
 				cwd: input.targetCwd,
-				enabled: raw.enabled && input.activate,
-				running: undefined,
-				lastDueAt: undefined,
-				lastError: undefined,
-				skippedOverlap: 0,
+				enabled,
+				...(enabled ? {} : { disabled: { code: "person" as const, why: DISABLED_BY_PERSON, at: stamp() } }),
 				sessionId: raw.stateful ? undefined : sessionId,
 				...(projectOwned ? { owner: "project" as const } : { createdBy: raw.createdBy ?? { sessionId: parsed.header.id, cwd: manifest.source?.cwd ?? input.targetCwd } }),
 			};
 			if (dedup.hasJob(job)) continue;
 			if (input.existingJobIds.has(job.id)) job.id = newId("cron");
 			idMap.set(raw.id, job.id);
+			carry[job.id] = fromArchiveCarry(raw);
 			if (raw.enabled) originallyEnabledJobs.push(job.id);
 			jobs.push(job);
 		}
@@ -453,6 +459,7 @@ export function importSession(input: ImportInput): ImportSummary {
 		jobs,
 		rules,
 		states,
+		carry,
 		originallyEnabledJobs,
 		originallyEnabledRules,
 		automationEnabled: input.activate,
@@ -486,9 +493,10 @@ export function parseActivateMode(value: string | undefined): ActivateMode {
  * The rollback is best effort by construction; the failure it is undoing is usually a store that
  * cannot be written.
  */
-export async function applyImport(imp: ImportSummary, jobStore: JobStore, triggerStore: TriggerStore): Promise<void> {
+export async function applyImport(imp: ImportSummary, jobStore: JobStore, triggerStore: TriggerStore, clock: Pick<Clock, "closeRun">): Promise<void> {
 	try {
 		if (imp.jobs.length) await jobStore.mutate((jobs) => ({ jobs: [...jobs, ...imp.jobs], result: undefined }));
+		for (const job of imp.jobs) if (imp.carry[job.id]) clock.closeRun(job.id, imp.carry[job.id]);
 		for (const [id, text] of Object.entries(imp.states)) jobStore.writeState(id, text);
 		if (imp.rules.length) await triggerStore.mutate((rules) => rules.push(...imp.rules));
 	} catch (err) {

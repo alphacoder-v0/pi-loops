@@ -110,9 +110,9 @@ test("computeDue collapses missed cron ticks into one", () => {
 	const now = local(2026, 9, 8, 12, 0);
 	assert.equal(computeDue({ schedule, createdAt }, now), local(2026, 9, 8, 9, 0));
 	// after recording lastDueAt, nothing more is owed
-	assert.equal(computeDue({ schedule, createdAt, lastDueAt: local(2026, 9, 8, 9, 0) }, now), undefined);
+	assert.equal(computeDue({ schedule, createdAt, due: local(2026, 9, 8, 9, 0) }, now), undefined);
 	// next day
-	assert.equal(computeDue({ schedule, createdAt, lastDueAt: local(2026, 9, 8, 9, 0) }, local(2026, 9, 9, 9, 0, 20)), local(2026, 9, 9, 9, 0));
+	assert.equal(computeDue({ schedule, createdAt, due: local(2026, 9, 8, 9, 0) }, local(2026, 9, 9, 9, 0, 20)), local(2026, 9, 9, 9, 0));
 });
 
 test("computeDue for every/once", () => {
@@ -122,14 +122,14 @@ test("computeDue for every/once", () => {
 	assert.equal(computeDue({ schedule: every, createdAt }, createdAt + 31 * 60_000), createdAt + 30 * 60_000);
 	// offline for 5h → one due (latest multiple)
 	assert.equal(computeDue({ schedule: every, createdAt }, createdAt + 5 * 3_600_000 + 1), createdAt + 10 * 1_800_000);
-	assert.equal(computeDue({ schedule: every, createdAt, lastFiredAt: createdAt + 5 * 3_600_000 }, createdAt + 5 * 3_600_000 + 1), undefined);
+	assert.equal(computeDue({ schedule: every, createdAt, fired: createdAt + 5 * 3_600_000 }, createdAt + 5 * 3_600_000 + 1), undefined);
 	const once = parseSchedule("in 10m", createdAt);
 	assert.equal(computeDue({ schedule: once, createdAt }, createdAt + 9 * 60_000), undefined);
 	assert.equal(computeDue({ schedule: once, createdAt }, createdAt + 11 * 60_000), createdAt + 10 * 60_000);
-	assert.equal(computeDue({ schedule: once, createdAt, lastFiredAt: createdAt + 11 * 60_000 }, createdAt + 20 * 60_000), undefined);
+	assert.equal(computeDue({ schedule: once, createdAt, fired: createdAt + 11 * 60_000 }, createdAt + 20 * 60_000), undefined);
 	// A one-shot the scheduler acted on but did not fire (catch-up declined) has spent its slot too;
 	// rolling both stamps back is how a crashed or failed run gets it back.
-	assert.equal(computeDue({ schedule: once, createdAt, lastDueAt: createdAt + 10 * 60_000 }, createdAt + 20 * 60_000), undefined);
+	assert.equal(computeDue({ schedule: once, createdAt, due: createdAt + 10 * 60_000 }, createdAt + 20 * 60_000), undefined);
 	assert.equal(computeDue({ schedule: once, createdAt }, createdAt + 20 * 60_000), createdAt + 10 * 60_000);
 	assert.equal(computeNext({ schedule: every, createdAt }, createdAt + 31 * 60_000), createdAt + 60 * 60_000);
 });
@@ -144,7 +144,7 @@ test("nextRunStamp advances an every job only when its next time is reached", ()
 
 test("nextRunStamp bases an every job on its last fire", () => {
 	const t = local(2026, 11, 2, 8, 0);
-	assert.equal(nextRunStamp({ schedule: { kind: "every", ms: 60_000 }, createdAt: stamp(t), lastFiredAt: stamp(t + 90_000) }, t + 100_000), stamp(t + 150_000));
+	assert.equal(nextRunStamp({ schedule: { kind: "every", ms: 60_000 }, createdAt: stamp(t), fired: stamp(t + 90_000) }, t + 100_000), stamp(t + 150_000));
 });
 
 test("nextRunStamp finds the next cron time strictly after now", () => {
@@ -160,7 +160,7 @@ test("nextRunStamp ends a one-shot when it fires or its time passes", () => {
 	const job = { schedule: { kind: "once", at }, createdAt: stamp(t) };
 	assert.equal(nextRunStamp(job, t), stamp(at));
 	assert.equal(nextRunStamp(job, at), undefined);
-	assert.equal(nextRunStamp({ ...job, lastFiredAt: stamp(t) }, t), undefined);
+	assert.equal(nextRunStamp({ ...job, fired: stamp(t) }, t), undefined);
 });
 
 test("nextRunStamp returns undefined for unusable jobs and ignores enabled", () => {
@@ -216,9 +216,9 @@ test("a stamp from the future does not wedge the clock forever", () => {
 	const future = now + 30 * 86_400_000; // a wrong clock, later corrected by NTP
 	// cron: `since > now` used to make cronLatestBetween return undefined for 30 days.
 	const daily = { kind: "cron", expr: "0 9 * * *" } as const;
-	assert.notEqual(computeDue({ schedule: daily, createdAt: now - 86_400_000, lastDueAt: future }, now), undefined, "a daily job still fires");
+	assert.notEqual(computeDue({ schedule: daily, createdAt: now - 86_400_000, due: future }, now), undefined, "a daily job still fires");
 	// every: `now - base < ms` was true for the whole window.
-	assert.notEqual(computeDue({ schedule: { kind: "every", ms: 60_000 }, createdAt: now - 120_000, lastFiredAt: future }, now), undefined);
+	assert.notEqual(computeDue({ schedule: { kind: "every", ms: 60_000 }, createdAt: now - 120_000, fired: future }, now), undefined);
 	// A createdAt in the future is discarded too: the job is treated as created now, so it waits one
 	// interval rather than being stuck for 30 days.
 	assert.notEqual(computeDue({ schedule: { kind: "every", ms: 60_000 }, createdAt: future }, now), undefined, "due once, then it runs from its own real stamps");
@@ -232,8 +232,8 @@ test("a stamp from the future does not wedge the clock forever", () => {
 	// A one-shot is the exception: dropping its future stamps would make it owe its single slot all
 	// over again, and `run this at 3pm` is not a thing to run twice. runCount says it already went.
 	const once = { kind: "once", at: now - 600_000 } as const;
-	assert.equal(computeDue({ schedule: once, createdAt: now - 900_000, lastFiredAt: future }, now), undefined, "already ran, whatever the clock says");
-	assert.equal(computeDue({ schedule: once, createdAt: now - 900_000, lastDueAt: future }, now), undefined, "a slot the scheduler declined is spent too");
+	assert.equal(computeDue({ schedule: once, createdAt: now - 900_000, fired: future }, now), undefined, "already ran, whatever the clock says");
+	assert.equal(computeDue({ schedule: once, createdAt: now - 900_000, due: future }, now), undefined, "a slot the scheduler declined is spent too");
 	// The retry a failed one-shot gets clears both stamps on purpose, and must still come due.
 	assert.notEqual(computeDue({ schedule: once, createdAt: now - 900_000 }, now), undefined, "the deliberate retry is not blocked");
 });

@@ -311,7 +311,7 @@ test("sessions and inspect answer the questions export and import assume", async
 	const job: any = { id: "cron-" + "a".repeat(32), schedule: { kind: "cron", expr: "0 9 * * *" }, stateful: true, prompt: "watch the issues", cwd: "/work/api", enabled: true, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0 };
 	const rule: any = { id: "dyn-" + "1".repeat(32), condition: "deploy finishes", action: "tell me", enabled: false, fireOnce: true, promoteToChat: true, createdAt: "t", cwd: "/work/api" };
 	const out = defaultExportPath(dir, "01a08416");
-	exportSession({ sessionFile, cwd: "/work/api", jobs: [job], rules: [rule], states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
+	exportSession({ sessionFile, cwd: "/work/api", jobs: [job], clock: { v: 1, jobs: {} }, rules: [rule], states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
 
 	const info = inspectArchive(out);
 	assert.match(info.schema, /pi-loops\.session_export/);
@@ -333,7 +333,7 @@ test("inspect does not hand an archive's escape sequences to the terminal", asyn
 	const nasty = "innocent\u001b[2J\u001b[1;1Hcron  enabled  0 9 * * *  something else\r";
 	const job: any = { id: "cron-" + "b".repeat(32), schedule: { kind: "cron", expr: "0 9 * * *" }, stateful: true, prompt: nasty, cwd: "/work/api", enabled: true, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0 };
 	const out = defaultExportPath(dir, "01a08416");
-	exportSession({ sessionFile, cwd: "/work/api", jobs: [job], rules: [], states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
+	exportSession({ sessionFile, cwd: "/work/api", jobs: [job], clock: { v: 1, jobs: {} }, rules: [], states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
 
 	const lines: string[] = [];
 	const code = await runCli(["inspect", out], (l) => void lines.push(l));

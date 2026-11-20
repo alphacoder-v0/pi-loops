@@ -505,8 +505,8 @@ export function controlPlanePreflight(proc: { hop: number; hasUI: boolean; held?
  * — the host used to only write to `host.log`, so `/triggers audit` was blank for exactly the hours
  * nobody was watching, which is when a user most wants to know what ran.
  */
-export function auditCronStart(store: TriggerStore, job: { id: string; name?: string; cwd: string; prompt: string; stateful: boolean; lastDueAt?: string; lastFiredAt?: string }, runId: string, due?: string): void {
-	const summary = `cron \`${job.id}\`${job.name ? ` "${job.name}"` : ""} due at ${due ?? job.lastDueAt ?? job.lastFiredAt ?? stamp()}: ${previewRedacted(job.prompt, 120)}`;
+export function auditCronStart(store: TriggerStore, job: { id: string; name?: string; cwd: string; prompt: string; stateful: boolean }, runId: string, due?: string): void {
+	const summary = `cron \`${job.id}\`${job.name ? ` "${job.name}"` : ""} due at ${due ?? stamp()}: ${previewRedacted(job.prompt, 120)}`;
 	store.appendAudit({ cwd: job.cwd, type: "trigger", traceId: runId, state: "accepted", sourceLabel: "Cron", eventLabel: job.id, summary, details: { delivery: job.stateful ? "sub_agent" : "inject_and_run", evaluator_decision: { outcome: "accept", permission: "allow" } } });
 	store.appendAudit({ cwd: job.cwd, type: "trigger_result", traceId: runId, state: "running", sourceLabel: "Cron", eventLabel: job.id, details: { cwd: job.cwd } });
 }

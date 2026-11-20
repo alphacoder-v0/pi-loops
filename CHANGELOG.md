@@ -7,6 +7,13 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Upgrade notes
 
+- **The first start of this version converts `~/.pi/agent/loops/jobs.json` to version 3, which
+  0.24.2 does not read.** The file holds each job's definition only: when a job last ran and how
+  many times is in `clock.json`, and its failures are read from `runs.jsonl`. The file before is
+  kept beside it as `jobs.json.v2.bak`. To go back to 0.24.2, stop pi-loops and every pi, and put
+  `jobs.json.v2.bak` back as `jobs.json`: it has the jobs and the run counts of the moment you
+  upgraded, and not the jobs you made since. 0.24.2 does not run a loop's run that this version
+  queued (`requests/@cron-*.jsonl`): it waits there until you upgrade again.
 - **Restart every pi terminal that runs pi-loops 0.24.2 or earlier after you upgrade.** What
   this version queues for a conversation is a line an earlier version cannot read. While a
   terminal of an earlier version has a conversation open, none of these reaches it: a rule's
@@ -56,6 +63,12 @@ All notable changes to pi-loops are documented here. The format follows
   rise once for each slot. The run
   after a long run is the one at the next slot of the schedule; before, a loop with an `every`
   schedule ran again at the first tick after the long run ended.
+- **A loop's and a plain job's failures are read from the run log.** After pi-loops stops in the
+  middle of a run, that run is not counted as a failure, where it was counted once from the mark
+  it left. `[failing ×N]` counts the failed runs that `runs.jsonl` still holds: past 1 MB it keeps its
+  newer half. A failing loop that you import from an archive starts with no failures.
+- **`/cron clear` says there is no running marker to clear.** A run's claim is closed when its
+  process is gone, so there is nothing to clear by hand.
 - **`/triggers audit` says more about a loop's runs.** It also lists a run that is stopped, removed
   with its job, failed because the process running it stopped, or parked, and the removal of a
   one-shot that has finished. The second try of a failed one-shot is listed with the time it runs,

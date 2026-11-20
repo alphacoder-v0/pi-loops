@@ -1,21 +1,23 @@
 import * as fs from "node:fs";
-import { type Clock, type ClockFile, type JobClock, v2Clock } from "./clock.ts";
+import * as path from "node:path";
+import { type ClockFile, ClockStore } from "./clock.ts";
 import { convertStores } from "./convert-v2.ts";
+import { withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { Inbox } from "./inbox.ts";
 import { RequestStore } from "./requests.ts";
-import { runHistory, fromV2, type JobHistory } from "./job-status.ts";
+import { runHistory, type JobHistory } from "./job-status.ts";
 import { RunList } from "./run-list.ts";
-import { JobStore, type LoopJobV3 } from "./store.ts";
+import { JobStore, type LoopJob } from "./store.ts";
 import { TriggerStore } from "./triggers.ts";
 
 export interface Book {
-	readonly jobs: readonly LoopJobV3[];
+	readonly jobs: readonly LoopJob[];
 	readonly clock: ClockFile;
 }
 export interface Stores {
 	readonly dir: string;
 	readonly jobs: JobStore;
-	readonly clock: Clock;
+	readonly clock: ClockStore;
 	readonly inbox: Inbox;
 	readonly requests: RequestStore;
 	readonly rules: TriggerStore;
@@ -23,23 +25,25 @@ export interface Stores {
 	history(): ReadonlyMap<string, JobHistory>;
 }
 
+/** The cursors of a loops directory (`clock.json`), for a reader that opens no other store. */
+export function clockStore(dir: string): ClockStore {
+	return new ClockStore({ file: path.join(dir, "clock.json"), lock: path.join(dir, "clock.lock") }, { locked: withFileLockSync, write: writeFileAtomic });
+}
+
 export function openStores(dir: string, log: (line: string) => void = () => {}): Stores {
-	const removed = convertStores(dir, log);
+	const { removed } = convertStores(dir, log);
 	if (removed.length) log(`removed ${removed.join(", ")}: files of an older version that nothing reads now`);
 	const jobs = new JobStore(dir);
 	const inbox = new Inbox(dir);
 	const requests = new RequestStore(dir);
 	const rules = new TriggerStore(dir);
-	const clock = v2Clock(jobs);
+	const clock = clockStore(dir);
 	let historyStamp = "";
 	let histories: ReadonlyMap<string, JobHistory> = new Map();
 	return {
 		dir, jobs, clock, inbox, requests, rules,
 		book() {
-			const converted = jobs.load().map(fromV2);
-			const entries: Record<string, JobClock> = {};
-			for (const item of converted) entries[item.job.id] = item.clock;
-			return { jobs: converted.map((item) => item.job), clock: { v: 1, jobs: entries } };
+			return { jobs: jobs.load(), clock: clock.read() };
 		},
 		history() {
 			let current = "missing";

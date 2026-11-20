@@ -15,7 +15,8 @@ import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal, signalSummary } from ".
 import { plural } from "./plural.ts";
 import { previewRedacted } from "./redact.ts";
 import type { ClaimedRow, Row } from "./requests.ts";
-import { listedJob, runHistory } from "./job-status.ts";
+import type { JobClock } from "./clock.ts";
+import { type ListedJob, listedJob, runHistory } from "./job-status.ts";
 import { loopLane } from "./lane.ts";
 import { computeNext, formatLocal, formatSchedule } from "./schedule.ts";
 import type { LoopJob, RunRecord } from "./store.ts";
@@ -26,6 +27,8 @@ export interface JobLinesInput {
 	runs: RunRecord[];
 	/** The whole inbox, read once by the caller. */
 	inbox: InboxEntry[];
+	/** Every job's cursor (`clock.json`), read once by the caller. */
+	clock: Readonly<Record<string, JobClock>>;
 	/** A conversation's queued rows (`RequestStore.list`): a plain job whose prompt waits there is marked `[queued …]`. */
 	requests: (sessionId: string) => Row[];
 	/** Who holds which session, as the instance reading the list sees it: a plain job of a session nobody holds has no next run. */
@@ -157,14 +160,13 @@ function catchUpMark(job: Pick<LoopJob, "stateful" | "catchUp">): string | undef
 export function jobLines(stored: LoopJob[], opts: JobLinesInput): string[] {
 	const { runs, inbox, requests, view, now, home, cwdExists, showCwd } = opts;
 	// A loop's run, failures and last error, from its rows and the run log (src/job-status.ts `listedJob`).
-	const histories = stored.some((job) => job.stateful) ? runHistory(runs) : undefined;
+	const histories = runHistory(runs);
 	const jobs = stored.map((job) => {
-		if (!job.stateful) return job;
-		const lane = loopLane(job.id);
+		const lane = job.stateful ? loopLane(job.id) : undefined;
 		let rows: Row[] = [];
 		try { if (lane) rows = requests(lane); }
 		catch { /* an unreadable lane lists as one with no rows */ }
-		return listedJob(job, rows, histories?.get(job.id), opts.live);
+		return listedJob(job, opts.clock[job.id], rows, histories.get(job.id), opts.live);
 	});
 	return jobs
 		.map((job, i) => {
@@ -175,7 +177,7 @@ export function jobLines(stored: LoopJob[], opts: JobLinesInput): string[] {
 							{
 								schedule: job.schedule,
 								createdAt: Date.parse(job.createdAt),
-								lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined,
+								fired: job.status.fired ? Date.parse(job.status.fired) : undefined,
 							},
 							now,
 						)
@@ -200,8 +202,8 @@ export function jobLines(stored: LoopJob[], opts: JobLinesInput): string[] {
 			const head = `${String(i + 1).padStart(2)}. ${job.id}${job.name ? ` "${job.name}"` : ""}${job.enabled ? "" : "  disabled"}  ${formatSchedule(job.schedule)}${marks ? `  ${marks}` : ""}`;
 			const action = `    action: ${previewRedacted(job.prompt, 120)}`;
 			const worth = signal ? signalSummary(signal) : undefined;
-			const meta = `    next ${next ? formatLocal(next) : "—"} · runs ${job.runCount}${job.skippedOverlap ? ` · skipped overlaps ${job.skippedOverlap}` : ""}${worth ? ` · 30d: ${worth}` : ""}${showCwd ? ` · ${projectLabel(job.cwd, home)}` : ""}`;
-			const err = job.lastError ? `    last error: ${previewRedacted(job.lastError, 100)}` : job.lastFiredAt ? `    last fired: ${formatLocal(Date.parse(job.lastFiredAt))}` : undefined;
+			const meta = `    next ${next ? formatLocal(next) : "—"} · runs ${job.status.runs}${job.status.collapsed ? ` · skipped overlaps ${job.status.collapsed}` : ""}${worth ? ` · 30d: ${worth}` : ""}${showCwd ? ` · ${projectLabel(job.cwd, home)}` : ""}`;
+			const err = job.status.error ? `    last error: ${previewRedacted(job.status.error, 100)}` : job.status.fired ? `    last fired: ${formatLocal(Date.parse(job.status.fired))}` : undefined;
 			return [head, action, meta, err].filter((l): l is string => !!l);
 		})
 		.flat();
@@ -219,7 +221,7 @@ export interface PanelInput {
 	rules: (Pick<DynamicTriggerRule, "condition" | "action" | "enabled" | "fireOnce"> & { failureMark?: string })[];
 	/** The last rule check here; only an outcome other than `no match` or `matched N` is shown. */
 	poll?: { at: string; outcome: string };
-	jobs: LoopJob[];
+	jobs: ListedJob[];
 	runs: RunRecord[];
 	runText: (r: RunRecord, name?: string) => string;
 	sources: { name: string; state: string; tools: number }[];
@@ -249,7 +251,7 @@ export function panelLines(i: PanelInput): { text: string; tone: PanelTone }[] {
 		const disabled = i.jobs.filter((j) => !j.enabled).length;
 		lines.push({ text: `Loops  ${i.jobs.length}${disabled ? ` · ${disabled} disabled` : ""}`, tone: "head" });
 		for (const j of i.jobs.slice(0, PANEL_ROW_LIMIT))
-			lines.push({ text: `${loopLabel(j)}  ${formatSchedule(j.schedule)}  ${clip(j.prompt, 48)}${j.enabled ? "" : "  [disabled]"}${j.skippedOverlap ? `  skipped overlaps ${j.skippedOverlap}` : ""}`, tone: j.skippedOverlap ? "warn" : j.enabled ? "ok" : "dim" });
+			lines.push({ text: `${loopLabel(j)}  ${formatSchedule(j.schedule)}  ${clip(j.prompt, 48)}${j.enabled ? "" : "  [disabled]"}${j.status.collapsed ? `  skipped overlaps ${j.status.collapsed}` : ""}`, tone: j.status.collapsed ? "warn" : j.enabled ? "ok" : "dim" });
 		more(i.jobs.length);
 	}
 	if (i.runs.length) {

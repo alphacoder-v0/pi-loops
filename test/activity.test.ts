@@ -1,3 +1,4 @@
+import type { ListedJob } from "../src/job-status.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { activityFrom, attentionFrom, machineWide } from "../src/activity.ts";
@@ -87,14 +88,14 @@ test("attention: this project's new decisions and news, the machine's new decisi
 		finding({ id: "n2" }),
 		finding({ id: "old", status: "dismissed" }),
 	];
-	const job = (over: Partial<LoopJob>) => ({ id: "cron-a", enabled: true, runCount: 10, ...over }) as LoopJob;
-	const jobs = [job({ id: "cron-a", name: "ci", consecutiveFailures: 3 }), job({ id: "cron-b", consecutiveFailures: 2 })];
+	const job = ({ runs = 10, streak = 0, ...over }: Partial<LoopJob> & { runs?: number; streak?: number }) => ({ id: "cron-a", enabled: true, ...over, status: { runs, collapsed: 0, streak } }) as unknown as ListedJob;
+	const jobs = [job({ id: "cron-a", name: "ci", streak: 3 }), job({ id: "cron-b", streak: 2 })];
 	const a = attentionFrom({ findings, jobs, cwd: "/api", inProject: same, budget: { spent: 1, cap: 5, over: false }, day: "2026-11-05" });
 	assert.deepEqual([a.decisions, a.news], [1, 2]);
 	assert.deepEqual(a.newDecisions, [{ id: "d-there", cwd: "/web", headline: "Merge the web branch?" }, { id: "d-here", cwd: "/api", headline: "Ship it?" }]);
 	assert.deepEqual(a.failing, [{ jobId: "cron-a", name: "ci", streak: 3, key: "cron-a:7" }], "a streak of two is not failing yet");
 	assert.equal(a.budget, undefined);
-	const over = attentionFrom({ findings: [], jobs: [job({ consecutiveFailures: 4, runCount: 11 })], inProject: same, budget: { spent: 5.2, cap: 5, over: true }, day: "2026-11-05" });
+	const over = attentionFrom({ findings: [], jobs: [job({ streak: 4, runs: 11 })], inProject: same, budget: { spent: 5.2, cap: 5, over: true }, day: "2026-11-05" });
 	assert.deepEqual(over.budget, { day: "2026-11-05", spent: 5.2, cap: 5 });
 	assert.equal(over.failing[0].key, "cron-a:7", "the key stays the same for the whole streak");
 });
@@ -122,7 +123,7 @@ test("a finding with no cwd is counted in the title of every project, as the inb
 });
 
 test("a conversation in no project known is told nothing of any project: only the machine-wide parts", () => {
-	const full = attentionFrom({ findings: [finding({ id: "d", kind: "checkpoint", text: "Ship it? · waits: you" }), finding({ id: "n" })], jobs: [{ id: "cron-a", enabled: true, runCount: 9, consecutiveFailures: 3 } as LoopJob], inProject: same, budget: { spent: 6, cap: 5, over: true }, day: "2026-11-05" });
+	const full = attentionFrom({ findings: [finding({ id: "d", kind: "checkpoint", text: "Ship it? · waits: you" }), finding({ id: "n" })], jobs: [{ id: "cron-a", enabled: true, status: { runs: 9, collapsed: 0, streak: 3 } } as unknown as ListedJob], inProject: same, budget: { spent: 6, cap: 5, over: true }, day: "2026-11-05" });
 	const wide = machineWide(full);
 	assert.deepEqual(Object.keys(wide).sort(), ["budget", "failing", "newDecisions"]);
 	assert.deepEqual([wide.newDecisions.length, wide.failing.length, wide.budget?.cap], [1, 1, 5]);

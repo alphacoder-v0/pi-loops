@@ -11,7 +11,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { claimable, landed, plainRunId, proofOf, type EngineSinks } from "../../src/engine.ts";
-import { advanceClock, ClockNewer, ClockStore, decideTick, wanted, writeSlot, commitSlot, v2Clock, type Clock, type ClockFile, type SimClockSubject, type SlotWritten, type SpendDecision, type TickDecision, type TickStores } from "../../src/clock.ts";
+import { advanceClock, ClockNewer, ClockStore, decideTick, wanted, writeSlot, commitSlot, type Clock, type ClockFile, type SimClockSubject, type SlotWritten, type SpendDecision, type TickDecision, type TickStores } from "../../src/clock.ts";
 import { loopLane, type LaneId } from "../../src/lane.ts";
 import { withFileLockSync, writeFileAtomic } from "../../src/lock.ts";
 import { RequestStore, type ClaimedRow, type Row, type UnclaimedRow } from "../../src/requests.ts";
@@ -20,22 +20,22 @@ import { TriggerStore } from "../../src/triggers.ts";
 import { stamp, type Schedule } from "../../src/schedule.ts";
 import { runEnd, type RunEnd } from "../../src/settle.ts";
 import { closeLoopRun, closeSteps, type LoopRunDeps, type RunRecordM4b } from "../../src/loop-run.ts";
-import { fromV2, jobStatus, runHistory, type JobHistory } from "../../src/job-status.ts";
-import { JobStore, type LoopJob, type LoopJobV3, type RunRecord } from "../../src/store.ts";
+import { jobCounts, jobStatus, runHistory, type JobHistory } from "../../src/job-status.ts";
+import { JobStore, type LoopJob, type RunRecord } from "../../src/store.ts";
 import { type Random, weighted } from "./prng.ts";
 
 type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
 export interface Ticker { readonly pid: number; readonly kind: "background" | "window"; alive: boolean; startedAt: number; pending: Array<{ decision: SpendDecision; written?: SlotWritten }> }
 export interface SlotLedger { ids: Set<string>; appends: number; spent: number; commits: number; fires: number; collapses: number; exit?: "delivered" | "stopped" | "dead" | "cancelled" }
-export interface ClockWorld { now: number; readonly jobs: readonly LoopJobV3[]; readonly tickers: Ticker[]; lease: { holder?: number; epoch: number }; readonly records: RunRecord[]; readonly entries: unknown[]; readonly ledger: Map<string, SlotLedger> }
+export interface ClockWorld { now: number; readonly jobs: readonly LoopJob[]; readonly tickers: Ticker[]; lease: { holder?: number; epoch: number }; readonly records: RunRecord[]; readonly entries: unknown[]; readonly ledger: Map<string, SlotLedger> }
 export type ClockStep = { readonly do: "tick"; readonly ticker: number } | { readonly do: "write"; readonly ticker: number } | { readonly do: "die" | "start"; readonly ticker: number } | { readonly do: "drain"; readonly lane: LaneId } | { readonly do: "end"; readonly lane: LaneId; readonly how: RunEnd["how"]; readonly dies?: number } | { readonly do: "deliver" } | { readonly do: "lease"; readonly to: number | undefined } | { readonly do: "cancel"; readonly lane: LaneId } | { readonly do: "forget" } | { readonly do: "newer" } | { readonly do: "advance"; readonly ms: number };
 export interface ClockOutcome { steps: string[]; violation?: string; seen: Set<string> }
 
-const JOBS: readonly LoopJobV3[] = [
-	{ id: "cron-repeat-loop", name: "repeat", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "go", cwd: "/p", enabled: true, catchUp: true, createdAt: stamp(Date.parse("2026-06-01T12:00:00Z")), runCount: 0, skippedOverlap: 0 },
-	{ id: "cron-cron-loop", name: "cron", schedule: { kind: "cron", expr: "* * * * *" }, stateful: true, prompt: "go", cwd: "/p", enabled: true, catchUp: true, createdAt: stamp(Date.parse("2026-06-01T12:00:00Z")), runCount: 0, skippedOverlap: 0 },
-	{ id: "plain-clock", name: "plain", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId: "clock-conversation", prompt: "go", cwd: "/p", enabled: true, catchUp: true, createdAt: stamp(Date.parse("2026-06-01T12:00:00Z")), runCount: 0, skippedOverlap: 0 },
-	{ id: "cron-once-loop", name: "once", schedule: { kind: "once", at: Date.parse("2026-06-01T12:01:00Z") }, stateful: true, prompt: "go", cwd: "/p", enabled: true, catchUp: true, createdAt: stamp(Date.parse("2026-06-01T12:00:00Z")), runCount: 0, skippedOverlap: 0 },
+const JOBS: readonly LoopJob[] = [
+	{ id: "cron-repeat-loop", name: "repeat", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "go", cwd: "/p", enabled: true, catchUp: true, createdAt: stamp(Date.parse("2026-06-01T12:00:00Z")) },
+	{ id: "cron-cron-loop", name: "cron", schedule: { kind: "cron", expr: "* * * * *" }, stateful: true, prompt: "go", cwd: "/p", enabled: true, catchUp: true, createdAt: stamp(Date.parse("2026-06-01T12:00:00Z")) },
+	{ id: "plain-clock", name: "plain", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId: "clock-conversation", prompt: "go", cwd: "/p", enabled: true, catchUp: true, createdAt: stamp(Date.parse("2026-06-01T12:00:00Z")) },
+	{ id: "cron-once-loop", name: "once", schedule: { kind: "once", at: Date.parse("2026-06-01T12:01:00Z") }, stateful: true, prompt: "go", cwd: "/p", enabled: true, catchUp: true, createdAt: stamp(Date.parse("2026-06-01T12:00:00Z")) },
 ];
 const lanes = JOBS.map((job) => job.stateful ? loopLane(job.id) : job.sessionId!) as LaneId[];
 const keyOf = (job: string, slot: string): string => `${job}|${slot}`;
@@ -81,13 +81,6 @@ export function clockJsonSubject(dir: string): SimClockSubject {
 	return { name: "clock.json", clock, read: () => clock.read(), forget: () => fs.rmSync(file, { force: true }), newer: () => fs.writeFileSync(file, JSON.stringify({ v: 2, jobs: {} })) };
 }
 
-export function jobsV2Subject(dir: string): SimClockSubject {
-	fs.mkdirSync(dir, { recursive: true });
-	const store = new JobStore(dir);
-	writeFileAtomic(store.jobsFile, JSON.stringify({ version: 2, jobs: JOBS }));
-	const clock = v2Clock(store);
-	return { name: "jobs.json v2", clock, read: () => ({ v: 1, jobs: Object.fromEntries(store.load().map((job) => [job.id, { ...(job.lastDueAt ? { slot: job.lastDueAt } : {}), ...(job.lastFiredAt ? { fired: job.lastFiredAt } : {}), runs: job.runCount, ...(job.skippedOverlap ? { collapsed: job.skippedOverlap } : {}) }])) }) };
-}
 
 function readClock(world: ClockWorld & { subject: SimClockSubject }, job: string) { try { return world.subject.read().jobs[job]; } catch (error) { if (error instanceof ClockNewer) return undefined; throw error; } }
 
@@ -96,13 +89,13 @@ export async function play(dir: string, random: Random, steps: number, subject: 
 	const requests = new RequestStore(dir);
 	const clock = subject.clock;
 	const simJobs = new JobStore(dir);
-	if (!fs.existsSync(simJobs.jobsFile)) writeFileAtomic(simJobs.jobsFile, JSON.stringify({ version: 2, jobs: JOBS }));
+	if (!fs.existsSync(simJobs.jobsFile)) writeFileAtomic(simJobs.jobsFile, JSON.stringify({ version: 3, jobs: JOBS }));
 	const inbox = new Inbox(dir);
 	const rules = new TriggerStore(dir);
 	const createdBy = { pid: process.pid, instance: "sim", version: "test" };
-	const engine = (): EngineSinks => ({ jobs: { exists: (id) => simJobs.load().some((job) => job.id === id), enabled: (id) => simJobs.load().find((job) => job.id === id)?.enabled ?? false, goalActive: () => false }, inbox, audit: rules, ledger: simJobs, self: () => createdBy });
+	const engine = (): EngineSinks => ({ jobs: { exists: (id) => simJobs.load().some((job) => job.id === id), enabled: (id) => simJobs.load().find((job) => job.id === id)?.enabled ?? false, goalActive: () => false }, inbox, audit: rules, ledger: simJobs, counts: (id) => jobCounts(runHistory(simJobs.allRuns()).get(id), undefined), self: () => createdBy });
 	const closeDeps: Pick<LoopRunDeps, "stores" | "engine" | "sinks" | "holder"> = {
-		stores: { jobs: simJobs, clock, inbox, requests, book: () => { const converted = simJobs.load().map(fromV2); let clockFile: ClockFile; try { clockFile = subject.read(); } catch (error) { if (!(error instanceof ClockNewer)) throw error; clockFile = { v: 1, jobs: {} }; } return { jobs: converted.map((entry) => entry.job), clock: clockFile }; }, history: () => runHistory(simJobs.allRuns()) },
+		stores: { jobs: simJobs, clock, inbox, requests, book: () => { let clockFile: ClockFile; try { clockFile = subject.read(); } catch (error) { if (!(error instanceof ClockNewer)) throw error; clockFile = { v: 1, jobs: {} }; } return { jobs: simJobs.load(), clock: clockFile }; }, history: () => runHistory(simJobs.allRuns()) },
 		engine,
 		sinks: { started: () => undefined, finished: () => undefined, log: () => undefined },
 		holder: () => ({ pid: process.pid, procStart: undefined }),

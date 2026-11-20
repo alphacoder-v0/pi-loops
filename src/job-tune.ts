@@ -14,8 +14,10 @@
  */
 import { applyJobEdit, type JobEditContext, type NextRun } from "./job-edit.ts";
 import type { LoopSignal } from "./job-signal.ts";
-import { computeNext, formatSchedule, type Schedule } from "./schedule.ts";
-import type { LoopJob } from "./store.ts";
+import type { ListedJob } from "./job-status.ts";
+import { computeNext, formatSchedule, stamp, type Schedule } from "./schedule.ts";
+import type { JobClock } from "./clock.ts";
+import { DISABLED_BY_PERSON, type LoopJob } from "./store.ts";
 import type { AuditRecord } from "./triggers.ts";
 
 /** "Run hourly instead" from this many empty runs in a row. */
@@ -60,8 +62,8 @@ function hourly(schedule: Schedule): Schedule {
 }
 
 /** At most one suggestion for `job`, or none. */
-export function suggestTune(job: LoopJob, s: LoopSignal, now: number): Suggestion | undefined {
-	if (!job.enabled || !job.stateful || job.schedule.kind === "once" || job.running) return undefined;
+export function suggestTune(job: ListedJob, s: LoopSignal, now: number): Suggestion | undefined {
+	if (!job.enabled || !job.stateful || job.schedule.kind === "once" || job.status.run) return undefined;
 	const at = `${job.id}:${formatSchedule(job.schedule)}`;
 	let suggestion: Suggestion | undefined;
 	if (s.findings >= PAUSE_FINDINGS && s.claimed === 0 && s.dismissed >= PAUSE_DISMISSED) suggestion = { kind: "pause", key: `pause:${at}`, label: "Pause" };
@@ -75,6 +77,8 @@ export function suggestTune(job: LoopJob, s: LoopSignal, now: number): Suggestio
 export interface AppliedTune {
 	/** Exactly the fields to write, under the store's lock. */
 	patch: Partial<LoopJob>;
+	/** The slot the clock restarts from, for a schedule change (`Clock.reset`). */
+	slot?: string;
 	/** The `cron_control_plane` state: a schedule change is `set`, a pause is `disable`. */
 	op: "set" | "disable";
 	changed: string[];
@@ -82,10 +86,10 @@ export interface AppliedTune {
 }
 
 /** Apply `suggestion` to `job`, through `applyJobEdit` for a schedule. */
-export function applyTune(job: LoopJob, suggestion: Suggestion, ctx: JobEditContext): AppliedTune {
-	if (suggestion.kind === "pause") return { patch: { enabled: false, tuneKept: undefined }, op: "disable", changed: ["paused from the page"], nextRun: { kind: "disabled" } };
-	const edit = applyJobEdit(job, { schedule: hourly(job.schedule) }, ctx);
-	return { patch: { ...edit.patch, tuneKept: undefined }, op: "set", changed: edit.changed, nextRun: edit.nextRun };
+export function applyTune(job: LoopJob, clock: JobClock | undefined, suggestion: Suggestion, ctx: JobEditContext): AppliedTune {
+	if (suggestion.kind === "pause") return { patch: { enabled: false, disabled: { code: "person", why: DISABLED_BY_PERSON, at: stamp(ctx.now) }, tuneKept: undefined }, op: "disable", changed: ["paused from the page"], nextRun: { kind: "disabled" } };
+	const edit = applyJobEdit(job, clock, { schedule: hourly(job.schedule) }, ctx);
+	return { patch: { ...edit.patch, tuneKept: undefined }, ...(edit.slot === undefined ? {} : { slot: edit.slot }), op: "set", changed: edit.changed, nextRun: edit.nextRun };
 }
 
 /**

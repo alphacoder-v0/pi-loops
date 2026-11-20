@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
+import { addV2, viewV2 } from "./v2-jobs.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { loadConfig } from "../src/config.ts";
@@ -112,7 +113,7 @@ test("the host runs a due loop on its tick", async () => {
 	const fake = fakeRunner();
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fake, mcpTools: () => [], log: () => undefined });
 	try {
-		await host.stores.jobs.add({ id: "cron-kept", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: dir, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await addV2(host.stores, { id: "cron-kept", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: dir, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		await host.drain(5000);
 		assert.equal(fake.calls.length, 1, "the host ran the loop");
@@ -129,7 +130,7 @@ test("the host runs loops and queues a promotion for the creating session when a
 	const logs: string[] = [];
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "", model: "default/model" }), runner: fake, mcpTools: () => [], log: (m) => void logs.push(m) });
 	try {
-		await host.stores.jobs.add({ id: "cron-hosted", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: proj, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await addV2(host.stores, { id: "cron-hosted", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: proj, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		const end = Date.now() + 5000;
 		while (host.stores.jobs.listRuns("cron-hosted").length < 1 && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
@@ -202,13 +203,13 @@ test("the host leaves a plain job's tick owed instead of consuming it", async ()
 	const createdAt = new Date(Date.now() - 120_000).toISOString();
 	try {
 		// A plain job (the default mode) and a one-shot: neither can be delivered without a chat.
-		await host.stores.jobs.add({ id: "cron-plain", schedule: { kind: "every", ms: 60_000 }, stateful: false, prompt: "tell me in the chat", cwd: proj, sessionId: "s1", enabled: true, catchUp: true, createdAt, runCount: 0, skippedOverlap: 0 });
-		await host.stores.jobs.add({ id: "cron-once", schedule: { kind: "once", at: Date.now() - 60_000 }, stateful: false, prompt: "one shot", cwd: proj, sessionId: "s1", enabled: true, catchUp: true, createdAt, runCount: 0, skippedOverlap: 0 });
+		await addV2(host.stores, { id: "cron-plain", schedule: { kind: "every", ms: 60_000 }, stateful: false, prompt: "tell me in the chat", cwd: proj, sessionId: "s1", enabled: true, catchUp: true, createdAt, runCount: 0, skippedOverlap: 0 });
+		await addV2(host.stores, { id: "cron-once", schedule: { kind: "once", at: Date.now() - 60_000 }, stateful: false, prompt: "one shot", cwd: proj, sessionId: "s1", enabled: true, catchUp: true, createdAt, runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		await host.drain(5000);
 
 		const jobs = host.stores.jobs.load();
-		const plain = jobs.find((j) => j.id === "cron-plain")!;
+		const plain = viewV2(host.stores, "cron-plain");
 		assert.equal(plain.runCount, 0, "an undeliverable job is not a completed run");
 		assert.equal(plain.lastFiredAt, undefined, "and its tick stays owed for the next interactive pi");
 		assert.equal(plain.lastDueAt, undefined);
@@ -226,7 +227,7 @@ test("the host audits its cron runs, so /triggers audit is not blank for the una
 	fs.mkdirSync(proj);
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
 	try {
-		await host.stores.jobs.add({ id: "cron-audited", name: "nightly", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: proj, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await addV2(host.stores, { id: "cron-audited", name: "nightly", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: proj, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		await host.drain(10_000);
 
@@ -266,7 +267,7 @@ test("the host fires run_start/run_end around each loop run, in the run's own pr
 	fs.writeFileSync(path.join(dir, "hooks.toml"), `${rule("run_start")}\n${rule("run_end")}\n`);
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "", model: "default/model" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
 	try {
-		await host.stores.jobs.add(dueJob("cron-hooked", "nightly", proj));
+		await addV2(host.stores, dueJob("cron-hooked", "nightly", proj));
 		await tickHost(host);
 		await host.drain(10_000);
 		const [startLine, endLine] = await waitForLines(events, 2);
@@ -286,7 +287,7 @@ test("the host fires run_start/run_end around each loop run, in the run's own pr
 
 		// The event the issue is about: last night's loop failed and nobody was watching.
 		process.env.FAKE_PI_FAIL = "1";
-		await host.stores.jobs.add(dueJob("cron-broken", "flaky", proj));
+		await addV2(host.stores, dueJob("cron-broken", "flaky", proj));
 		await tickHost(host);
 		await host.drain(10_000);
 		const failed = JSON.parse((await waitForLines(events, 4)).at(-1)!);
@@ -512,13 +513,14 @@ test("a closed conversation's plain job that keeps failing waits out its pause: 
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined });
 	try {
 		const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
-		await host.stores.jobs.add({ id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: ago(10 * 60_000), runCount: 3, skippedOverlap: 0, consecutiveFailures: 3, lastCompletedAt: ago(30_000) });
+		await addV2(host.stores, { id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: ago(10 * 60_000), runCount: 3, skippedOverlap: 0 });
+		// Three failed turns in a row, the last one `last` ago: the streak and its pause are the run log's.
+		const failures = (last: number) => fs.writeFileSync(host.stores.jobs.runsFile, [2, 1, 0].map((i) => JSON.stringify({ runId: `run-failed-${i}`, jobId: "cron-held", stateful: false, cwd: dir, pid: 1, startedAt: ago(last + i * 60_000), finishedAt: ago(last + i * 60_000), ok: false, error: "boom", findings: 0, droppedFindings: 0, stateUpdated: false })).join("\n") + "\n");
+		failures(30_000);
 		await tickHost(host);
 		await host.drain(5000);
 		assert.deepEqual(turns, [], "no turn 30 seconds after the third failure");
-		await host.stores.jobs.update("cron-held", (j) => {
-			j.lastCompletedAt = ago(61_000);
-		});
+		failures(61_000);
 		await tickHost(host);
 		await host.drain(5000);
 		assert.deepEqual(turns, ["held"], "a turn once one minute has passed");
@@ -541,13 +543,13 @@ test("a held turn runs in the closed conversation's file and stops once a window
 	};
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined });
 	try {
-		await host.stores.jobs.add({ id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await addV2(host.stores, { id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		await host.drain(5000);
 		assert.deepEqual(seen[0], { kind: "held", sessionFile: file, before: true }, "the turn runs in that conversation's own file, holding it");
 		assert.deepEqual(seen[1], { after: false }, "the window's acquisition is what the turn sees");
 		// The slot was counted when its row was written, as a window counts it; what is owed is the row.
-		const job = host.stores.jobs.load()[0];
+		const job = viewV2(host.stores, host.stores.jobs.load()[0].id);
 		assert.deepEqual([job.runCount, !!job.lastFiredAt, job.owedSlot, job.consecutiveFailures], [1, true, undefined, undefined]);
 		const [row] = new RequestStore(dir).list(sessionId);
 		assert.deepEqual([row.source, row.run, row.attempts, row.not_before], ["cron:cron-held", undefined, 0, undefined], "its row is owed to the window now holding the conversation: no claim, no attempt");
@@ -580,8 +582,8 @@ test("a held turn is the conversation's own: its model, its session for the tool
 	};
 	host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "", model: "host/default" }), runner, mcpTools: () => [], log: () => undefined });
 	try {
-		await host.stores.jobs.add({ id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, model: "old/pinned", thinking: "high", enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
-		await host.stores.jobs.add({ id: "cron-elsewhere", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: other, enabled: false, catchUp: false, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
+		await addV2(host.stores, { id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, model: "old/pinned", thinking: "high", enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await addV2(host.stores, { id: "cron-elsewhere", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: other, enabled: false, catchUp: false, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		await host.drain(5000);
 		assert.deepEqual([seen.model, seen.thinking], [undefined, undefined], "the conversation keeps the model and thinking level it is on; the job's 0.22 capture is ignored");
@@ -742,7 +744,7 @@ test("a stop row aborts the held turn running in that conversation", { timeout: 
 	};
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined });
 	try {
-		await host.stores.jobs.add({ id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await addV2(host.stores, { id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		assert.equal(await until(() => started, 5000), true, "the held turn is running");
 		const leases = new LeaseStore(dir);
@@ -789,7 +791,7 @@ test("Stop this run on a held turn: the stop goes through the conversation's que
 		createdBy: () => ({ pid: process.pid, instance: "host", version: "0" }),
 	});
 	try {
-		await host.stores.jobs.add({ id: "cron-held", schedule: { kind: "every", ms: 3_600_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 3_700_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await addV2(host.stores, { id: "cron-held", schedule: { kind: "every", ms: 3_600_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 3_700_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		assert.equal(await until(() => started && !!host.heldTurn(sessionId), 5000), true);
 		const runId = host.heldTurn(sessionId)!.runId;
@@ -824,7 +826,7 @@ test("a held turn a person stopped runs exactly once: no successor row, no owed 
 	const prompts: string[] = [];
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: runnerUntilStopped(prompts), mcpTools: () => [], log: () => undefined });
 	try {
-		await host.stores.jobs.add(heldJob(sessionId, dir));
+		await addV2(host.stores, heldJob(sessionId, dir));
 		await tickHost(host);
 		assert.equal(await until(() => prompts.length === 1, 5000), true);
 		const requests = new RequestStore(dir);
@@ -832,7 +834,7 @@ test("a held turn a person stopped runs exactly once: no successor row, no owed 
 		host.ring(sessionId);
 		await host.drain(5000);
 		assert.deepEqual(requests.list(sessionId), [], "no successor row asks the stopped prompt again");
-		const job = host.stores.jobs.load()[0];
+		const job = viewV2(host.stores, host.stores.jobs.load()[0].id);
 		assert.equal(job.owedSlot, undefined, "the slot is spent");
 		assert.equal(job.runCount, 1, "the slot was counted when its row was written, as a window counts it");
 		assert.equal(job.lastError, undefined, "and not a failure: no failing mark, nothing under failures in pi-loops status");
@@ -860,7 +862,7 @@ test("a stop read by the held turn's own first drain stops it", { timeout: 30_00
 	};
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: runnerUntilStopped(prompts), mcpTools: () => [], log });
 	try {
-		await host.stores.jobs.add(heldJob(sessionId, dir));
+		await addV2(host.stores, heldJob(sessionId, dir));
 		await tickHost(host);
 		assert.equal(await until(() => stop !== undefined, 5000), true, "the turn began");
 		assert.ok(stop);
@@ -868,7 +870,7 @@ test("a stop read by the held turn's own first drain stops it", { timeout: 30_00
 		assert.equal(host.triggers.store.listAudit(1, (r) => r.type === "request" && r.traceId === stop.id)[0]?.state, "done", "the stop named the run");
 		assert.equal(prompts.length, 0, "stopped before the model was asked");
 		assert.deepEqual(requests.list(sessionId), []);
-		const job = host.stores.jobs.load()[0];
+		const job = viewV2(host.stores, host.stores.jobs.load()[0].id);
 		assert.deepEqual([job.owedSlot, !!job.lastFiredAt, job.runCount, job.consecutiveFailures], [undefined, true, 1, undefined], "done, not owed: the slot is spent, and a stop is no failure");
 		assert.deepEqual(host.triggers.store.listAudit(5, (r) => r.type === "request" && r.state === "stopped").length, 1, "the row left as stopped, with its audit line");
 	} finally {
@@ -905,7 +907,7 @@ test("a held turn of a job with no name is named by its short run id, never by t
 	};
 	host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined });
 	try {
-		await host.stores.jobs.add({ id: "cron-53f86ab39270e599468d9b2c5e1909b1", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await addV2(host.stores, { id: "cron-53f86ab39270e599468d9b2c5e1909b1", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		await host.drain(5000);
 		assert.equal(during.length, 1);
@@ -928,7 +930,7 @@ test("a conversation open in the page is never held for a plain job's turn, and 
 		};
 		host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined, pageHolds: (id) => pageHasIt && id === sessionId });
 		try {
-			await host.stores.jobs.add({ id: "cron-held", name: "remind", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+			await addV2(host.stores, { id: "cron-held", name: "remind", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 			await tickHost(host);
 			await host.drain(5000);
 			if (pageHasIt) {
@@ -957,7 +959,7 @@ test("Stop this run on a loop run, through the page's wiring: aborted at once, a
 	const appended: unknown[] = [];
 	const stop = stopRunFrom("person", false, { runs: host.runs, heldTurn: (sid) => host.heldTurn(sid), ring: (sid) => host.ring(sid), leases: () => new LeaseStore(dir).list(), append: (row) => void appended.push(row), createdBy: () => ({ pid: 1, instance: "host", version: "0" }) });
 	try {
-		await host.stores.jobs.add({ id: "cron-loop", schedule: { kind: "every", ms: 3_600_000 }, stateful: true, prompt: "watch", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 3_700_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await addV2(host.stores, { id: "cron-loop", schedule: { kind: "every", ms: 3_600_000 }, stateful: true, prompt: "watch", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 3_700_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		assert.equal(await until(() => host.runs.all().length === 1, 5000), true);
 		const { runId } = host.runs.all()[0];

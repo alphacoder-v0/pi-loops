@@ -550,11 +550,11 @@ function snapshot(): HostSnapshot & { slots: { inUse: number; limit: number } } 
 			.reverse()
 			.map(recentRun),
 		// The three-in-a-row rule `/cron` and the badge use: one missed run is not a failing loop.
-		failing: failingJobs(jobs).map((j) => ({ job: loopLabel(j), error: previewRedacted(j.lastError ?? "", 120) })),
+		failing: failingJobs(jobs).map((j) => ({ job: loopLabel(j), error: previewRedacted(j.status.error ?? "", 120) })),
 		nextDue: (() => {
 			const next = jobs
 				.filter((j) => j.enabled && j.stateful)
-				.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, Date.now()))
+				.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), fired: j.status.fired ? Date.parse(j.status.fired) : undefined }, Date.now()))
 				.filter((n): n is number => n !== undefined)
 				.sort((a, b) => a - b)[0];
 			return next ? stamp(next) : undefined;

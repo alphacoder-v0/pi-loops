@@ -7,7 +7,7 @@
  */
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal } from "./job-signal.ts";
 import { formatWait, queuedPrompt, type QueuedPrompt, runningRun } from "./engine.ts";
-import { listedJobs } from "./job-status.ts";
+import { type ListedJob, listedJobs } from "./job-status.ts";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -18,7 +18,7 @@ import type { SessionSnapshot } from "./job-owner.ts";
 import { removeJob } from "./stores.ts";
 import type { Stores } from "./stores.ts";
 import type { RunList } from "./run-list.ts";
-import { MAX_PROMPT_BYTES, type JobStore, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
+import { DISABLED_BY_PERSON, MAX_PROMPT_BYTES, type JobStore, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
 import type { RequestStore } from "./requests.ts";
 import type { Inbox } from "./inbox.ts";
 import { jobNameFrom } from "./job-name.ts";
@@ -201,8 +201,6 @@ export async function createLoopJob(host: ToolStoresHost & Pick<ToolHost, "sessi
 		// A sub-agent schedules on behalf of the session that runs it.
 		...(scope?.projectOwned ? { owner: "project" as const } : { createdBy: { sessionId: scope?.parentSessionId ?? host.session().sessionId, cwd: scope?.parentCwd ?? host.session().cwd } }),
 		sessionId: owningSessionId(input.stateful, host.session().sessionId, scope?.parentSessionId),
-		runCount: 0,
-		skippedOverlap: 0,
 	};
 	await jobsOf(host).add(job);
 	if (job.stateful) host.ensureHost?.();
@@ -261,23 +259,23 @@ function renderTriggerRulesForTool(rules: ReturnType<TriggerStore["load"]>, host
  * run for a job nothing will dispatch is a time nothing intends to keep, and a model reads it as a
  * promise; one held by another window is shown, with the pid it runs in.
  */
-function nextRunForTool(job: LoopJob, now: number, view: OwnerView): number | undefined {
+function nextRunForTool(job: ListedJob, now: number, view: OwnerView): number | undefined {
 	if (!job.enabled || !runsSomewhere(job, view)) return undefined;
-	return computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined }, now);
+	return computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), fired: job.status.fired ? Date.parse(job.status.fired) : undefined }, now);
 }
 
 /** A plain job's prompt waiting in its conversation's queue (src/engine.ts `queuedPrompt`); a loop has no queue. */
-function queuedForTool(job: LoopJob, host: Pick<ToolHost, "stores">, now: number): QueuedPrompt | undefined {
+function queuedForTool(job: ListedJob, host: Pick<ToolHost, "stores">, now: number): QueuedPrompt | undefined {
 	return !job.stateful && job.sessionId ? queuedPrompt(job, requestsOf(host).list(job.sessionId), now) : undefined;
 }
 
 /** The run a job is in, for a tool result: a loop's marker, or the claim on a plain job's row. */
-function runningRunForTool(job: LoopJob, host: Pick<ToolHost, "stores">): string | undefined {
+function runningRunForTool(job: ListedJob, host: Pick<ToolHost, "stores">): string | undefined {
 	return runningRun(job, !job.stateful && job.sessionId ? requestsOf(host).list(job.sessionId) : []);
 }
 
 /** Cron jobs, rendered for a tool result. */
-function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session" | "stores" | "owner">): string {
+function renderCronJobsForTool(jobs: readonly ListedJob[], host: Pick<ToolHost, "session" | "stores" | "owner">): string {
 	if (!jobs.length) return "cron jobs: none";
 	const now = Date.now();
 	const lines = [`cron jobs: ${jobs.length}`];
@@ -296,9 +294,9 @@ function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session" |
 		if (run) lines.push(`  running_run_id: ${run}`);
 		const queued = queuedForTool(job, host, now);
 		if (queued) lines.push(`  queued: ${formatWait(now - Date.parse(queued.since))} (since ${queued.since})${queued.reason ? ` — ${queued.reason}` : ""}`);
-		if (job.lastError) lines.push(`  last_error: ${previewRedacted(job.lastError, 120)}`);
-		if (job.consecutiveFailures) lines.push(`  consecutive_failures: ${job.consecutiveFailures}`);
-		if (job.skippedOverlap) lines.push(`  skipped_overlap_count: ${job.skippedOverlap}`);
+		if (job.status.error) lines.push(`  last_error: ${previewRedacted(job.status.error, 120)}`);
+		if (job.status.streak) lines.push(`  consecutive_failures: ${job.status.streak}`);
+		if (job.status.collapsed) lines.push(`  skipped_overlap_count: ${job.status.collapsed}`);
 		if (job.stateful) {
 			// The same two facts `/cron` shows, so the model can say "this loop's findings are all
 			// dismissed" or "it has found nothing in 12 runs" when the user asks about their automation.
@@ -543,9 +541,9 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const text = `${renderCronJobsForTool(jobs, host)}\ninbox: ${plural(newFindings, "new finding")}`;
 			const nowMs = Date.now();
 			const view = ownerOf(host);
-			const nextRun = (j: LoopJob) => nextRunForTool(j, nowMs, view);
-			const heldBy = (j: LoopJob) => { const where = whereRuns(j, view); return where.kind === "terminal" ? where.pid : undefined; };
-			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: jobsOf(host).jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: runningRunForTool(j, host), last_due_at: j.lastDueAt, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, consecutive_failures: j.consecutiveFailures, skipped_overlap_count: j.skippedOverlap, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: whereRuns(j, view).kind === "asleep" || undefined, held_by_pid: heldBy(j), queued: queuedForTool(j, host, nowMs), created_at: j.createdAt })) } };
+			const nextRun = (j: ListedJob) => nextRunForTool(j, nowMs, view);
+			const heldBy = (j: ListedJob) => { const where = whereRuns(j, view); return where.kind === "terminal" ? where.pid : undefined; };
+			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: jobsOf(host).jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: runningRunForTool(j, host), last_due_at: j.status.due, last_fired_at: j.status.fired, last_completed_at: j.status.completed, last_error: j.status.error ? previewRedacted(j.status.error, 120) : undefined, consecutive_failures: j.status.streak || undefined, skipped_overlap_count: j.status.collapsed, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: whereRuns(j, view).kind === "asleep" || undefined, held_by_pid: heldBy(j), queued: queuedForTool(j, host, nowMs), created_at: j.createdAt })) } };
 		},
 	});
 
@@ -599,7 +597,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 				if (denied) return deny(denied);
 			}
 			const at = stamp();
-			const updated = (params.enabled ? await jobsOf(host).enable(job.id) : await jobsOf(host).disable(job.id, { code: "person", why: "disabled by a person", at })) ?? job;
+			const updated = (params.enabled ? await jobsOf(host).enable(job.id) : await jobsOf(host).disable(job.id, { code: "person", why: DISABLED_BY_PERSON, at })) ?? job;
 			if (params.enabled) host.stores.clock.clear(job.id, at);
 			const auditEntryId = host.cronControlAudit(params.enabled ? "enable" : "disable", scope.actor, job, updated);
 			return {

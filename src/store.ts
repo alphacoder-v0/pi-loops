@@ -13,6 +13,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fromV2, type V2Job } from "./convert-v2.ts";
 import { randomBytes } from "node:crypto";
 import { withFileLock, withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { LOOP_STATE_MAX_CHARS, capChars } from "./protocol.ts";
@@ -66,45 +67,19 @@ export interface LoopJob {
 	owner?: "project";
 	/** non-stateful jobs only: the session that receives the message. */
 	sessionId?: string;
-	lastDueAt?: string;
-	lastFiredAt?: string;
-	lastCompletedAt?: string;
-	lastError?: string;
-	running?: RunningMarker;
-	runCount: number;
-	skippedOverlap: number;
-	/** Failures in a row. Cleared by a success; drives the backoff in the scheduler. */
-	consecutiveFailures?: number;
-	/**
-	 * A slot handed back unrun: the host's turn in a closed conversation was taken back by a window,
-	 * or stopped by the host itself (a stop, an upgrade, the budget), or its process died before a
-	 * record was written. The next dispatch runs it at once instead of calling it missed — the
-	 * catch-up rule is for slots nobody tried, and this one was tried. Cleared by the next claim.
-	 */
-	owedSlot?: string;
-	/**
-	 * Runs in a row that started and never finished: the process running them died mid-run. Three
-	 * park the job (disabled, with why) rather than letting one that takes its process down with it
-	 * do so on every start. Cleared by a run that finishes, and by enabling the job again.
-	 */
-	interruptions?: number;
-	/**
-	 * When this job's `cwd` was first found missing, if it still is.
-	 *
-	 * A directory that is not there at this instant is usually not a directory that is gone: a
-	 * network mount, an external disk or an encrypted volume comes up *after* the first pi does at
-	 * boot. Disabling on the first miss killed jobs for being twenty seconds early. Cleared the
-	 * moment the directory is back — so this is a transient marker like `lastError`, which is why
-	 * it does not bump `JOBS_FILE_VERSION`: an older build sharing this directory drops it on its
-	 * next write, and the only consequence is that the grace period starts again.
-	 */
-	cwdMissingSince?: string;
 	/**
 	 * The page's suggestion for this loop that a person answered with Keep (src/job-tune.ts): the
 	 * same one is not offered again. Its key names the schedule, so a schedule change makes a new one.
 	 */
 	tuneKept?: string;
+	/** Why it does not run, when pi-loops or a person turned it off. */
+	disabled?: Disabled;
+	/** A watch nobody has said yes to yet; `enabled` is false. */
+	proposed?: { at: string; session: string };
 }
+
+/** The reason of a job a person turned off: main's `/cron disable` wrote no error, so a list shows the last failure instead. */
+export const DISABLED_BY_PERSON = "disabled by a person";
 
 /** Why a job does not run, and who said so. `at` is a stamp. */
 export interface Disabled {
@@ -114,14 +89,6 @@ export interface Disabled {
 	at: string;
 }
 
-/** The eleven counters stored on the version 2 job. */
-export type V2Counters = "lastDueAt" | "lastFiredAt" | "lastCompletedAt" | "lastError" | "running" | "runCount" | "skippedOverlap" | "consecutiveFailures" | "owedSlot" | "interruptions" | "cwdMissingSince";
-
-/** A version 3 job definition, without fields derived from clock, rows or run records. */
-export interface LoopJobV3 extends Omit<LoopJob, V2Counters> {
-	disabled?: Disabled;
-	proposed?: { at: string; session: string };
-}
 
 /** Who asked for a run by hand: the conversation the request came from. */
 export interface RunRequester {
@@ -165,8 +132,8 @@ export interface RunRecord {
 	/** The session that created this run's job (job.createdBy.sessionId), so its results can be counted for that conversation. */
 	forSession?: string;
 	/**
-	 * Which run of its loop this was: the job's `runCount + 1` when the record was written. A stopped
-	 * run does not raise `runCount`, so the run after it has the same ordinal. Absent on a record
+	 * Which run of its loop this was: the job's run count plus one when the record was written. A
+	 * stopped run does not raise the count, so the run after it has the same ordinal. Absent on a record
 	 * written before 0.24, and on a plain job's turn. The run log is halved as it grows, so counting
 	 * records cannot tell run 3 from run 300.
 	 */
@@ -327,9 +294,19 @@ export function newId(prefix: string): string {
  * On-disk shape of `jobs.json`, bumped whenever a field becomes load-bearing, so an older pi-loops sharing this directory refuses
  * the file instead of silently rewriting it without that field. Version 2 added `verify`/`checkerModel`,
  * `timeoutMs` and `consecutiveFailures` (and a `host` that gated dispatch until 0.19.0: pi-loops runs
- * on one machine, so the field is ignored when read and dropped when written).
+ * on one machine, so the field is ignored when read and dropped when written). Version 3 holds
+ * definitions only, with `disabled`: a job's cursor is in `clock.json`, its runs in `runs.jsonl` and
+ * its going run on its row (src/convert-v2.ts converts a version 2 file at the start).
  */
-export const JOBS_FILE_VERSION = 2;
+export const JOBS_FILE_VERSION = 3;
+
+/** A write that meets a `version: 2` file after the start: someone put `jobs.json.v2.bak` back while pi-loops ran. */
+export class JobsNotConverted extends Error {
+	constructor(file: string) {
+		super(`${file}: version 2 was put back while pi-loops ran; restart pi-loops to convert it`);
+		this.name = "JobsNotConverted";
+	}
+}
 
 /** Local `YYYY-MM-DD`, so a day boundary means the same thing here as it does to the user. */
 function localDay(ms: number): string {
@@ -339,6 +316,12 @@ function localDay(ms: number): string {
 interface JobsFile {
 	version: number;
 	jobs: LoopJob[];
+}
+
+/** The jobs of a file and whether it is the version 2 one that a conversion at the next start turns into version 3. */
+interface Parsed {
+	readonly jobs: LoopJob[];
+	readonly v2: boolean;
 }
 
 export class JobStore {
@@ -386,7 +369,7 @@ export class JobStore {
 
 	/** Read all jobs. A missing file is an empty store; a corrupt or too-new file throws. */
 	load(): LoopJob[] {
-		return this.parse(this.read());
+		return this.parse(this.read()).jobs;
 	}
 
 	/** The file exactly as it is on disk, or undefined when it does not exist yet. */
@@ -399,8 +382,8 @@ export class JobStore {
 		}
 	}
 
-	private parse(text: string | undefined): LoopJob[] {
-		if (text === undefined) return []; // no file yet: a machine with no jobs
+	private parse(text: string | undefined): Parsed {
+		if (text === undefined) return { jobs: [], v2: false }; // no file yet: a machine with no jobs
 		// An existing but empty file is damage (a torn write, an external truncation), not "no jobs".
 		// Returning [] here would let the next tick's write erase every job with no error anywhere.
 		if (!text.trim()) throw new Error(`${this.jobsFile} is empty; restore it from ${this.jobsFile}.bak or delete it to start over`);
@@ -420,7 +403,9 @@ export class JobStore {
 		// Until 0.19.0 a job carried the hostname that created it and other machines ignored it.
 		// pi-loops runs on one machine: the stamp is dropped here and gone on the next write.
 		for (const j of parsed.jobs) delete (j as { host?: unknown }).host;
-		return parsed.jobs;
+		// A version 2 file here was put back after the start converted it: read as definitions, written never.
+		if (typeof parsed.version === "number" && parsed.version < JOBS_FILE_VERSION) return { jobs: (parsed.jobs as unknown as V2Job[]).map((job) => fromV2(job).job), v2: true };
+		return { jobs: parsed.jobs, v2: false };
 	}
 
 	/** The last content that parsed, so a truncated `jobs.json` has something to restore from. */
@@ -447,26 +432,14 @@ export class JobStore {
 	async mutate<T>(fn: (jobs: LoopJob[]) => { jobs: LoopJob[]; result: T }): Promise<T> {
 		return withFileLock(this.lockPath, () => {
 			const before = this.read();
-			const { jobs, result } = fn(this.parse(before));
+			const parsed = this.parse(before);
+			// Its counters are not in clock.json yet: a write would lose them before the next start converts the file.
+			if (parsed.v2) throw new JobsNotConverted(this.jobsFile);
+			const { jobs, result } = fn(parsed.jobs);
 			if (before === undefined && !jobs.length) return result; // no file and no jobs: create nothing
 			const next = this.serialize(jobs);
 			if (next !== before) {
 				// The content that just parsed is worth keeping: it is what a truncated file is restored from.
-				if (before !== undefined) this.backup(before);
-				writeFileAtomic(this.jobsFile, next);
-			}
-			return result;
-		});
-	}
-
-	/** Synchronous read-modify-write for the synchronous clock port. */
-	mutateSync<T>(fn: (jobs: LoopJob[]) => { jobs: LoopJob[]; result: T }): T {
-		return withFileLockSync(this.lockPath, () => {
-			const before = this.read();
-			const { jobs, result } = fn(this.parse(before));
-			if (before === undefined && !jobs.length) return result;
-			const next = this.serialize(jobs);
-			if (next !== before) {
 				if (before !== undefined) this.backup(before);
 				writeFileAtomic(this.jobsFile, next);
 			}
@@ -492,7 +465,7 @@ export class JobStore {
 		return this.update(id, (job) => {
 			if (!job.enabled) return;
 			job.enabled = false;
-			if (disabled.why !== "disabled by a person") job.lastError = disabled.why;
+			job.disabled = disabled;
 		});
 	}
 
@@ -500,9 +473,7 @@ export class JobStore {
 	async enable(id: string): Promise<LoopJob | undefined> {
 		return this.update(id, (job) => {
 			job.enabled = true;
-			job.lastError = undefined;
-			job.interruptions = undefined;
-			delete (job as LoopJob & { disabled?: unknown }).disabled;
+			delete job.disabled;
 		});
 	}
 
