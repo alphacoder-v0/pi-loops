@@ -11,12 +11,12 @@
  */
 import { createHash } from "node:crypto";
 import { backoffFor, DEAD_AFTER_ATTEMPTS } from "./backoff.ts";
-import type { InboxEntry, InboxStatus, NewFinding } from "./inbox.ts";
+import type { InboxEntry as Finding, InboxStatus, NewFinding } from "./inbox.ts";
 import { findingId } from "./inbox.ts";
 import type { ConversationId, LaneId } from "./lane.ts";
 import { loopLane, parseLane } from "./lane.ts";
 import { capChars, findingKind, INBOX_TEXT_MAX_CHARS } from "./protocol.ts";
-import type { ClaimedRow, RequestSource, Row, UnclaimedRow } from "./requests.ts";
+import type { ClaimedRow, Row, UnclaimedRow } from "./requests.ts";
 import type { LoopJob, RunRecord } from "./store.ts";
 
 /* ====================================================================================================
@@ -119,18 +119,6 @@ export interface AskFields {
 	answer?: Answer | UnreadableAnswer;
 }
 
-/** A finding with the three fields. Lands as `InboxEntry` itself in src/inbox.ts at M5a.4. */
-export type Finding = InboxEntry & AskFields;
-/** Lands as `NewFinding` in src/inbox.ts at M5a.4. */
-export type NewFindingM5a = NewFinding & Pick<AskFields, "ask">;
-
-/** Lands as `RequestSource` in src/requests.ts at M5a.4: `"answer"` comes, `inbox:${string}` goes. */
-export type RequestSourceM5a = Exclude<RequestSource, `inbox:${string}`> | "answer";
-/** Lands as the one field `RowBase.payload` gains in src/requests.ts at M5a.4. */
-export interface RowPayloadM5a {
-	/** The finding this row answers: the only thing `Answers.meet` reads of the payload. */
-	finding?: string;
-}
 /** Lands as three fields at the end of `RunRecord` in src/store.ts at M5a.7. M5a writes `cause: "answer"` only. */
 export interface RunRecordM5a extends RunRecord {
 	cause?: "slot" | "run" | "wake" | "answer" | "check" | "push";
@@ -139,9 +127,6 @@ export interface RunRecordM5a extends RunRecord {
 	/** Whether the granted call was made. Present only for a run that had a grant. */
 	grant_used?: boolean;
 }
-
-// Until `RequestSource` has `"answer"` (M5a.4), the rows of this module carry it through this cast.
-const ANSWER_SOURCE = "answer" as RequestSourceM5a as RequestSource;
 
 /** The whole command of a question fits a finding with its frame (design 8.1). */
 export const ASK_COMMAND_MAX_CHARS = 300;
@@ -384,7 +369,7 @@ export interface AnswerWrite {
 	/** `answer` is always an arm of `Answer`: no step writes an `UnreadableAnswer`. `lane` only at Y1, on a finding that has none. */
 	readonly set: Partial<Pick<Finding, "status" | "claimed_by" | "answered_by" | "dismissed_at" | "dismiss_reason" | "lane">> & { readonly answer?: Answer };
 	/** Filed in the same rewrite, unless a finding has its id already. */
-	readonly beside?: { readonly id: string; readonly entry: NewFindingM5a };
+	readonly beside?: { readonly id: string; readonly entry: NewFinding };
 }
 
 /** Why `answerStep` made no write. `already` carries what `Inbox.decide` returned as `already`. */
@@ -465,7 +450,7 @@ function notRun(write: (set: AnswerWrite["set"], beside?: Beside, text?: string)
  * origin, transcript and ask, and no answer. A news line keeps the origin of the finding it is
  * about, and no transcript, so it pins none.
  */
-function besideEntry(finding: Finding, what: Beside, text: string | undefined, lane: LaneId | undefined): NewFindingM5a {
+function besideEntry(finding: Finding, what: Beside, text: string | undefined, lane: LaneId | undefined): NewFinding {
 	const origin = { source: finding.source, run_id: finding.run_id, cwd: finding.cwd, job_id: finding.job_id, session_id: finding.session_id };
 	if (what === "again") return defined({ ...origin, text: finding.text, kind: finding.kind, transcript: finding.transcript, ask: finding.ask, lane });
 	return defined({ ...origin, text: text ?? "", kind: "news" as const, lane });
@@ -528,10 +513,8 @@ export function laneFact(finding: Finding, jobs: readonly Pick<LoopJob, "id" | "
 
 /** Whether `row` is the row of a yes: source `"answer"`, an input that asks for a turn. */
 export function isAnswerRow(row: Row): boolean {
-	return row.kind === "input" && (row.source as RequestSourceM5a) === "answer" && row.wake === "turn";
+	return row.kind === "input" && row.source === "answer" && row.wake === "turn";
 }
-
-type Payload = NonNullable<Row["payload"]> & RowPayloadM5a;
 
 /**
  * The row of a yes. id `answerRowId(finding.id)`; source `"answer"`; `wake: "turn"`; mode
@@ -541,8 +524,8 @@ type Payload = NonNullable<Row["payload"]> & RowPayloadM5a;
  */
 export function answerRow(finding: Finding, lane: LaneId, at: string, by: Row["created_by"]): UnclaimedRow {
 	const id = answerRowId(finding.id);
-	const payload: Payload = defined({ text: `[Trigger ${id}] ${finding.text}`, cwd: finding.cwd, requested_by: finding.claimed_by, finding: finding.id });
-	return { v: 3, id, lane, kind: "input", source: ANSWER_SOURCE, mode: "unattended", wake: "turn", payload, created_at: at, created_by: by, attempts: 0 };
+	const payload: Row["payload"] = defined({ text: `[Trigger ${id}] ${finding.text}`, cwd: finding.cwd, requested_by: finding.claimed_by, finding: finding.id });
+	return { v: 3, id, lane, kind: "input", source: "answer", mode: "unattended", wake: "turn", payload, created_at: at, created_by: by, attempts: 0 };
 }
 
 /** The row that tells a conversation of a no: only for a question whose `ask.lane` is a conversation. id `noRowId`; `wake: "append"`; mode `none`. */
@@ -550,8 +533,8 @@ export function noRow(finding: Finding, at: string, by: Row["created_by"]): Uncl
 	if (!finding.ask || parseLane(finding.ask.lane)?.kind !== "conversation") return undefined;
 	const id = noRowId(finding.id);
 	const text = `[Trigger ${id}] A person said no to the call you asked about: ${callWords(finding.ask.call)}. Do not run it, and do not try another way to do the same thing.`;
-	const payload: Payload = { text, cwd: finding.cwd, finding: finding.id };
-	return { v: 3, id, lane: finding.ask.lane, kind: "input", source: ANSWER_SOURCE, mode: "none", wake: "append", payload, created_at: at, created_by: by, attempts: 0 };
+	const payload: Row["payload"] = { text, cwd: finding.cwd, finding: finding.id };
+	return { v: 3, id, lane: finding.ask.lane, kind: "input", source: "answer", mode: "none", wake: "append", payload, created_at: at, created_by: by, attempts: 0 };
 }
 
 export type AnswerStatus = AnswerState | "cli";
@@ -598,7 +581,7 @@ function callWords(call: Call): string {
  * `Run \`<command>\`? (<reason>) · waits: <who> went on without it · if not: it stays undone`,
  * which `findingKind` reads as a checkpoint.
  */
-export function questionFinding(call: Call, asked: { lane: LaneId; sessionFile: string; cap: AskCap }, origin: AskOrigin, at: string): { id: string; entry: NewFindingM5a } {
+export function questionFinding(call: Call, asked: { lane: LaneId; sessionFile: string; cap: AskCap }, origin: AskOrigin, at: string): { id: string; entry: NewFinding } {
 	const ask: Ask = {
 		kind: "call",
 		id: askId(asked.sessionFile, call.tool_call_id),
@@ -610,7 +593,7 @@ export function questionFinding(call: Call, asked: { lane: LaneId; sessionFile: 
 		created_at: at,
 	};
 	const text = `${call.command !== undefined ? `Run \`${call.command}\`` : `Use ${call.tool}`}? (${call.reason}) · waits: ${origin.who} went on without it · if not: it stays undone`;
-	const entry: NewFindingM5a = defined({
+	const entry: NewFinding = defined({
 		source: origin.source,
 		run_id: origin.run_id,
 		cwd: origin.cwd,

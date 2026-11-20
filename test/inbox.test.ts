@@ -5,7 +5,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { FINDING_FIELDS, Inbox, type InboxEntry, findingId, resolveInboxRef } from "../src/inbox.ts";
+import { FINDING_FIELDS, Inbox, type InboxEntry, findingId, resolveInboxRef, UNDER_INBOX_LOCK } from "../src/inbox.ts";
+import { type AnswerWrite, answerStep } from "../src/ask.ts";
+import { CLAIM_QUEUE_LOCK } from "../src/engine.ts";
 
 test("listNew puts checkpoints first and keeps file order inside each group; list() is the file order", async () => {
 	const inbox = new Inbox(tmp("pi-loops-inbox-"));
@@ -261,4 +263,137 @@ test("a finding keeps its lane through a rewrite, and a lane that is not a strin
 test("pi-loops inbox --json fields do not gain lane", () => {
 	assert.equal((FINDING_FIELDS as readonly string[]).includes("lane"), false);
 	assert.equal(FINDING_FIELDS.length, 10);
+});
+
+const AT = "2026-11-20T00:00:00.000+00:00";
+const CALL = { tool: "bash", tool_call_id: "call-1", command: "git push --force origin main", input_sha256: "a".repeat(64), reason: "git push --force on main/master" };
+const ASK = { kind: "call", id: `ask-${"b".repeat(32)}`, lane: "@cron-abc", session_file: "/s/a.jsonl", title: "nightly asks to run a command", call: CALL, created_at: AT };
+const CLAIM = { id: "ans-1", pid: 1, started_at: AT };
+
+/** The lines a rewrite must keep as they are: a pending answer, an answer a newer version wrote, an ask of another shape, and fields nobody here reads. */
+const KEPT = [
+	{ id: findingId("kept-1"), created_at: AT, status: "claimed", kind: "checkpoint", source: "cron:x", run_id: "r", cwd: "/p", text: "kept one", verified: null, dismiss_reason: null, claimed_by: "s1", ask: ASK, answered_by: "page", answer: { state: "pending", at: AT }, later: { nested: [1, "two"] } },
+	{ id: findingId("kept-2"), created_at: AT, status: "claimed", kind: "news", source: "cron:x", run_id: "r", cwd: "/p", text: "kept two", verified: null, dismiss_reason: null, ask: { kind: "repo", url: "x" }, answered_by: "pager", answer: { state: "later", at: AT, extra: 1 }, later: "z" },
+];
+const KEPT_FIELDS = ["ask", "answered_by", "answer", "later"] as const;
+
+function seedKept(inbox: Inbox): void {
+	fs.mkdirSync(path.dirname(inbox.file), { recursive: true });
+	fs.writeFileSync(inbox.file, KEPT.map((k) => JSON.stringify(k)).join("\n") + "\n");
+}
+
+function assertKept(inbox: Inbox, after: string): void {
+	const lines = fs.readFileSync(inbox.file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+	for (const k of KEPT) {
+		const line = lines.find((l) => l.id === k.id);
+		assert.ok(line, `${k.text} is still there after ${after}`);
+		for (const field of KEPT_FIELDS) assert.equal(JSON.stringify(line[field]), JSON.stringify((k as Record<string, unknown>)[field]), `${k.text}: ${field} as it was after ${after}`);
+	}
+}
+
+test("[keep-fields] decide, dismissAllNew and section.write keep ask, answered_by, answer and an unknown field of another finding as they were", async () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	seedKept(inbox);
+	const base = { source: "cron:demo", run_id: "r", job_id: "j", cwd: "/p" };
+	const a = await inbox.append({ ...base, text: "a" });
+	await inbox.decide(a.id, "dismissed", { reason: "noise" });
+	assertKept(inbox, "decide");
+	await inbox.append({ ...base, text: "b" });
+	assert.equal(await inbox.dismissAllNew(), 1);
+	assertKept(inbox, "dismissAllNew");
+	const c = await inbox.append({ ...base, text: "c" });
+	const write = answerStep("N1", inbox.list().find((e) => e.id === c.id), { to: "none", by: "terminal" }, { at: AT, lane: undefined }) as AnswerWrite;
+	await inbox.section((tx) => tx.write(write));
+	assertKept(inbox, "section.write");
+	assert.deepEqual(inbox.list().find((e) => e.id === KEPT[1].id)?.answer, { state: "unreadable", raw: KEPT[1].answer }, "an answer a newer version wrote reads as unreadable");
+	assert.equal(inbox.list().find((e) => e.id === KEPT[1].id)?.ask, undefined, "an ask of another shape reads as absent");
+	assert.deepEqual(inbox.list().find((e) => e.id === KEPT[0].id)?.answer, KEPT[0].answer);
+});
+
+test("[keep-fields] a finding the section writes keeps its own unknown field, and a field it now carries is the one written", async () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	fs.mkdirSync(path.dirname(inbox.file), { recursive: true });
+	const id = findingId("own");
+	fs.writeFileSync(inbox.file, `${JSON.stringify({ id, created_at: AT, status: "new", kind: "news", source: "cron:x", run_id: "r", cwd: "/p", text: "t", verified: null, dismiss_reason: null, lane: 5, later: true })}\n`);
+	const write = answerStep("Y1", inbox.list()[0], { to: "pending", by: "page", claimed_by: "s1", lane: "@cron-abc" }, { at: AT, lane: "@cron-abc" }) as AnswerWrite;
+	await inbox.section((tx) => tx.write(write));
+	const line = JSON.parse(fs.readFileSync(inbox.file, "utf8"));
+	assert.equal(line.later, true, "kept");
+	assert.equal(line.lane, "@cron-abc", "the lane the write set, not the one that did not read");
+	assert.deepEqual(line.answer, { state: "pending", at: AT });
+	assert.equal(line.answered_by, "page");
+});
+
+test("[section] a body that returns a promise does not compile, and a throw before write leaves the file as it was", async () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	seedKept(inbox);
+	const a = await inbox.append({ source: "cron:demo", run_id: "r", job_id: "j", cwd: "/p", text: "a" });
+	const typeOnly = () =>
+		// @ts-expect-error a section is synchronous: inbox.lock is never held across an await
+		inbox.section(async () => 1);
+	assert.equal(typeof typeOnly, "function");
+	const before = fs.readFileSync(inbox.file, "utf8");
+	await assert.rejects(inbox.section((tx) => {
+		tx.find(a.id);
+		throw new Error("before the write");
+	}), /before the write/);
+	assert.equal(fs.readFileSync(inbox.file, "utf8"), before);
+	const write = answerStep("N1", inbox.list().find((e) => e.id === a.id), { to: "none", by: "page" }, { at: AT, lane: undefined }) as AnswerWrite;
+	const missing = { ...write, id: findingId("not there") } as AnswerWrite;
+	assert.throws(() => inbox.sectionSync((tx) => tx.write(write, missing)), /no finding/);
+	assert.equal(fs.readFileSync(inbox.file, "utf8"), before, "a change whose finding is missing writes none of the changes");
+	assert.equal(await inbox.section((tx) => tx.list().length), 3, "a body's value is the section's");
+});
+
+test("[section] write sets the finding and appends beside once", async () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	const a = await inbox.append({ source: "cron:demo", run_id: "r", job_id: "j", cwd: "/p", text: "a" });
+	const write = answerStep("Y2", inbox.list()[0], { to: "not_run", by: "terminal", claimed_by: "s1", why: "there is nowhere to run it" }, { at: AT, lane: undefined }) as AnswerWrite;
+	assert.ok(write.beside);
+	const written = await inbox.section((tx) => tx.write(write));
+	assert.equal(written.id, a.id);
+	assert.equal(written.status, "claimed");
+	assert.deepEqual(written.answer, { state: "not_run", why: "there is nowhere to run it", at: AT });
+	await inbox.section((tx) => tx.write(write));
+	const all = inbox.list();
+	assert.deepEqual(all.map((e) => e.id), [a.id, write.beside.id], "the news is filed once, after the finding");
+	assert.equal(all[1].status, "new");
+	assert.match(all[1].text, /could not be started/);
+	assert.equal(fs.readFileSync(inbox.file, "utf8").split("\n").filter(Boolean).length, 2);
+});
+
+test("[section] fileOnce inside a section files once and carries ask", async () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	const id = findingId("ask | one");
+	const entry = { source: "cron:x", run_id: "r", cwd: "/p", text: "Run it?", ask: ASK as InboxEntry["ask"] };
+	const [first, second] = await inbox.section((tx) => [tx.fileOnce(entry, id), tx.fileOnce({ ...entry, text: "other" }, id)]);
+	assert.equal(first, second);
+	assert.deepEqual(inbox.list().map((e) => [e.id, e.text]), [[id, "Run it?"]]);
+	assert.deepEqual(inbox.list()[0].ask, ASK);
+	assert.equal(Object.keys(inbox.list()[0]).at(-1), "ask", "written after lane");
+	assert.deepEqual((await inbox.fileOnce(entry, findingId("ask | two"))).ask, ASK);
+});
+
+test("[pins] pinnedTranscripts keeps the transcripts of new findings and of open answers, by job or by lane", () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	fs.mkdirSync(path.dirname(inbox.file), { recursive: true });
+	const f = (n: string, over: Record<string, unknown>) => ({ id: findingId(n), created_at: AT, status: "claimed", kind: "news", source: "cron:j", run_id: "r", cwd: "/p", text: n, verified: null, dismiss_reason: null, job_id: "j", transcript: `/t/${n}.jsonl`, answered_by: "page", ...over });
+	const lines = [
+		f("new", { status: "new", answered_by: undefined }),
+		f("pending", { answer: { state: "pending", at: AT } }),
+		f("started", { answer: { state: "started", run: CLAIM, at: AT } }),
+		f("done", { answer: { state: "done", run: CLAIM, at: AT } }),
+		f("claimed", {}),
+		f("check-pending", { job_id: "rule-1", lane: "@check-abc", answer: { state: "pending", at: AT } }),
+		f("check-done", { job_id: "rule-1", lane: "@check-abc", answer: { state: "done", run: CLAIM, at: AT } }),
+	];
+	fs.writeFileSync(inbox.file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+	assert.deepEqual([...inbox.pinnedTranscripts({ job: "j" })].sort(), ["/t/new.jsonl", "/t/pending.jsonl", "/t/started.jsonl"]);
+	assert.deepEqual([...inbox.pinnedTranscripts("j")].sort(), ["/t/new.jsonl", "/t/pending.jsonl", "/t/started.jsonl"], "a job's id as before");
+	assert.deepEqual([...inbox.pinnedTranscripts({ lane: "@check-abc" })], ["/t/check-pending.jsonl"]);
+});
+
+test("[lock] UNDER_INBOX_LOCK is five seconds, and the claim lock is that value", () => {
+	assert.deepEqual(UNDER_INBOX_LOCK, { timeoutMs: 5_000 });
+	assert.equal(CLAIM_QUEUE_LOCK, UNDER_INBOX_LOCK);
 });

@@ -11,7 +11,6 @@ import {
 	type AnswerStepId,
 	type AnswerWrite,
 	type Call,
-	type Finding,
 	type LaneFact,
 	type MeetFacts,
 	type StepInput,
@@ -39,6 +38,7 @@ import {
 	readAskFields,
 	repairRows,
 } from "../src/ask.ts";
+import type { InboxEntry as Finding } from "../src/inbox.ts";
 import { BACKOFF_MS } from "../src/backoff.ts";
 import type { ClaimedRow, Row } from "../src/requests.ts";
 import type { RunRecord } from "../src/store.ts";

@@ -14,7 +14,7 @@
  */
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import { type Inbox, findingId } from "./inbox.ts";
+import { type Inbox, findingId, UNDER_INBOX_LOCK } from "./inbox.ts";
 import { type ConversationId, type Lane, type LaneId, parseLane } from "./lane.ts";
 import { redact } from "./redact.ts";
 import { type LeaseHolder, type LeaseStore, type ProcessProbe, type SessionLease, holderAlive, holderDelivers, systemProbe } from "./lease.ts";
@@ -47,6 +47,8 @@ export function modeOf(lane: Lane["kind"], kind: Row["kind"], source: Row["sourc
 	if (source.startsWith("rule:")) return "none";
 	if (source.startsWith("push:")) return wake === "turn" ? "unattended" : "none";
 	if (source.startsWith("cron:")) return "unattended";
+	// The row of a yes runs a turn in the background; the row that tells of a no asks for no model call.
+	if (source === "answer") return wake === "turn" ? "unattended" : "none";
 	return "attended";
 }
 
@@ -372,10 +374,10 @@ export function enqueue(store: RequestStore, row: UnclaimedRow, delivered: (row:
 
 /**
  * How long a claim waits for a queue's lock while it holds the inbox's (`Inbox.decide`'s `before`):
- * well inside the inbox lock's ten-second stale point, so a stuck queue lock makes the claim fail
- * instead of letting another process break the inbox lock and lose its write under this rewrite.
+ * `UNDER_INBOX_LOCK`. A re-export, not a copy: src/inbox.ts and this module import each other, and
+ * a binding is read when it is used, not when this module is evaluated.
  */
-export const CLAIM_QUEUE_LOCK: LockOptions = { timeoutMs: 5_000 };
+export { UNDER_INBOX_LOCK as CLAIM_QUEUE_LOCK } from "./inbox.ts";
 
 /** Where a producer's hand-over went, for the trigger audit: not written at all, in the chat already, or waiting in the file. */
 export function handOverTarget(written: boolean, result: Pick<DrainResult, "delivered"> | undefined, id: string): "collapsed" | "chat" | "queued" {
@@ -431,7 +433,7 @@ export async function handOver(deps: HandOverDeps, row: UnclaimedRow, claim?: { 
 		// Queued under the inbox lock, after the finding is found still new (`Inbox.decide`): a claim
 		// decided elsewhere between the list and here (another window, the page, `pi-loops inbox`)
 		// queues nothing, so no holder can run a hand-off for a claim that lost.
-		const decided = await claim.inbox.decide(claim.entryId, "claimed", { by: row.lane, before: () => void (written = enqueue(deps.store, row, deps.delivered, CLAIM_QUEUE_LOCK)) });
+		const decided = await claim.inbox.decide(claim.entryId, "claimed", { by: row.lane, before: () => void (written = enqueue(deps.store, row, deps.delivered, UNDER_INBOX_LOCK)) });
 		if (!("ok" in decided)) {
 			const ref = claim.entryId.slice(0, 12);
 			return { written: false, result: undefined, line: "missing" in decided ? `inbox: ${ref} is gone; nothing was sent` : `inbox: ${ref} was already ${decided.already}; nothing was sent` };

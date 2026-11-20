@@ -9,8 +9,9 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { type AnswerWrite, type AskFields, keptByRotation, readAskFields } from "./ask.ts";
 import type { LaneId } from "./lane.ts";
-import { withFileLock, writeFileAtomic } from "./lock.ts";
+import { type LockOptions, withFileLock, withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { INBOX_TEXT_MAX_CHARS, type FindingKind, capChars } from "./protocol.ts";
 import { newId } from "./store.ts";
 import { stamp } from "./schedule.ts";
@@ -70,13 +71,52 @@ export interface InboxEntry {
 	undelivered?: true;
 	/** The lane the finding was filed from (src/lane.ts). Absent on a finding an older version wrote. */
 	lane?: LaneId;
+	/** This finding is a question about one blocked call (src/ask.ts). Written when it is filed and never changed. */
+	ask?: AskFields["ask"];
+	/** The surface that claimed or dismissed it. Written only through `AnswerWrite`. */
+	answered_by?: AskFields["answered_by"];
+	/** The answer to a claim from a terminal or the page. Written only through `AnswerWrite`. */
+	answer?: AskFields["answer"];
 }
 
 /** The fields a finding is, in their order — CONTRACT.md §2.2 and docs/downstream.md §3. */
 export const FINDING_FIELDS = ["id", "created_at", "status", "kind", "source", "run_id", "cwd", "text", "verified", "dismiss_reason"] as const;
 
-/** What a writer gives for a new finding; the inbox fills in the id, the time and the status. */
-export type NewFinding = Omit<InboxEntry, "id" | "created_at" | "status" | "kind" | "verified" | "dismiss_reason"> & Partial<Pick<InboxEntry, "kind" | "verified">>;
+/** What a writer gives for a new finding; the inbox fills in the id, the time and the status. A new finding has no answer. */
+export type NewFinding = Omit<InboxEntry, "id" | "created_at" | "status" | "kind" | "verified" | "dismiss_reason" | "answered_by" | "answer"> & Partial<Pick<InboxEntry, "kind" | "verified">>;
+
+/** A value that is not a promise: the body of a section is synchronous, so `inbox.lock` is never held across an await. */
+export type Sync<T> = T extends PromiseLike<unknown> ? never : T;
+
+/** `inbox.jsonl` while `inbox.lock` is held. It lives for one call of `Inbox.section`. */
+export interface InboxSection {
+	/** Every finding, as the file has it now. Read once for the section. */
+	list(): readonly InboxEntry[];
+	find(id: string): InboxEntry | undefined;
+	/**
+	 * One atomic rewrite, made at once: `change.set` on its finding, and `change.beside` appended
+	 * unless a finding has that id. `more` are further changes of the same rewrite. Returns the first
+	 * finding as written. A change whose finding is not in the file throws, and nothing is written.
+	 */
+	write(change: AnswerWrite, ...more: AnswerWrite[]): InboxEntry;
+	/** `Inbox.fileOnce`, inside the section: a finding with this id is returned as it is, else `entry` is written with it. */
+	fileOnce(entry: NewFinding, id: string): InboxEntry;
+}
+
+/**
+ * How long a lane write waits for the lane's lock while `inbox.lock` is held: well inside the inbox
+ * lock's ten-second stale point, so a stuck lane lock makes the section throw and no other process
+ * breaks `inbox.lock` under its rewrite.
+ */
+export const UNDER_INBOX_LOCK: LockOptions = { timeoutMs: 5_000 };
+
+/** One line of `inbox.jsonl`: its text, the finding it reads as, and the fields of that line this version does not read. */
+interface Line {
+	raw: string;
+	entry?: InboxEntry;
+	/** Written back as they were by every rewrite. */
+	rest?: Record<string, unknown>;
+}
 
 /**
  * The id of a finding that is filed once: `inb-` and the first 32 hex of SHA-256(`seed`). It has
@@ -144,14 +184,67 @@ export class Inbox {
 	 */
 	async fileOnce(entry: NewFinding, id: string): Promise<InboxEntry> {
 		if (!/^inb-[0-9a-f]{32}$/.test(id)) throw new Error(`not a finding id: ${JSON.stringify(id)}`);
-		const full = this.build(entry, id);
+		return this.section((tx) => tx.fileOnce(entry, id));
+	}
+
+	/**
+	 * Run `fn` under `inbox.lock`. `fn` is synchronous. It may take one lane's lock inside (a
+	 * `RequestStore` write with `UNDER_INBOX_LOCK`), and no other lock. A throw from `fn` before
+	 * `write` leaves the file as it was.
+	 */
+	async section<T>(fn: (tx: InboxSection) => Sync<T>): Promise<T> {
 		fs.mkdirSync(path.dirname(this.file), { recursive: true });
-		return withFileLock(this.lockPath, () => {
-			const there = this.list().find((e) => e.id === id);
-			if (there) return there;
-			this.write(full);
-			return full;
-		});
+		return withFileLock(this.lockPath, () => fn(this.openSection()));
+	}
+
+	/** The same section behind the synchronous lock: for the conversion at start, which runs before anything else and holds no lock. */
+	sectionSync<T>(fn: (tx: InboxSection) => Sync<T>): T {
+		fs.mkdirSync(path.dirname(this.file), { recursive: true });
+		return withFileLockSync(this.lockPath, () => fn(this.openSection()));
+	}
+
+	/** The section over the file as it is now. Caller holds the lock. */
+	private openSection(): InboxSection {
+		let lines = this.lines();
+		const find = (id: string): InboxEntry | undefined => lines.find((l) => l.entry?.id === id)?.entry;
+		// An append past the rotation size rotates, as `append` does, and the section goes on with what is left.
+		const rotated = (): void => {
+			const kept = this.rotate(() => lines);
+			if (kept) lines = kept;
+		};
+		return {
+			list: () => lines.flatMap(({ entry }) => (entry ? [entry] : [])),
+			find,
+			write: (change, ...more) => {
+				const changes = [change, ...more];
+				const targets = changes.map((c) => {
+					const target = find(c.id);
+					if (!target) throw new Error(`no finding ${c.id} to write`);
+					return target;
+				});
+				let appended = false;
+				changes.forEach((c, i) => {
+					Object.assign(targets[i], c.set);
+					if (c.beside && !find(c.beside.id)) {
+						lines.push({ raw: "", entry: this.build(c.beside.entry, c.beside.id) });
+						appended = true;
+					}
+				});
+				this.rewrite(lines);
+				if (appended) rotated();
+				return targets[0];
+			},
+			fileOnce: (entry, id) => {
+				if (!/^inb-[0-9a-f]{32}$/.test(id)) throw new Error(`not a finding id: ${JSON.stringify(id)}`);
+				const there = find(id);
+				if (there) return there;
+				const full = this.build(entry, id);
+				fs.appendFileSync(this.file, `${JSON.stringify(full)}\n`, "utf8");
+				lines.push({ raw: "", entry: full });
+				rotated();
+				return full;
+			},
+		};
 	}
 
 	/** The line a new finding is: built in `FINDING_FIELDS` order, then pi-loops' own. */
@@ -175,34 +268,41 @@ export class Inbox {
 			...(entry.transcript === undefined ? {} : { transcript: entry.transcript }),
 			...(entry.undelivered ? { undelivered: true as const } : {}),
 			...(entry.lane === undefined ? {} : { lane: entry.lane }),
+			...(entry.ask === undefined ? {} : { ask: entry.ask }),
 		};
 	}
 
 	/** Caller holds the lock. */
 	private write(full: InboxEntry): void {
 		fs.appendFileSync(this.file, `${JSON.stringify(full)}\n`, "utf8");
-		this.rotate();
+		this.rotate(() => this.lines());
 	}
 
 	/**
-	 * Past `INBOX_ROTATE_BYTES`, drop the oldest already-triaged entries (`claimed`/`dismissed`) —
-	 * never anything still `new`, which is the whole point of the inbox, and the reason this is not the
-	 * blind halving the run log and the audit use. This file was the one that grew forever, and
-	 * `newCount()` re-parses it on every badge refresh. Caller holds the lock.
+	 * Past `INBOX_ROTATE_BYTES`, drop the oldest half of the findings that `keptByRotation` does not
+	 * keep: never anything still `new`, which is the whole point of the inbox, and the reason this is
+	 * not the blind halving the run log and the audit use; never an answer that is open, nor a no that
+	 * still holds. This file was the one that grew forever, and `newCount()` re-parses it on every
+	 * badge refresh. Caller holds the lock. `read` gives the lines as the file has them. Returns the
+	 * lines written, or undefined when nothing was dropped.
 	 */
-	private rotate(): void {
+	private rotate(read: () => Line[]): Line[] | undefined {
 		try {
-			if (fs.statSync(this.file).size < INBOX_ROTATE_BYTES) return;
-			const lines = this.lines();
-			const triaged = lines.flatMap(({ entry }) => (entry && entry.status !== "new" ? [entry] : []));
-			const drop = Math.floor(triaged.length / 2);
-			// Nothing triaged to drop means an inbox full of unread findings: rewriting it would
-			// change nothing and would cost a full read+write on every append from here on.
-			if (drop === 0) return;
-			const dropped = new Set(triaged.slice(0, drop));
-			this.rewrite(lines.filter(({ entry }) => !entry || !dropped.has(entry)));
+			if (fs.statSync(this.file).size < INBOX_ROTATE_BYTES) return undefined;
+			const lines = read();
+			const now = Date.now();
+			const droppable = lines.flatMap(({ entry }) => (entry && !keptByRotation(entry, now) ? [entry] : []));
+			const drop = Math.floor(droppable.length / 2);
+			// Nothing to drop means an inbox full of findings it keeps: rewriting it would change
+			// nothing and would cost a full read+write on every append from here on.
+			if (drop === 0) return undefined;
+			const dropped = new Set(droppable.slice(0, drop));
+			const kept = lines.filter(({ entry }) => !entry || !dropped.has(entry));
+			this.rewrite(kept);
+			return kept;
 		} catch {
 			/* best effort: a rotation that fails must never lose the append that just succeeded */
+			return undefined;
 		}
 	}
 
@@ -215,7 +315,7 @@ export class Inbox {
 	 * Every non-blank line of the file, in order, with the entry it reads as; `entry` is missing for a
 	 * line that is not a finding (torn, not JSON). A rewrite writes such a line back as it found it.
 	 */
-	private lines(): Array<{ raw: string; entry?: InboxEntry }> {
+	private lines(): Line[] {
 		let text: string;
 		try {
 			text = fs.readFileSync(this.file, "utf8");
@@ -223,16 +323,17 @@ export class Inbox {
 			if (err?.code === "ENOENT") return [];
 			throw err;
 		}
-		const out: Array<{ raw: string; entry?: InboxEntry }> = [];
+		const out: Line[] = [];
 		for (const raw of text.split("\n")) {
 			if (!raw.trim()) continue;
-			let entry: InboxEntry | undefined;
+			let parsed: unknown;
 			try {
-				entry = readFinding(JSON.parse(raw));
+				parsed = JSON.parse(raw);
 			} catch {
 				/* a corrupt line: kept as raw text, read as nothing */
 			}
-			out.push(entry ? { raw, entry } : { raw });
+			const entry = readFinding(parsed);
+			out.push(entry ? { raw, entry, rest: unread(parsed as Record<string, unknown>, entry) } : { raw });
 		}
 		return out;
 	}
@@ -253,8 +354,15 @@ export class Inbox {
 		return this.list().filter((e) => e.status === "new" && e.session_id === sessionId && Date.parse(e.created_at) > after);
 	}
 
-	pinnedTranscripts(jobId: string): Set<string> {
-		return new Set(this.list().filter((e) => e.status === "new" && e.job_id === jobId && e.transcript).map((e) => path.resolve(e.transcript!)));
+	/**
+	 * The transcripts a prune must keep: those of `new` findings, and those of findings whose answer
+	 * is `pending` or `started` (the answer's run resumes them, and its checks read them). By job for
+	 * a loop, by lane for a check, whose findings name a rule in `job_id`. A string is a job's id.
+	 */
+	pinnedTranscripts(of: string | { job: string } | { lane: LaneId }): Set<string> {
+		const mine = typeof of === "string" ? (e: InboxEntry) => e.job_id === of : "job" in of ? (e: InboxEntry) => e.job_id === of.job : (e: InboxEntry) => e.lane === of.lane;
+		const open = (e: InboxEntry) => e.status === "new" || e.answer?.state === "pending" || e.answer?.state === "started";
+		return new Set(this.list().filter((e) => e.transcript && mine(e) && open(e)).map((e) => path.resolve(e.transcript!)));
 	}
 
 	/** Count of new entries; 0 on any error (badge path must never throw). */
@@ -337,9 +445,12 @@ export class Inbox {
 		return this.list().filter((e) => e.job_id === jobId && e.status === "dismissed" && !!e.dismiss_reason && !!e.dismissed_at && Date.parse(e.dismissed_at) > after);
 	}
 
-	/** Write `lines` back, each finding in this version's shape and every line it could not read as it was. Caller holds the lock. */
-	private rewrite(lines: Array<{ raw: string; entry?: InboxEntry }>): void {
-		writeFileAtomic(this.file, lines.map(({ raw, entry }) => (entry ? JSON.stringify(entry) : raw)).join("\n") + (lines.length ? "\n" : ""));
+	/**
+	 * Write `lines` back, each finding in this version's shape with every field it does not read as
+	 * it was, and every line it could not read as it was. Caller holds the lock.
+	 */
+	private rewrite(lines: Line[]): void {
+		writeFileAtomic(this.file, lines.map(({ raw, entry, rest }) => (entry ? findingLine(entry, rest) : raw)).join("\n") + (lines.length ? "\n" : ""));
 	}
 }
 
@@ -377,7 +488,33 @@ function readFinding(raw: any): InboxEntry | undefined {
 		transcript: str("transcript"),
 		...(raw.undelivered === true ? { undelivered: true as const } : {}),
 		...(typeof raw.lane === "string" ? { lane: raw.lane } : {}),
+		...readAskFields(raw),
 	};
+}
+
+/** The keys of the two older shapes that `readFinding` reads into this version's: a rewrite writes them in this shape and drops these. */
+const OLDER_KEYS: ReadonlySet<string> = new Set(["createdAt", "trace_id", "runId", "jobId", "sessionId", "claimedBy", "verifiedReason"]);
+
+/**
+ * The fields of line `raw` that `entry` does not carry: a field this version does not know, or one
+ * of the wrong shape (an `ask` a newer version wrote). A rewrite writes them back as they were.
+ */
+function unread(raw: Record<string, unknown>, entry: InboxEntry): Record<string, unknown> | undefined {
+	const known = entry as unknown as Record<string, unknown>;
+	const rest = Object.entries(raw).filter(([key]) => known[key] === undefined && !OLDER_KEYS.has(key));
+	return rest.length ? Object.fromEntries(rest) : undefined;
+}
+
+/**
+ * The line of a finding: its fields in this version's shape, an unreadable `answer` as it was read,
+ * then the fields of the line it did not read, unless the finding now carries one of them.
+ */
+function findingLine(entry: InboxEntry, rest: Record<string, unknown> | undefined): string {
+	const { answer, ...fields } = entry;
+	const out: Record<string, unknown> = { ...fields };
+	if (answer !== undefined) out.answer = answer.state === "unreadable" ? answer.raw : answer;
+	for (const [key, value] of Object.entries(rest ?? {})) if (out[key] === undefined) out[key] = value;
+	return JSON.stringify(out);
 }
 
 /**

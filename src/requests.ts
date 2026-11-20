@@ -10,6 +10,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { RestoredRow } from "./ask.ts";
 import { type ConversationId, type Lane, type LaneId, laneFileName, parseLane } from "./lane.ts";
 import { type LockOptions, withFileLockSync, writeFileAtomic } from "./lock.ts";
 
@@ -44,6 +45,8 @@ export type RequestSource =
 	| `push:${string}`
 	| "goal"
 	| `inbox:${string}`
+	/** The row of a yes (`ans-`), and the row that tells a conversation of a no (`no-`): src/ask.ts. */
+	| "answer"
 	| `recipe:${string}`
 	| "new-trigger"
 	| "person"
@@ -77,6 +80,8 @@ interface RowBase {
 		slot?: string;
 		catch_up?: true;
 		requested_by?: string;
+		/** An `answer` row only: the finding it answers. */
+		finding?: string;
 	};
 	/** stop, cancel. Never "whatever runs next". */
 	target?: { id: string } | { current: true; started_before: string };
@@ -340,9 +345,10 @@ export class RequestStore {
 	 * the same lock as the write, so two producers cannot both find the key free. A row `done` says
 	 * is already in the conversation does not collapse anything: it is in the file only until the
 	 * next drain removes it. `lock` bounds the wait for this queue's lock: a caller that holds another
-	 * lock meanwhile passes a timeout shorter than that lock's stale point, and a timeout throws.
+	 * lock meanwhile passes a timeout shorter than that lock's stale point, and a timeout throws. A
+	 * `RestoredRow` is an answer's row put back with the claim its finding records.
 	 */
-	appendIfAbsent(row: UnclaimedRow, opts: { collapse?: boolean; done?: (queued: Row) => boolean } = {}, lock?: LockOptions): boolean {
+	appendIfAbsent(row: UnclaimedRow | RestoredRow, opts: { collapse?: boolean; done?: (queued: Row) => boolean } = {}, lock?: LockOptions): boolean {
 		return withFileLockSync(this.lockPath(row.lane), () => {
 			const queued = this.lines(row.lane);
 			if (queued.some(({ row: q }) => q?.id === row.id)) return false;
@@ -367,7 +373,7 @@ export class RequestStore {
 		return result;
 	}
 
-	private appendLocked(row: UnclaimedRow): void {
+	private appendLocked(row: UnclaimedRow | RestoredRow): void {
 		const file = this.file(row.lane);
 		fs.mkdirSync(path.dirname(file), { recursive: true });
 		// A write cut short by a crash leaves a last line with no newline; appended to, it would take
@@ -380,19 +386,20 @@ export class RequestStore {
 		return this.lines(lane).flatMap(({ row }) => (row ? [row] : []));
 	}
 
-	/** Rewrite the file without `ids`, under the lock; every line not ours stays. The file goes when nothing is left, and each removed row's image file with it. */
-	remove(lane: LaneId, ids: Iterable<string>): void {
+	/** Rewrite the file without `ids`, under the lock; every line not ours stays. The file goes when nothing is left, and each removed row's image file with it. `lock` as for `appendIfAbsent`. */
+	remove(lane: LaneId, ids: Iterable<string>, lock?: LockOptions): void {
 		const gone = new Set(ids);
-		this.rewrite(lane, (lines) => lines.filter(({ row }) => !row || !gone.has(row.id)));
+		this.rewrite(lane, (lines) => lines.filter(({ row }) => !row || !gone.has(row.id)), lock);
 		for (const id of gone) fs.rmSync(this.imageFile(lane, id), { force: true });
 	}
 
 	/**
 	 * Rewrite one row with `patch` applied, under the lock; a row removed meanwhile stays removed, and
 	 * the result says so: false when no row `id` was in the file, so a hand-over whose stamp did not
-	 * land knows the row is gone (cancelled, or sent from the page) and hands nothing over.
+	 * land knows the row is gone (cancelled, or sent from the page) and hands nothing over. `lock` as
+	 * for `appendIfAbsent`.
 	 */
-	update(lane: LaneId, id: string, patch: Partial<Pick<Row, "attempts" | "not_before" | "last_error" | "created_by" | "handed_at" | "waiting">> & { run?: undefined }): boolean {
+	update(lane: LaneId, id: string, patch: Partial<Pick<Row, "attempts" | "not_before" | "last_error" | "created_by" | "handed_at" | "waiting">> & { run?: undefined }, lock?: LockOptions): boolean {
 		let found = false;
 		this.rewrite(lane, (lines) =>
 			lines.map(({ raw, row, version }) => {
@@ -400,6 +407,7 @@ export class RequestStore {
 				found = true;
 				return { raw: rowLine({ ...row, ...patch }, version), row };
 			}),
+			lock,
 		);
 		return found;
 	}
@@ -407,9 +415,10 @@ export class RequestStore {
 	/**
 	 * Write `run` on row `id`, under the lane's lock, only if the row is there, is an input, and no
 	 * run has claimed it. Returns whether this caller has the claim. A patch (`update`) can clear a claim and cannot
-	 * set one: the condition is checked here, where no other writer can come between.
+	 * set one: the condition is checked here, where no other writer can come between. `lock` as for
+	 * `appendIfAbsent`.
 	 */
-	claim(lane: LaneId, id: string, run: Listed): boolean {
+	claim(lane: LaneId, id: string, run: Listed, lock?: LockOptions): boolean {
 		let claimed = false;
 		this.rewrite(lane, (lines) =>
 			lines.map(({ raw, row }) => {
@@ -419,6 +428,7 @@ export class RequestStore {
 				const { skipped: _skipped, ...fresh } = row;
 				return { raw: rowLine({ ...fresh, kind: "input", run }), row };
 			}),
+			lock,
 		);
 		return claimed;
 	}
@@ -427,9 +437,10 @@ export class RequestStore {
 	 * Remove row `id` under the lock, but only if `when` holds for the row as it is in the file at that
 	 * moment: the page takes a message back only while no holder has stamped it handed over, and the
 	 * check and the removal are one critical section, so a stamp cannot land between them. Says what
-	 * happened: `removed` with the row, `kept` with the row `when` refused, or `missing`.
+	 * happened: `removed` with the row, `kept` with the row `when` refused, or `missing`. `lock` as for
+	 * `appendIfAbsent`.
 	 */
-	removeIf(lane: LaneId, id: string, when: (row: Row) => boolean): Taken {
+	removeIf(lane: LaneId, id: string, when: (row: Row) => boolean, lock?: LockOptions): Taken {
 		// Assigned inside the rewrite's callback, which the type checker does not follow: no narrowing here.
 		let result = { outcome: "missing" } as Taken;
 		this.rewrite(lane, (lines) =>
@@ -438,6 +449,7 @@ export class RequestStore {
 				result = when(row) ? { outcome: "removed", row } : { outcome: "kept", row };
 				return result.outcome !== "removed";
 			}),
+			lock,
 		);
 		if (result.outcome === "removed") fs.rmSync(this.imageFile(lane, id), { force: true });
 		return result;

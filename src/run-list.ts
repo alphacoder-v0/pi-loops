@@ -4,6 +4,7 @@
  * of leases nobody uses, the page) reads this list, and a claim on a row is written only through it.
  */
 import type { ConversationId } from "./lane.ts";
+import type { LockOptions } from "./lock.ts";
 import type { ClaimedRow, Listed, RequestStore, UnclaimedRow } from "./requests.ts";
 import { stamp } from "./schedule.ts";
 
@@ -42,16 +43,16 @@ export class RunList {
 	 * them. Returns the claimed row, or undefined when the row is gone, another run has it, or its run
 	 * is in the list already; the run is then not in the list. When the write throws, the run is
 	 * taken out and the error goes on: no claim was written. This is the one caller of
-	 * `RequestStore.claim`.
+	 * `RequestStore.claim`. `lock` bounds the wait for the lane's lock, for a caller that holds `inbox.lock`.
 	 */
-	claim(requests: Pick<RequestStore, "claim">, row: UnclaimedRow, by: { readonly pid: number; readonly procStart: string | undefined }, run: Omit<Running, "runId" | "startedAt">, now: number): ClaimedRow | undefined {
+	claim(requests: Pick<RequestStore, "claim">, row: UnclaimedRow, by: { readonly pid: number; readonly procStart: string | undefined }, run: Omit<Running, "runId" | "startedAt">, now: number, lock?: LockOptions): ClaimedRow | undefined {
 		if (this.#runs.has(row.id)) return undefined;
 		const startedAt = stamp(now);
 		this.#runs.set(row.id, { ...run, runId: row.id, startedAt });
 		const claim = { id: row.id, pid: by.pid, started_at: startedAt, ...(by.procStart === undefined ? {} : { procStart: by.procStart }) } as Listed;
 		let claimed = false;
 		try {
-			claimed = requests.claim(row.lane, row.id, claim);
+			claimed = requests.claim(row.lane, row.id, claim, lock);
 		} finally {
 			if (!claimed) this.#runs.delete(row.id);
 		}
