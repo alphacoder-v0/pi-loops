@@ -1,3 +1,4 @@
+import { answerCap, askedLines } from "./ask.ts";
 import { type EngineSinks, applyFate, plainJobRow, plainRunId } from "./engine.ts";
 import { findingKind, composeCheckerPrompt, composeLoopPrompt, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
 import type { ClaimedRow, Row, UnclaimedRow } from "./requests.ts";
@@ -58,24 +59,31 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 		let dismissed: Array<{ text: string; reason: string }> = [];
 		try { dismissed = deps.stores.inbox.feedbackFor(job.id, deps.stores.book().clock.jobs[job.id]?.fired).map((entry) => ({ text: entry.text, reason: entry.dismiss_reason ?? "" })); }
 		catch (error) { deps.sinks.log(`loop ${job.id}: feedback read failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
+		let asked: string[] = [];
+		try { asked = askedLines(deps.stores.inbox.list(), row.lane); }
+		catch (error) { deps.sinks.log(`loop ${job.id}: questions read failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
 		// From jobs.json only, as tools and cwd are: a row in the lane file can be written by hand.
 		const timeoutMs = job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
 		const prompt = composeLoopPrompt(job.prompt, previousState, {
 			name: job.name,
 			dismissed,
+			asked,
 			timeoutMs,
 			runAt: `${formatLocalZoned(started)}${payload?.catch_up ? " (catching up a missed tick)" : ""}`,
 		});
 		const model = job.model ?? session.model;
 		const thinking = job.thinking ?? session.thinking;
 		const abort = running?.ctrl.signal;
+		const source = `cron:${job.name ?? job.id.slice(0, "cron-".length + 8)}`;
+		// The guard's seat: a dangerous call files a question in this lane. The cap is the job's as jobs.json has it.
+		const guard = { lane: row.lane, origin: { source, run_id: runId, cwd: job.cwd, job_id: job.id, ...(job.createdBy?.sessionId ? { session_id: job.createdBy.sessionId } : {}), who: job.name ?? job.id }, cap: answerCap(job, undefined) };
 		let result: RunnerResult;
 		try {
 			result = await deps.runner({
 				cwd: job.cwd, prompt, model, thinking, tools: job.tools, builtinTools: job.builtinTools,
 				timeoutMs, signal: abort, sessionDir: deps.stores.jobs.sessionDirFor(job.id),
 				hop: deps.hop + 1, parentSessionId: session.sessionId, parentCwd: session.cwd,
-				kind: "loop", jobId: job.id, runId,
+				kind: "loop", jobId: job.id, runId, guard,
 				onSessionFile: (file) => { if (running) running.sessionFile = file; },
 			});
 		} catch (error) {
@@ -104,7 +112,7 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 			for (const finding of reviewed) {
 				try {
 					await deps.stores.inbox.append({
-						source: `cron:${job.name ?? job.id.slice(0, "cron-".length + 8)}`,
+						source,
 						text: finding.text, run_id: runId, job_id: job.id, cwd: job.cwd,
 						kind: findingKind(finding.text), verified: finding.verified,
 						verified_reason: finding.reason, session_id: job.createdBy?.sessionId,
@@ -134,7 +142,7 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 			...(byPerson ? { stoppedBy: "person" as const, stoppedFrom: running?.stoppedFrom ?? "cli" } : {}),
 		};
 		// As main, before the record: the newest transcripts are kept, and those a finding points at.
-		try { deps.stores.jobs.pruneSessions(job.id, undefined, deps.stores.inbox.pinnedTranscripts(job.id)); }
+		try { deps.stores.jobs.pruneSessions(job.id, undefined, deps.stores.inbox.pinnedTranscripts({ job: job.id })); }
 		catch (error) { deps.sinks.log(`loop ${job.id}: transcript pruning failed: ${error instanceof Error ? error.message : String(error)}`, "info", job); }
 		await closeLoopRun(row, deps, now(), record);
 		if (findings.length) deps.sinks.filed?.();

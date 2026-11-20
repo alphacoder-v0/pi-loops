@@ -49,6 +49,8 @@ export function jobCounts(history: JobHistory | undefined, cleared: string | und
 export function runHistory(records: readonly RunRecord[]): ReadonlyMap<string, JobHistory> {
 	const histories = new Map<string, { ordinal: number; streak: number; failed?: { at: string; error: string }; finished?: string; completed?: string; settled?: string; interrupted: string[]; spent: Set<string> }>();
 	for (const record of records) {
+		// An answer's run is a person's yes, not a run of the schedule: it counts no slot, failure or interruption. `JobStore.spend` still counts its cost.
+		if (record.cause === "answer") continue;
 		let history = histories.get(record.jobId);
 		if (!history) {
 			history = { ordinal: 0, streak: 0, interrupted: [], spent: new Set() };

@@ -10,6 +10,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { isAnswerRow } from "./ask.ts";
 import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileMark, type Proof, type QuietMark, DEAD_AFTER_ATTEMPTS, bury, changesSomething, claimAlive, closeRun, conversationHas, decideDrain, drain, jobQueued, modeOf, plainRunId, plainJobRow, proofOf, quietMark, sessionFileEntries, stillQuiet } from "./engine.ts";
 import { type ConversationId, parseLane } from "./lane.ts";
 import { DELIVERY_JOB_ID, type LeaseHolder, type LeaseStore, closedConversation, liveHolderPid } from "./lease.ts";
@@ -446,15 +447,30 @@ export interface LoopLanes {
 	settle(ms: number): Promise<void>;
 }
 
-export function abortRemovedJobs(runs: RunList, exists: (jobId: string) => boolean, log: (line: string) => void): number {
+/**
+ * Stop each run whose job is not in `jobs.json`. A run of an answer row whose lane is not a loop lane
+ * is left: a check lane and a conversation are in no `jobs.json`, and a person's yes there is not a
+ * run of a removed job. An answer's run in a removed loop's lane is stopped.
+ */
+export function abortRemovedJobs(runs: Pick<RunList, "all">, exists: (jobId: string) => boolean, log: (line: string) => void): number {
 	let aborted = 0;
 	for (const run of runs.all()) {
+		if (run.answer && parseLane(run.answer.lane)?.kind !== "loop") continue;
 		if (exists(run.jobId) || run.ctrl.signal.aborted) continue;
 		run.ctrl.abort();
 		log(`cron ${run.label}: removed while it ran; stopped run ${run.runId}`);
 		aborted++;
 	}
 	return aborted;
+}
+
+/**
+ * The test of the drain's pre-pass: a claim of this process whose run left the list. Its run ended
+ * here and its closing threw before it wrote the row, so the slot is spent. An `ans-` row is passed
+ * over: the answer protocol finds that claim not live and counts it (F1).
+ */
+export function spentOwnClaim(row: Row, self: { readonly pid: number; readonly procStart: string | undefined }, listed: (runId: string) => boolean): boolean {
+	return !isAnswerRow(row) && row.run !== undefined && row.run.pid === self.pid && row.run.procStart === self.procStart && !listed(row.run.id);
 }
 
 export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
@@ -528,9 +544,9 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 		// end of a run fails: it does not run again, here or after a restart.
 		const self = deps.holder();
 		for (const row of stores.requests.list(lane.id)) {
-			if (!row.run || row.run.pid !== self.pid || row.run.procStart !== self.procStart || runs.get(row.run.id) !== undefined) continue;
+			if (!spentOwnClaim(row, self, (runId) => runs.get(runId) !== undefined)) continue;
 			stores.requests.remove(lane.id, [row.id]);
-			deps.sinks.log(`loop ${jobId}: run ${row.run.id.slice(0, 12)} ended without its closing; its slot is spent`, "info", current);
+			deps.sinks.log(`loop ${jobId}: run ${row.run!.id.slice(0, 12)} ended without its closing; its slot is spent`, "info", current);
 		}
 		if (current) {
 			// Main's rule: the grace counts from the first look that found the checkout missing (a mount

@@ -112,7 +112,7 @@ export interface TriggerRuntimeOptions {
 	 * Where a matched rule's result is filed, whatever `promote_to_chat` says (docs/triggers.md).
 	 * Both processes pass the scheduler's inbox; omitted, a result is only audited.
 	 */
-	inbox?: Pick<Inbox, "appendOnce">;
+	inbox?: Pick<Inbox, "appendOnce" | "pinnedTranscripts">;
 	/** The `stat` a waiting rule's look uses; tests inject one that hangs. */
 	stat?: (p: string) => Promise<unknown>;
 }
@@ -155,7 +155,8 @@ export function triggerSessionKey(cwd: string): string {
  */
 export function checkLane(cwd: string): LaneId | undefined {
 	if (!cwd) return undefined;
-	const name = (path.basename(cwd).replace(/[^A-Za-z0-9._-]/g, "_").replace(/\.{2,}/g, "_") || "unknown").slice(0, 100);
+	// The real directory's name, as the digest is of the real path: a symlink to the project is the same lane.
+	const name = (path.basename(realpathish(cwd)).replace(/[^A-Za-z0-9._-]/g, "_").replace(/\.{2,}/g, "_") || "unknown").slice(0, 100);
 	const digest = createHash("sha256").update(realpathish(cwd)).digest("hex").slice(0, 8);
 	const lane = parseLane(`@check-${name}-${digest}`);
 	return lane?.kind === "check" ? lane.id : undefined;
@@ -232,7 +233,7 @@ export class TriggerRuntime {
 	/** Every sub-agent this process starts takes a slot from here, loop runs included. */
 	readonly slots: SubagentSlots;
 	private readonly budget: () => { spent: number; cap: number; over: boolean };
-	private readonly inbox: Pick<Inbox, "appendOnce"> | undefined;
+	private readonly inbox: Pick<Inbox, "appendOnce" | "pinnedTranscripts"> | undefined;
 	pollIntervalSecs: number;
 	lastCheckAt = 0;
 	/** Bounded, display-only status of the latest periodic check. */
@@ -670,11 +671,14 @@ export class TriggerRuntime {
 		const withModel = rules.find((r) => r.model);
 		const model = withModel?.model ?? session.model;
 		const thinking = withModel?.thinking ?? session.thinking;
+		const lane = checkLane(cwd);
 		let result: RunnerResult;
 		try {
 			// A check runs every rule of the project, so the longest per-rule cap wins.
 			const timeoutMs = rules.reduce((max, r) => Math.max(max, r.timeoutMs ?? 0), 0) || this.runTimeoutMs;
-			result = await this.runner({ cwd, prompt, model, thinking, timeoutMs, signal: ctrl.signal, sessionDir: this.jobStore.sessionDirFor(triggerSessionKey(cwd)), hop: this.hop + 1, parentSessionId: session.sessionId, parentCwd: session.cwd, kind: "trigger", traceId: trigger.traceId });
+			// The guard's seat: a dangerous call files a question in the project's check lane.
+			const guard = lane === undefined ? undefined : { lane, origin: { source: `trigger:${trigger.sourceLabel}`, run_id: trigger.traceId, cwd, who: `the check of ${path.basename(cwd) || cwd}` }, cap: { cwd, ...(withModel?.model ? { model: withModel.model } : {}), ...(withModel?.thinking ? { thinking: withModel.thinking } : {}), timeout_ms: timeoutMs } };
+			result = await this.runner({ cwd, prompt, model, thinking, timeoutMs, signal: ctrl.signal, sessionDir: this.jobStore.sessionDirFor(triggerSessionKey(cwd)), hop: this.hop + 1, parentSessionId: session.sessionId, parentCwd: session.cwd, kind: "trigger", traceId: trigger.traceId, ...(guard ? { guard } : {}) });
 		} catch (err: any) {
 			result = failedRun(err?.message ?? String(err));
 		} finally {
@@ -684,7 +688,8 @@ export class TriggerRuntime {
 		// to exhaust a shared 40 within a couple of hours, taking the evidence with them. The key has
 		// to be the one the transcripts were written under, or the prune looks in a directory that
 		// does not exist and silently keeps everything.
-		this.jobStore.pruneSessions(triggerSessionKey(cwd), TRIGGER_SESSIONS_KEPT);
+		// A transcript a finding points at, or an open answer resumes, is kept.
+		this.jobStore.pruneSessions(triggerSessionKey(cwd), TRIGGER_SESSIONS_KEPT, lane === undefined ? undefined : this.inbox?.pinnedTranscripts({ lane }));
 
 		const summary = result.text.trim();
 		// A check killed by the run timeout (or aborted) has usually already *executed* the matching
@@ -705,7 +710,7 @@ export class TriggerRuntime {
 			const source = `trigger:${trigger.sourceLabel}`;
 			for (const [forSession, group] of byCreator(matchedRules)) {
 				try {
-					const there = await this.inbox.appendOnce({ source, text: summary, run_id: trigger.traceId, job_id: group[0].id, cwd, session_id: forSession, lane: checkLane(cwd) }, { run_id: trigger.traceId, source, session_id: forSession }, { unlessRepeat: true });
+					const there = await this.inbox.appendOnce({ source, text: summary, run_id: trigger.traceId, job_id: group[0].id, cwd, session_id: forSession, lane, transcript: result.sessionFile }, { run_id: trigger.traceId, source, session_id: forSession }, { unlessRepeat: true });
 					inboxDecision = there.run_id === trigger.traceId ? "filed" : (inboxDecision ?? "repeat");
 				} catch (err: any) {
 					this.log(`trigger ${trigger.traceId.slice(0, 8)}: inbox append failed: ${err?.message ?? err}`);

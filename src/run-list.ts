@@ -3,7 +3,7 @@
  * One list per process, with one owner. Whoever asks what runs here (the status, a stop, the sweep
  * of leases nobody uses, the page) reads this list, and a claim on a row is written only through it.
  */
-import type { ConversationId } from "./lane.ts";
+import type { ConversationId, LaneId } from "./lane.ts";
 import type { LockOptions } from "./lock.ts";
 import type { ClaimedRow, Listed, RequestStore, UnclaimedRow } from "./requests.ts";
 import { stamp } from "./schedule.ts";
@@ -24,6 +24,8 @@ export interface Running {
 	stoppedFrom?: "page" | "cli";
 	/** A held turn only: the closed conversation it writes, the lease it runs under, and what the page's waiting line calls it. */
 	readonly turn?: { readonly sessionId: ConversationId; readonly epoch: number; readonly sessionFile: string; readonly cwd?: string; readonly label: string };
+	/** The run of an answer row: the lane it runs in and the finding it answers. */
+	readonly answer?: { readonly lane: LaneId; readonly finding: string };
 }
 
 /** The list. A caller gets it as a parameter; nothing reaches it through module state. */

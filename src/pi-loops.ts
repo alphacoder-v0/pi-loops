@@ -32,8 +32,8 @@ import { LoopsLog, pruneLogs } from "./log.ts";
 import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
-import { capRedacted, previewRedacted, redact } from "./redact.ts";
-import { cardLines, cardOrigin, claimPrompt, dismissOutcome, dismissTail, inboxCard, screenText } from "./inbox-card.ts";
+import { capRedacted, previewRedacted, redact, screenText } from "./redact.ts";
+import { cardLines, cardOrigin, claimPrompt, dismissOutcome, dismissTail, inboxCard } from "./inbox-card.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { FRESH_RUNS_READ, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardLines, runCardsHere, runLine } from "./run-card.ts";
 import { type ShareMessage, renderShare, shareSummary, shareableMessages } from "./share.ts";
@@ -62,6 +62,7 @@ import { TURN_TYPE } from "./mark.ts";
 import { renderTurn } from "./turn-render.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
+import { GuardSeats } from "./guard.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
 import { SubagentSlots } from "./slots.ts";
 import { askHost, noticesToShow, renderHostSnapshot, ringHost, type HostSnapshot } from "./host-control-channel.ts";
@@ -194,6 +195,10 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * unless the job pins one, its own transcript file. `customTools` hands each run the parent's
 	 * MCP tools plus the automation tools at hop 1.
 	 */
+	const subagentLog = (msg: string): void => {
+		log.warn(`sub-agent: ${msg}`);
+		if (lastCtx?.hasUI) lastCtx.ui.notify(`[sub-agent] ${msg}`, "warning");
+	};
 	const runner = createInProcessRunner({
 		agentDir: getAgentDir(),
 		parentFlags: parentRuntimeFlags(process.argv),
@@ -225,13 +230,15 @@ export default function piLoops(pi: ExtensionAPI) {
 		isTrusted: (cwd) => (!!session.trusted && sessionTrustCovers(session.cwd, cwd)) || isExactlyTrusted(getAgentDir(), cwd),
 		ownDir: PACKAGE_DIR,
 		allowCommands: () => config.allowCommands,
+		// One set of seats for this process: a loop's or a check's dangerous call files a question in this inbox.
+		guard: {
+			seats: new GuardSeats(),
+			deps: { inbox: stores.inbox, allowCommands: () => config.allowCommands, hop: 1, now: Date.now, log: subagentLog },
+		},
 		// The daily cap, read while a run is in flight and not only before it is dispatched. Lazy: the
 		// scheduler is built with this runner, and asking it anything before then would be a cycle.
 		budget: () => budgetState(stores.jobs, config.dailyBudgetUsd, Date.now()),
-		log: (msg) => {
-			log.warn(`sub-agent: ${msg}`);
-			if (lastCtx?.hasUI) lastCtx.ui.notify(`[sub-agent] ${msg}`, "warning");
-		},
+		log: subagentLog,
 	});
 
 	/**

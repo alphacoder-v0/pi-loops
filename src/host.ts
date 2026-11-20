@@ -41,6 +41,7 @@ import { previewRedacted, redact } from "./redact.ts";
 import { parentRuntimeFlags, type RunnerResult, type SubagentRunner } from "./runner.ts";
 import type { SessionSnapshot } from "./job-owner.ts";
 import type { HostSnapshot, PageOpened, PageOpenRequest } from "./host-control-channel.ts";
+import { GuardSeats } from "./guard.ts";
 import { createInProcessRunner, releaseHeldResources } from "./sdk-runner.ts";
 import { defaultLoopsDir, homeLoopsDir, sessionExists } from "./store.ts";
 import { sameProject } from "./paths.ts";
@@ -171,6 +172,11 @@ const inProcessRunner = createInProcessRunner({
 	isTrusted: (cwd) => isExactlyTrusted(agentDir, cwd),
 	ownDir: PACKAGE_DIR,
 	allowCommands: () => config.allowCommands,
+	// One set of seats for this process. The inbox is read at call time: the stores open after the runner.
+	guard: {
+		seats: new GuardSeats(),
+		deps: { inbox: { list: () => stores.inbox.list(), fileOnce: (entry, id) => stores.inbox.fileOnce(entry, id) }, allowCommands: () => config.allowCommands, hop: 1, now: Date.now, log: (msg) => log(`sub-agent: ${msg}`) },
+	},
 	// The daily cap, read while a run is in flight and not only before it is dispatched. Lazy: the
 	// host owns the scheduler and is built with this runner, so it can only be asked at run time.
 	budget: () => host.budget(),

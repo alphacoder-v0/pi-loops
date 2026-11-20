@@ -10,9 +10,8 @@
 import { type AskCap, type AskOrigin, type Call, ASK_COMMAND_MAX_CHARS, ASKS_OPEN_PER_LANE, ASKS_PER_TURN, type Grant, NO_HOLDS_MS, callKey, inputHash, questionFinding } from "./ask.ts";
 import { dangerousCommandReason } from "./danger.ts";
 import type { Inbox, InboxEntry as Finding } from "./inbox.ts";
-import { screenText } from "./inbox-card.ts";
+import { cardText } from "./redact.ts";
 import type { LaneId } from "./lane.ts";
-import { redact } from "./redact.ts";
 import { stamp } from "./schedule.ts";
 
 /** One call as the `tool_call` event gives it. */
@@ -84,7 +83,7 @@ function commandOf(call: Pick<ToolCallFacts, "toolName" | "input">): string | un
  *   3. `turn.refused` has its key: refuse, `a person said no to this on <date>`;
  *   4. `turn.open` has its key: asked;
  *   5. it can be asked (`turn.resumable`, the command at most
- *      `ASK_COMMAND_MAX_CHARS`, unchanged by `screenText` and `redact`) and the caps allow it: question;
+ *      `ASK_COMMAND_MAX_CHARS`, unchanged by `cardText`) and the caps allow it: question;
  *   6. else refuse, with why nobody was asked.
  */
 export function judgeCall(call: ToolCallFacts, turn: GuardTurn, cfg: { allowCommands: readonly string[] }): CallVerdict {
@@ -110,7 +109,8 @@ export function judgeCall(call: ToolCallFacts, turn: GuardTurn, cfg: { allowComm
 function whyNotAsked(command: string, turn: GuardTurn): WhyNot | undefined {
 	if (!turn.resumable || turn.lane === undefined) return { why: "no-transcript" };
 	if ([...command].length > ASK_COMMAND_MAX_CHARS) return { why: "too-long" };
-	if (screenText(command) !== command || redact(command) !== command) return { why: "not-as-written" };
+	// The card collapses a newline, a tab or a run of spaces: a yes would run what the person did not read.
+	if (cardText(command) !== command) return { why: "not-as-written" };
 	if (turn.asked >= ASKS_PER_TURN) return { why: "turn-cap" };
 	if (turn.open.size >= ASKS_OPEN_PER_LANE) return { why: "lane-cap" };
 	return undefined;

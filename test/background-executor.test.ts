@@ -10,7 +10,7 @@ import { jobCounts, runHistory } from "../src/job-status.ts";
 import { clockStore } from "../src/stores.ts";
 import { addV2, viewV2 } from "./v2-jobs.ts";
 import { plainJobRow, plainRunId } from "../src/engine.ts";
-import { abortRemovedJobs, createBackgroundExecutor } from "../src/background-executor.ts";
+import { abortRemovedJobs, createBackgroundExecutor, spentOwnClaim } from "../src/background-executor.ts";
 import { createHostRuntime } from "../src/host-runtime.ts";
 import { RunList } from "../src/run-list.ts";
 import { LeaseBinding, LeaseStore, procStart } from "../src/lease.ts";
@@ -765,6 +765,61 @@ test("[job-removed-aborts] removed jobs abort every matching run once, including
 		"cron loop: removed while it ran; stopped run loop-run",
 		"cron plain: removed while it ran; stopped run held-run",
 	]);
+});
+
+test("[job-removed-aborts] an answer's run in a removed loop's lane is stopped; one in a check lane or a conversation is left", () => {
+	const runs = new RunList();
+	const loopRun = new AbortController();
+	const checkRun = new AbortController();
+	const heldRun = new AbortController();
+	const at = new Date().toISOString();
+	runs.add({ runId: "ans-loop", jobId: "gone-loop", label: "loop", startedAt: at, promptPreview: "", ctrl: loopRun, answer: { lane: "@cron-gone-loop", finding: "inb-1" } });
+	runs.add({ runId: "ans-check", jobId: "@check-proj-0123abcd", label: "check", startedAt: at, promptPreview: "", ctrl: checkRun, answer: { lane: "@check-proj-0123abcd", finding: "inb-2" } });
+	runs.add({ runId: "ans-held", jobId: "gone-plain", label: "plain", startedAt: at, promptPreview: "", ctrl: heldRun, answer: { lane: "0f0e0d0c-0b0a-4908-8706-050403020100", finding: "inb-3" } });
+	const lines: string[] = [];
+	assert.equal(abortRemovedJobs(runs, () => false, (line) => lines.push(line)), 1);
+	assert.deepEqual([loopRun.signal.aborted, checkRun.signal.aborted, heldRun.signal.aborted], [true, false, false]);
+	assert.deepEqual(lines, ["cron loop: removed while it ran; stopped run ans-loop"]);
+});
+
+test("spentOwnClaim: a claim of this process whose run left the list, never an ans- row", () => {
+	const self = { pid: 7, procStart: "p7" };
+	const claim = { pid: 7, started_at: "2026-06-01T12:00:00Z", procStart: "p7" };
+	const slot = { ...plainJobRow({ id: "cron-a", sessionId: "@cron-a", prompt: "p", cwd: "/p" } as any, "run-a", "cron:cron-a", "", { pid: 7, instance: "x", version: "0" }), lane: "@cron-a", run: { id: "run-a", ...claim } } as any;
+	const ans = { ...slot, id: `ans-${"a".repeat(32)}`, source: "answer", payload: { text: "x", cwd: "/p", finding: `inb-${"a".repeat(32)}` }, run: { id: `ans-${"a".repeat(32)}`, ...claim } };
+	assert.equal(spentOwnClaim(slot, self, () => false), true);
+	assert.equal(spentOwnClaim(slot, self, () => true), false, "its run is going");
+	assert.equal(spentOwnClaim(slot, { pid: 7, procStart: "other" }, () => false), false, "another process's claim");
+	assert.equal(spentOwnClaim(ans, self, () => false), false, "an answer's claim is the answer protocol's to count (F1)");
+});
+
+test("[overlap-at-drain] the pre-pass leaves a dead own claim on an ans- row; a cron: row due beside a live claimed ans- row is skipped and counted on it", async () => {
+	const s = scene(ok);
+	try {
+		const id = "cron-0123456789abcdef0123456789abcdef";
+		const lane = loopLane(id)!;
+		const job = { id, schedule: { kind: "cron" as const, expr: "*/10 * * * *" }, stateful: true, prompt: "look", cwd: s.dir, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 3_700_000).toISOString(), runCount: 0, skippedOverlap: 0 };
+		await s.host.stores.jobs.add(job as any);
+		const t0 = Date.now();
+		const self = { pid: process.pid, procStart: procStart(process.pid) };
+		const ansId = `ans-${"a".repeat(32)}`;
+		const ans = { v: 3, id: ansId, lane, kind: "input", source: "answer", mode: "unattended", wake: "turn", payload: { text: `[Trigger ${ansId}] go`, cwd: s.dir, finding: `inb-${"a".repeat(32)}` }, created_at: new Date(t0 - 90_000).toISOString(), created_by: { pid: process.pid, instance: "x", version: "0" }, attempts: 0 };
+		s.requests.append(ans as any);
+		s.requests.update(lane, ansId, { run: { id: ansId, pid: self.pid, started_at: new Date(t0 - 60_000).toISOString(), ...(self.procStart ? { procStart: self.procStart } : {}) } } as any);
+		await s.host.loops.drain(parseLane(lane) as any, t0);
+		assert.deepEqual(s.requests.list(lane).map((row) => [row.id, !!row.run]), [[ansId, true]], "a dead own claim on an ans- row stays for the answer protocol");
+
+		const slot = new Date(t0 - 30_000).toISOString();
+		const waiting = plainJobRow(job as any, plainRunId(id, slot), `cron:${id}`, "", { pid: process.pid, instance: "x", version: "0" } as any, t0 - 30_000);
+		s.requests.appendIfAbsent({ ...waiting, lane, payload: { ...waiting.payload!, slot } } as any);
+		s.host.runs.add({ runId: ansId, jobId: id, label: "look", startedAt: new Date(t0 - 60_000).toISOString(), promptPreview: "", ctrl: new AbortController(), answer: { lane, finding: `inb-${"a".repeat(32)}` } });
+		await s.host.loops.drain(parseLane(lane) as any, t0);
+		const rows = s.requests.list(lane) as any[];
+		assert.deepEqual(rows.map((row) => [row.id, row.collapsed, row.collapsed_slot, row.skipped]), [[ansId, 1, slot, 1]], "the slot is skipped and counted on the answer's row");
+		assert.equal(s.host.stores.clock.read().jobs[id]?.collapsed, 1, "one skipped overlap on the loop's cursor");
+		assert.equal(s.calls.length, 0, "nothing ran beside the answer");
+		s.host.runs.remove(ansId);
+	} finally { await s.host.stop(); }
 });
 
 test("[job-removed-aborts] the next drain of a removed loop's lane removes its row as job-removed", async () => {

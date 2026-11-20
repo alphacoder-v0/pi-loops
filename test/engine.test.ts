@@ -7,7 +7,7 @@ import { TriggerStore } from "../src/triggers.ts";
 import { type ClaimedRow, type ImageContent, RequestStore, type Row, type UnclaimedRow } from "../src/requests.ts";
 import * as path from "node:path";
 import { BACKOFF_MS } from "../src/backoff.ts";
-import { type Action, type Proof, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, proofOf, landed, personRow, plainJobRow, plainRunId, stripImageNotes, claimAlive, changesSomething, runningRun, jobQueued, queuedPrompt, closeRun, heldTurns } from "../src/engine.ts";
+import { type Action, type Proof, ANSWER_ROW_WAITS, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, proofOf, landed, personRow, plainJobRow, plainRunId, stripImageNotes, claimAlive, changesSomething, runningRun, jobQueued, queuedPrompt, closeRun, heldTurns } from "../src/engine.ts";
 import { jobCounts, listedJob, runHistory } from "../src/job-status.ts";
 import { runEnd } from "../src/settle.ts";
 import type { RunRecord } from "../src/store.ts";
@@ -2631,4 +2631,57 @@ test("[T2-ran] a slot appended again after its row ran and left is proved by the
 	// An archive imported as another conversation keeps the job's id, so the same slot id is queued there: the run in the first conversation does not prove it.
 	assert.equal(proved([record({ sessionId: "s" })]), true, "a held turn of this conversation proves it");
 	assert.equal(proved([record({ sessionId: "another-conversation" })]), false, "a run in another conversation does not");
+});
+
+/** An `ans-` row of a yes and a `no-` row of a no, as src/ask.ts writes them. */
+const ANS = `ans-${"a".repeat(32)}`;
+const NO = `no-${"b".repeat(32)}`;
+const answerOf = (over: Partial<UnclaimedRow> = {}): UnclaimedRow => row(ANS, { source: "answer", mode: "unattended", wake: "turn", payload: { text: `[Trigger ${ANS}] go`, cwd: "/p", finding: `inb-${"a".repeat(32)}` }, ...over });
+const noOf = (): UnclaimedRow => row(NO, { source: "answer", mode: "none", wake: "append", payload: { text: `[Trigger ${NO}] A person said no`, cwd: "/p", finding: `inb-${"b".repeat(32)}` } });
+const claimOf = (r: UnclaimedRow): ClaimedRow => ({ ...r, run: { id: r.id, pid: 7, started_at: "2026-06-01T11:59:00Z", procStart: "p7" } } as ClaimedRow);
+
+test("decideDrain: an ans- row waits and nothing else, whatever would apply to another row; it never holds a lane unclaimed", () => {
+	const answers = [answerOf(), answerOf({ attempts: DEAD_AFTER_ATTEMPTS }), answerOf({ mode: "attended" }), answerOf({ not_before: new Date(T0 - 1).toISOString() }), answerOf({ payload: undefined })];
+	for (const lane of ["conversation", "loop", "check"] as const) for (const ans of answers) {
+		assert.deepEqual(decideDrain(lane, [ans], none, jobs, view(), T0), [{ do: "wait", row: ans, why: ANSWER_ROW_WAITS }], `${lane}: never handed to pi, never dead, never refused`);
+		assert.deepEqual(decideDrain(lane, [ans], { ...none, has: () => true }, jobs, view(), T0), [{ do: "wait", row: ans, why: ANSWER_ROW_WAITS }], `${lane}: a mark proves nothing of it`);
+	}
+	const turn = row("z", { wake: "turn", source: "cron:j", mode: "unattended" });
+	assert.deepEqual(decideDrain("loop", [answerOf(), turn], none, jobs, view(), T0), [{ do: "wait", row: answerOf(), why: ANSWER_ROW_WAITS }, { do: "turn", row: turn }], "a slot's turn starts beside an answer that has not started");
+});
+
+test("decideDrain: a live claim on an ans- row holds its lane, a dead one is never closed here", () => {
+	const claimed = claimOf(answerOf());
+	const turn = row("z", { wake: "turn", source: "cron:j", mode: "unattended" });
+	assert.deepEqual(decideDrain("loop", [claimed, turn], none, jobs, view({ claimLive: () => true }), T0), [
+		{ do: "wait", row: claimed, why: ANSWER_ROW_WAITS },
+		{ do: "wait", row: turn, why: "pi is busy" },
+	], "no slot's turn starts beside a live answer run");
+	assert.deepEqual(decideDrain("loop", [claimed, turn], none, jobs, view({ claimLive: () => false }), T0), [
+		{ do: "wait", row: claimed, why: ANSWER_ROW_WAITS },
+		{ do: "turn", row: turn },
+	], "a dead claim is the answer protocol's (F1): no close, and the lane is free");
+});
+
+test("decideDrain: a cancel that names an ans- row finds no target and leaves as stale; a no- row is an ordinary append row", () => {
+	const ans = answerOf();
+	const cancel = row("c1", { kind: "cancel", source: "person", target: { id: ANS } });
+	assert.deepEqual(decideDrain("conversation", [ans, cancel], none, jobs, view(), T0), [
+		{ do: "exit", row: cancel, exit: "stale" },
+		{ do: "wait", row: ans, why: ANSWER_ROW_WAITS },
+	]);
+	const no = noOf();
+	assert.deepEqual(decideDrain("conversation", [no], none, jobs, view({ idle: false }), T0), [{ do: "append", row: no, wakeAgent: true }]);
+	const cancelNo = row("c2", { kind: "cancel", source: "person", target: { id: NO } });
+	assert.deepEqual(decideDrain("conversation", [no, cancelNo], none, jobs, view(), T0), [{ do: "exit", row: no, exit: "cancelled" }, { do: "exit", row: cancelNo, exit: "delivered" }], "a no- row is cancelled as any queued row is");
+});
+
+test("bury leaves an ans- row for the answer protocol and drops a no- row as stale, with no finding", async () => {
+	const { store, sinks, inbox, audit } = world();
+	store.append(answerOf({ lane: "s" }));
+	store.append(noOf());
+	assert.deepEqual(await bury("s", store, sinks, "its conversation is gone"), [NO]);
+	assert.deepEqual(store.list("s").map((r) => r.id), [ANS], "the yes stays: its finding holds the answer");
+	assert.deepEqual(inbox.listNew(), [], "neither is a dead letter");
+	assert.equal(audit.listAudit(1, (r) => r.type === "request" && r.traceId === NO)[0]?.state, "stale");
 });

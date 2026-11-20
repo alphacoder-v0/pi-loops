@@ -71,6 +71,14 @@ test("[Q1] judgeCall: each reason nobody is asked", () => {
 	assert.equal(why(bash(PUSH), turn({ open: new Map([["a", "1"], ["b", "2"], ["c", "3"], ["d", "4"]]) })), "lane-cap");
 });
 
+test("[Q1] [not-as-written] a command the card would not show as itself is not asked about: a newline, a carriage return, a tab, a run of spaces", () => {
+	for (const command of [`echo checking status\n${PUSH}`, `echo checking status\r${PUSH}`, `echo checking\t&& ${PUSH}`, `echo checking  && ${PUSH}`, `echo checking\u00a0&& ${PUSH}`, `echo checking\u2028${PUSH}`]) {
+		const v = judgeCall(bash(command), turn(), cfg);
+		assert.deepEqual(v.kind === "refuse" ? v.whyNot : v, { why: "not-as-written" }, JSON.stringify(command));
+	}
+	assert.equal(judgeCall(bash(`echo checking && ${PUSH}`), turn(), cfg).kind, "question", "one space between words is shown as written");
+});
+
 test("guardTurn: one lane's new questions and the nos of the last 14 days, and the grant until it is used", () => {
 	const ask = (id: string, lane: string, command: string) => ({ kind: "call", id, lane, session_file: "/s.jsonl", title: "t", call: callOf(command, "r"), created_at: "2026-11-01T00:00:00.000Z" });
 	const finding = (over: Partial<Finding>): Finding => ({ id: "inb-x", created_at: "2026-11-01T00:00:00.000Z", status: "new", kind: "checkpoint", source: "s", run_id: "r", cwd: "/proj", text: "t", verified: null, dismiss_reason: null, ...over }) as Finding;

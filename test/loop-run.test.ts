@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { test } from "node:test";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { answerCap } from "../src/ask.ts";
+import { GuardSeats } from "../src/guard.ts";
+import type { SubagentRequest } from "../src/runner.ts";
+import { createInProcessRunner } from "../src/sdk-runner.ts";
 import { openStores } from "../src/stores.ts";
 import { closeLoopRun, closeSteps, ensureRecord, runLoop, stoppedTogether, aloneIn } from "../src/loop-run.ts";
 import type { LoopRunDeps, ProcessStop, RunRecordM4b } from "../src/loop-run.ts";
@@ -179,4 +187,96 @@ test("[kept-last-fired] a loop's fired stamp is its claim start, including cron-
 	await closeLoopRun(claim, f.deps, now, record);
 	assert.equal(f.stores.book().clock.jobs[job.id].fired, startedAt);
 	assert.equal("lastFiredAt" in f.stores.jobs.load()[0], false, "the definition holds no cursor");
+});
+
+const FAKE_MODEL = path.join(path.dirname(new URL(import.meta.url).pathname), "downstream", "fake-model.mjs");
+const PUSH = "git push --force origin main";
+
+/** The real runner with the guard's seats over `inbox`, against the stand-in model, which asks for `PUSH` on a prompt with PROMPT-ONE. */
+async function standIn(dir: string, reply: string, inbox: Pick<ReturnType<typeof openStores>["inbox"], "list" | "fileOnce">) {
+	const portFile = path.join(dir, "port");
+	const modelLog = path.join(dir, "model.jsonl");
+	const fake = spawn(process.execPath, [FAKE_MODEL, portFile], { env: { ...process.env, FAKE_MODEL_REPLY: reply, FAKE_MODEL_LOG: modelLog, FAKE_MODEL_TOOL_SCRIPT: JSON.stringify([{ match: "PROMPT-ONE", tool: "bash", args: { command: PUSH } }]) }, stdio: "ignore" });
+	for (let i = 0; i < 200 && !(fs.existsSync(portFile) && fs.readFileSync(portFile, "utf8").trim()); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+	const agentDir = path.join(dir, "agent");
+	fs.mkdirSync(agentDir, { recursive: true });
+	fs.writeFileSync(path.join(agentDir, "models.json"), JSON.stringify({ providers: { fake: { baseUrl: `http://127.0.0.1:${fs.readFileSync(portFile, "utf8").trim()}/v1`, api: "openai-completions", apiKey: "fake", models: [{ id: "fake-model" }] } } }));
+	const modelRuntime = await ModelRuntime.create({ authPath: path.join(agentDir, "auth.json"), modelsPath: path.join(agentDir, "models.json") });
+	const model = modelRuntime.getModel("fake", "fake-model");
+	assert.ok(model, "the stand-in model is registered");
+	const real = createInProcessRunner({
+		agentDir,
+		parentFlags: { extensionPaths: [], skillPaths: [], promptTemplatePaths: [], appendSystemPrompt: [], noSkills: true, noExtensions: false, noContextFiles: true, noPromptTemplates: true },
+		getParentModel: () => model,
+		getParentModelRuntime: () => modelRuntime,
+		getParentThinking: () => undefined,
+		customTools: () => [],
+		isTrusted: () => false,
+		ownDir: tmp("pi-loops-own-"),
+		guard: { seats: new GuardSeats(), deps: { inbox, allowCommands: () => [], hop: 1, now: Date.now } },
+	});
+	return { real, modelLog, fake };
+}
+
+test("[guard-seated] a loop run whose model asks for a dangerous command files one question in its lane through the seated guard; the checker's run files none; the next run is told under [asked]", { timeout: 60_000 }, async () => {
+	const { dir, stores, deps, createdBy } = setup();
+	const cwd = path.join(dir, "proj");
+	fs.mkdirSync(cwd, { recursive: true });
+	const { real, modelLog, fake } = await standIn(dir, "<inbox>main is behind</inbox><loop-state>seen</loop-state>", stores.inbox);
+	try {
+		const requests: SubagentRequest[] = [];
+		const job = makeJob({ cwd, prompt: "PROMPT-ONE push what is ready", verify: true, name: "nightly" });
+		await stores.jobs.add(job);
+		const loopDeps: LoopRunDeps = { ...deps, runner: (req) => (requests.push(req), real(req)), session: () => ({ sessionId: "s1", cwd }) };
+		const run = async (id: string): Promise<void> => {
+			const row: UnclaimedRow = { v: 3, id, lane: `@${job.id}`, kind: "input", source: `cron:${job.id}`, mode: "unattended", wake: "turn", payload: { text: "x", cwd }, created_at: stamp(now), created_by: createdBy, attempts: 0 };
+			stores.requests.append(row);
+			const claimed = deps.runs.claim(stores.requests, row, deps.holder(), { jobId: job.id, label: "nightly", promptPreview: "x", ctrl: new AbortController() }, now)!;
+			await runLoop(claimed, job, loopDeps);
+		};
+		await run("run-00000000000000000000000000000001");
+
+		assert.deepEqual(requests.map((req) => [req.kind, req.guard?.lane]), [["loop", `@${job.id}`], ["checker", undefined]], "the loop's request has a seat in its lane; the checker's has none");
+		assert.deepEqual(requests[0].guard?.cap, answerCap(job, undefined), "the cap is the job's as jobs.json has it");
+		assert.deepEqual(requests[0].guard?.origin, { source: "cron:nightly", run_id: "run-00000000000000000000000000000001", cwd, job_id: job.id, who: "nightly" });
+		const questions = stores.inbox.list().filter((f) => f.ask);
+		assert.equal(questions.length, 1, "one question: the checker's blocked call files none");
+		assert.equal(questions[0].ask?.lane, `@${job.id}`);
+		assert.equal(questions[0].ask?.call.command, PUSH);
+		assert.equal(questions[0].lane, `@${job.id}`);
+		assert.match(questions[0].text, /^Run `git push --force origin main`\? \(.+\) · waits: nightly went on without it · if not: it stays undone$/);
+		const toolResults = fs.readFileSync(modelLog, "utf8").trim().split("\n").map((line) => JSON.parse(line)).flatMap((body) => body.messages.filter((m: any) => m.role === "tool").map((m: any) => String(m.content)));
+		assert.ok(toolResults.some((text) => text.startsWith("asked a person: ")), "the loop's model is told a person was asked");
+		assert.ok(toolResults.some((text) => text.includes("This run is unattended")), "the checker's model is refused as before, with nobody asked");
+
+		await run("run-00000000000000000000000000000002");
+		assert.match(requests[2].prompt, /\[asked\] \(questions of yours that wait for a person; do not ask them again\)\n- \d\d-\d\d run `git push --force origin main`\n\[\/asked\]/, "the next run is told what waits");
+		assert.equal(stores.inbox.list().filter((f) => f.ask).length, 1, "the same call asked again files no second question");
+	} finally {
+		fake.kill();
+	}
+});
+
+test("[seated-tools] a job's tools are the same seated as before; only a job that names both tools and builtinTools, which createLoopJob never writes, loses a built-in that builtinTools leaves out", { timeout: 60_000 }, async () => {
+	const { dir, stores } = setup();
+	const cwd = path.join(dir, "proj");
+	fs.mkdirSync(cwd, { recursive: true });
+	const { real, modelLog, fake } = await standIn(dir, "done", stores.inbox);
+	try {
+		const toolsSent = async (job: LoopJob, seated: boolean): Promise<string[]> => {
+			const before = fs.existsSync(modelLog) ? fs.readFileSync(modelLog, "utf8").trim().split("\n").length : 0;
+			const guard = seated ? { lane: `@${job.id}` as const, origin: { source: "cron:x", run_id: "r", cwd, who: "x" }, cap: answerCap(job, undefined) } : undefined;
+			await real({ cwd, prompt: "list nothing", tools: job.tools, builtinTools: job.builtinTools, timeoutMs: 20_000, hop: 1, kind: "loop", ...(guard ? { guard } : {}) });
+			const body = JSON.parse(fs.readFileSync(modelLog, "utf8").trim().split("\n")[before]);
+			return (body.tools ?? []).map((t: any) => t.function?.name).sort();
+		};
+		for (const job of [makeJob({ cwd }), makeJob({ cwd, builtinTools: ["read"] }), makeJob({ cwd, tools: ["bash", "read"] })]) {
+			assert.deepEqual(await toolsSent(job, true), await toolsSent(job, false), `the same tools seated: ${JSON.stringify({ tools: job.tools, builtinTools: job.builtinTools })}`);
+		}
+		const both = makeJob({ cwd, tools: ["bash", "read"], builtinTools: ["read"] });
+		assert.deepEqual(await toolsSent(both, false), ["bash", "read"], "before: builtinTools beside tools was not read");
+		assert.deepEqual(await toolsSent(both, true), ["read"], "seated: bash, which builtinTools leaves out, is gone");
+	} finally {
+		fake.kill();
+	}
 });

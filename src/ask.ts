@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 import { backoffFor, DEAD_AFTER_ATTEMPTS } from "./backoff.ts";
 import type { InboxEntry as Finding, InboxStatus, NewFinding } from "./inbox.ts";
 import { findingId } from "./inbox.ts";
+import { cardText } from "./redact.ts";
 import type { ConversationId, LaneId } from "./lane.ts";
 import { loopLane, parseLane } from "./lane.ts";
 import { capChars, findingKind, INBOX_TEXT_MAX_CHARS } from "./protocol.ts";
@@ -643,12 +644,17 @@ export function answerPrompt(finding: Finding, rowId: string, now: number): stri
 	return `${first}\nThey ask you to investigate and address it.`;
 }
 
-/** The lines of `[asked]`: this lane's `new` questions, oldest first, as `- <MM-DD> run \`<command>\``. */
+/**
+ * The lines of `[asked]`: this lane's `new` questions, as `- <MM-DD> run \`<command>\``, the newest
+ * `ASKS_OPEN_PER_LANE`, oldest first. Each line is `cardText`: an inbox edited by hand or written by
+ * an older version cannot grow the block, break a line, or put a secret into the prompt.
+ */
 export function askedLines(findings: readonly Finding[], lane: LaneId): string[] {
 	return findings
 		.filter((f): f is Finding & { ask: Ask } => f.status === "new" && f.ask !== undefined && f.ask.lane === lane)
 		.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
-		.map((f) => `- ${f.created_at.slice(5, 10)} ${f.ask.call.command !== undefined ? `run \`${f.ask.call.command}\`` : `use ${f.ask.call.tool}`}`);
+		.slice(-ASKS_OPEN_PER_LANE)
+		.map((f) => cardText(`- ${f.created_at.slice(5, 10)} ${f.ask.call.command !== undefined ? `run \`${f.ask.call.command}\`` : `use ${f.ask.call.tool}`}`));
 }
 
 /**

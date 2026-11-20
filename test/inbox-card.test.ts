@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { type InboxEntry } from "../src/inbox.ts";
-import { DISMISS_CHIPS, cardLine, cardLines, cardOrigin, screenText, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, dismissTail, inboxCard, splitFinding } from "../src/inbox-card.ts";
+import { DISMISS_CHIPS, cardLine, cardLines, cardOrigin, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, dismissTail, inboxCard, splitFinding } from "../src/inbox-card.ts";
+import { screenText } from "../src/redact.ts";
 
 const entry = (over: Partial<InboxEntry>): InboxEntry => ({
 	id: "inb-3f2a9c1d00000000000000000000000a",

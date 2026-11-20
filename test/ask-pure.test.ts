@@ -38,6 +38,7 @@ import {
 	readAskFields,
 	repairRows,
 } from "../src/ask.ts";
+import { ASKS_OPEN_PER_LANE, askedLines } from "../src/ask.ts";
 import type { InboxEntry as Finding } from "../src/inbox.ts";
 import { BACKOFF_MS } from "../src/backoff.ts";
 import type { ClaimedRow, Row } from "../src/requests.ts";
@@ -447,4 +448,20 @@ test("[C1] [C3] [C4] [V2] [removed-job] [K1] [K2] PROTOCOL orders the writes of 
 	for (const [key, writes] of Object.entries(PROTOCOL)) {
 		for (const w of writes) if (w.write === "finding") assert.ok(w.lock === "inbox" || w.lock === "inbox+lane", `${key}: a rewrite of the inbox holds inbox.lock`);
 	}
+});
+
+test("[asked-lines] askedLines: at most ASKS_OPEN_PER_LANE lines, the newest, oldest first; each line screened, redacted and on one line", () => {
+	const question = (n: number, command: string): Finding => ({ id: `inb-${String(n).padStart(32, "0")}`, source: "cron:a", text: "t", created_at: `2026-11-${String(10 + n).padStart(2, "0")}T00:00:00.000Z`, status: "new", kind: "checkpoint", cwd: "/p", ask: { kind: "call", id: `ask-${n}`, lane: LOOP, session_file: "/s.jsonl", title: "t", call: { tool: "bash", tool_call_id: `c${n}`, command, input_sha256: "h", reason: "r" }, created_at: `2026-11-${String(10 + n).padStart(2, "0")}T00:00:00.000Z` } } as unknown as Finding);
+	const token = `ghp_${"a".repeat(36)}`;
+	const findings = [1, 2, 3].map((n) => question(n, `git push --force origin b${n}`)).concat([
+		question(4, `echo hi\ngit push --force origin main`),
+		question(5, `GITHUB_TOKEN=${token} git push --force origin main`),
+		question(6, `git push --force origin main\u001b[2K`),
+	]);
+	const lines = askedLines(findings, LOOP);
+	assert.equal(lines.length, ASKS_OPEN_PER_LANE, "a hand-edited inbox cannot grow the block");
+	assert.deepEqual(lines.map((line) => line.slice(0, 7)), ["- 11-13", "- 11-14", "- 11-15", "- 11-16"], "the newest, oldest first");
+	assert.equal(lines[1], "- 11-14 run `echo hi git push --force origin main`", "on one line");
+	assert.ok(!lines[2].includes(token), "a secret never reaches the prompt");
+	assert.equal(lines[3], "- 11-16 run `git push --force origin main`", "no terminal escape");
 });

@@ -760,6 +760,35 @@ test("every matched rule's result is one inbox finding, whatever promote_to_chat
 	}
 });
 
+test("[guard-seated] a check runs with a seat in its project's check lane; its result's finding records the check's transcript, which pruning keeps", async () => {
+	const dir = tmp("pi-loops-trt-seat-");
+	const inbox = new Inbox(dir);
+	const runner = fakeRunner();
+	const jobs = new JobStore(dir);
+	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: jobs, getSession: () => ({ sessionId: "s", cwd: dir }), runner, inbox });
+	try {
+		const rule = await rt.store.add({ condition: "~/build.done appears", action: "print it", cwd: dir, sessionId: "creator", fireOnce: false });
+		process.env.FAKE_PI_REPLY = `matched ${rule.id}. it is there`;
+		const out = await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
+		const lane = checkLane(dir)!;
+		assert.deepEqual(runner.calls[0].guard, { lane, origin: { source: "trigger:local:dynamic", run_id: out!.trigger.traceId, cwd: dir, who: `the check of ${path.basename(dir)}` }, cap: { cwd: dir, timeout_ms: runner.calls[0].timeoutMs } });
+		const [finding] = inbox.list();
+		assert.ok(out!.sessionFile, "the check wrote a transcript");
+		assert.equal(finding.transcript, out!.sessionFile, "the finding points at it");
+
+		// Older than the newest TRIGGER_SESSIONS_KEPT: kept only because the finding pins it.
+		const sessions = jobs.sessionDirFor(triggerSessionKey(dir));
+		fs.utimesSync(out!.sessionFile!, 1, 1);
+		for (let i = 0; i < TRIGGER_SESSIONS_KEPT; i++) fs.writeFileSync(path.join(sessions, `newer-${i}.jsonl`), "{}\n");
+		process.env.FAKE_PI_REPLY = "no dynamic trigger matched";
+		await rt.handle(buildPeriodicCheckTrigger(dir, 2), "sub_agent");
+		assert.ok(fs.existsSync(out!.sessionFile!), "a transcript a finding points at is not pruned");
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		await rt.stop();
+	}
+});
+
 test("the audit's matched ids are this project's rules the check named; any other id it wrote is kept apart", async () => {
 	const dir = tmp("pi-loops-trt-named-");
 	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner() });
@@ -972,6 +1001,16 @@ test("the next look the page shows is the last look plus the poll interval, and 
 	rt.pollIntervalSecs = 600;
 	assert.equal(rt.ruleLook(rule.id)!.nextAt - look.nextAt, 600_000 - 30_000, "600 s after the look");
 	assert.equal(rt.ruleLook("dyn-none"), undefined);
+});
+
+test("[check-lane-symlink] a project reached through a symlink has one check lane, named for the real directory", () => {
+	const root = fs.realpathSync(tmp("pi-loops-lane-link-"));
+	const real = path.join(root, "proj");
+	const link = path.join(root, "link");
+	fs.mkdirSync(real);
+	fs.symlinkSync(real, link);
+	assert.equal(checkLane(link), checkLane(real));
+	assert.match(checkLane(link)!, /^@check-proj-[0-9a-f]{8}$/);
 });
 
 test("a project's check lane is @check-, its directory's name and a digest of its path; two projects named alike have two lanes, and no project has none", () => {

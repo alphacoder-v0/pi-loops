@@ -34,6 +34,13 @@ test("[status-streak] Failure streak passes over interrupted runs and ends at su
 	assert.equal(runHistory([record({ error: "bad" }), record({ ok: true })]).get("cron-job")?.streak, 0);
 });
 
+test("[status-answer] An answer's run is not a run of the schedule: ordinal, streak, interrupted runs and spent slots are as they were.", () => {
+	const before = [record({ runId: "1", error: "a", ordinal: 4 }), record({ runId: "2", interrupted: true })];
+	const answers = [record({ runId: "ans-ok", ok: true, ordinal: 9, cause: "answer" }), record({ runId: "ans-fail", error: "b", ordinal: 10, cause: "answer" }), record({ runId: "ans-cut", interrupted: true, cause: "answer" })];
+	assert.deepEqual(runHistory([...before, ...answers]).get("cron-job"), runHistory(before).get("cron-job"));
+	assert.equal(runHistory(answers).get("cron-job"), undefined, "a loop with only answers has no run history");
+});
+
 test("[status-disabled] Main's five disabled reasons map to codes, and disabled jobs have no next slot.", () => {
 	const v2 = { ...job(), enabled: false, runCount: 2, skippedOverlap: 0, lastError: "disabled: cwd /gone", lastFiredAt: at } as LoopJob;
 	const converted = fromV2(v2);

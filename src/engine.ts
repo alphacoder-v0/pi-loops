@@ -14,6 +14,7 @@
  */
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
+import { isAnswerRow } from "./ask.ts";
 import { type Inbox, findingId, UNDER_INBOX_LOCK } from "./inbox.ts";
 import { type ConversationId, type Lane, type LaneId, parseLane } from "./lane.ts";
 import { redact } from "./redact.ts";
@@ -1043,6 +1044,12 @@ function holdsLane(row: Row, view: ExecutorView, own: readonly Action[]): boolea
 }
 
 /**
+ * Why an `ans-` row waits in every drain: `decideDrain` never hands it to pi, counts no attempt on
+ * it and never closes it. The answer lanes run it, and its claim holds the lane while its run goes.
+ */
+export const ANSWER_ROW_WAITS = "an answer: it runs outside this drain";
+
+/**
  * Pure. `lane` is the kind of the lane the rows are in. Stops and cancels first, idle or busy; then
  * every input is classified with no regard to whether the lane is free; then the lane is taken, from
  * all the rows; then the rows that could start are started, in order. So where a row sorts does not
@@ -1062,7 +1069,8 @@ function holdsLane(row: Row, view: ExecutorView, own: readonly Action[]): boolea
 export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Proof, jobs: JobsView, view: ExecutorView, now: number, opts: DrainOptions = {}): Action[] {
 	const actions: Action[] = [];
 	// What a stop or a cancel can take out of the queue: an input no run has claimed.
-	const queued = new Map(rows.flatMap((row) => (row.kind === "input" && !row.run ? [[row.id, row] as const] : [])));
+	// An `ans-` row is not one: a cancel of an answer is the answer protocol's, so it finds no target here.
+	const queued = new Map(rows.flatMap((row) => (row.kind === "input" && !row.run && !isAnswerRow(row) ? [[row.id, row] as const] : [])));
 	const inputs = queueOrder(rows);
 	const cancelled = new Set<string>();
 	for (const row of rows) {
@@ -1254,7 +1262,10 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 		return { actions, holding: false, ready: row };
 	};
 
-	const sorted = inputs.filter((row) => !cancelled.has(row.id)).map((row) => (row.run ? claimed(row) : unclaimed(row)));
+	/** An `ans-` row, before every other rule: it waits, and a live claim on it holds the lane. */
+	const answer = (row: Row): Sorted => ({ actions: [{ do: "wait", row, why: ANSWER_ROW_WAITS }], holding: row.run !== undefined && view.claimLive(row) });
+
+	const sorted = inputs.filter((row) => !cancelled.has(row.id)).map((row) => (isAnswerRow(row) ? answer(row) : row.run ? claimed(row) : unclaimed(row)));
 	// The lane is taken from all the rows, before any of them is started.
 	const taken = sorted.some((s) => s.holding);
 	let busy = !view.idle;
@@ -1603,7 +1614,9 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 export async function bury(sessionId: ConversationId, store: RequestStore, sinks: EngineSinks, why: string): Promise<string[]> {
 	const ids: string[] = [];
 	for (const row of store.list(sessionId)) {
-		if (row.kind === "input" && row.source !== "person") await deadLetter(store, sinks, row, why);
+		// Left for the answer protocol's deleted-conversation case: the finding, not this row, holds the answer.
+		if (isAnswerRow(row)) continue;
+		if (row.kind === "input" && row.source !== "person" && row.source !== "answer") await deadLetter(store, sinks, row, why);
 		else {
 			sinks.audit.appendAudit({ cwd: "", type: "request", traceId: row.id, state: AUDIT_STATE.stale, sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, kind: row.kind, reason: why } });
 			store.remove(sessionId, [row.id]);
