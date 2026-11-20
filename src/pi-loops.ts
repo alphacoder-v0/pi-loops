@@ -1222,7 +1222,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		"/cron snapshot                 what only this process knows — connected MCP servers and their tools, whether pi-loops runs — written into the session, for a front end that is not a terminal",
 		"/cron gc                       remove plain jobs whose session was deleted (they are parked as disabled first)",
 		"/cron cost [today|7d|all]      what automation has cost, by job, and today's budget if one is set",
-		"/cron clear <n|id|name>        clear a stuck `running` marker left by a process that is gone",
+		"/cron clear <n|id|name>        nothing to clear: a run's claim closes when its process is gone",
 		"/cron remove <ref> [--purge]   remove a job; its loop state is kept unless --purge",
 		"/cron disable --all            pause every job in this project (--all-projects for the machine); /cron enable --all resumes",
 		"/inbox                         triage findings from stateful jobs (/inbox help)",

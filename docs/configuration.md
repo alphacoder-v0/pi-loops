@@ -11,6 +11,8 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `ui.json` | preferences that outlive a session: `panel` (written by `/cron panel on\|off`); `model` / `thinking` — the last ones you chose in the browser page, applied to the next session that does not say otherwise; `host` (`"stopped"` after a manual stop); `launcher` (`"declined"` after `uninstall-launcher`, so the launcher is not written again; `"failed"`, with `launcherFailedIn`, the directory a write failed in, so it is retried only when that changes); `heldJobsNotice` (the one-time notice about plain jobs of closed conversations); `lastPage` (the conversation `GET /` opens) |
 | `jobs.json`, `triggers.json` | cron jobs and trigger rules (machine-global, each with a `cwd`) |
 | `jobs.json.bak` | the last `jobs.json` that read cleanly, kept so a damaged store can be restored |
+| `clock.json` | each job's cursor: the slot it last fired or owes, when it last ran, how many runs, skipped overlaps |
+| `jobs.json.v2.bak` | the `jobs.json` that 0.24.2 or earlier left, kept by the start that converted it to version 3 |
 | `state/<id>.md` | loop notes; plain Markdown, editable |
 | `inbox.jsonl` | the inbox (past 1 MB the oldest triaged findings are dropped; nothing still new) |
 | `runs.jsonl`, `triggers-audit.jsonl` | run log (halved past 1 MB) and trigger audit (2 MB) |

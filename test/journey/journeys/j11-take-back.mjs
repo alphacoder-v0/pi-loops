@@ -39,8 +39,8 @@ export async function run(ctx) {
 
 	// 2. A plain job of that conversation whose slot is due. Written as a person's `/cron add` leaves it.
 	const jobsFile = path.join(loops, "jobs.json");
-	const store = fs.existsSync(jobsFile) ? JSON.parse(fs.readFileSync(jobsFile, "utf8")) : { version: 2, jobs: [] };
-	store.jobs.push({ id: JOB, name: "build-watch", schedule: { kind: "every", ms: 60 * 60_000 }, stateful: false, sessionId: session, prompt: PROMPT, cwd: ctx.boot.project, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 61 * 60_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+	const store = fs.existsSync(jobsFile) ? JSON.parse(fs.readFileSync(jobsFile, "utf8")) : { version: 3, jobs: [] };
+	store.jobs.push({ id: JOB, name: "build-watch", schedule: { kind: "every", ms: 60 * 60_000 }, stateful: false, sessionId: session, prompt: PROMPT, cwd: ctx.boot.project, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 61 * 60_000).toISOString() });
 	fs.writeFileSync(`${jobsFile}.journey`, JSON.stringify(store));
 	fs.renameSync(`${jobsFile}.journey`, jobsFile);
 
@@ -93,8 +93,9 @@ export async function run(ctx) {
 	const followsSuccessor = (e) => { for (let at = e.id; at; at = parents.get(at)) if (at === all[second].id) return true; return false; };
 	const late = all.slice(first + 1).filter((e) => (e.message.role === "assistant" || e.message.role === "toolResult") && !followsSuccessor(e) && Date.parse(e.timestamp ?? "") >= took).map((e) => `${e.message.role}${e.message.stopReason ? `(${e.message.stopReason})` : ""}: ${text(e).slice(0, 60)}`);
 	if (late.length > 2 || late.some((line) => !/^(toolResult|assistant\(error\)|assistant\(aborted\))/.test(line))) throw new Error(`the background wrote more than the end of an aborted turn after the take-back: ${JSON.stringify(late)}`);
-	const job = JSON.parse(fs.readFileSync(jobsFile, "utf8")).jobs.find((j) => j.id === JOB);
-	if (job?.runCount !== 1 || job.consecutiveFailures) throw new Error(`the slot was counted twice, or the hand-back counted as a failure: ${JSON.stringify(job)}`);
+	const job = JSON.parse(fs.readFileSync(path.join(loops, "clock.json"), "utf8")).jobs[JOB];
+	const failed = runs().filter((r) => r.ok === false && !r.aborted && !r.interrupted);
+	if (job?.runs !== 1 || failed.length) throw new Error(`the slot was counted twice, or the hand-back counted as a failure: ${JSON.stringify({ cursor: job, failed })}`);
 
 	const evidence = path.join(ctx.dir, "take-back.txt");
 	fs.writeFileSync(evidence, [`status while the turn ran:\n${status.stdout}${status.stderr}`, `claim ${JSON.stringify(claimed.run)}`, `record ${JSON.stringify(record)}`, `prompts in the conversation, by id: ${JSON.stringify(again)}`, `what the background wrote into the conversation after the take-back (${late.length}): ${JSON.stringify(late)}`, `job ${JSON.stringify(job)}`, `terminal:\n${said}`].join("\n\n"));

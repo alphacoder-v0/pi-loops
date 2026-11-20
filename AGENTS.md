@@ -40,7 +40,7 @@ src/ts-entry.mjs            how an .mjs entry point imports this package's .ts: 
 the pipelines
 src/backoff.ts              the one table of waits after a failure: a row, a loop, a rule check
 src/job-status.ts           what a list shows for one job, folded from its clock, rows and run history; `listedJob`, a loop's run, failures and last error as every list reads them
-src/clock.ts                the schedule cursor, pure tick decisions and their compare-and-set writes
+src/clock.ts                the schedule cursor in clock.json, pure tick decisions and their compare-and-set writes
 src/settle.ts               how a plain job's turn ends, as one table: what becomes of its row and of its job, for each way a run ends
 src/loop-run.ts              one loop run, its stop record, and its ordered closing writes
 src/ticker.ts               one process timer and its typed, ordered riders
@@ -103,11 +103,11 @@ src/pi-resolver.mjs         where that hook looks for them
 
 storage
 src/lane.ts                 a lane's id and its one grammar: a conversation's session id, `@cron-…` for a loop, `@check-…` for a project's checks; the file name it gives
-src/store.ts                jobs.json, state/, runs.jsonl, sessions/
+src/store.ts                jobs.json (version 3: definitions only), state/, runs.jsonl, sessions/
 src/inbox.ts                inbox.jsonl
 src/archive.ts              .pisession export/import
 src/lock.ts                 the mkdir lock, atomic writes, is-that-pid-alive
-src/convert-v2.ts           what older versions left in the loops directory, removed at every start; the only module that names it
+src/convert-v2.ts           what older versions left in the loops directory, at every start: a version 2 jobs.json converted to version 3 (cursors to clock.json, owed slots to rows), retired files removed; the only module that names version 2
 src/paths.ts                realpathish: the deepest existing ancestor's realpath, so a path that is not there yet resolves as its parent does
 src/snapshot.ts             the pi_loops_snapshot fingerprint, and when a new entry is worth writing
 src/config.ts               config.toml and the environment overrides
@@ -132,7 +132,7 @@ skills/pi-loops/            when the agent should reach for cron_create, new_tri
 recipes/<name>/             a recipe: recipe.toml, the playbooks its jobs read, an optional setup script; _tracker-setup.md and _tracker/ are the prompt and templates the wizard hands to the session
 examples/                   a dependency-free MCP push server, and an mcp.toml to point at it
 test/                       node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
-test/downstream/            the contract in docs/downstream.md checked from the outside: sh + jq driving `pi-loops`, a loop run in the background against fake-model.mjs, no import of src/
+test/downstream/            the contract in docs/downstream.md checked from the outside: sh + jq driving `pi-loops`, a loop run in the background against fake-model.mjs, no import of src/; upgrade.sh starts a directory 0.24.2 left
 test/journey/               the journeys J1-J12 (`npm run journey -- J1 …`), `boot.mjs` and `terminal.mjs`, a sandboxed page with a stand-in model
 test/sim/                   the seeded simulation of the request engine that test/sim.test.ts runs: world.ts (the real engine and stores around a simulated pi, lease, clock and crashes, and what that leaves out), schedule.ts (the steps a seed draws), invariants.ts (what is checked after every step), prng.ts; claims.ts (a lane the background runs: rows a run claims, runs that end in every way, a process that dies at any write), which test/sim-claims.test.ts runs; held.ts (a held turn in a closed conversation: the real closing and settle table around a simulated runner, a window that takes the conversation, a process that dies at any write), which test/sim-held.test.ts runs; clock.ts (interleaved ticker decisions and T2/T3 writes, crashes, row proofs and loop settlement; checks I1: one row per job and slot), which test/sim-clock.test.ts runs
 test/tmp.ts                 every test's temporary directory: removed when the test passes, kept and named when it fails (PI_LOOPS_KEEP_TMP=1 keeps all), strays it started ended

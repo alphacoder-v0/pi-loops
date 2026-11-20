@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { RETIRED_FILES, convertStores } from "../src/convert-v2.ts";
-import { JobStore } from "../src/store.ts";
+import { JobStore, JobsNotConverted } from "../src/store.ts";
 import { RequestStore } from "../src/requests.ts";
 
 /** A loops directory as an older version left it: the retired files, and files that stay. */
@@ -168,6 +168,18 @@ test("[convert-live] A run marker whose process lives gets no row and one line: 
 	assert.equal(new RequestStore(dir).list("@cron-live").length, 0);
 	assert.ok(said.some((line) => /cron-live: an older pi-loops process still runs it; its record will come/.test(line)));
 	assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "jobs.json"), "utf8")).version, 3);
+});
+
+test("[convert-put-back] A version 2 file put back while pi-loops runs is read as definitions, and a write of it throws until the next start converts it.", async () => {
+	const dir = tmp("pi-loops-convert-");
+	writeV2(dir, [v2Loop(dir, { runCount: 5, lastError: "missed a slot" })]);
+	const store = new JobStore(dir);
+	assert.deepEqual(store.load().map((job) => [job.id, (job as any).runCount]), [["cron-convert", undefined]], "the definition, no counter");
+	const before = fs.readFileSync(path.join(dir, "jobs.json"), "utf8");
+	await assert.rejects(store.update("cron-convert", (job) => { job.name = "renamed"; }), (err: Error) => err instanceof JobsNotConverted && /version 2 was put back while pi-loops ran; restart pi-loops to convert it$/.test(err.message));
+	assert.equal(fs.readFileSync(path.join(dir, "jobs.json"), "utf8"), before, "nothing of it is lost before the start converts it");
+	convertStores(dir);
+	assert.equal((await store.update("cron-convert", (job) => { job.name = "renamed"; }))?.name, "renamed");
 });
 
 test("[convert-unreadable] A jobs.json that does not parse is left as it is, for the store to say what is wrong with it.", () => {

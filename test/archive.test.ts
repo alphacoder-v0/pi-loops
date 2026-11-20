@@ -315,6 +315,21 @@ test("parseActivateMode: the three words, and ask when nothing was said", () => 
 	assert.throws(() => parseActivateMode("maybe"), /off, ask or on/);
 });
 
+test("applyImport starts each imported job's cursor from the archive's run count and last fire, as 0.24.2's import showed them", async () => {
+	const dir = tmp("pi-loops-arc-carry-");
+	const sessionFile = fakeSession(dir);
+	const out = path.join(dir, "carry.pisession");
+	const job: any = { id: "cron-aaaaaaaa", name: "watch", schedule: { kind: "cron", expr: "0 9 * * *" }, stateful: true, prompt: "watch issues", cwd: dir, enabled: true, catchUp: true, createdAt: "t", runCount: 12, skippedOverlap: 0, lastFiredAt: "2026-09-08T09:00:00.000Z" };
+	exportV2({ sessionFile, cwd: dir, jobs: [job], rules: [], states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
+	const loops = path.join(dir, "loops");
+	fs.mkdirSync(loops);
+	const imp = importSession({ archivePath: out, sessionDir: path.join(dir, "sessions"), targetCwd: dir, activate: true, existingJobIds: new Set(), existingRuleIds: new Set() });
+	const clock = clockStore(loops);
+	await applyImport(imp, new JobStore(loops), new TriggerStore(loops), clock);
+	const entry = clock.read().jobs[imp.jobs[0].id];
+	assert.deepEqual([entry?.runs, entry?.fired], [12, "2026-09-08T09:00:00.000Z"]);
+});
+
 test("applyImport rolls back a half-written import: no job, no loop state, no orphan session", async () => {
 	const dir = tmp("pi-loops-rollback-");
 	const sessionFile = fakeSession(dir);

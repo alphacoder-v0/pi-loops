@@ -17,7 +17,6 @@ const jsonl = (file) => { try { return fs.readFileSync(file, "utf8").split("\n")
 
 export async function run(ctx) {
 	const loops = ctx.boot.loopsDir;
-	const jobs = () => { try { return JSON.parse(fs.readFileSync(path.join(loops, "jobs.json"), "utf8")).jobs; } catch { return []; /* being rewritten */ } };
 	// A loop's run is the claim on the row of its lane (src/requests.ts: one row per line).
 	const marker = (id) => { const run = jsonl(path.join(loops, "requests", `@${id}.jsonl`)).find((r) => r.run)?.run; return run ? { runId: run.id, startedAt: run.started_at } : undefined; };
 	const runs = (id) => jsonl(path.join(loops, "runs.jsonl")).filter((r) => r.jobId === id);
@@ -63,8 +62,8 @@ export async function run(ctx) {
 	// 4. Two ticks later nothing has run it again: the slot was spent, and the next run is on schedule.
 	await new Promise((resolve) => setTimeout(resolve, 65000));
 	if (marker(LOOP) || runs(LOOP).length !== 1) throw new Error(`the stopped loop ran again: ${JSON.stringify({ marker: marker(LOOP), runs: runs(LOOP) })}`);
-	const after = jobs().find((j) => j.id === LOOP);
-	if (!after?.lastFiredAt || after.runCount !== 0) throw new Error(`the slot was handed back or counted: ${JSON.stringify(after)}`);
+	const after = (() => { try { return JSON.parse(fs.readFileSync(path.join(loops, "clock.json"), "utf8")).jobs[LOOP]; } catch { return undefined; /* being rewritten */ } })();
+	if (!after?.fired || (after.runs ?? 0) !== 0) throw new Error(`the slot was handed back or counted: ${JSON.stringify(after)}`);
 	const evidence = path.join(ctx.dir, "stop.txt");
 	fs.writeFileSync(evidence, `clicked -> record ${tookMs}ms\nrecord ${JSON.stringify(record)}\nrows after two ticks ${runs(LOOP).length}\njob ${JSON.stringify(after)}\n`);
 	ctx.addEvidence(evidence);
