@@ -53,7 +53,7 @@ import type { Row, UnclaimedRow } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
-import { budgetState, listedJobs } from "./job-status.ts";
+import { budgetState, type ListedJob, listedJobs } from "./job-status.ts";
 import { runClockTick, decideRunNow } from "./clock.ts";
 import { openStores, removeJob } from "./stores.ts";
 import { Ticker, WINDOW_RIDERS, type Riders } from "./ticker.ts";
@@ -827,7 +827,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		try {
 			// A marker whose process is gone is not a run. A loop's run is the live claim on its row (`listedJob`).
 			const jobs = listedNow();
-			const marked = jobs.filter((j) => j.running && (!j.running.host || j.running.host === os.hostname()) && pidAlive(j.running.pid)).map((j) => ({ id: j.running!.runId, source: "Cron", event: j.id, label: j.name ?? j.id, startedAt: j.running!.startedAt, promptPreview: previewRedacted(j.prompt, 80), check: false, inHost: true }));
+			const marked = jobs.flatMap((j) => { const run = j.status.run; return run && (!run.host || run.host === os.hostname()) && pidAlive(run.pid) ? [{ job: j, run }] : []; }).map(({ job: j, run }) => ({ id: run.runId, source: "Cron", event: j.id, label: j.name ?? j.id, startedAt: run.startedAt, promptPreview: previewRedacted(j.prompt, 80), check: false, inHost: true }));
 			// A plain job's turn in a closed conversation has no marker: it is the claim on the job's row.
 			const held = heldTurns(jobs, (sessionId) => requests.list(sessionId)).map(({ jobId, run }) => {
 				const j = jobs.find((x) => x.id === jobId)!;
@@ -990,7 +990,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	/** Every job as the lists show it: a loop's run, failures and last error come from its rows and run log (src/job-status.ts `listedJob`). */
-	function listedNow(): LoopJob[] {
+	function listedNow(): ListedJob[] {
 		return listedJobs(stores);
 	}
 	/**
@@ -3376,7 +3376,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				afterHistory(ctx, () => ctx.ui.notify(`[cron] ${plural(pausedLoops, "loop")} and ${plural(myRules.length, "rule")} here are paused: ${pauseReason}`, "warning"));
 			} else if (ctx.hasUI && (myJobs.length || myRules.length)) {
 				const next = myJobs
-					.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, Date.now()))
+					.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.status.fired ? Date.parse(j.status.fired) : undefined }, Date.now()))
 					.filter((n): n is number => n !== undefined)
 					.sort((a, b) => a - b)[0];
 				const active = `[cron] ${plural(myJobs.length, "loop")} and ${plural(myRules.length, "rule")} active here${next ? ` · next ${formatLocal(next)}` : ""}${failing ? ` · ${failing} — /cron runs` : ""}`;

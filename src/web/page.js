@@ -1226,7 +1226,7 @@ function drawQueue() {
 // disk, not something this page gets to assume is well formed.
 const ESCAPES = { "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" };
 function esc(s) { return String(s ?? "").replace(/[<>&"']/g, (c) => ESCAPES[c]); }
-// A count out of a JSON file is a number only if the file says so: a runCount holding an img tag
+// A count out of a JSON file is a number only if the file says so: a run count holding an img tag
 // with an onerror handler is a perfectly valid file, and interpolating it raw reaches the DOM.
 function num(n) { return Number.isFinite(Number(n)) ? Number(n) : 0; }
 // And .slice() is a string method: a job whose lastError is a number, or which has no id at all,
@@ -1390,7 +1390,7 @@ function renderSidebar(s) {
       // in the body, rather than once and cut. A named loop's name says what it is, so no peek.
       const prompt = safeText(j.prompt);
       const named = typeof j.name === "string" && j.name !== "";
-      const fired = [j.lastFiredAt ? "last fired " + safeText(clock(j.lastFiredAt)) : "", j.skippedOverlap ? "skipped overlaps " + num(j.skippedOverlap) : ""].filter(Boolean).join(" · ");
+      const fired = [j.fired ? "last fired " + safeText(clock(j.fired)) : "", j.collapsed ? "skipped overlaps " + num(j.collapsed) : ""].filter(Boolean).join(" · ");
       html += '<details class="card job' + (j.enabled ? "" : " off") + '" data-key="job:' + safeText(j.id) + '">' +
         '<summary><span class="t"><span class="nm"><b>' + safeText(j.label || j.name || j.id) + "</b>" +
         '<span class="m">' + safeText(j.schedule) + (j.stateful ? "" : " · in its conversation") + (j.enabled ? "" : " · disabled") +

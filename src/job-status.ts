@@ -6,7 +6,7 @@ import type { JobClock } from "./clock.ts";
 import type { ClaimedRow, RequestStore, Row } from "./requests.ts";
 type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
 import { computeNext, formatLocal } from "./schedule.ts";
-import type { Disabled, JobStore, LoopJob, LoopJobV3, RunRecord } from "./store.ts";
+import type { Disabled, JobStore, LoopJob, LoopJobV3, RunningMarker, RunRecord } from "./store.ts";
 
 export interface BudgetState { readonly spent: number; readonly cap: number; readonly over: boolean }
 
@@ -177,8 +177,31 @@ export function loopWait(job: Pick<LoopJob, "cwd" | "cwdMissingSince">, facts: G
  *
  * A plain job is returned as it is: its turns still write these fields (until M4b.B).
  */
-export function listedJob(job: LoopJob, rows: readonly Row[], history: JobHistory | undefined, live: (row: ClaimedRow) => boolean = claimAlive): LoopJob {
-	if (!job.stateful) return job;
+/** What a list shows of a job beside its definition: its cursor, its run and its failures. */
+export interface ListedStatus {
+	/** The last slot the schedule fired or owes: main's `lastDueAt`. */
+	readonly due?: string;
+	/** When the last run started: main's `lastFiredAt`. */
+	readonly fired?: string;
+	/** When the last run that wrote its own record ended: main's `lastCompletedAt`. */
+	readonly completed?: string;
+	readonly runs: number;
+	/** Skipped overlaps, a lifetime count. */
+	readonly collapsed: number;
+	/** Failures in a row. */
+	readonly streak: number;
+	/** The one line a list shows after `last error:`. */
+	readonly error?: string;
+	/** The run going now. */
+	readonly run?: RunningMarker;
+}
+
+/** A job as every list shows it: the definition, and its status from its clock, its rows and its run log. */
+export type ListedJob = LoopJobV3 & { readonly status: ListedStatus };
+
+export function listedJob(job: LoopJob, rows: readonly Row[], history: JobHistory | undefined, live: (row: ClaimedRow) => boolean = claimAlive): ListedJob {
+	const definition = fromV2(job).job;
+	if (!job.stateful) return { ...definition, status: { ...(job.lastDueAt ? { due: job.lastDueAt } : {}), ...(job.lastFiredAt ? { fired: job.lastFiredAt } : {}), ...(job.lastCompletedAt ? { completed: job.lastCompletedAt } : {}), runs: job.runCount, collapsed: job.skippedOverlap, streak: job.consecutiveFailures ?? 0, ...(job.lastError ? { error: job.lastError } : {}), ...(job.running ? { run: job.running } : {}) } };
 	const mine = rows.filter((row) => row.kind === "input") as CountedRow[];
 	const claim = mine.find((row): row is ClaimedRow & CountedRow => row.run !== undefined && live(row as ClaimedRow));
 	const waiting = mine.filter((row) => !row.run).sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))[0];
@@ -205,26 +228,28 @@ export function listedJob(job: LoopJob, rows: readonly Row[], history: JobHistor
 		if (failed && !(note && job.lastDueAt && Date.parse(job.lastDueAt) > Date.parse(failed.at))) return oneShotRetry ? `${failed.error} (one-shot: retrying once)` : failed.error;
 		return note;
 	})();
-	const { running: _running, lastError: _lastError, lastCompletedAt: _lastCompletedAt, consecutiveFailures: _consecutiveFailures, lastDueAt: _lastDueAt, lastFiredAt: _lastFiredAt, ...rest } = job;
 	return {
-		...rest,
-		// An older version's marker is kept only while its pid is alive (src/convert-v2.ts): it is still a run.
-		...(claim ? { running: { runId: claim.run.id, pid: claim.run.pid, startedAt: claim.run.started_at } } : job.running ? { running: job.running } : {}),
-		...(lastDueAt === undefined ? {} : { lastDueAt }),
-		...(lastFiredAt === undefined ? {} : { lastFiredAt }),
-		...(history?.completed === undefined ? {} : { lastCompletedAt: history.completed }),
-		...(lastError === undefined ? {} : { lastError }),
-		...(history?.streak ? { consecutiveFailures: history.streak } : {}),
+		...definition,
+		status: {
+			...(lastDueAt === undefined ? {} : { due: lastDueAt }),
+			...(lastFiredAt === undefined ? {} : { fired: lastFiredAt }),
+			...(history?.completed === undefined ? {} : { completed: history.completed }),
+			runs: job.runCount,
+			collapsed: job.skippedOverlap,
+			streak: history?.streak ?? 0,
+			...(lastError === undefined ? {} : { error: lastError }),
+			// An older version's marker is kept only while its pid is alive (src/convert-v2.ts): it is still a run.
+			...(claim ? { run: { runId: claim.run.id, pid: claim.run.pid, startedAt: claim.run.started_at } } : job.running ? { run: job.running } : {}),
+		},
 	};
 }
 
 /** Every job of `jobs.json` as the lists show it (`listedJob`): one read of the jobs, of each loop's lane, and of the folded run log. */
-export function listedJobs(stores: { readonly jobs: Pick<JobStore, "load">; readonly requests: Pick<RequestStore, "list">; history(): ReadonlyMap<string, JobHistory> }, live?: (row: ClaimedRow) => boolean): LoopJob[] {
+export function listedJobs(stores: { readonly jobs: Pick<JobStore, "load">; readonly requests: Pick<RequestStore, "list">; history(): ReadonlyMap<string, JobHistory> }, live?: (row: ClaimedRow) => boolean): ListedJob[] {
 	const jobs = stores.jobs.load();
-	if (!jobs.some((job) => job.stateful)) return jobs;
-	const histories = stores.history();
+	const histories = jobs.some((job) => job.stateful) ? stores.history() : new Map<string, JobHistory>();
 	return jobs.map((job) => {
-		if (!job.stateful) return job;
+		if (!job.stateful) return listedJob(job, [], undefined, live);
 		const lane = loopLane(job.id);
 		let rows: Row[] = [];
 		try { if (lane) rows = stores.requests.list(lane); }

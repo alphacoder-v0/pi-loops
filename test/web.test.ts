@@ -1176,7 +1176,7 @@ test("the panel and /cron agree about what this project is", { timeout: 30_000 }
 		assert.deepEqual(listed, ["cron-linked", "cron-worktree-gone"], `the linked project's jobs are this project's; got ${JSON.stringify(listed)}`);
 		// The card shows the skipped-overlap count the terminal panel and `/cron` print. It leaves the
 		// store on this same payload, so the page never has to work out a number the scheduler owns.
-		assert.equal(state.automation.jobs.find((j: any) => j.id === "cron-linked")?.skippedOverlap, 3, "the panel is handed the skipped-overlap count the terminal prints");
+		assert.equal(state.automation.jobs.find((j: any) => j.id === "cron-linked")?.collapsed, 3, "the panel is handed the skipped-overlap count the terminal prints");
 		// `/cron` says `+ <all - here> loops in other projects`, counting jobs and nothing else; this is
 		// the same subtraction, and the rules are their own number beside it rather than added in.
 		assert.deepEqual(state.automation.elsewhere, { jobs: 2, rules: 1 }, "and what it cannot show is counted, jobs and rules apart");

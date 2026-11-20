@@ -23,7 +23,7 @@ import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom, machineWide } from "./
 import { formatSchedule, nextRunStamp, scheduleWords, stamp } from "./schedule.ts";
 import { type Look, lookLine, watchOf } from "./path-precheck.ts";
 import { failingJobs } from "./job-health.ts";
-import { type JobHistory, listedJob, runHistory } from "./job-status.ts";
+import { type JobHistory, type ListedJob, listedJob, runHistory } from "./job-status.ts";
 import { loopLane } from "./lane.ts";
 import { loopSignal, type LoopSignal, SIGNAL_WINDOW_MS } from "./job-signal.ts";
 import { applyTune, rowSignal, scheduleAudit, suggestTune } from "./job-tune.ts";
@@ -1183,7 +1183,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	function loopWorth(j: any, now: number): { signal?: ReturnType<typeof rowSignal>; suggestion?: { kind: string; key: string; label: string } } {
 		if (!j.stateful || typeof j.id !== "string") return {};
 		const sig = signalOf(j.id, now);
-		const s = suggestTune(j as LoopJob, sig, now);
+		const s = suggestTune(j as ListedJob, sig, now);
 		return { signal: rowSignal(sig), suggestion: s && { kind: s.kind, key: s.key, label: s.label } };
 	}
 
@@ -1248,16 +1248,16 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			stateful: !!j.stateful,
 			enabled: !!j.enabled,
 			prompt: maskSecrets(j.prompt),
-			runCount: j.runCount ?? 0,
-			lastError: maskSecrets(j.lastError),
+			runs: j.status.runs,
+			lastError: maskSecrets(j.status.error),
 			// The streak, only for a loop that counts as failing by the rule `/cron` and the Background view use.
-			failing: failingJobs([j])[0]?.consecutiveFailures,
-			running: !!j.running || heldClaim(j) !== undefined,
+			failing: failingJobs([j])[0]?.status.streak,
+			running: !!j.status.run || heldClaim(j) !== undefined,
 			// The run Stop this run names: the whole id, which the page posts back as it is.
 			// Only a run pi-loops in the background holds (a loop's run, a held turn) can be stopped from
 			// here; a plain job's turn in a window is that window's to stop. A held turn is the claim on
 			// the job's row, written by the background process.
-			run: j.running && typeof j.running.runId === "string" && hostPid !== undefined && j.running.pid === hostPid ? { runId: j.running.runId, since: j.running.startedAt } : heldClaim(j) && hostPid !== undefined && heldClaim(j)!.pid === hostPid ? { runId: heldClaim(j)!.id, since: heldClaim(j)!.started_at } : undefined,
+			run: j.status.run && typeof j.status.run.runId === "string" && hostPid !== undefined && j.status.run.pid === hostPid ? { runId: j.status.run.runId, since: j.status.run.startedAt } : heldClaim(j) && hostPid !== undefined && heldClaim(j)!.pid === hostPid ? { runId: heldClaim(j)!.id, since: heldClaim(j)!.started_at } : undefined,
 			// How the loop's latest run ended, which is what the row says once a stop is through.
 			lastEnd: lastEndOf(j.id),
 			// A loop's worth, and at most one suggestion that never applies itself (src/job-tune.ts).
@@ -1265,10 +1265,10 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			// The open body of a card shows these, which the terminal's `/cron` line has and the panel
 			// did not; they leave the store as they were written, no reshaping.
 			cwd: j.cwd,
-			lastFiredAt: j.lastFiredAt,
-			// Due ticks a run was too slow to take. The `lastError` a skip writes is cleared by the next
+			fired: j.status.fired,
+			// Due ticks a run was too slow to take. The error line a skip shows is gone with the next
 			// run; this count is not, so it is the last evidence a loop is losing cadence.
-			skippedOverlap: j.skippedOverlap ?? 0,
+			collapsed: j.status.collapsed,
 			// Set only when it is not this machine's: the panel says so, and nothing else has to guess.
 			// What to type to fix it. The terminal's version of this line says `/cron set <n>`, where n
 			// is the position in a numbered list — which this panel does not have, so telling someone to
@@ -1276,7 +1276,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			ref: j.name || j.id,
 			// Only for a job that is actually going to run, which is the rule `/cron` follows. The time
 			// is computed from the job when the page asks for its state.
-			next: j.enabled && runsSomewhere(owned(j), view) ? nextRunStamp(j, now) : undefined,
+			next: j.enabled && runsSomewhere(owned(j), view) ? nextRunStamp({ schedule: j.schedule, createdAt: j.createdAt, fired: j.status.fired }, now) : undefined,
 			// Where it runs when that is not here, in the terminal's words (src/job-owner.ts). A disabled
 			// one runs nowhere, and the card already says it is off.
 			asleep: j.enabled ? asleepNote(owned(j), view) : undefined,
@@ -1316,25 +1316,31 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const jobStore = new JobStore(LOOPS_DIR);
 	let histories: { stamp: string; byJob: ReadonlyMap<string, JobHistory> } | undefined;
 	/** The entries of jobs.json as the lists show them: a loop's run, failures and last error come from its rows and run log (src/job-status.ts `listedJob`). */
-	const listedRaw = (raw: any[]): any[] => {
-		if (!raw.some((j) => j?.stateful && typeof j.id === "string")) return raw;
-		try {
-			let stamp = "-";
-			try { const s = fs.statSync(jobStore.runsFile); stamp = `${s.size}:${s.mtimeMs}`; }
-			catch { /* no run log yet */ }
-			if (histories?.stamp !== stamp) histories = { stamp, byJob: runHistory(jobStore.allRuns()) };
-			const byJob = histories.byJob;
-			return raw.map((j) => {
-				if (!j?.stateful || typeof j.id !== "string") return j;
-				let rows: Row[] = [];
-				try { const lane = loopLane(j.id); if (lane) rows = requests.list(lane); }
-				catch { /* an unreadable lane lists as one with no rows */ }
-				return listedJob(j, rows, byJob.get(j.id));
-			});
-		} catch (err: any) {
-			opts.log(`pi-loops web: loop state: ${err?.message ?? err}`);
-			return raw;
+	const listedRaw = (raw: any[]): ListedJob[] => {
+		let byJob: ReadonlyMap<string, JobHistory> = new Map();
+		if (raw.some((j) => j?.stateful && typeof j.id === "string")) {
+			try {
+				let stamp = "-";
+				try { const s = fs.statSync(jobStore.runsFile); stamp = `${s.size}:${s.mtimeMs}`; }
+				catch { /* no run log yet */ }
+				if (histories?.stamp !== stamp) histories = { stamp, byJob: runHistory(jobStore.allRuns()) };
+				byJob = histories.byJob;
+			} catch (err: any) {
+				opts.log(`pi-loops web: loop state: ${err?.message ?? err}`);
+			}
 		}
+		return raw.map((j) => {
+			try {
+				let rows: Row[] = [];
+				try { const lane = j?.stateful && typeof j.id === "string" ? loopLane(j.id) : undefined; if (lane) rows = requests.list(lane); }
+				catch { /* an unreadable lane lists as one with no rows */ }
+				return listedJob(j, rows, typeof j?.id === "string" ? byJob.get(j.id) : undefined);
+			} catch (err: any) {
+				// A hand-written entry the reader cannot fold lists with its definition and no status.
+				opts.log(`pi-loops web: loop state: ${err?.message ?? err}`);
+				return { ...j, status: { runs: 0, collapsed: 0, streak: 0 } };
+			}
+		});
 	};
 	const pool = opts.pool;
 	const signed = (child: PageChild) => createdBy(child, VERSION);
@@ -1917,7 +1923,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			opts.log(`pi-loops web: away summary: ${err?.message ?? err}`);
 		}
 		// The loops of this project that count as failing: listed with the decisions, under Needs you.
-		const failing = failingJobs(listedRaw(objectsIn(readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs)).filter((j) => !cwd || sameAsked(String(j.cwd ?? ""), cwd))).map((j) => ({ id: j.id, label: loopLabel({ id: j.id, name: typeof j.name === "string" ? j.name : undefined }), streak: j.consecutiveFailures }));
+		const failing = failingJobs(listedRaw(objectsIn(readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs)).filter((j) => !cwd || sameAsked(String(j.cwd ?? ""), cwd))).map((j) => ({ id: j.id, label: loopLabel({ id: j.id, name: typeof j.name === "string" ? j.name : undefined }), streak: j.status.streak }));
 		const offer = cwd && here ? startersFor(cwd, leaseOf(here)?.cwd ?? conversationThere(here)?.cwd) : undefined;
 		return { status: 200, body: { cwd: cwd ?? null, cards: shown, more: cards.length - shown.length, handled, elsewhere: fresh.length - scoped(fresh).length, chips: DISMISS_CHIPS, away, failing, ...(offer ? { starters: offer } : {}) } };
 	}

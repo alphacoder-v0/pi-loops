@@ -159,7 +159,7 @@ export function jobLines(stored: LoopJob[], opts: JobLinesInput): string[] {
 	// A loop's run, failures and last error, from its rows and the run log (src/job-status.ts `listedJob`).
 	const histories = stored.some((job) => job.stateful) ? runHistory(runs) : undefined;
 	const jobs = stored.map((job) => {
-		if (!job.stateful) return job;
+		if (!job.stateful) return listedJob(job, [], undefined, opts.live);
 		const lane = loopLane(job.id);
 		let rows: Row[] = [];
 		try { if (lane) rows = requests(lane); }
@@ -175,7 +175,7 @@ export function jobLines(stored: LoopJob[], opts: JobLinesInput): string[] {
 							{
 								schedule: job.schedule,
 								createdAt: Date.parse(job.createdAt),
-								lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined,
+								lastFiredAt: job.status.fired ? Date.parse(job.status.fired) : undefined,
 							},
 							now,
 						)
@@ -200,8 +200,8 @@ export function jobLines(stored: LoopJob[], opts: JobLinesInput): string[] {
 			const head = `${String(i + 1).padStart(2)}. ${job.id}${job.name ? ` "${job.name}"` : ""}${job.enabled ? "" : "  disabled"}  ${formatSchedule(job.schedule)}${marks ? `  ${marks}` : ""}`;
 			const action = `    action: ${previewRedacted(job.prompt, 120)}`;
 			const worth = signal ? signalSummary(signal) : undefined;
-			const meta = `    next ${next ? formatLocal(next) : "—"} · runs ${job.runCount}${job.skippedOverlap ? ` · skipped overlaps ${job.skippedOverlap}` : ""}${worth ? ` · 30d: ${worth}` : ""}${showCwd ? ` · ${projectLabel(job.cwd, home)}` : ""}`;
-			const err = job.lastError ? `    last error: ${previewRedacted(job.lastError, 100)}` : job.lastFiredAt ? `    last fired: ${formatLocal(Date.parse(job.lastFiredAt))}` : undefined;
+			const meta = `    next ${next ? formatLocal(next) : "—"} · runs ${job.status.runs}${job.status.collapsed ? ` · skipped overlaps ${job.status.collapsed}` : ""}${worth ? ` · 30d: ${worth}` : ""}${showCwd ? ` · ${projectLabel(job.cwd, home)}` : ""}`;
+			const err = job.status.error ? `    last error: ${previewRedacted(job.status.error, 100)}` : job.status.fired ? `    last fired: ${formatLocal(Date.parse(job.status.fired))}` : undefined;
 			return [head, action, meta, err].filter((l): l is string => !!l);
 		})
 		.flat();

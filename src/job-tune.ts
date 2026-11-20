@@ -14,6 +14,7 @@
  */
 import { applyJobEdit, type JobEditContext, type NextRun } from "./job-edit.ts";
 import type { LoopSignal } from "./job-signal.ts";
+import type { ListedJob } from "./job-status.ts";
 import { computeNext, formatSchedule, type Schedule } from "./schedule.ts";
 import type { LoopJob } from "./store.ts";
 import type { AuditRecord } from "./triggers.ts";
@@ -60,8 +61,8 @@ function hourly(schedule: Schedule): Schedule {
 }
 
 /** At most one suggestion for `job`, or none. */
-export function suggestTune(job: LoopJob, s: LoopSignal, now: number): Suggestion | undefined {
-	if (!job.enabled || !job.stateful || job.schedule.kind === "once" || job.running) return undefined;
+export function suggestTune(job: ListedJob, s: LoopSignal, now: number): Suggestion | undefined {
+	if (!job.enabled || !job.stateful || job.schedule.kind === "once" || job.status.run) return undefined;
 	const at = `${job.id}:${formatSchedule(job.schedule)}`;
 	let suggestion: Suggestion | undefined;
 	if (s.findings >= PAUSE_FINDINGS && s.claimed === 0 && s.dismissed >= PAUSE_DISMISSED) suggestion = { kind: "pause", key: `pause:${at}`, label: "Pause" };

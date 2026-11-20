@@ -965,8 +965,8 @@ const jobOf = (source: string): string | undefined => (source.startsWith("cron:"
  * queue. Not a question of liveness: a claim whose process is gone prints until the next drain
  * closes it, as a stale marker prints until the next tick clears it.
  */
-export function runningRun(job: Pick<LoopJob, "id" | "running">, rows: readonly Row[]): string | undefined {
-	return job.running?.runId ?? jobClaim(job.id, rows)?.run.id;
+export function runningRun(job: { readonly id: string; readonly status: { readonly run?: { readonly runId: string } } }, rows: readonly Row[]): string | undefined {
+	return job.status.run?.runId ?? jobClaim(job.id, rows)?.run.id;
 }
 
 /** The row of a plain job that a run has claimed, among its conversation's `rows`: the turn that is going for it. */
@@ -979,9 +979,9 @@ export function jobClaim(jobId: string, rows: readonly Row[]): ClaimedRow | unde
  * row, when the process that made it lives. What a window lists as runs of the machine that have
  * no marker in the store.
  */
-export function heldTurns(jobs: readonly Pick<LoopJob, "id" | "stateful" | "sessionId" | "running">[], rowsOf: (sessionId: string) => readonly Row[], alive: (row: ClaimedRow) => boolean = claimAlive): Array<{ jobId: string; run: ClaimedRow["run"] }> {
+export function heldTurns(jobs: readonly { readonly id: string; readonly stateful: boolean; readonly sessionId?: string; readonly status: { readonly run?: unknown } }[], rowsOf: (sessionId: string) => readonly Row[], alive: (row: ClaimedRow) => boolean = claimAlive): Array<{ jobId: string; run: ClaimedRow["run"] }> {
 	return jobs.flatMap((job) => {
-		if (job.stateful || !job.sessionId || job.running) return [];
+		if (job.stateful || !job.sessionId || job.status.run) return [];
 		const claimed = jobClaim(job.id, rowsOf(job.sessionId));
 		return claimed && alive(claimed) ? [{ jobId: job.id, run: claimed.run }] : [];
 	});
@@ -1007,10 +1007,10 @@ export interface QueuedPrompt {
  * it, and the listing already shows that. The reason is read from the row alone, so a listing costs
  * one file read per conversation and no executor view.
  */
-export function queuedPrompt(job: Pick<LoopJob, "id" | "running">, rows: readonly Row[], now: number): QueuedPrompt | undefined {
+export function queuedPrompt(job: { readonly id: string; readonly status: { readonly run?: { readonly runId: string } } }, rows: readonly Row[], now: number): QueuedPrompt | undefined {
 	// Only a row the engine would run for this job: its own prefix, its source's mode, not dead. A row
 	// written into the file under a job's name is not that job's prompt, and the listing must not say so.
-	const row = rows.find((r) => r.kind === "input" && jobOf(r.source) === job.id && !r.run && r.id !== job.running?.runId && r.payload?.text.startsWith(`[Trigger ${r.id}] `) && modeOf("conversation", r.kind, r.source, r.wake) === r.mode && r.attempts < DEAD_AFTER_ATTEMPTS);
+	const row = rows.find((r) => r.kind === "input" && jobOf(r.source) === job.id && !r.run && r.id !== job.status.run?.runId && r.payload?.text.startsWith(`[Trigger ${r.id}] `) && modeOf("conversation", r.kind, r.source, r.wake) === r.mode && r.attempts < DEAD_AFTER_ATTEMPTS);
 	if (!row) return undefined;
 	// Stamps from the file are re-written from what they parse to, never echoed: they reach a terminal and the model.
 	const created = Date.parse(row.created_at);

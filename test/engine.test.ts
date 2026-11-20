@@ -2464,17 +2464,17 @@ test("the run a plain job is in is its marker, else the claim of its row; a row 
 	const mine = claimedRow("r1", { source: "cron:j", collapse_key: "cron:j" });
 	const { run: _, ...free } = mine;
 	const other = claimedRow("r2", { source: "cron:other", collapse_key: "cron:other" });
-	assert.equal(runningRun({ id: "j" }, [other, mine]), "run-r1");
-	assert.equal(runningRun({ id: "j" }, [other, free as UnclaimedRow]), undefined, "a row with no claim is not a run");
-	assert.equal(runningRun({ id: "j", running: { runId: "run-old", startedAt: "2026-06-01T11:00:00Z" } }, [mine]), "run-old", "a marker comes first");
-	assert.equal(runningRun({ id: "j" }, []), undefined);
+	assert.equal(runningRun({ id: "j", status: {} }, [other, mine]), "run-r1");
+	assert.equal(runningRun({ id: "j", status: {} }, [other, free as UnclaimedRow]), undefined, "a row with no claim is not a run");
+	assert.equal(runningRun({ id: "j", status: { run: { runId: "run-old" } } }, [mine]), "run-old", "a marker comes first");
+	assert.equal(runningRun({ id: "j", status: {} }, []), undefined);
 	assert.equal(jobQueued("j", [other]), false);
 	assert.equal(jobQueued("j", [other, mine]), true, "a claimed row is queued");
 	assert.equal(jobQueued("j", [free as UnclaimedRow]), true);
 	assert.equal(jobQueued("j", [{ ...(free as UnclaimedRow), kind: "stop" }]), false, "only an input is a prompt");
 	// A row that a run has claimed is running, not waiting: the listing says `running`, not `[queued]`.
-	assert.equal(queuedPrompt({ id: "j" }, [mine], T0), undefined);
-	assert.notEqual(queuedPrompt({ id: "j" }, [free as UnclaimedRow], T0), undefined);
+	assert.equal(queuedPrompt({ id: "j", status: {} }, [mine], T0), undefined);
+	assert.notEqual(queuedPrompt({ id: "j", status: {} }, [free as UnclaimedRow], T0), undefined);
 });
 
 /** A plain job's turn row, as the clock writes it. */
@@ -2545,12 +2545,12 @@ test("the held turns a window lists are the claims on plain jobs' rows whose pro
 	const claim = (job: string, id: string) => claimedRow(id, { source: `cron:${job}`, collapse_key: `cron:${job}`, lane: `s-${job}` });
 	const rowsOf = (sessionId: string): Row[] => ({ "s-a": [claim("a", "r-a")], "s-b": [claim("b", "r-b")], "s-c": [claim("c", "r-c")], "s-d": [claim("d", "r-d")], "s-e": [slotRow("r-e")] })[sessionId] ?? [];
 	const jobsList = [
-		{ id: "a", stateful: false, sessionId: "s-a" },
-		{ id: "b", stateful: true, sessionId: "s-b" },
-		{ id: "c", stateful: false, sessionId: "s-c", running: { runId: "run-old", pid: 1, startedAt: "2026-06-01T11:00:00Z" } },
-		{ id: "d", stateful: false, sessionId: "s-d" },
-		{ id: "e", stateful: false, sessionId: "s-e" },
-		{ id: "f", stateful: false },
+		{ id: "a", stateful: false, sessionId: "s-a", status: {} },
+		{ id: "b", stateful: true, sessionId: "s-b", status: {} },
+		{ id: "c", stateful: false, sessionId: "s-c", status: { run: { runId: "run-old", pid: 1, startedAt: "2026-06-01T11:00:00Z" } } },
+		{ id: "d", stateful: false, sessionId: "s-d", status: {} },
+		{ id: "e", stateful: false, sessionId: "s-e", status: {} },
+		{ id: "f", stateful: false, status: {} },
 	];
 	const alive = (row: ClaimedRow) => row.id !== "r-d";
 	assert.deepEqual(heldTurns(jobsList, rowsOf, alive), [{ jobId: "a", run: claim("a", "r-a").run }]);

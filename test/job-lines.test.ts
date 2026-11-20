@@ -153,7 +153,7 @@ test("a loop that has filed nothing has no 30-day part, and skipped overlaps kee
 
 test("a queued row counts for its job only if the engine would run it, and its stamps are re-written, never echoed", () => {
 	const now = Date.parse("2026-06-01T12:10:00Z");
-	const job = { id: "cron-a" } as any;
+	const job = { id: "cron-a", status: {} } as any;
 	const base = { v: 3, lane: "s", kind: "input", source: "cron:cron-a", mode: "unattended", wake: "turn", created_at: "2026-06-01T12:07:00Z", created_by: { pid: 1, instance: "w", version: "0" }, attempts: 0 } as any;
 	const ok = { ...base, id: "run-1", payload: { text: "[Trigger run-1] tidy", cwd: "/" } };
 	assert.ok(queuedPrompt(job, [ok], now));
