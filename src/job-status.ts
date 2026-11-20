@@ -1,4 +1,5 @@
 import { failurePause } from "./backoff.ts";
+import { fromV2 } from "./convert-v2.ts";
 import { claimAlive, plainCollapseKey } from "./engine.ts";
 import { loopLane } from "./lane.ts";
 import { runEnd } from "./settle.ts";
@@ -81,7 +82,7 @@ export function jobStatus(job: LoopJobV3, clock: JobClock | undefined, rows: rea
 	const state = job.proposed ? "proposed" : job.enabled ? "enabled" : "disabled";
 	let next: number | undefined;
 	if (state === "enabled") {
-		try { next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastFiredAt: clock?.fired === undefined ? undefined : Date.parse(clock.fired) }, now); }
+		try { next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), fired: clock?.fired === undefined ? undefined : Date.parse(clock.fired) }, now); }
 		catch { next = undefined; }
 	}
 	const key = job.stateful ? undefined : plainCollapseKey(job.id);
@@ -105,32 +106,6 @@ export function jobStatus(job: LoopJobV3, clock: JobClock | undefined, rows: rea
 	};
 }
 
-/** Read a version 2 job as its version 3 definition and clock entry. */
-export function fromV2(job: LoopJob): { job: LoopJobV3; clock: JobClock } {
-	const {
-		lastDueAt, lastFiredAt, runCount, lastCompletedAt, lastError, running: _running,
-		skippedOverlap: _skippedOverlap, consecutiveFailures: _consecutiveFailures,
-		owedSlot: _owedSlot, interruptions: _interruptions, cwdMissingSince: _cwdMissingSince,
-		...definition
-	} = job;
-	let disabled: Disabled | undefined;
-	if (!job.enabled) {
-		const why = lastError ?? "disabled by a person";
-		const code: Disabled["code"] = /no longer exists/.test(why) ? "session-gone" : why.startsWith("disabled: cwd ") ? "cwd-missing" : why.startsWith("parked: ") ? "interrupted" : why.startsWith("disabled: ") ? "schedule" : "person";
-		disabled = { code, why, at: lastCompletedAt ?? lastFiredAt ?? job.createdAt };
-	}
-	return {
-		job: { ...definition, enabled: job.enabled, ...(disabled ? { disabled } : {}) },
-		clock: {
-			...(lastDueAt ? { slot: lastDueAt } : {}),
-			...(lastFiredAt ? { fired: lastFiredAt } : {}),
-			runs: runCount,
-			...(job.skippedOverlap ? { collapsed: job.skippedOverlap } : {}),
-			...(job.lastError && job.enabled ? { note: { at: lastDueAt ?? job.createdAt, text: job.lastError } } : {}),
-			...("clearedAt" in job && typeof job.clearedAt === "string" ? { cleared: job.clearedAt } : {}),
-		},
-	};
-}
 
 /** What says why a loop's queued row does not start yet: the background's drain asks it, and writes the answer on the row (`Row.waiting`). */
 export interface GateFacts {

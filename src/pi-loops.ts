@@ -55,6 +55,7 @@ import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuar
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { budgetState, type ListedJob, listedJobs } from "./job-status.ts";
 import { runClockTick, decideRunNow } from "./clock.ts";
+import { DEAD_SESSION_MARKER } from "./convert-v2.ts";
 import { openStores, removeJob } from "./stores.ts";
 import { Ticker, WINDOW_RIDERS, type Riders } from "./ticker.ts";
 import { TURN_TYPE } from "./mark.ts";
@@ -1180,7 +1181,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	 */
 	function cronControlAudit(op: "add" | "enable" | "disable" | "remove", actor: "slash" | "tool" | "sub-agent" | "clock", before?: LoopJob, after?: LoopJob): string {
 		const job = after ?? before;
-		const next = after?.enabled ? computeNext({ schedule: after.schedule, createdAt: Date.parse(after.createdAt), lastFiredAt: after.lastFiredAt ? Date.parse(after.lastFiredAt) : undefined }, Date.now()) : undefined;
+		const next = after?.enabled ? computeNext({ schedule: after.schedule, createdAt: Date.parse(after.createdAt), fired: after.lastFiredAt ? Date.parse(after.lastFiredAt) : undefined }, Date.now()) : undefined;
 		// pi.appendEntry returns no id; mint one so tool results can point at the entry.
 		const auditEntryId = newId("audit");
 		// The scheduler's own retirements happen on every window's tick: a viewer leaves them to the holder.
@@ -1522,7 +1523,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						// project's jobs — and with --purge their loop state — from a session that
 						// never listed them. Every other listing is project-scoped; so is this.
 						const all = /(^|\s)--all(\s|$)/.test(rest);
-						const removed = await stores.jobs.removeWhere((j) => (all || sameProject(j.cwd, session.cwd)) && !j.enabled && !!j.lastError?.endsWith("no longer exists (/cron gc removes it)"), { purge: true });
+						const removed = await stores.jobs.removeWhere((j) => (all || sameProject(j.cwd, session.cwd)) && !j.enabled && !!j.lastError?.endsWith(DEAD_SESSION_MARKER), { purge: true });
 						for (const job of removed) cronControlAudit("remove", "slash", job, undefined);
 						const orphans = stores.jobs.orphanStates();
 						const purge = /(^|\s)--purge(\s|$)/.test(rest);
@@ -3376,7 +3377,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				afterHistory(ctx, () => ctx.ui.notify(`[cron] ${plural(pausedLoops, "loop")} and ${plural(myRules.length, "rule")} here are paused: ${pauseReason}`, "warning"));
 			} else if (ctx.hasUI && (myJobs.length || myRules.length)) {
 				const next = myJobs
-					.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.status.fired ? Date.parse(j.status.fired) : undefined }, Date.now()))
+					.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), fired: j.status.fired ? Date.parse(j.status.fired) : undefined }, Date.now()))
 					.filter((n): n is number => n !== undefined)
 					.sort((a, b) => a - b)[0];
 				const active = `[cron] ${plural(myJobs.length, "loop")} and ${plural(myRules.length, "rule")} active here${next ? ` · next ${formatLocal(next)}` : ""}${failing ? ` · ${failing} — /cron runs` : ""}`;

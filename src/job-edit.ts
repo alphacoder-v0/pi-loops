@@ -11,7 +11,7 @@
  * lock, so a tick that started a run between the read and the write has already set `running` —
  * assigning a whole job built from a stale copy would erase it.
  */
-import { computeDue, computeNext, formatSchedule, stamp, type Schedule } from "./schedule.ts";
+import { computeDue, computeNext, formatSchedule, stamp, type DueInput, type Schedule } from "./schedule.ts";
 import type { LoopJob } from "./store.ts";
 
 export interface JobEdit {
@@ -83,7 +83,7 @@ export function applyJobEdit(job: LoopJob, edit: JobEdit, ctx: JobEditContext): 
 	if (edit.schedule !== undefined) {
 		// An expression can parse and still never match ("0 0 30 2 *"): the job would go quiet with
 		// nothing to see. Refuse it, so the caller writes nothing.
-		if (computeNext({ schedule, createdAt, lastFiredAt }, ctx.now) === undefined) {
+		if (computeNext({ schedule, createdAt, fired: lastFiredAt }, ctx.now) === undefined) {
 			throw new Error(`${formatSchedule(edit.schedule)} has no next run; the job is unchanged`);
 		}
 		patch.schedule = edit.schedule;
@@ -104,11 +104,11 @@ export function applyJobEdit(job: LoopJob, edit: JobEdit, ctx: JobEditContext): 
 /** Read the job back exactly as the scheduler will, so the confirmation cannot promise a fiction. */
 export function nextRunOf(job: LoopJob, now: number): NextRun {
 	if (!job.enabled) return { kind: "disabled" };
-	const input = {
+	const input: DueInput = {
 		schedule: job.schedule,
 		createdAt: Date.parse(job.createdAt),
-		lastDueAt: job.lastDueAt ? Date.parse(job.lastDueAt) : undefined,
-		lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined,
+		due: job.lastDueAt ? Date.parse(job.lastDueAt) : undefined,
+		fired: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined,
 	};
 	if (computeDue(input, now) !== undefined) return { kind: "due" };
 	const at = computeNext(input, now);

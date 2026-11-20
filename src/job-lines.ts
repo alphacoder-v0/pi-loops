@@ -175,7 +175,7 @@ export function jobLines(stored: LoopJob[], opts: JobLinesInput): string[] {
 							{
 								schedule: job.schedule,
 								createdAt: Date.parse(job.createdAt),
-								lastFiredAt: job.status.fired ? Date.parse(job.status.fired) : undefined,
+								fired: job.status.fired ? Date.parse(job.status.fired) : undefined,
 							},
 							now,
 						)

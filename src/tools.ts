@@ -263,7 +263,7 @@ function renderTriggerRulesForTool(rules: ReturnType<TriggerStore["load"]>, host
  */
 function nextRunForTool(job: ListedJob, now: number, view: OwnerView): number | undefined {
 	if (!job.enabled || !runsSomewhere(job, view)) return undefined;
-	return computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastFiredAt: job.status.fired ? Date.parse(job.status.fired) : undefined }, now);
+	return computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), fired: job.status.fired ? Date.parse(job.status.fired) : undefined }, now);
 }
 
 /** A plain job's prompt waiting in its conversation's queue (src/engine.ts `queuedPrompt`); a loop has no queue. */

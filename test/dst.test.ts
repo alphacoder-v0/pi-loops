@@ -67,7 +67,7 @@ test("every 24h is immune, because it counts elapsed time", () => {
 	inZone("America/Santiago", () => {
 		const schedule = { kind: "every", ms: 86_400_000 } as const;
 		for (const from of [local(2026, 4, 4, 12), local(2026, 9, 5, 12)]) {
-			const at = computeNext({ schedule, createdAt: from, lastFiredAt: from }, from);
+			const at = computeNext({ schedule, createdAt: from, fired: from }, from);
 			assert.equal(at, from + 86_400_000, `exactly 24 hours from ${new Date(from).toString()}`);
 		}
 	});

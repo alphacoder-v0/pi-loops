@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fromV2, jobStatus, listedJob, runHistory } from "../src/job-status.ts";
+import { fromV2 } from "../src/convert-v2.ts";
+import { jobStatus, listedJob, runHistory } from "../src/job-status.ts";
 import type { JobClock } from "../src/clock.ts";
 import type { Row } from "../src/requests.ts";
 type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
@@ -41,6 +42,8 @@ test("[status-disabled] Main's five disabled reasons map to codes, and disabled 
 	const reasons = [
 		["stopped by a person", "person"],
 		["no longer exists (/cron gc removes it)", "session-gone"],
+		["disabled: session 1a2b3c4d no longer exists (/cron gc removes it)", "session-gone"],
+		["the repo no longer exists, so I stopped it", "person"],
 		["disabled: cwd /gone", "cwd-missing"],
 		["disabled: unusable schedule", "schedule"],
 		["parked: stopped", "interrupted"],

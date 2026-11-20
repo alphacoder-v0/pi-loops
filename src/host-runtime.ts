@@ -36,6 +36,7 @@ import { type ToolHost, automationTools, createLoopJob } from "./tools.ts";
 import { TriggerRuntime, promotionToInbox } from "./trigger-runtime.ts";
 import { auditCronFinish, auditCronStart, controlPlanePreflight } from "./triggers.ts";
 import { shortSessionId } from "./session-head.ts";
+import { DEAD_SESSION_MARKER } from "./convert-v2.ts";
 
 export interface HostRuntimeDeps {
 	dir: string;
@@ -432,7 +433,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		for (const job of book.jobs) {
 			if (job.stateful || !job.sessionId || !canHold(job.sessionId) || !job.enabled) continue;
 			let due: number | undefined;
-			try { due = computeDue({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastDueAt: book.clock.jobs[job.id]?.slot ? Date.parse(book.clock.jobs[job.id].slot!) : undefined, lastFiredAt: book.clock.jobs[job.id]?.fired ? Date.parse(book.clock.jobs[job.id].fired!) : undefined }, now); }
+			try { due = computeDue({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), due: book.clock.jobs[job.id]?.slot ? Date.parse(book.clock.jobs[job.id].slot!) : undefined, fired: book.clock.jobs[job.id]?.fired ? Date.parse(book.clock.jobs[job.id].fired!) : undefined }, now); }
 			catch (error) { log(`cron ${job.name ?? job.id}: ${error instanceof Error ? error.message : String(error)}`); continue; }
 			if (due === undefined && !background.owes(job, now)) continue;
 			if (due !== undefined && budget.over) continue;
@@ -469,7 +470,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			lastDeadSessionScan = now;
 			for (const job of stores.jobs.load()) {
 				if (!job.enabled || job.stateful || !job.sessionId || deps.sessionExists(job.sessionId)) continue;
-				const why = `disabled: session ${shortSessionId(job.sessionId)} no longer exists (/cron gc removes it)`;
+				const why = `disabled: session ${shortSessionId(job.sessionId)} ${DEAD_SESSION_MARKER}`;
 				await stores.jobs.disable(job.id, { code: "session-gone", why, at: stamp(now) });
 				log(`cron ${job.name ?? job.id}: disabled, its session ${shortSessionId(job.sessionId)} no longer exists`);
 			}

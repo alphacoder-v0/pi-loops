@@ -554,7 +554,7 @@ function snapshot(): HostSnapshot & { slots: { inUse: number; limit: number } } 
 		nextDue: (() => {
 			const next = jobs
 				.filter((j) => j.enabled && j.stateful)
-				.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.status.fired ? Date.parse(j.status.fired) : undefined }, Date.now()))
+				.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), fired: j.status.fired ? Date.parse(j.status.fired) : undefined }, Date.now()))
 				.filter((n): n is number => n !== undefined)
 				.sort((a, b) => a - b)[0];
 			return next ? stamp(next) : undefined;

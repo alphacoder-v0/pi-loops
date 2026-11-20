@@ -10,7 +10,8 @@ import type { RequestStore, Row, UnclaimedRow } from "./requests.ts";
 type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
 import { computeDue, formatLocal, isValidSchedule, stamp } from "./schedule.ts";
 import type { Disabled, JobStore, LoopJob, LoopJobV3, RunRecord } from "./store.ts";
-import { fromV2, jobStatus, runHistory, type JobHistory } from "./job-status.ts";
+import { fromV2 } from "./convert-v2.ts";
+import { jobStatus, runHistory, type JobHistory } from "./job-status.ts";
 import { oneShotDoneV3 } from "./settle.ts";
 import type { Book } from "./stores.ts";
 
@@ -216,7 +217,7 @@ export function wanted(probe: TickProbe): ReadonlyMap<string, LaneId> {
 		if (!lane || !isValidSchedule(job.schedule)) continue;
 		const clock = probe.clock.jobs[job.id];
 		let due: number | undefined;
-		try { due = computeDue({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastDueAt: clock?.slot === undefined ? undefined : Date.parse(clock.slot), lastFiredAt: clock?.fired === undefined ? undefined : Date.parse(clock.fired) }, probe.now); } catch { continue; }
+		try { due = computeDue({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), due: clock?.slot === undefined ? undefined : Date.parse(clock.slot), fired: clock?.fired === undefined ? undefined : Date.parse(clock.fired) }, probe.now); } catch { continue; }
 		const maybeDone = job.schedule.kind === "once" && (clock?.slot !== undefined || clock?.fired !== undefined) && !(job.stateful && !job.enabled && (clock?.runs ?? 0) === 0);
 		if ((job.enabled && !job.proposed && due !== undefined) || maybeDone) result.set(job.id, lane);
 	}
@@ -275,7 +276,7 @@ export function decideTick(input: TickInput): TickDecision[] {
 		const jobRows = data.rows.filter((row) => job.stateful ? row.lane === lane : row.collapse_key === plainCollapseKey(job.id));
 		const liveFired = firedOf(entry, jobRows);
 		let slot: number | undefined;
-		try { slot = computeDue({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastDueAt: entry?.slot === undefined ? undefined : Date.parse(entry.slot), lastFiredAt: liveFired === undefined ? undefined : Date.parse(liveFired) }, view.now); }
+		try { slot = computeDue({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), due: entry?.slot === undefined ? undefined : Date.parse(entry.slot), fired: liveFired === undefined ? undefined : Date.parse(liveFired) }, view.now); }
 		catch (error) { return { do: "disable", job: job.id, disabled: { code: "schedule", why: `disabled: ${error instanceof Error ? error.message : String(error)}`, at: stamp(view.now) } }; }
 		// An every schedule counts from `fired`, which a loop's collapse and a skip leave as they were: the same slot comes back, and the cursor already stands on it.
 		if (slot === undefined || (entry?.slot !== undefined && slot <= Date.parse(entry.slot))) return { do: "pass", job: job.id, why: "not-due" };

@@ -1,9 +1,9 @@
 import * as fs from "node:fs";
 import { type Clock, type ClockFile, type JobClock, v2Clock } from "./clock.ts";
-import { convertStores } from "./convert-v2.ts";
+import { convertStores, fromV2 } from "./convert-v2.ts";
 import { Inbox } from "./inbox.ts";
 import { RequestStore } from "./requests.ts";
-import { runHistory, fromV2, type JobHistory } from "./job-status.ts";
+import { runHistory, type JobHistory } from "./job-status.ts";
 import { RunList } from "./run-list.ts";
 import { JobStore, type LoopJobV3 } from "./store.ts";
 import { TriggerStore } from "./triggers.ts";

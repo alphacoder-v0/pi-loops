@@ -20,7 +20,8 @@ import { TriggerStore } from "../../src/triggers.ts";
 import { stamp, type Schedule } from "../../src/schedule.ts";
 import { runEnd, type RunEnd } from "../../src/settle.ts";
 import { closeLoopRun, closeSteps, type LoopRunDeps, type RunRecordM4b } from "../../src/loop-run.ts";
-import { fromV2, jobStatus, runHistory, type JobHistory } from "../../src/job-status.ts";
+import { fromV2 } from "../../src/convert-v2.ts";
+import { jobStatus, runHistory, type JobHistory } from "../../src/job-status.ts";
 import { JobStore, type LoopJob, type LoopJobV3, type RunRecord } from "../../src/store.ts";
 import { type Random, weighted } from "./prng.ts";
 

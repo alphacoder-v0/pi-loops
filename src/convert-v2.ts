@@ -5,7 +5,38 @@ import { plainJobRow, plainRunId } from "./engine.ts";
 import { loopLane } from "./lane.ts";
 import { pidAlive } from "./lock.ts";
 import { RequestStore } from "./requests.ts";
-import { JobStore, type LoopJob } from "./store.ts";
+import type { JobClock } from "./clock.ts";
+import { type Disabled, JobStore, type LoopJob, type LoopJobV3 } from "./store.ts";
+
+/** The end of the `lastError` of a job whose conversation was gone: such a job is `disabled.code: "session-gone"`, and `/cron gc` removes it. */
+export const DEAD_SESSION_MARKER = "no longer exists (/cron gc removes it)";
+
+/** Read a version 2 job as its version 3 definition and clock entry. */
+export function fromV2(job: LoopJob): { job: LoopJobV3; clock: JobClock } {
+	const {
+		lastDueAt, lastFiredAt, runCount, lastCompletedAt, lastError, running: _running,
+		skippedOverlap: _skippedOverlap, consecutiveFailures: _consecutiveFailures,
+		owedSlot: _owedSlot, interruptions: _interruptions, cwdMissingSince: _cwdMissingSince,
+		...definition
+	} = job;
+	let disabled: Disabled | undefined;
+	if (!job.enabled) {
+		const why = lastError ?? "disabled by a person";
+		const code: Disabled["code"] = why.endsWith(DEAD_SESSION_MARKER) ? "session-gone" : why.startsWith("disabled: cwd ") ? "cwd-missing" : why.startsWith("parked: ") ? "interrupted" : why.startsWith("disabled: ") ? "schedule" : "person";
+		disabled = { code, why, at: lastCompletedAt ?? lastFiredAt ?? job.createdAt };
+	}
+	return {
+		job: { ...definition, enabled: job.enabled, ...(disabled ? { disabled } : {}) },
+		clock: {
+			...(lastDueAt ? { slot: lastDueAt } : {}),
+			...(lastFiredAt ? { fired: lastFiredAt } : {}),
+			runs: runCount,
+			...(job.skippedOverlap ? { collapsed: job.skippedOverlap } : {}),
+			...(job.lastError && job.enabled ? { note: { at: lastDueAt ?? job.createdAt, text: job.lastError } } : {}),
+			...("clearedAt" in job && typeof job.clearedAt === "string" ? { cleared: job.clearedAt } : {}),
+		},
+	};
+}
 
 /** Private files of older versions that nothing reads now. */
 export const RETIRED_FILES: readonly string[] = ["next-runs.json", "scheduler.json", "presence"];
