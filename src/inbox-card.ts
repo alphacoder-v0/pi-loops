@@ -32,6 +32,12 @@ export interface InboxCard {
 	waits?: string;
 	/** A decision: after `· if not:`; undefined when the loop left the clause out. */
 	ifNot?: string;
+	/**
+	 * A question (a finding with an `ask`): its call, from the ask's fields. Its card is drawn from
+	 * these and `ask.title`, never cut from the text, which holds the command and could hold a
+	 * `· waits:` of the command's own.
+	 */
+	question?: { tool: string; command?: string; reason: string };
 	/** The checker kept it (✓). */
 	verified: boolean;
 	verifiedReason?: string;
@@ -110,9 +116,26 @@ export function ruleResultText(text: string): string {
 }
 
 /**
+ * A question's card parts, from its `ask`: the headline is who asks (`ask.title`), the call's
+ * command and reason are fields of their own, and the clauses are the words `questionFinding` of
+ * src/ask.ts writes, with who asks as `answerWho` names it. Screened, redacted and on one line, as
+ * any card text is.
+ */
+function questionParts(entry: InboxEntry, ask: NonNullable<InboxEntry["ask"]>, ctx: CardContext): Pick<InboxCard, "headline" | "waits" | "ifNot" | "question"> {
+	const { tool, command, reason } = ask.call;
+	return {
+		headline: cardText(ask.title) || "a run asks",
+		question: { tool: cardText(tool), ...(command !== undefined ? { command: cardText(command) } : {}), reason: cardText(reason) },
+		waits: `${answerWho(entry, ask.lane, ctx.loopName)} went on without it`,
+		ifNot: "it stays undone",
+	};
+}
+
+/**
  * One finding as a card, or undefined for a line with no id or no text: `readFinding` turns a
  * line `{}` into an entry with both empty, and a button that sends an empty id names nothing.
- * The text is redacted and capped again, since a line another tool wrote is not bounded.
+ * The text is redacted and capped again, since a line another tool wrote is not bounded. A question
+ * is drawn from its `ask` (`questionParts`); `splitFinding` never reads its text.
  */
 export function inboxCard(entry: InboxEntry, ctx: CardContext): InboxCard | undefined {
 	if (!entry.id || !entry.text) return undefined;
@@ -126,9 +149,9 @@ export function inboxCard(entry: InboxEntry, ctx: CardContext): InboxCard | unde
 	const condition = ruleId ? ctx.ruleCondition?.(ruleId) : undefined;
 	return {
 		id: entry.id,
-		kind: entry.kind === "checkpoint" ? "decision" : "news",
+		kind: entry.ask || entry.kind === "checkpoint" ? "decision" : "news",
 		status: entry.status,
-		...splitFinding(origin === "rule" ? ruleResultText(text) : text, entry.kind),
+		...(entry.ask ? questionParts(entry, entry.ask, ctx) : splitFinding(origin === "rule" ? ruleResultText(text) : text, entry.kind)),
 		verified: entry.verified === true,
 		...(entry.verified_reason ? { verifiedReason: redact(screenText(entry.verified_reason)) } : {}),
 		origin,
@@ -160,13 +183,16 @@ export function cardOrigin(card: Pick<InboxCard, "loop" | "source">): string {
 
 /**
  * A card as terminal lines: `head`, the marks, the headline (news: its whole text) and `meta` on
- * the first line; a decision's clauses on indented lines under it, under the page's words. A clause
- * the loop left out prints nothing: two packaged playbooks leave `if not` out on purpose.
+ * the first line; a question's command and reason, then a decision's clauses, on indented lines
+ * under it, under the page's words. A clause the loop left out prints nothing: two packaged
+ * playbooks leave `if not` out on purpose.
  */
 export function cardLines(card: InboxCard, head: string, meta: string): string[] {
 	const mark = `${card.kind === "decision" ? "⚑ " : ""}${card.verified ? "✓ " : ""}`;
 	const title = card.body === undefined ? card.headline : `${card.headline}${/[。！？]$/.test(card.headline) ? "" : " "}${card.body}`;
 	const lines = [`${head}${mark}${title}${meta}`];
+	if (card.question?.command !== undefined) lines.push(`${CLAUSE_INDENT}command: ${card.question.command}`);
+	if (card.question) lines.push(`${CLAUSE_INDENT}reason: ${card.question.reason}`);
 	if (card.waits !== undefined) lines.push(`${CLAUSE_INDENT}waiting on: ${card.waits}`);
 	if (card.ifNot !== undefined) lines.push(`${CLAUSE_INDENT}if you don't: ${card.ifNot}`);
 	return lines;

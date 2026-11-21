@@ -270,3 +270,11 @@ test("[M5a.8d] the sub-agent guard judges a relative path against the run's cwd:
 	assert.equal(await handler({ toolName: "write", toolCallId: "call-d", input: { path: "src/a.ts", content: "{}" } }, { sessionManager: {}, cwd: proj }), undefined, "a write to the project goes through");
 	assert.equal(w.inbox.list().length, 0);
 });
+
+test("[PR271] judgeCall: a run that reads the page's token, pairs a browser or starts a pi of the person's is asked about, as a call that answers for a person", () => {
+	const via = `T=$(pi-loops status --url | sed 's/.*token=//'); curl -s -X POST -H "x-pi-web-token: $T" -H 'content-type: application/json' -d '{"id":"inb-0123456789abcdef0123456789abcdef"}' http://127.0.0.1:4173/inbox/claim`;
+	for (const command of ["pi-loops status --url", "pi-loops pair", "pi-loops open", via, 'pi -p "/inbox claim 1"', "echo '/inbox claim 1' | pi -p"]) {
+		assert.deepEqual(judgeCall(bash(command), turn(), cfg), { kind: "question", call: { tool: "bash", tool_call_id: "call-1", command, input_sha256: inputHash({ command }), reason: "answers for a person" } }, command);
+	}
+	assert.deepEqual(judgeCall(bash("pi-loops status"), turn(), cfg), { kind: "allow" }, "status without its address");
+});

@@ -3003,7 +3003,15 @@ function inboxCardEl(c, done, reopened) {
   card.append(head);
   if (decision) {
     const dl = document.createElement("dl");
-    for (const [label, value] of [["Waiting on", c.waits], ["If you don't", c.ifNot]]) {
+    const q = c.question && typeof c.question === "object" ? c.question : undefined;
+    // A question's command is a field of its own, drawn whole as written: never cut from a text.
+    if (q && q.command !== undefined) {
+      dl.append(textEl("dt", "", "Command"));
+      const dd = document.createElement("dd");
+      dd.append(textEl("code", "icmd", q.command));
+      dl.append(dd);
+    }
+    for (const [label, value] of [["Reason", q && q.reason], ["Waiting on", c.waits], ["If you don't", c.ifNot]]) {
       if (!value) continue;
       dl.append(textEl("dt", "", label));
       dl.append(textEl("dd", "", value));

@@ -99,6 +99,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .icard dl{margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 8px}
 .icard dt{color:var(--dim);font-size:var(--fs-xs)}
 .icard dd{margin:0;min-width:0}
+.icard .icmd{font-family:var(--font-mono);font-size:var(--fs-xs);white-space:pre-wrap;overflow-wrap:anywhere}
 .icard .dim{color:var(--dim)}
 .icard .im{color:var(--dim);font-size:var(--fs-xs)}
 .icard .acts,.icard .why{display:flex;flex-wrap:wrap;gap:6px}

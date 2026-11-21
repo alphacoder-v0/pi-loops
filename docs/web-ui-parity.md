@@ -477,6 +477,15 @@ weaker, and worth converting whenever one of them breaks.
       question from a conversation is told by a row in it. `test/page-server.test.ts`: *a no to a
       question from a conversation dismisses it with its reason, tells the conversation by its row,
       and says so*.
+- [x] A question's card is drawn from the question's own fields, never cut from its text: the
+      headline names who asks ("nightly asks to run a command"), **Command** shows the command whole
+      and as written in the page's monospace face, then **Reason**, **Waiting on** and **If you
+      don't**. A command that holds `· waits:` cannot make the headline another command.
+      `test/web-page.test.ts`: *a question's card shows its command whole, as written, in a field of
+      its own, and its headline names who asks*; `test/page-server.test.ts`: *GET /inbox draws a
+      question's card from its ask: the command whole in its own field, and the headline names who
+      asks*; `test/inbox-card.test.ts`: *a question's card is drawn from its ask: the command whole in
+      its own field and on its own line, and the headline names who asks*.
 - [x] **Loop activity** between the conversation and the composer: closed, one line ("loop
       activity · 5 runs today · 1 failed · 1 rule result"); open, a row for each loop run and each
       matched or failed rule check of this project over the last day, newest first, at most 100. A

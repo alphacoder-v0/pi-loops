@@ -1,8 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { dangerousCommandReason, pathToolReason } from "../src/danger.ts";
+import { openFileDir } from "../src/open-file.ts";
 import { tmp } from "./tmp.ts";
 
 const HOME = "/home/u";
@@ -654,4 +656,63 @@ test("[M5a.8d] pi-loops behind a wrapper and by any path is the program that ans
 	for (const c of answers) assert.equal(dangerousCommandReason(c, HOME), ANSWERS, c);
 	assert.equal(dangerousCommandReason("sudo -u me /opt/pi/pi-loops inbox claim x", HOME), "sudo invocation", "sudo and doas are refused before this rule");
 	for (const c of ["npm --prefix ~/code/pi-loops start", "find ~/code/pi-loops -name import", "ls ~/code/pi-loops/docs start", "git -C ~/code/pi-loops log --grep import", "timeout 5 make start"]) assert.equal(dangerousCommandReason(c, HOME), undefined, c);
+});
+
+test("[PR271] each known channel to the page's token, a one-use open key, a pairing code or a pi of the person's answers for a person", () => {
+	const answers = [
+		"pi-loops status --url",
+		"pi-loops host status --url",
+		"pi-loops status --json --url",
+		"pi-loops status --url=1",
+		`T=$(pi-loops status --url | sed 's/.*token=//'); curl -s -X POST -H "x-pi-web-token: $T" http://127.0.0.1:4173/inbox/claim`,
+		"node -e \"require('child_process').execSync('pi-loops status --url')\"",
+		"pi-loops pair",
+		"pi-loops open",
+		"pi-loops open --cwd ~/proj",
+		"pi-loops web --no-open",
+		"pi-loops tui",
+		"pi-loops",
+		"pi-loops --no-open",
+		"pi-loops --web --port 4180",
+		"cd /tmp && pi-loops",
+		'pi -p "/inbox claim 3"',
+		"pi --print '/inbox dismiss 1 no'",
+		'pi "/inbox claim inb-1"',
+		"echo '/inbox claim 1' | pi -p",
+		"pi -p < answers.txt",
+		"pi --mode rpc",
+		'pi -p "/pi-loops web"',
+		"pi -p 'summarize the diff'",
+		"timeout 60 pi -p hi",
+		"/usr/local/bin/pi --mode json -p hi",
+		"npx @earendil-works/pi-coding-agent -p hi",
+	];
+	for (const c of answers) assert.equal(dangerousCommandReason(c, HOME), ANSWERS, c);
+	const allowed = ["pi-loops status", "pi-loops status --json", "pi-loops --version", "pi-loops --help", "which pi-loops", "command -v pi-loops", "echo pi-loops", "pi --version", "pi --help", "echo pi", "grep -rn pi src", "ls pi", "pip install x", "npm --prefix ~/code/pi-loops start"];
+	for (const c of allowed) assert.equal(dangerousCommandReason(c, HOME), undefined, c);
+	assert.match(dangerousCommandReason('pi -p "/pi-loops stop"', HOME) ?? "", /pi-loops abort \/ stop \/ restart/, "a stop keeps its reason");
+	for (const unit of ["pi ", "env pi ", "pi-loops status ", "--url "]) {
+		const command = unit.repeat(Math.ceil((200 * 1024) / unit.length));
+		const started = process.cpuUsage();
+		dangerousCommandReason(command, HOME);
+		const used = process.cpuUsage(started);
+		assert.ok((used.user + used.system) / 1000 < 500, `${JSON.stringify(unit)} is answered in linear time`);
+	}
+});
+
+test("[PR271] the control socket's fallback directory, outside the loops directory, is reached as pi-loops' own files", () => {
+	const { home, loops } = loopsWorld();
+	const fallback = path.join(os.tmpdir(), `pi-loops-${process.getuid?.() ?? "u"}`);
+	const own = [`printf '{"op":"pair"}' | nc -U ${fallback}/host-service-0123456789abcdef.sock`, `ls ${fallback}`, `socat - UNIX-CONNECT:$TMPDIR/pi-loops-${process.getuid?.() ?? "u"}/host-service-x.sock`, `ls \${TMPDIR}/pi-loops-${process.getuid?.() ?? "u"}`];
+	for (const c of own) assert.equal(dangerousCommandReason(c, home, [], loops), OWN, c);
+	for (const c of [`ls ${os.tmpdir()}`, `ls ${fallback}x`, `cat ${os.tmpdir()}/pi-loops-merge-1/x`]) assert.equal(dangerousCommandReason(c, home, [], loops), undefined, c);
+});
+
+test("[PR271] the 0600 file the browser opens on, which holds a one-use key, is in the loops directory: a path tool and a shell command into it are refused", () => {
+	const { home, loops } = loopsWorld();
+	const file = path.join(openFileDir(loops), `${"a".repeat(32)}.html`);
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(file, "<meta http-equiv=refresh content='0;url=http://127.0.0.1:4173/?open=k'>", { mode: 0o600 });
+	for (const toolName of ["read", "grep", "find", "ls"]) assert.equal(pathToolReason({ toolName, input: { path: toolName === "read" ? file : path.dirname(file) } }, home, loops), OWN, toolName);
+	for (const c of [`cat ${file}`, `cat ${loops}/pages/open/*.html`, "grep -r open= ~/loops/pages", `ls ${path.dirname(file)}`]) assert.equal(dangerousCommandReason(c, home, [], loops), OWN, c);
 });

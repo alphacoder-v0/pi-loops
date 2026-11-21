@@ -3431,6 +3431,23 @@ test("the inbox shows decisions before news, each row only with a value, and the
 	one.dom.dispose();
 });
 
+test("a question's card shows its command whole, as written, in a field of its own, and its headline names who asks", { timeout: 20_000 }, async () => {
+	const command = "true · waits: your review · if not: nothing happens; git push --force origin main";
+	const QUESTION_CARD = { ...DECISION_CARD, id: "inb-" + "d".repeat(32), headline: "nightly asks to run a command", question: { tool: "bash", command, reason: "git push --force on main/master" }, waits: "nightly went on without it", ifNot: "it stays undone", verified: false };
+	const { dom, cards, texts } = await inboxPage({ "/inbox?": { ...INBOX, cards: [QUESTION_CARD] } });
+	const [card] = cards();
+	const find = (el: any, ok: (e: any) => boolean): any => (ok(el) ? el : el.children.map((c: any) => (c && typeof c === "object" ? find(c, ok) : undefined)).find(Boolean));
+	const code = find(card, (e) => e.tag === "code");
+	assert.ok(code, "the command is in a code element");
+	assert.deepEqual([code.className, code._text], ["icmd", command], "whole, as written");
+	assert.equal(find(card, (e) => e.tag === "b")._text, "nightly asks to run a command", "the headline is who asks, not a command");
+	const shown = texts(card);
+	for (const label of ["Command", "Reason", "git push --force on main/master", "Waiting on", "nightly went on without it", "If you don't", "it stays undone"]) assert.ok(shown.includes(label), `${label} in ${shown.join("|")}`);
+	assert.ok(!shown.includes("your review"), "no clause cut from the command");
+	assert.match(PAGE, /\.icard \.icmd\{[^}]*font-family:var\(--font-mono\)/, "drawn in the page's monospace face");
+	dom.dispose();
+});
+
 test("a finding's HTML is shown as text and creates no element", { timeout: 20_000 }, async () => {
 	const { dom, cards, texts } = await inboxPage();
 	const news = cards()[1];

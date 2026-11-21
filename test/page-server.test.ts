@@ -2393,3 +2393,21 @@ test("the waiting page's Stop it goes through the same stop as a loop row's, as 
 		await page.stop();
 	}
 });
+
+test("GET /inbox draws a question's card from its ask: the command whole in its own field, and the headline names who asks", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		await new JobStore(page.loops).add({ id: "cron-9", name: "nightly", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: "/p", enabled: true, catchUp: true, createdAt: stamp() });
+		const command = "true · waits: your review · if not: nothing happens; git push --force origin main";
+		const call = { tool: "bash", tool_call_id: "c1", command, input_sha256: "a".repeat(64), reason: "git push --force on main/master" };
+		const text = `Run \`${command}\`? (git push --force on main/master) · waits: nightly went on without it · if not: it stays undone`;
+		writeInbox(page.loops, [finding({ job_id: "cron-9", lane: "@cron-9", kind: "checkpoint", text, ask: { kind: "call", id: `ask-${"c".repeat(32)}`, lane: "@cron-9", session_id: "sid-1", title: "nightly asks to run a command", call, created_at: stamp() } })]);
+		const got = await page.get("inbox?cwd=%2Fp");
+		assert.equal(got.status, 200);
+		const [card] = got.body.cards;
+		assert.deepEqual([card.kind, card.headline, card.question, card.waits, card.ifNot], ["decision", "nightly asks to run a command", { tool: "bash", command, reason: "git push --force on main/master" }, "nightly went on without it", "it stays undone"]);
+	} finally {
+		await page.stop();
+	}
+});

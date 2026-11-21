@@ -617,11 +617,25 @@ A run cannot answer for a person, because a yes in the inbox lets a dangerous ca
 unattended run, a built-in file tool (`read`, `write`, `edit`, `grep`, `find`, `ls`) whose path is
 in the loops directory is refused, and nobody is asked: the question could not show what the tool
 would read or write. A shell command that reaches the loops directory is a question, "reads or
-writes pi-loops' own files". So is `pi-loops` with a verb that answers or changes state (`inbox
-claim`, `dismiss`, `cancel` or `clear`, `recipe add`, `import`, `start`, `pair`), "answers for a
-person", also behind `env`, `timeout`, `nohup`, `sudo`, `npx` and the like. This is a guard, not a
-sandbox: a path that the shell builds at run time, or a program that reaches the file another way,
-is not caught.
+writes pi-loops' own files". The directory that holds the control socket when the path of the
+loops directory is too long for a socket, `pi-loops-<uid>` in the temporary directory, counts as
+pi-loops' own files too. A question with the reason "answers for a person" comes from these
+commands:
+
+- `pi-loops` with a verb that answers or changes state: `inbox claim`, `dismiss`, `cancel` or
+  `clear`, `recipe add`, `import` and `start`.
+- `pi-loops` with a verb that gives out what signs a browser in to the page: `status --url`, which
+  prints the page's token, `pair`, `open`, `web`, `tui`, and `pi-loops` with no verb.
+- `pi` itself, with anything but `--version` or `--help`. A pi that a run starts is your session:
+  it loads pi-loops, so an `/inbox claim` that it gets as an argument, on its input or in
+  `--mode rpc` is your yes, and the tools of its model are not checked.
+
+The same is true behind `env`, `timeout`, `nohup`, `sudo`, `npx` and the like. These rules stop a
+model when it types a command that answers for you through one of these known ways. They do not
+stop a run that sets out to make a yes another way. A run is a process of your user, and every file
+and process of pi-loops belongs to that user too, so such a run can reach them. Your own sandbox is
+the boundary for that. A path that the shell builds at run time, or a program that reaches the file or the page another
+way, is not caught.
 
 A search for one of the words shutdown, reboot, halt and poweroff is not refused, when the command
 is no more than a search: `grep -rn shutdown src/`, `rg -n "halt" src | wc -l`,

@@ -77,8 +77,19 @@ All notable changes to pi-loops are documented here. The format follows
   `grep`, `find`, `ls`) is refused when its path is in the loops directory, and nobody is asked. A
   shell command that reads or writes the files of pi-loops is a question in the inbox. So is
   `pi-loops` with a verb that answers or changes state: `inbox claim`, `dismiss`, `cancel` and
-  `clear`, `recipe add`, `import`, `start` and `pair`. A scheduled turn in a window meets the same
-  rules.
+  `clear`, `recipe add`, `import` and `start`. So is a command that gives out what signs a browser
+  in to the page: `pi-loops status --url`, `pair`, `open`, `web`, `tui` and `pi-loops` with no
+  verb, and a command that reaches the control socket's directory in the temporary directory. So is
+  `pi` itself with anything but `--version` or `--help`: a pi that a run starts is your session,
+  and its `/inbox claim` is your yes. A scheduled turn in a window meets the same rules. These rules
+  stop a model when it types a command that answers for you through these known ways. They do not
+  stop a run that sets out to make a yes another way: it runs as your user, as every file and
+  process of pi-loops does, and your own sandbox is the boundary for that.
+- **A question's card shows the command as a field of its own.** The terminal, `pi-loops inbox
+  list` and the page draw a question from its fields: who asks, the command whole and as written
+  (on its own line in a terminal, in a monospace face on the page), the reason, and what waits on
+  it. The card is never cut from the finding's text, so a command that holds `· waits:` cannot
+  make the card show another command.
 - **A finding's words are screened where they are read.** The terminal, `pi-loops inbox`, the page
   and a loop's prompt get a finding's text, source, reasons and asked command as the card shows
   them: no control characters, secrets masked, on one line, and capped. `inbox.jsonl` keeps the

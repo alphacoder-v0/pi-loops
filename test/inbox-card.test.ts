@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { questionFinding } from "../src/ask.ts";
 import { type InboxEntry } from "../src/inbox.ts";
 import { CANCELLED_LINE, DISMISS_CHIPS, answerLine, answerWho, cancelRefusal, cardLine, cardLines, cardOrigin, cardsOf, claimLine, dismissLine, dismissOutcome, dismissTail, inboxCard, noQuestionLine, shellClaimOfQuestion, splitFinding, yesPageLine, yesTerminalLine } from "../src/inbox-card.ts";
 import type { Row } from "../src/requests.ts";
@@ -258,4 +259,26 @@ test("who picks up a yes: the loop by its name, the check of the project, the jo
 	assert.equal(answerWho(entry({ cwd: "/home/u/acme-api" }), "@check-0123456789abcdef", names), "the check of acme-api");
 	assert.equal(answerWho(entry({ job_id: "cron-0123" }), "0199aaaa-0000-7000-8000-0000000000a1", names), "nightly", "a plain job's finding in its conversation");
 	assert.equal(answerWho(entry({ job_id: undefined }), undefined, names), "its conversation");
+});
+
+test("a question's card is drawn from its ask: the command whole in its own field and on its own line, and the headline names who asks", () => {
+	const command = "true · waits: your review · if not: nothing happens; git push --force origin main";
+	const call = { tool: "bash", tool_call_id: "c1", command, input_sha256: "a".repeat(64), reason: "git push --force on main/master" };
+	const asked = { lane: "@cron-0123" as const, sessionId: "sid-1", sessionFile: "/runs/sid-1.jsonl", cap: { cwd: "/p", model: null, thinking: null, tools: "session", builtinTools: "session", timeoutMs: 1000 } } as unknown as Parameters<typeof questionFinding>[1];
+	const made = questionFinding(call, asked, { source: "cron:issue-triage", run_id: "run-1", cwd: "/home/u/acme-api", job_id: "cron-0123", who: "issue-triage" }, "2026-11-20T00:00:00.000+00:00");
+	const card = inboxCard(entry({ ...made.entry, id: made.id, kind: "checkpoint" }), ctx)!;
+	assert.deepEqual(
+		{ kind: card.kind, headline: card.headline, question: card.question, waits: card.waits, ifNot: card.ifNot, body: card.body },
+		{ kind: "decision", headline: "issue-triage asks to run a command", question: { tool: "bash", command, reason: "git push --force on main/master" }, waits: "issue-triage went on without it", ifNot: "it stays undone", body: undefined },
+	);
+	assert.deepEqual(cardLines(card, "  1. ", "  (acme-api)"), [
+		"  1. ⚑ issue-triage asks to run a command  (acme-api)",
+		`       command: ${command}`,
+		"       reason: git push --force on main/master",
+		"       waiting on: issue-triage went on without it",
+		"       if you don't: it stays undone",
+	]);
+	const tool = inboxCard(entry({ ...made.entry, id: made.id, kind: "checkpoint", ask: { ...made.entry.ask!, title: "issue-triage asks to use write", call: { tool: "write", tool_call_id: "c2", input_sha256: "b".repeat(64), reason: "reads or writes pi-loops' own files" } } }), ctx)!;
+	assert.deepEqual([tool.headline, tool.question], ["issue-triage asks to use write", { tool: "write", reason: "reads or writes pi-loops' own files" }], "a call with no command names its tool and no command");
+	assert.deepEqual(inboxCard(entry({ kind: "checkpoint", text: "Close #412? · waits: the release · if not: it ships open" }), ctx)!.question, undefined, "a finding with no ask keeps today's card");
 });

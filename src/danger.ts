@@ -321,34 +321,42 @@ const WRAPPERS = new Set(["env", "timeout", "nice", "nohup", "exec", "command", 
 /** Options of a wrapper that take the next word as their value. */
 const WRAPPER_VALUE_FLAGS = new Set(["-u", "-g", "-C", "-s", "-k", "-n", "-a", "-p", "-I", "-P", "-L", "-d", "-E", "--package", "--signal", "--kill-after", "--chdir", "--user", "--group"]);
 
+/** pi's own program: `pi`, or its npm package by name (`npx @earendil-works/pi-coding-agent`). */
+const PI_BASENAME = /^(?:pi|pi-coding-agent(?:@\S*)?)$/;
+
+/** What follows a program in a sub-command, and whether the program is at the head of it, where the shell runs it. */
+interface ProgramRun {
+	rest: string;
+	head: boolean;
+}
+
 /**
- * What follows pi-loops' program in each sub-command of `command` that runs it: what
- * `answersForPerson` reads. A word is the program when it names pi-loops with no directory before it
- * (`pi-loops`, `$(which pi-loops)`, `echo pi-loops inbox claim x | bash`), anywhere; or when its last
- * path segment is the program (`PROGRAM_BASENAME`, `~/tools/pi-loops`, `src/cli-entry.mjs`) and it
- * is the first word of the sub-command, or the first word after a run of `WRAPPERS` with their
- * options, `NAME=value` words and numbers (`timeout 5 ~/tools/pi-loops`, `sudo -u me /opt/pi-loops`,
- * `node ~/code/piz/src/cli-entry.mjs`). A directory that has the name, given to another program
- * (`npm --prefix ~/code/pi-loops start`, `find ~/code/pi-loops -name import`), is not the program.
- * One pass over the words.
+ * What follows a program in each sub-command of `command` that runs it. A word is the program when
+ * `anywhere` names it with no directory before it (`pi-loops`, `$(which pi-loops)`, `echo pi-loops
+ * inbox claim x | bash`); or when its last path segment matches `basename` (`~/tools/pi-loops`,
+ * `src/cli-entry.mjs`, `/usr/local/bin/pi`) and it is the first word of the sub-command, or the first
+ * word after a run of `WRAPPERS` with their options, `NAME=value` words and numbers (`timeout 5
+ * ~/tools/pi-loops`, `sudo -u me /opt/pi-loops`, `node ~/code/piz/src/cli-entry.mjs`). A directory
+ * that has the name, given to another program (`npm --prefix ~/code/pi-loops start`, `find
+ * ~/code/pi-loops -name import`), is not the program. One pass over the words.
  */
-function piLoopsPrograms(command: string): string[] {
-	const found: string[] = [];
+function programRuns(command: string, anywhere: RegExp | undefined, basename: RegExp): ProgramRun[] {
+	const found: ProgramRun[] = [];
 	for (const sub of flatCommand(command).split(SUBCOMMANDS)) {
 		const words = [...sub.matchAll(/\S+/g)];
 		let head = true; // a program may start at this word
 		let wrapped = false; // a wrapper's options and arguments may come before it
 		for (let i = 0; i < words.length; i++) {
 			const w = words[i][0];
-			const at = w.search(PI_LOOPS_NAME);
+			const at = anywhere ? w.search(anywhere) : -1;
 			if (at !== -1 && !w.slice(0, at).includes("/")) {
-				found.push(sub.slice(words[i].index + at));
+				found.push({ rest: sub.slice(words[i].index + at), head });
 				break;
 			}
 			if (!head) continue;
 			const slash = w.lastIndexOf("/");
-			if (PROGRAM_BASENAME.test(w.slice(slash + 1))) {
-				found.push(sub.slice(words[i].index + slash + 1));
+			if (basename.test(w.slice(slash + 1))) {
+				found.push({ rest: sub.slice(words[i].index + slash + 1), head });
 				break;
 			}
 			const next = words[i + 1]?.[0];
@@ -359,16 +367,31 @@ function piLoopsPrograms(command: string): string[] {
 				i++;
 			} else if (wrapped && w.startsWith("-")) {
 				if (WRAPPER_VALUE_FLAGS.has(w)) i++;
+				// `command -v pi-loops` names the program and runs nothing.
+				if ((w === "-v" || w === "-V") && words[i - 1]?.[0] === "command") head = false;
 			} else if (!(wrapped && /^\d+(?:\.\d+)?[smhd]?$/.test(w))) head = false;
 		}
 	}
 	return found;
 }
 
+/** pi-loops' program, as `answersForPerson` reads it. */
+function piLoopsPrograms(command: string): ProgramRun[] {
+	return programRuns(command, PI_LOOPS_NAME, PROGRAM_BASENAME);
+}
+
 /** A run answering a question, pairing a browser, installing jobs or bringing pi-loops up is a person's call, not a loop's. */
 const ANSWERS = "answers for a person";
-/** Verbs of pi-loops that answer or change state on their own. `abort`, `stop` and `restart` are `PI_LOOPS_STOP`'s. */
-const ANSWER_VERBS = new Set(["start", "import", "pair"]);
+/**
+ * Verbs of pi-loops that answer or change state on their own. `abort`, `stop` and `restart` are
+ * `PI_LOOPS_STOP`'s. `open`, `web` and `tui` print a link with a one-use key that signs a browser in
+ * to the page, or start a pi of the person's.
+ */
+const ANSWER_VERBS = new Set(["start", "import", "pair", "open", "web", "tui"]);
+/** The first words after pi-loops that print and leave, where any other flag there opens the page (`cliRoute`). */
+const NOT_A_LAUNCH = new Set(["--help", "-h", "--version", "-v"]);
+/** The flags only a launch takes (`LAUNCH_FLAGS` of src/cli.ts): a launch wherever pi-loops is, the head of a sub-command or not. */
+const LAUNCH_FLAG = /^--(?:web|tui|port|host|allow-host|no-open|no-auth|loops-dir)(?:=|$)/;
 /** Verbs that answer or change state after a group: `inbox claim`, `recipe add` (the one install verb). */
 const ANSWER_SUBVERBS = new Map<string, ReadonlySet<string>>([
 	["inbox", new Set(["claim", "dismiss", "cancel", "clear"])],
@@ -378,21 +401,33 @@ const ANSWER_SUBVERBS = new Map<string, ReadonlySet<string>>([
 const ANSWER_WORDS = /\$\{?IFS\}?|[\s{},]+/;
 
 /**
- * Whether a pi-loops of `piLoopsPrograms` runs a verb that answers for a person or changes state:
- * `start`, `import`, `pair`, or after `inbox` or `recipe` one of its `ANSWER_SUBVERBS`, or a word the
- * shell expands in that verb's place (`pi-loops inbox $V`). Fail closed as `stopsPiLoops` is: the
- * verb anywhere after the program counts, so `pi-loops recipe show start` is refused too. One pass
- * over the words. Known gaps: a program name the shell expands (`P=pi-loops; $P inbox claim x`), a
- * verb read from input (`echo claim | xargs pi-loops inbox`), an alias or a function defined to run
- * it, a path to the program behind a program that is not in `WRAPPERS` (`flock /tmp/l
- * ~/tools/pi-loops start`, `ssh host ~/tools/pi-loops start`), and a wrapper option that takes a value
- * this does not know. An answer written by hand into the loops
- * directory is `reachesLoopsDir`'s to catch; one sent through the page's server needs the page's
- * token, which is in the loops directory; one sent by a program that is not this CLI is not caught.
+ * Whether a pi-loops of `piLoopsPrograms` runs a verb that answers for a person, changes state or
+ * hands out what signs a browser in to the page: `start`, `import`, `pair`, `open`, `web`, `tui`, a
+ * launch (pi-loops at the head of a sub-command with nothing after it or a first word that is a flag
+ * other than `NOT_A_LAUNCH`, and anywhere with a `LAUNCH_FLAG` first), `status` with `--url` (the
+ * page's address with its token), after `inbox` or `recipe` one of its `ANSWER_SUBVERBS`, or a word
+ * the shell expands in that verb's place (`pi-loops inbox $V`). Fail closed as `stopsPiLoops` is:
+ * the verb anywhere after the program counts, so `pi-loops recipe show start` is refused too. One
+ * pass over the words.
+ *
+ * This stops a model from typing a call that answers for it through the channels known here: this
+ * CLI, a pi of the person's (`runsPi`), the loops directory and the control socket's fallback
+ * directory (`reachesLoopsDir`). It does not stop a run of the same user that sets out to forge a
+ * yes another way, since every file and process of pi-loops is that user's: the person's own
+ * sandbox is the boundary for that. Known gaps: a program name the shell expands (`P=pi-loops; $P
+ * inbox claim x`), a verb read from input (`echo claim | xargs pi-loops inbox`), an alias or a
+ * function defined to run it, a path to the program behind a program that is not in `WRAPPERS`
+ * (`flock /tmp/l ~/tools/pi-loops start`, `ssh host ~/tools/pi-loops start`), a launch behind such a
+ * program (`script -c pi-loops`), a wrapper option that takes a value this does not know, and a
+ * program that is not this CLI and reads the token or talks to the page or the socket by a path it
+ * builds.
  */
-function answersForPerson(invocations: readonly string[]): boolean {
-	return invocations.some((rest) => {
+function answersForPerson(invocations: readonly ProgramRun[]): boolean {
+	return invocations.some(({ rest, head }) => {
 		const words = rest.split(ANSWER_WORDS).filter(Boolean);
+		const first = words[1];
+		if (first === undefined ? head : (head && first.startsWith("-") && !NOT_A_LAUNCH.has(first)) || LAUNCH_FLAG.test(first)) return true;
+		if (words.includes("status") && words.some((w) => /^--url\b/.test(w))) return true;
 		let after: ReadonlySet<string> = new Set(); // the verbs an `inbox` or `recipe` read so far opens
 		for (let i = 0; i < words.length; i++) {
 			const w = words[i];
@@ -405,6 +440,24 @@ function answersForPerson(invocations: readonly string[]): boolean {
 			if (/^[$`]/.test(words[k] ?? "")) return true;
 		}
 		return false;
+	});
+}
+
+/** What `pi` may be asked and still print and leave, with nothing else on its line. */
+const PI_PRINTS_ONLY = new Set(["--version", "-v", "--help", "-h"]);
+
+/**
+ * Whether `command` runs pi itself (`PI_BASENAME`, by any path, behind `WRAPPERS`) with anything but
+ * `PI_PRINTS_ONLY`. A pi started from a run is a session of the person's: it loads pi-loops, so its
+ * `/inbox claim`, `/inbox dismiss` and `/pi-loops web` are the person's, whether they come as an
+ * argument, on stdin or over `--mode rpc`; and its own model's tools are not judged by this policy.
+ * So every such pi is refused, not only one whose words name a command. Known gaps: pi started by
+ * its script's path (`node …/pi-coding-agent/dist/cli.js`), and a name the shell expands.
+ */
+function runsPi(command: string): boolean {
+	return programRuns(command, undefined, PI_BASENAME).some(({ rest }) => {
+		const words = rest.split(/\s+/).filter(Boolean).slice(1);
+		return !(words.length > 0 && words.every((w) => PI_PRINTS_ONLY.has(w)));
 	});
 }
 
@@ -438,7 +491,10 @@ function spelt(dir: string, homes: ReadonlySet<string>): string[] {
 /**
  * The ways a shell command can name the loops directory (`named`): its path, its realpath,
  * `~/.pi/agent/loops` (pi-loops' directory when nobody moved it), each of those under home
- * (`spelt`), `$PI_LOOPS_DIR` and `$PI_CODING_AGENT_DIR/loops`. And the directories that hold it
+ * (`spelt`), `$PI_LOOPS_DIR` and `$PI_CODING_AGENT_DIR/loops`; and the control socket's fallback
+ * directory, `pi-loops-<uid>` in the temporary directory, which takes the socket when the loops
+ * directory's path is too long for one (src/host-control-channel.ts `hostSocketPath`): the socket
+ * hands out a one-use key and a pairing code. And the directories that hold the loops directory
  * (`parents`): the same for the directory above each, and `$PI_CODING_AGENT_DIR`.
  */
 function loopsDirSpellings(loopsDir: string, home: string | undefined): { named: string[]; parents: string[] } {
@@ -452,6 +508,8 @@ function loopsDirSpellings(loopsDir: string, home: string | undefined): { named:
 		const parent = path.dirname(dir);
 		if (parent !== path.dirname(parent)) for (const s of spelt(parent, homes)) parents.add(s);
 	}
+	const socketDir = `pi-loops-${process.getuid?.() ?? "u"}`;
+	for (const tmp of new Set([os.tmpdir(), realpathish(os.tmpdir()), "/tmp", "$TMPDIR", "${TMPDIR}"])) named.add(`${tmp}/${socketDir}`);
 	return { named: [...named], parents: [...parents] };
 }
 
@@ -696,7 +754,7 @@ export function dangerousCommandReason(command: string, home: string = process.e
 	const scanned = dequote(command);
 	for (const [label, re] of PATTERNS) if (typeof re === "function" ? re(scanned, command) : re.test(scanned)) return label;
 	if (stopsPiLoops(command)) return PI_LOOPS_STOP;
-	if (answersForPerson(piLoopsPrograms(command))) return ANSWERS;
+	if (answersForPerson(piLoopsPrograms(command)) || runsPi(command)) return ANSWERS;
 	if (loopsDir !== undefined && reachesLoopsDir(pathText(command), loopsDir, home || undefined, platform)) return OWN_FILES;
 	return rmRecursiveForceOnDangerousTarget(scanned, home || undefined);
 }
