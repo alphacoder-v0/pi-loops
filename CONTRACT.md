@@ -47,7 +47,7 @@ talks to it only through a recipe directory, `hooks.toml`, and the `pi-loops inb
 
 - **Install a recipe**: copy the playbooks into the project with the level line written, and create the jobs the manifest declares. A manifest that breaks a rule is refused whole; no file is copied.
 - **Run**: emit one `run_start` and one `run_end` with the same `run_id`. The run's findings enter the queue with `status = new` and `run_id` = that run.
-- **Claim** and **dismiss**: take a finding's `id` or a unique prefix of it, and succeed once each, only on a `new` finding. Dismiss can carry a `reason`, written to `dismiss_reason`. **Cancel** takes a claimed finding whose answer has not started back to `new`.
+- **Claim** and **dismiss**: take a finding's `id` or a unique prefix of it, and each succeeds only on a `new` finding, so a finding is decided once unless a cancel opens it again. Dismiss can carry a `reason`, written to `dismiss_reason`. **Cancel** takes a claimed finding whose answer has not started back to `new`.
 
 ### 2.4 Ledger
 
