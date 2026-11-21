@@ -118,12 +118,8 @@ function looksWords(secs: number): string {
 	return secs >= 120 ? `every ${Math.round(secs / 60)} minutes` : secs === 60 ? "every minute" : `every ${secs} seconds`;
 }
 
-/**
- * The dialog's title: the head line, then the card's rows as `Label: value`, the same text a
- * terminal shows and the page draws its card from. A value's further lines are indented two spaces,
- * so a line inside an action never reads as a row of its own.
- */
-export function askTitle(card: WatchCard): string {
+/** The card's rows, as label and value: what a terminal's question and the page's card both show. */
+function cardRows(card: WatchCard): [string, string][] {
 	const rows: [string, string][] = [];
 	if (card.kind === "rule") {
 		rows.push(["Waits for", card.when], ["Looks", looksWords(card.looksEverySecs ?? 600)]);
@@ -133,7 +129,16 @@ export function askTitle(card: WatchCard): string {
 	}
 	if (card.danger) rows.push(["Careful", `When this runs and reaches ${card.danger}, pi-loops does not run it: it asks you in the inbox and goes on without it.`]);
 	rows.push(["Command", card.command]);
-	return [WATCH_ASK_HEAD, ...rows.map(([label, value]) => `${label}: ${value.replace(/\r?\n/g, "\n  ")}`)].join("\n");
+	return rows;
+}
+
+/**
+ * The dialog's title: the head line, then the card's rows as `Label: value`, the same text a
+ * terminal shows. A value's further lines are indented two spaces, so a line inside an action never
+ * reads as a row of its own.
+ */
+export function askTitle(card: WatchCard): string {
+	return [WATCH_ASK_HEAD, ...cardRows(card).map(([label, value]) => `${label}: ${value.replace(/\r?\n/g, "\n  ")}`)].join("\n");
 }
 
 /** A yes, as the card's choices: where the result goes, whether a rule fires once, whether a loop's findings are checked. */
@@ -191,6 +196,27 @@ export function planOf(p: Proposal): WatchPlan {
 	}
 	const j = p.job;
 	return { kind: "schedule", job: { schedule: j.schedule, prompt: j.prompt, name: j.name, cwd: j.cwd, verify: j.verify, catchUp: j.catchUp, model: j.model, thinking: j.thinking, tools: j.tools, timeoutMs: j.timeoutMs, checkerModel: j.checkerModel }, where: j.stateful ? "inbox" : "chat" };
+}
+
+/** A proposal as the page draws it (`GET /watch`): the terminal's rows without its Command line, and the options in the order the terminal offers them. */
+export interface ProposalCard {
+	kind: Proposal["kind"];
+	id: string;
+	/** The conversation it was proposed in, where its card is drawn and its receipt lands. */
+	session: string;
+	at: string;
+	label: string;
+	rows: [string, string][];
+	options: string[];
+}
+
+/** The card of a record that is still proposed; undefined for one that is not. Every text is redacted as `askTitle`'s. */
+export function proposalCard(p: Proposal, ctx: { now: number; pollSecs: number; home?: string }): ProposalCard | undefined {
+	const record = p.kind === "schedule" ? p.job : p.rule;
+	if (!record.proposed) return undefined;
+	const plan = planOf(p);
+	const rows = cardRows(planCard(plan, ctx)).filter(([label]) => label !== "Command");
+	return { kind: p.kind, id: record.id, session: record.proposed.session, at: record.proposed.at, label: redact(proposalLabel(p)), rows, options: watchOptions(plan) };
 }
 
 /**
@@ -317,7 +343,7 @@ export async function answerProposal(stores: ProposalStores, ref: { kind: Propos
 	else auditRule(stores.rules, op, ctx.actor, after?.kind === "rule" ? after.rule : before.rule);
 	const session = before.kind === "schedule" ? before.job.proposed!.session : before.rule.proposed!.session;
 	stores.requests.appendIfAbsent(receiptRow(after ?? before, session, choice, now, ctx.by));
-	const label = proposalLabel(before);
+	const label = redact(proposalLabel(before));
 	if (!after || choice.verdict === "cancel") return { outcome: "cancelled", proposal: before, line: `cancelled: ${label} is removed and nothing ran` };
 	const when = after.kind === "schedule" ? scheduleWords(after.job.schedule) : `waits for ${previewRedacted(after.rule.condition, 60)}`;
 	return { outcome: "set", proposal: after, line: `set up: ${label} · ${when} · ${optionText(after.kind, choice).slice("Set it up · ".length)}` };

@@ -187,6 +187,18 @@ test("[P3] Cancel removes the record only while proposed is set, then the audit 
 	assert.ok(job(c, "cron-live"), "kept");
 });
 
+test("an answer's line names the proposal as its card does: redacted, so a secret in a name is not handed back", async () => {
+	const w = world();
+	const name = "sk-abcdefghijklmnopqrstuvwxyz012"; // within the 40 characters a name may have
+	for (const answer of ["Set it up · inbox", "Cancel"]) {
+		await w.call("cron_create", { schedule: "every 10m", action: "report new PRs", name: answer === "Cancel" ? `${name}-b` : name });
+		const id = w.stores.jobs.load().find((j) => j.proposed)!.id;
+		const done = await answerProposal(w.stores, { kind: "schedule", id }, watchChoice(answer), w.ctx({ actor: "page" }));
+		assert.doesNotMatch(done.line, /sk-abcdefghijklmnopqrstuvwxyz/, answer);
+		assert.match(done.line, /REDACTED/, answer);
+	}
+});
+
 test("[already-answered] two answers at once land once: the second changes nothing, writes no receipt and says already answered", async () => {
 	for (const kind of ["schedule", "rule"] as const) {
 		const w = world();

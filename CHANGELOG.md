@@ -60,8 +60,13 @@ All notable changes to pi-loops are documented here. The format follows
   so the agent learns what you chose at its next turn. A second answer from another surface says
   `already answered: set up` or `already answered: cancelled`. `/cron` and `/triggers rules` mark a
   proposal `proposed: waits for your yes`, and a session start names the ones of its conversation.
-  `/cron enable --all` passes over proposals. Before, the tools asked in the same call and created
-  at once. A sub-agent's `cron_create`, `cron_create` in a scheduled turn, `/cron add` and a recipe
+  `/cron enable --all` passes over proposals. In the browser page, a proposal of the open
+  conversation is a card in the conversation, drawn from the record, so it is still there after a
+  reload or a restart: one button for the agent's choice (`Set it up · inbox`), `Other…` for the
+  other options, and `Cancel`. The answered card keeps its rows and says `Set up · inbox` or
+  `Cancelled. Nothing runs.` The conversation list counts a proposal with the decisions that need
+  you. Before, the tools asked in the same call and created at once, and the page drew pi's
+  question as a card with choice chips that gave up after thirty minutes. A sub-agent's `cron_create`, `cron_create` in a scheduled turn, `/cron add` and a recipe
   still create enabled jobs; there, a `gate` argument is refused with `a gate needs a person`. A
   `jobs.json` and a `triggers.json` that 0.24.2 wrote have no proposals: there is nothing to
   convert. See "A proposed watch" in docs/loops.md and docs/triggers.md.

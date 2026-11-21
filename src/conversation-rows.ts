@@ -29,7 +29,7 @@ export interface ConversationRow {
 	delivers: boolean;
 	/** The page has a pi for it now. */
 	open: boolean;
-	/** Open decisions (new checkpoints) filed by loops this conversation created. */
+	/** Open decisions (new checkpoints) filed by loops this conversation created, and the watches proposed in it. */
 	needsYou: number;
 	/** Input rows waiting in `requests/<id>.jsonl`. */
 	queued: number;
@@ -206,19 +206,37 @@ export function countNeedsYou(text: string): Map<string, number> {
 	return out;
 }
 
-/** `countNeedsYou` of one file, read again only when its size or mtime changed. */
-export class NeedsYouCounts {
+/** Proposed watches in `jobs.json` (`key` "jobs") or `triggers.json` ("rules"), by the conversation each was proposed in. A file that does not parse counts none. */
+export function countProposals(text: string, key: "jobs" | "rules"): Map<string, number> {
+	const out = new Map<string, number>();
+	let list: unknown;
+	try {
+		list = JSON.parse(text)?.[key];
+	} catch {
+		return out; // torn mid-write: the next answer reads it whole
+	}
+	for (const r of Array.isArray(list) ? list : []) {
+		const session = r?.proposed?.session;
+		if (typeof r?.id === "string" && typeof session === "string" && session) out.set(session, (out.get(session) ?? 0) + 1);
+	}
+	return out;
+}
+
+/** One file's counts, read again only when its size or mtime changed. */
+class CountedFile {
 	private readonly file: string;
+	private readonly count: (text: string) => Map<string, number>;
 	private at?: { mtimeMs: number; size: number; counts: Map<string, number> };
-	constructor(file: string) {
+	constructor(file: string, count: (text: string) => Map<string, number>) {
 		this.file = file;
+		this.count = count;
 	}
 	get(): ReadonlyMap<string, number> {
 		let st: fs.Stats;
 		try {
 			st = fs.statSync(this.file);
 		} catch {
-			return new Map(); // no inbox yet
+			return new Map(); // not written yet
 		}
 		if (this.at && this.at.mtimeMs === st.mtimeMs && this.at.size === st.size) return this.at.counts;
 		let text = "";
@@ -227,8 +245,21 @@ export class NeedsYouCounts {
 		} catch {
 			return new Map(); // gone between the stat and the read
 		}
-		this.at = { mtimeMs: st.mtimeMs, size: st.size, counts: countNeedsYou(text) };
+		this.at = { mtimeMs: st.mtimeMs, size: st.size, counts: this.count(text) };
 		return this.at.counts;
+	}
+}
+
+/** What asks a conversation's person: `countNeedsYou` of the inbox, and the watches proposed in it. */
+export class NeedsYouCounts {
+	private readonly files: CountedFile[];
+	constructor(inboxFile: string, proposals: { jobs: string; rules: string }) {
+		this.files = [new CountedFile(inboxFile, countNeedsYou), new CountedFile(proposals.jobs, (t) => countProposals(t, "jobs")), new CountedFile(proposals.rules, (t) => countProposals(t, "rules"))];
+	}
+	get(): ReadonlyMap<string, number> {
+		const out = new Map<string, number>();
+		for (const part of this.files.map((f) => f.get())) for (const [session, n] of part) out.set(session, (out.get(session) ?? 0) + n);
+		return out;
 	}
 }
 
