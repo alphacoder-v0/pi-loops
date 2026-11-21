@@ -34,7 +34,7 @@ import { type Lane, parseLane } from "./lane.ts";
 import { type LeaseBinding, type ProcessProbe, systemProbe } from "./lease.ts";
 import { DEFAULT_RUN_TIMEOUT_MS } from "./loop-run.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
-import { type RowMark, TURN_TYPE, type TurnDetails, markDetails, markFor, turnOn, withMark } from "./mark.ts";
+import { type RowMark, TURN_TYPE, type TurnDetails, markDetails, markFor, markOn, turnOn, withMark } from "./mark.ts";
 import { previewRedacted } from "./redact.ts";
 import type { ClaimedRow, ImageContent, RequestMode, RequestStore, Row, UnclaimedRow } from "./requests.ts";
 import { type RunList, STOPPED_BY_PERSON } from "./run-list.ts";
@@ -210,9 +210,16 @@ export class WindowExecutor implements Executor {
 	private compacting = false;
 	/** The generation of the turn whose message the window aborted as it started: its mark says so (`messageEnded`). */
 	private abortedAtStart: string | undefined;
-	/** The generations of the turn messages that started in the run going now, and in the run that settled last (`startedInSettledRun`). */
-	private startedThisRun = new Set<string>();
-	private startedInLastRun: ReadonlySet<string> = new Set();
+	/**
+	 * The generations of the turn messages this window handed that started in the run going now, each
+	 * with the place of its start among the messages of the run, and those of the run that settled last
+	 * (`startedInSettledRun`). `messagesThisRun` counts the messages that started; `lastForeign` is the
+	 * place of the last one this window did not hand (`foreignSinceStart`).
+	 */
+	private startedThisRun = new Map<string, number>();
+	private startedInLastRun: ReadonlyMap<string, number> = new Map();
+	private messagesThisRun = 0;
+	private lastForeign: number | undefined;
 	/** Turn rows whose images are being resized before the send (`resizedTurn`). */
 	private readonly resizing = new Set<string>();
 	/**
@@ -529,6 +536,16 @@ export class WindowExecutor implements Executor {
 		return "sent";
 	}
 
+	/**
+	 * Whether, in the run going now, a message this window did not hand started after the message of
+	 * `row`'s turn: another extension's user message or turn message, the person's typing, a custom
+	 * message of another sender. The grant of an answer's turn lives only until then.
+	 */
+	foreignSinceStart(row: Pick<Row, "id" | "created_at">): boolean {
+		const start = this.startedThisRun.get(generation(row));
+		return start !== undefined && this.lastForeign !== undefined && this.lastForeign > start;
+	}
+
 	/** Whether the message of `row`'s turn (its mark, at its `created_at`) started in the run that settled last: that settle was its turn's. */
 	startedInSettledRun(row: Pick<Row, "id" | "created_at">): boolean {
 		return this.startedInLastRun.has(generation(row));
@@ -574,7 +591,9 @@ export class WindowExecutor implements Executor {
 	settled(aborted = false): string[] {
 		this.current = undefined;
 		this.startedInLastRun = this.startedThisRun;
-		this.startedThisRun = new Set();
+		this.startedThisRun = new Map();
+		this.messagesThisRun = 0;
+		this.lastForeign = undefined;
 		this.foreign = false;
 		// A row that left the file since the last look (an exit in the drain that ran since) owes no exit:
 		// what pi did with its prompt must not reach the same row queued again.
@@ -641,6 +660,8 @@ export class WindowExecutor implements Executor {
 	 */
 	messageStarted(message: unknown, now = Date.now()): void {
 		const turn = turnOn(message);
+		const place = ++this.messagesThisRun;
+		const foreign = (): void => void (this.lastForeign = place);
 		if (turn) {
 			// Two hand-overs of one row carry the same message: the one no stop named takes it first, so
 			// that a stop for a request that left does not abort the message of the same row queued again.
@@ -658,18 +679,29 @@ export class WindowExecutor implements Executor {
 			this.current = slot?.cap ?? (row ? this.capOf(row) : { kind: "row", id: named?.id ?? "unknown", mode: "unattended", tools: [] });
 			if (this.running && named !== undefined) this.running = { ...this.running, requestId: named.id };
 			// Only the message this window handed counts as its row's turn having started.
-			if (slot) this.startedThisRun.add(generation(rowOf(slot.mark)));
+			if (slot) this.startedThisRun.set(generation(rowOf(slot.mark)), place);
+			else foreign();
 			this.abortedAtStart = slot?.stop ? generation(rowOf(slot.mark)) : undefined;
 			if (slot?.stop) this.ctx()?.abort();
 			return;
 		}
-		if ((message as { role?: unknown } | undefined)?.role !== "user") return;
+		const role = (message as { role?: unknown } | undefined)?.role;
+		if (role === "custom") {
+			// An append row's message is the window's own, known by its slot; any other custom message is not.
+			const mark = markOn({ type: "custom_message", details: (message as { details?: unknown }).details });
+			const ours = (message as { customType?: unknown }).customType === "pi-loops:trigger" && mark !== undefined && this.slots.some((slot) => slot.whose === "append" && slot.mark.id === mark.id && slot.mark.at === mark.at);
+			if (!ours) foreign();
+			return;
+		}
+		if (role !== "user") return;
 		const theirs = this.foreign || this.slots.some((slot) => slot.whose === "other" && slot.from === "extension");
 		if (!(this.current?.kind === "row" && theirs)) this.current = { kind: "person" };
 		this.slots = this.slots.map((slot) => (slot.whose === "person" && slot.phase.is === "pending" ? { ...slot, phase: { is: "pending", since: now } } : slot));
 		const text = userTextOf(message);
 		if (text === undefined) return;
 		const claim = claimOf(text, this.slots);
+		// A user message is the window's own only as the page message of a person row it handed.
+		if (claim.by !== "person") foreign();
 		this.slots = this.slots.flatMap((slot): Slot[] => {
 			if (claim.by === "person" && slot === claim.slot) return [{ ...slot, phase: { is: "writing", claim } }];
 			if (claim.by === "other" && slot === claim.slot) return [];
@@ -723,7 +755,7 @@ export interface WindowAnswerDeps {
 	readonly requests: Pick<RequestStore, "list" | "claim">;
 	/** This window's runs: an answer's turn is in it from its claim (E4a) to the end of its closing. */
 	readonly runs: RunList;
-	readonly executor: Pick<WindowExecutor, "holds" | "answerFree" | "answerTurn" | "startedInSettledRun" | "handedOver">;
+	readonly executor: Pick<WindowExecutor, "holds" | "answerFree" | "answerTurn" | "startedInSettledRun" | "foreignSinceStart" | "handedOver">;
 	/** The conversation this window is on: its id, its directory, and its session file as pi writes it. */
 	here(): { readonly sessionId?: string; readonly cwd: string; readonly sessionFile?: string };
 	/** The jobs of `jobs.json` now. */
@@ -962,13 +994,18 @@ export function createWindowAnswers(deps: WindowAnswerDeps): WindowAnswers {
 			for (const turn of [...turns.values()]) await close(turn, { ok: false, error: "the window left the conversation", aborted: true }, now);
 		},
 		seat(cap) {
-			// The very cap object the turn was handed with. The cap in force is that object only while the
-			// message that started is the one this window handed, its content and all (`messageStarted`):
-			// a message of another sender that copies the row's mark runs under a cap of its own, with no grant.
+			// The very cap object the turn was handed with, while the answer is open. The cap in force is
+			// that object once the message that started has the mark and the content this window handed
+			// (`messageStarted`). Other extensions in this pi are inside the same-user boundary: the guard
+			// defends the person against the model, not against code beside it, so a sender that copies
+			// both is not told apart. One rule holds as defence in depth: the grant lives only until the
+			// first message in the answer's run that this window did not hand (`foreignSinceStart`). The
+			// cap's restrictions stay for such a message; its seat carries no grant, and neither does the
+			// answer's own seat from then on.
 			const turn = turns.get(cap.id);
 			const seed = turn?.seed;
-			if (!turn || !seed || turn.closing || turn.rowCap !== cap) return undefined;
-			return { seed, seated: (seat) => void (turn.seat = seat), open: () => turns.get(cap.id) === turn && !turn.closing };
+			if (!turn || !seed || turn.closing || turn.rowCap !== cap || deps.executor.foreignSinceStart(turn.start.row)) return undefined;
+			return { seed, seated: (seat) => void (turn.seat = seat), open: () => turns.get(cap.id) === turn && !turn.closing && !deps.executor.foreignSinceStart(turn.start.row) };
 		},
 	};
 }

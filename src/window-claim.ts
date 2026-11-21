@@ -41,8 +41,9 @@ export interface TurnSlot {
 	cap: RowCap;
 	/**
 	 * What the window handed pi, as `canonicalJson` of the message's content. A message that names the
-	 * row is this slot's only with this very content: the mark is in the request file for anyone to
-	 * copy, and a message of another sender that carries it takes neither this slot nor its cap.
+	 * row is this slot's only with this very content too: the mark is in the request file, so a message
+	 * that copies the mark alone takes neither this slot nor its cap. One that copies the mark and the
+	 * content is not told apart; another extension in this pi is inside the same-user boundary.
 	 */
 	handed: string;
 	/**

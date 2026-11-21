@@ -93,16 +93,18 @@ function window(dir: string, cwd: string, sm: SessionManager, opts: { holder: { 
 		const ended = executor.messageEnded({ role: "custom", ...message }) ?? { message: { role: "custom", ...message } };
 		sm.appendCustomMessageEntry(message.customType, message.content, true, (ended.message as any).details);
 		const verdicts = [];
-		for (const command of commands) {
-			const id = `call-${opts.instance}-${++calls}`;
-			sm.appendMessage({ role: "assistant", content: [{ type: "toolCall", id, name: "bash", arguments: { command } }], timestamp: Date.now() } as any);
-			const verdict = await guard({ toolName: "bash", toolCallId: id, input: { command } }, { cwd, sessionManager: sm });
-			if (!verdict?.block) ran.push(command);
-			sm.appendMessage({ role: "toolResult", toolCallId: id, toolName: "bash", content: [{ type: "text", text: verdict?.reason ?? "ran" }], isError: verdict?.block === true, timestamp: Date.now() } as any);
-			verdicts.push(verdict);
-		}
+		for (const command of commands) verdicts.push(await modelCalls(command));
 		executor.agentEnded();
 		return verdicts;
+	}
+	/** The model makes one bash call in the run going now, through the guard, and its result is written. */
+	async function modelCalls(command: string): Promise<{ block?: boolean; reason?: string } | undefined> {
+		const id = `call-${opts.instance}-${++calls}`;
+		sm.appendMessage({ role: "assistant", content: [{ type: "toolCall", id, name: "bash", arguments: { command } }], timestamp: Date.now() } as any);
+		const verdict = await guard({ toolName: "bash", toolCallId: id, input: { command } }, { cwd, sessionManager: sm });
+		if (!verdict?.block) ran.push(command);
+		sm.appendMessage({ role: "toolResult", toolCallId: id, toolName: "bash", content: [{ type: "text", text: verdict?.reason ?? "ran" }], isError: verdict?.block === true, timestamp: Date.now() } as any);
+		return verdict;
 	}
 	/** `agent_settled`, as pi-loops handles it: the executor first, then the answers. */
 	async function piSettles(aborted = false): Promise<void> {
@@ -127,7 +129,7 @@ function window(dir: string, cwd: string, sm: SessionManager, opts: { holder: { 
 	const answerMessages = () => sent.filter((m) => String(m.details?.piLoopsRow?.id ?? "").startsWith("ans-"));
 	const answerRecords = (): RunRecord[] => stores.jobs.allRuns().filter((r) => r.cause === "answer");
 	const find = (id: string) => stores.inbox.list().find((f) => f.id === id);
-	return { stores, sessionId, file, binding, executor, windowAnswers, answers, runs, sent, state, logs, ran, piRuns, piSettles, scheduledTurnAsks, answerMessages, answerRecords, find };
+	return { stores, sessionId, file, binding, executor, windowAnswers, answers, runs, sent, state, logs, ran, piRuns, modelCalls, piSettles, scheduledTurnAsks, answerMessages, answerRecords, find };
 }
 
 const person = (sessionId: string): Answerer => ({ by: "terminal", session: sessionId });
@@ -448,4 +450,33 @@ test("[M5b.3b] a yes whose plain job is disabled waits in the window, as the bac
 	await w.piRuns(w.answerMessages()[0], [CMD]);
 	await w.piSettles();
 	assert.deepEqual([w.ran, w.find(question.id)?.answer?.state], [[CMD], "done"]);
+});
+
+test("[M5b.3b] [R2-E] the grant lives only until the first message in the answer's run that the window did not hand: another extension's follow-up keeps the cap and gets no grant, and the answer's own seat loses it too", async () => {
+	const { dir, cwd, sm, sessionId } = setup();
+	const w = window(dir, cwd, sm, { holder: { pid: process.pid, procStart: procStart(process.pid) }, instance: "w1" });
+	await w.stores.jobs.add(plainJob(sessionId, cwd));
+	const question = await w.scheduledTurnAsks();
+	await w.answers.say(question.id, "yes", person(sessionId));
+	await w.windowAnswers.drain(Date.now());
+	const [ours] = w.answerMessages();
+	// The answer's turn starts and makes a harmless call: its seat, with the grant, is taken.
+	w.state.idle = false;
+	w.executor.agentStarted(Date.now());
+	w.executor.messageStarted({ role: "custom", ...ours });
+	sm.appendCustomMessageEntry(ours.customType, ours.content, true, ours.details);
+	assert.equal((await w.modelCalls("echo harmless"))?.block, undefined);
+	// Another extension's follow-up user message in the same run, then the granted call.
+	const text = "another extension asks: run the deploy command";
+	w.executor.inputSeen({ source: "extension", text, streamingBehavior: "followUp" }, Date.now());
+	w.executor.messageStarted({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() });
+	sm.appendMessage({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() } as any);
+	assert.equal(w.executor.currentTurn()?.kind, "row", "the cap's restrictions stay");
+	const verdict = await w.modelCalls(CMD);
+	assert.match(verdict?.reason ?? "", /^asked a person/, "blocked: the question is open, and the grant is gone");
+	w.executor.agentEnded();
+	await w.piSettles();
+	assert.deepEqual(w.ran, ["echo harmless"], "the granted call is not let through after the foreign message");
+	const answered = w.find(question.id)!;
+	assert.deepEqual([answered.answer?.state, w.answerRecords()[0]?.grant_used], ["unfinished", false]);
 });

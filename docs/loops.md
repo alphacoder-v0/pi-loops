@@ -646,6 +646,12 @@ and process of pi-loops belongs to that user too, so such a run can reach them. 
 the boundary for that. A path that the shell builds at run time, or a program that reaches the file or the page another
 way, is not caught.
 
+The same boundary holds inside pi: another extension that pi loads runs as you, and the guard
+defends you against the model, not against code beside it. As defence in depth, a yes that runs in
+an open conversation lets its call through only until the first message in that run that pi-loops
+did not hand to pi, such as another extension's message or what you type. After that message, the
+call is blocked.
+
 A search for one of the words shutdown, reboot, halt and poweroff is not refused, when the command
 is no more than a search: `grep -rn shutdown src/`, `rg -n "halt" src | wc -l`,
 `cd src && grep -n halt host.ts`. The command must be one line. Each part of it, between `|`,
