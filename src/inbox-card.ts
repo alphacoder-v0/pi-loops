@@ -366,6 +366,44 @@ export function noQuestionLine(surface: "terminal" | "page", who: string): strin
 	return surface === "terminal" ? `said no: ${who} is told why on its next run; the same command is refused for 14 days` : `You said no. ${who} is told on its next run, and the same command is refused for 14 days.`;
 }
 
+/** A terminal's selector at the end of a turn on a question of its conversation (design 6.4): the refusing answer first. */
+export const SETTLE_NO = "No, do not run it";
+export const SETTLE_YES = "Yes, run it once";
+
+/**
+ * Who a question of a conversation names on its selector and in the lines after it: a scheduled
+ * prompt by its job's name in quotes, else `answerWho`'s words.
+ */
+function settleAsker(entry: Pick<InboxEntry, "cwd" | "job_id">, lane: LaneId, loopName: (jobId: string) => string | undefined): string {
+	const who = answerWho(entry, lane, loopName);
+	return fromScheduledPrompt(lane, entry.job_id) ? `"${cardText(who)}"` : cardText(who);
+}
+
+/**
+ * The selector a terminal opens on a question when a turn settles (design 6.4): `Allow this once?`,
+ * who asked for which tool and why, the command, and what Yes and Esc do. Drawn from the ask's
+ * fields as `questionParts` draws a card, redacted and on one line each.
+ */
+export function settleQuestion(entry: InboxEntry & { ask: NonNullable<InboxEntry["ask"]> }, loopName: (jobId: string) => string | undefined): { title: string; options: [string, string] } {
+	const { tool, command, reason } = entry.ask.call;
+	const asker = settleAsker(entry, entry.ask.lane, loopName);
+	const who = fromScheduledPrompt(entry.ask.lane, entry.job_id) ? `The scheduled prompt ${asker}` : asker.charAt(0).toUpperCase() + asker.slice(1);
+	const lines = ["Allow this once?", `${who} asked to run ${cardText(tool)}: ${cardText(reason).replace(/\.$/, "")}.`];
+	if (command !== undefined) lines.push(cardText(command));
+	lines.push("It went on without it. Yes runs it once in a new turn. Esc leaves the question open (/inbox).");
+	return { title: lines.join("\n"), options: [SETTLE_NO, SETTLE_YES] };
+}
+
+/** What a terminal prints after the selector's Yes (design 6.4): the yes is a row of this conversation, run after the current turn. */
+export function settleYesLine(entry: Pick<InboxEntry, "cwd" | "job_id">, lane: LaneId, loopName: (jobId: string) => string | undefined): string {
+	return `queued: your yes to ${settleAsker(entry, lane, loopName)} runs after the current turn`;
+}
+
+/** What a terminal prints after the selector's No (design 6.4). */
+export function settleNoLine(entry: Pick<InboxEntry, "cwd" | "job_id">, lane: LaneId, loopName: (jobId: string) => string | undefined): string {
+	return `said no: ${settleAsker(entry, lane, loopName)} is told in this conversation`;
+}
+
 /** Why the CLI refuses a claim of a question (design 6.1): a claim from a shell allows no command, so the question stays open for a person to answer where a yes can run it. */
 export function shellClaimOfQuestion(id: string, who: string): string {
 	return `inbox entry ${id} is a question from ${who}, and a claim from a shell allows no command: answer it on the page or in pi with /inbox`;

@@ -194,19 +194,18 @@ export async function run(ctx) {
 	ctx.browser("open", `${ctx.boot.url}?token=${ctx.boot.token}`);
 	await ctx.waitFor("the waiting card in the transcript after a reload", () => { const now = feedCards().filter((c) => c.id === phoneCard.id); return { ok: now.length === 1 && now[0].buttons[0] === "Set it up · this conversation · once", last: now }; }, 30000);
 
-	// 11. The terminal: the same sentence proposes; `/triggers enable` asks with pi's selector, the
-	// card's rows as its title and the same options, the model's choice first. Enter sets it up; Esc
-	// on the schedule's question leaves it proposed.
+	// 11. The terminal: the same sentence proposes, and when the turn settles pi's selector asks by
+	// itself, the card's rows as its title and the same options, the model's choice first. Enter sets
+	// it up. The schedule's question: Esc leaves it proposed and says how to ask again; `/cron enable`
+	// asks again, and Esc there leaves it proposed too.
 	const term = (what) => ctx.waitFor(what.name, () => { const screen = ctx.term.screen(); return { ok: what.ok(screen), last: screen, value: screen }; }, 30000);
 	const proposedRule = (sid) => rules().find((r) => r.proposed && r.proposed.session !== sid);
 	ctx.term.type(EXAMPLES.buildDone);
 	ctx.term.press("Enter");
 	const termRule = await ctx.waitFor("the terminal's proposal", () => { const r = proposedRule(sessionId()); return { ok: !!r, last: rules().length, value: r }; }, 30000);
 	if (termRule.enabled !== false) throw new Error("the terminal's watch runs before it is answered");
-	await term({ name: "the model told the person sees a card", ok: (s) => s.includes("proposed dynamic trigger") });
-	ctx.term.type(`/triggers enable ${termRule.id}`);
-	ctx.term.press("Enter");
-	const selector = await term({ name: "pi's selector with the card's rows and the options", ok: (s) => s.includes("Set up this watch?") && s.includes("Waits for: ~/build.done appears") && /→ Set it up · this conversation · once/.test(s) && s.includes("Set it up · inbox · every time") && s.includes("Cancel") });
+	const selector = await term({ name: "pi's selector at settle, with the card's rows and the options", ok: (s) => s.includes("Set up this watch?") && s.includes("Waits for: ~/build.done appears") && /→ Set it up · this conversation · once/.test(s) && s.includes("Set it up · inbox · every time") && s.includes("Cancel") });
+	if (!selector.includes("proposed dynamic trigger")) throw new Error("the model's line that the person sees a card is not on the screen above the selector");
 	const selectorFile = path.join(ctx.dir, "terminal-selector.txt");
 	fs.writeFileSync(selectorFile, selector);
 	ctx.addEvidence(selectorFile);
@@ -215,14 +214,18 @@ export async function run(ctx) {
 	const termSet = rules().find((x) => x.id === termRule.id);
 	if (termSet.promoteToChat !== true || termSet.fireOnce !== true) throw new Error(`the terminal's first option is this conversation, once: ${JSON.stringify(termSet)}`);
 	await term({ name: "the selector gone after the answer", ok: (s) => !s.includes("↑↓ navigate") });
+	const jobsBeforeAsk = bytes(jobsFile);
 	ctx.term.type(EXAMPLES.ci);
 	ctx.term.press("Enter");
 	const termJob = await ctx.waitFor("the terminal's schedule proposal", () => { const j = jobs().find((x) => x.proposed && x.schedule.kind === "every"); return { ok: !!j, last: jobs().length, value: j }; }, 30000);
-	await term({ name: "the model told the schedule waits", ok: (s) => s.includes("proposed cron job") });
+	await term({ name: "the schedule's selector at settle, the inbox first", ok: (s) => s.includes("Set up this watch?") && s.includes("Runs: every 30m") && /→ Set it up · inbox\b/.test(s) });
 	const jobsBeforeEsc = bytes(jobsFile);
+	if (jobsBeforeEsc === jobsBeforeAsk) throw new Error("the proposal was not written before its selector");
+	ctx.term.press("Escape");
+	await term({ name: "Esc at settle leaves it proposed and says how to ask again", ok: (s) => !s.includes("↑↓ navigate") && s.includes("the watch stays proposed: /cron enable") });
 	ctx.term.type(`/cron enable ${termJob.id}`);
 	ctx.term.press("Enter");
-	await term({ name: "the schedule's selector, the inbox first", ok: (s) => s.includes("Set up this watch?") && s.includes("Runs: every 30m") && /→ Set it up · inbox\b/.test(s) });
+	await term({ name: "/cron enable asks again", ok: (s) => s.includes("Set up this watch?") && s.includes("Runs: every 30m") && /→ Set it up · inbox\b/.test(s) });
 	ctx.term.press("Escape");
 	await term({ name: "the selector gone after Esc", ok: (s) => !s.includes("↑↓ navigate") });
 	await new Promise((resolve) => setTimeout(resolve, 1500));

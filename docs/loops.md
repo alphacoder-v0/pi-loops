@@ -106,6 +106,17 @@ after Esc `pr-watch is still proposed`. Esc is not Cancel. A proposal is answere
 surface answered first, the second prints `already answered: set up` or `already answered:
 cancelled` and changes nothing.
 
+When a turn settles in a terminal, the window asks you about what waits for you in its
+conversation, one selector at a time: first each open question of the conversation (see "When
+something looks wrong" below), oldest first, then each proposal of the conversation, oldest first. A
+proposal's selector is the one `/cron enable` opens, and it prints the same lines. Esc leaves the
+proposal and prints `the watch stays proposed: /cron enable pr-watch asks again` (for a rule,
+`/triggers enable <id>`). The window asks only while it holds the conversation, pi is idle and
+nothing is queued for the conversation, and it checks this again before each selector. It asks
+about each question and each proposal once per pi process, whatever the answer. The page's pi and
+a pi with no UI do not ask: the page draws its own cards. A question of a loop is not asked here:
+it is in the inbox.
+
 Set it up is one write under the store's lock, applied only while `proposed` is still set: the
 fields of the choice, `enabled: true`, `proposed` deleted, and the job's schedule counted from the
 answer. Then the audit line `enable`, then a receipt in the conversation the watch was proposed in:
@@ -659,6 +670,23 @@ it on the page or in pi with `/inbox`, and the question stays new.
 For a plain job's turn, the question is in its conversation's lane: a yes runs as a turn in that
 conversation, as described below for a yes to a finding of a conversation. The checker and a
 `/goal` continuation have nobody to ask, and refuse as before.
+
+While a window has a conversation open, a terminal asks each question of that conversation's lane
+in pi's selector when a turn settles (see "A proposed watch" above):
+
+```
+Allow this once?
+The scheduled prompt "deploy-check" asked to run bash: sudo invocation.
+sudo systemctl restart api
+It went on without it. Yes runs it once in a new turn. Esc leaves the question open (/inbox).
+  No, do not run it
+  Yes, run it once
+```
+
+Yes prints `queued: your yes to "deploy-check" runs after the current turn`, and the yes runs as a
+turn in that window. No prints `said no: "deploy-check" is told in this conversation`. Esc leaves
+the question open for `/inbox` or the page. When another surface answered first, the line says so,
+for example `inbox entry inb-… was already dismissed`.
 
 A run cannot answer for a person, because a yes in the inbox lets a dangerous call through. In an
 unattended run, a built-in file tool (`read`, `write`, `edit`, `grep`, `find`, `ls`) whose path is

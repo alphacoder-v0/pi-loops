@@ -70,6 +70,10 @@ All notable changes to pi-loops are documented here. The format follows
   still create enabled jobs; there, a `gate` argument is refused with `a gate needs a person`. A
   `jobs.json` and a `triggers.json` that 0.24.2 wrote have no proposals: there is nothing to
   convert. See "A proposed watch" in docs/loops.md and docs/triggers.md.
+- **A terminal asks about a proposal or a question of its conversation when a turn settles.** pi's
+  selector shows each open question of the conversation, then each proposal, one at a time and
+  once per pi process. Esc leaves it for `/inbox`, `/cron enable` or the page. See "A proposed
+  watch" in docs/loops.md.
 - **A dangerous call of a loop or a rule check in the background asks you in the inbox.** Before,
   it was only refused. Now the call does not run, and the inbox gets a question with Yes and No.
   The run does not wait for your answer: it is told that a person was asked, and it finishes the

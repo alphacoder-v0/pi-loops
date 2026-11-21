@@ -52,6 +52,7 @@ import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, closedConve
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, newTriggerRow, promotionTarget, promotionView, proofOf, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, sessionFileEntries, stopRow, waitingLine } from "./engine.ts";
 import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, proposalsNotice, queueLines, toolsCapNotice } from "./job-lines.ts";
 import { type Proposal, askProposal } from "./watch-plan.ts";
+import { type SettleState, offerAtSettle, oneRunAtATime, settleOffers, settleReady } from "./settle-offer.ts";
 import type { Row, UnclaimedRow } from "./requests.ts";
 import { WindowExecutor, createWindowAnswers, unattendedTurn } from "./window-executor.ts";
 import { RunList } from "./run-list.ts";
@@ -3651,6 +3652,41 @@ export default function piLoops(pi: ExtensionAPI) {
 			}
 		};
 		await settledTurn(sessionId ? requests.list(sessionId) : [], executor.handedRows, (row) => executor.delivered(row), evaluate, () => drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`)));
+		// Not awaited: a selector waits on the person, and the settle must not wait with it.
+		runSettleOffers(ctx)?.catch((err: any) => log.info(`settle offers: ${err?.message ?? err}`));
+	});
+
+	/** The questions and proposals a selector at settle has shown in this process (src/settle-offer.ts): each once. */
+	const settleOffered = new Set<string>();
+	function settleState(ctx: ExtensionContext): SettleState {
+		const { sessionId, holds } = binding.here();
+		const waiting = sessionId ? requests.list(sessionId).filter((row) => !executor.delivered(row)).length : 0;
+		return { sessionId, held: holds, idle: ctx.isIdle(), queued: waiting + executor.handedRows.length, mode: ctx.mode, hasUI: ctx.hasUI };
+	}
+	const runSettleOffers = oneRunAtATime(async (ctx: ExtensionContext) => {
+		const state = settleState(ctx);
+		if (!settleReady(state)) return;
+		const proposals: Proposal[] = [...stores.jobs.load().filter((job) => job.proposed).map((job): Proposal => ({ kind: "schedule", job })), ...triggers.store.load().filter((rule) => rule.proposed).map((rule): Proposal => ({ kind: "rule", rule }))];
+		const offers = settleOffers({ ...state, findings: stores.inbox.list(), proposals, offered: settleOffered });
+		if (!offers.length) return;
+		const from = { by: "terminal" as const, session: state.sessionId ?? "" };
+		const names = new Map(stores.jobs.load().map((job) => [job.id, job.name ?? job.id]));
+		const results = await offerAtSettle(offers, {
+			select: (title, options) => ctx.ui.select(title, options),
+			say: (id, word) => answers.say(id, word, from),
+			proposals: { stores: { jobs: stores.jobs, rules: triggers.store, requests: stores.requests }, ctx: { now: Date.now, by: createdBy(), actor: "slash", auditJob: (op, before, after) => cronControlAudit(op, "slash", before, after), pollSecs: triggers.pollIntervalSecs, home: process.env.HOME } },
+			loopName: (id) => names.get(id),
+			refused: (id, refusal) => refusedLine(id, refusal),
+			stillOk: () => {
+				const now = settleState(ctx);
+				return now.sessionId === state.sessionId && settleReady(now);
+			},
+			offered: settleOffered,
+			print: (line) => ctx.ui.notify(line, "warning"),
+		});
+		refreshBadge();
+		if (results.some((r) => r.kind === "proposal" && r.outcome === "set")) toolHost.ensureHost?.();
+		if (results.some((r) => (r.kind === "question" && r.said !== "esc") || (r.kind === "proposal" && (r.outcome === "set" || r.outcome === "cancelled")))) await drainRequests();
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {
