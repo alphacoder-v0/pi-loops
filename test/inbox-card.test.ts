@@ -278,6 +278,17 @@ test("[6.4] a yes from the page to a question a conversation's turn asked says i
 	const asked = entry({ status: "claimed", answered_by: "page", answer: { state: "pending", at: AT }, ask: { ...QUESTION, lane: conversation } });
 	assert.equal(yesPageLine({ said: "Y1", finding: asked }, "deploy-check", true), "Approved. It runs in this conversation after the current turn.");
 	assert.equal(yesPageLine({ said: "Y1", finding: { ...asked, ask: QUESTION } }, "nightly", true), "Waiting to run", "a loop's question shows its state");
+	assert.equal(answerLine(asked), "Approved. It runs in this conversation after the current turn.", "the card's line after the yes says the same, not Waiting to run");
+	assert.equal(answerLine(asked, { waiting: "the job is disabled" } as Row), "Waiting to run: the job is disabled", "a row that says why it waits still says why");
+	assert.equal(answerLine({ ...asked, ask: QUESTION }), "Waiting to run", "a loop's pending yes");
+});
+
+test("[6.4] /inbox claim on a question of this window's own conversation says it runs here after the current turn, with no card", () => {
+	const conversation = "0199aaaa-0000-7000-8000-0000000000a1";
+	const asked = entry({ status: "claimed", ask: { ...QUESTION, lane: conversation } });
+	for (const background of [true, false]) assert.equal(yesTerminalLine({ said: "Y1", finding: asked }, '"deploy-check"', background, conversation), "approved: it runs in this conversation after the current turn, with this one command allowed.", `background: ${background}`);
+	assert.equal(yesTerminalLine({ said: "Y1", finding: asked }, '"deploy-check"', true, "0199aaaa-0000-7000-8000-0000000000b2"), 'approved: "deploy-check" resumes the run that asked, with this one command allowed. A card comes here when it ends.', "another conversation's question");
+	assert.equal(yesTerminalLine({ said: "Y1", finding: entry({ status: "claimed", ask: QUESTION }) }, "nightly", true, conversation), "approved: nightly resumes the run that asked, with this one command allowed. A card comes here when it ends.", "a loop's question");
 });
 
 test("[6.1] /inbox ends a new question with the two commands that answer it, by its number", () => {

@@ -46,7 +46,7 @@ const PROBE = `export default function (pi) {
 }
 `;
 
-test("an agent_settled handler opens a selector in pi's terminal, and the answer reaches it", { skip, timeout: 120000 }, async () => {
+test("[settle-probe] an agent_settled handler opens a selector in pi's terminal, and the answer reaches it", { skip, timeout: 120000 }, async () => {
 	const version = spawnSync(pi!, ["--version"], { encoding: "utf8", timeout: 10000 }).stdout.trim();
 	const root = tmp("pi-loops-settle-probe-");
 	const dirs = Object.fromEntries(["home", "agent", "loops", "project"].map((name) => [name, path.join(root, name)])) as Record<string, string>;

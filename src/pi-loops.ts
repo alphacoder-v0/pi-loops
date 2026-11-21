@@ -2212,7 +2212,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							ctx.ui.notify(said.said === "nothing" ? refusedLine(target, said.refusal) : `inbox entry ${target}: a yes came to ${said.said}`, "warning");
 							return;
 						}
-						ctx.ui.notify(yesTerminalLine(said, whoOf(said.finding, said.said === "Y1" ? said.lane : said.finding.lane), !!liveHostRecord()), said.said === "Y1" ? "info" : "warning");
+						ctx.ui.notify(yesTerminalLine(said, whoOf(said.finding, said.said === "Y1" ? said.lane : said.finding.lane), !!liveHostRecord(), from.session), said.said === "Y1" ? "info" : "warning");
 						return;
 					}
 					case "cancel": {

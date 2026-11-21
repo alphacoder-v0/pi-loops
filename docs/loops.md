@@ -86,7 +86,7 @@ your own turn these tools ask with pi's confirm, and in a loop's or a check's ru
 
 ### A proposed watch
 
-In your own turn, `cron_create` does not create a running job. It writes a **proposal**: the job,
+In your own turn in a pi with a UI, `cron_create` does not create a running job. It writes a **proposal**: the job,
 with every check a create makes, `enabled: false` and `proposed: { at, session }` in `jobs.json`.
 `new_trigger` does the same for a rule, in your own turn and in a scheduled or held turn. Nothing
 runs a proposal: the clock, the loop lanes and the rule checks pass over it, and it does not
@@ -95,7 +95,10 @@ not to wait, not to do the action now and not to call the tool again. A sub-agen
 (hop 1), `cron_create` in a scheduled or held turn, `/cron add` and a recipe still create an
 enabled job. A `gate` passed to `cron_create` where it creates at once is refused whole: `a gate
 needs a person: set it with /cron set <name> --gate`. A proposal needs a saved conversation: with
-`--no-session` the tools refuse it.
+`--no-session` the tools refuse it. In your own turn in a pi with no UI (`pi -p`) nobody could
+answer a proposal, so the tools do what 0.24.2 did: `cron_create` creates an enabled job, and
+`new_trigger` asks pi's confirm, which a pi with no UI refuses (`create dynamic trigger requires
+interactive confirmation; a person can do it with the slash command`).
 
 The question is drawn from the record, so it is the same after a reload and a restart: the card's
 rows, `Set up this watch?` and the options of the watch card. The first option is the model's own
@@ -260,15 +263,18 @@ of the decision the finding recommends; on news, it asks the run to investigate 
 The finding's text is given to the run as a quote of what it reported, not as your words. When the
 run's transcript is gone, the run starts from the finding's text. A card comes to your
 conversation when the run ends. A yes does not run, and says why, when the loop was removed or the
-finding has nowhere to run (no loop and no lane). A yes to a finding of a conversation waits in that
-conversation's queue while a window or the page has the conversation open. When nobody has it open,
+finding has nowhere to run (no loop and no lane). A yes to a finding of a conversation runs in that
+conversation. While a window or the page has the conversation open, the yes runs there, as a turn
+after the current one (see "When something looks wrong" below). When nobody has it open,
 pi-loops in the background takes the conversation, as for its plain job's turn, and runs the yes as
 a turn in the conversation's own file, then gives the conversation back. A conversation written in
 the last two minutes is left for a later tick. A yes to a finding of a conversation that was deleted
 does not run, and says why. `/inbox cancel` takes back a yes while it waits; a yes that has
-started or ended cannot be cancelled. Only pi-loops in the background runs a yes: a yes that waits
-to run is work for it, so a window starts it, and while it is not running the line after `/inbox
-claim` adds "It runs when pi-loops runs in the background."
+started or ended cannot be cancelled. A yes to a loop's or a rule check's finding, and one of a
+closed conversation, is work for pi-loops in the background, so a window starts it, and while it is
+not running the line after `/inbox claim` adds "It runs when pi-loops runs in the background."
+`/inbox claim` on a question of the window's own conversation prints `approved: it runs in this
+conversation after the current turn, with this one command allowed.`
 
 A dismiss with words after the number — `/inbox dismiss 2 that file is generated, ignore it` — is
 the one way a person talks back to a loop. The reason is stored on the entry and put in front of

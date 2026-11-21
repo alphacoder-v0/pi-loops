@@ -26,8 +26,10 @@ Tools: `new_trigger` (condition, action, spec, fire_once, promote_to_chat), `lis
 `remove_trigger` (id | all), `set_trigger_state`. Removing and re-enabling ask the user to
 confirm, with `ctx.ui.confirm`.
 
-`new_trigger` never creates a rule that runs at once: it writes a **proposal**, in the person's own
-turn and in a scheduled or held turn alike (see "A proposed watch" in [loops.md](loops.md)). The
+`new_trigger` writes a **proposal**, in the person's own turn and in a scheduled or held turn
+alike (see "A proposed watch" in [loops.md](loops.md)). In the person's own turn in a pi with no UI
+(`pi -p`), where nobody could answer a proposal, it asks pi's confirm as 0.24.2 did, and a pi with
+no UI refuses it. The
 rule is in `triggers.json` with `enabled: false` and `proposed: { at, session }`; no check reads it,
 and it does not expire. The model reads `proposed dynamic trigger dyn-…: the person sees a card …`.
 The question's answers are Result, `promote_to_chat` (*this conversation*, the default in the

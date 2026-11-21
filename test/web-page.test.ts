@@ -4129,6 +4129,36 @@ test("a proposal answered on another surface leaves the transcript; a receipt an
 	dom.dispose();
 });
 
+test("the Loops panel says proposed of a proposed job or rule, from any conversation, and disabled of one a person turned off", { timeout: 20_000 }, async () => {
+	const job = proposedJob(3, {}, "other-session");
+	const rule = proposedRule(1);
+	const automation = {
+		installed: true, dir: "/loops", inboxNew: 0,
+		jobs: [{ id: job.kind === "schedule" ? job.job.id : "", name: "todo-watch", schedule: "every day at 09:00", stateful: true, enabled: false, prompt: "p" }, { id: "cron-99999999", name: "off-job", schedule: "every hour", stateful: true, enabled: false, prompt: "q" }],
+		rules: [{ id: rule.kind === "rule" ? rule.rule.id : "", condition: "~/build.done appears", action: "notify", enabled: false, fireOnce: true }, { id: "dyn-" + "9".repeat(32), condition: "off rule", action: "notify", enabled: false, fireOnce: false }],
+	};
+	const { dom, doc } = await watchPage({ "/watch": listed(rule, job) }, { automation });
+	const panel = String(doc.getElementById("auto").innerHTML);
+	assert.match(panel, /todo-watch<\/b><span class="m">every day at 09:00 · proposed</, "a proposed job, of another conversation");
+	assert.match(panel, /off-job<\/b><span class="m">every hour · disabled</, "a job a person turned off");
+	assert.match(panel, /~\/build\.done appears<\/b><span class="m">proposed · once</, "a proposed rule");
+	assert.match(panel, /off rule<\/b><span class="m">disabled · repeat</, "a rule a person turned off");
+	dom.dispose();
+});
+
+test("the Loops panel says proposed from the state's own field, before /watch has answered", { timeout: 20_000 }, async () => {
+	const automation = {
+		installed: true, dir: "/loops", inboxNew: 0,
+		jobs: [{ id: "cron-11111111", name: "todo-watch", schedule: "every day at 09:00", stateful: true, enabled: false, proposed: true, prompt: "p" }],
+		rules: [{ id: "dyn-" + "1".repeat(32), condition: "~/build.done appears", action: "notify", enabled: false, proposed: true, fireOnce: true }],
+	};
+	const { dom, doc } = await watchPage({ "/watch": { proposals: [] } }, { automation });
+	const panel = String(doc.getElementById("auto").innerHTML);
+	assert.match(panel, /todo-watch<\/b><span class="m">every day at 09:00 · proposed</, "a proposed job, with no proposal listed yet");
+	assert.match(panel, /~\/build\.done appears<\/b><span class="m">proposed · once</, "a proposed rule, with no proposal listed yet");
+	dom.dispose();
+});
+
 test("a page moved to another conversation draws that conversation's proposals, and none of the one it left", { timeout: 20_000 }, async () => {
 	const { dom, cards, send, all } = await watchPage({ "/watch": listed(proposedRule(1), proposedJob(2)) });
 	cardParts(cards("feed")[0]).button("Set it up · this conversation · once").onclick();

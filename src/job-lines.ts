@@ -115,7 +115,7 @@ export function pickQueued(rows: readonly Row[], ref: string): Row | undefined {
 
 /**
  * The one-time line a session start says when plain jobs carry `--tools`: 0.22.8 stored the list
- * and never used it; now a tool outside it is not run, and pi-loops asks the person. Undefined when
+ * and never used it; now a command outside it is not run, and pi-loops asks the person; another tool outside it is refused. Undefined when
  * no enabled plain job has one. `names` are what `/cron set` takes.
  */
 export function toolsCapNotice(jobs: readonly LoopJob[]): string | undefined {
@@ -123,7 +123,7 @@ export function toolsCapNotice(jobs: readonly LoopJob[]): string | undefined {
 	if (!capped.length) return undefined;
 	const names = capped.map((j) => j.name ?? j.id);
 	const one = capped.length === 1;
-	return `[cron] ${plural(capped.length, "plain job")} ${one ? "has" : "have"} --tools, which now limit ${one ? "its" : "their"} turns (a tool outside the list is not run: pi-loops asks you, in the conversation and in /inbox): ${names.join(", ")} — /cron set <ref> --tools - clears it`;
+	return `[cron] ${plural(capped.length, "plain job")} ${one ? "has" : "have"} --tools, which now limit ${one ? "its" : "their"} turns (a command outside the list is not run: pi-loops asks you, in the conversation and in /inbox; another tool outside it is refused): ${names.join(", ")} — /cron set <ref> --tools - clears it`;
 }
 
 /**

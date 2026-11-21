@@ -324,6 +324,9 @@ export function answerWho(finding: Pick<InboxEntry, "cwd" | "job_id">, lane: Lan
 	return "its conversation";
 }
 
+/** What a card says of a yes to a conversation's question that waits (design 6.4). */
+const CONVERSATION_YES = "Approved. It runs in this conversation after the current turn.";
+
 /** The sentence a question's unfinished answer ends with when it names none: the cautious one (C3). */
 const MAY_HAVE_RUN = "The command may or may not have run.";
 
@@ -340,7 +343,9 @@ export function answerLine(finding: InboxEntry, row?: Row, summary?: string): st
 	const why = cardText(status.why ?? "");
 	switch (status.status) {
 		case "pending":
-			return why ? `Waiting to run: ${why}` : "Waiting to run";
+			if (why) return `Waiting to run: ${why}`;
+			// A conversation's question runs there, as a turn after the current one (design 6.4).
+			return finding.ask && parseLane(finding.ask.lane)?.kind === "conversation" ? CONVERSATION_YES : "Waiting to run";
 		case "started":
 			return "Running";
 		case "done": {
@@ -374,10 +379,12 @@ export const YES_WAITS_FOR_BACKGROUND = "It runs when pi-loops runs in the backg
  * What a terminal prints after a yes (design 6.1, 6.2). Y1 on a question: the run that asked
  * resumes with the one call allowed. Y1 on any other finding: the run that reported it picks it up.
  * Y2: why nothing runs. `background`: pi-loops runs in the background now; when it does not, a Y1
- * says that the yes runs once it does.
+ * says that the yes runs once it does. `here`: the conversation this window holds, whose own
+ * questions it runs as a turn after the current one (design 6.4), with no card.
  */
-export function yesTerminalLine(said: { said: "Y1"; finding: InboxEntry } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, background: boolean): string {
+export function yesTerminalLine(said: { said: "Y1"; finding: InboxEntry } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, background: boolean, here?: string): string {
 	if (said.said === "Y2") return `${said.why}; nothing runs`;
+	if (said.finding.ask && here !== undefined && said.finding.ask.lane === here && parseLane(here)?.kind === "conversation") return "approved: it runs in this conversation after the current turn, with this one command allowed.";
 	const waits = background ? "" : ` ${YES_WAITS_FOR_BACKGROUND}`;
 	if (said.finding.ask) return `approved: ${who} resumes the run that asked, with this one command allowed.${waits} A card comes here when it ends.`;
 	return `claimed: ${who} picks this up in the run that reported it, in the background.${waits} A card comes here when it ends.`;
@@ -397,8 +404,6 @@ export function clearLeftTail(questions: number): string {
  */
 export function yesPageLine(said: { said: "Y1"; finding: InboxEntry; queued?: boolean } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, transcriptKept: boolean): string {
 	if (said.said === "Y2") return `Not run (${said.why})`;
-	// A conversation's question runs there, as a turn after the current one (design 6.4).
-	if (said.finding.ask && parseLane(said.finding.ask.lane)?.kind === "conversation" && said.finding.answer?.state === "pending") return "Approved. It runs in this conversation after the current turn.";
 	if (said.finding.ask) return answerLine(said.finding) ?? "Waiting to run";
 	if (said.queued === false) return "Your yes is saved, but its run could not be queued. pi-loops queues it again on its next tick.";
 	return transcriptKept ? "Running in the background, in the run that reported it." : `Running in the background. The run's transcript is gone, so ${who} starts from the finding's text.`;

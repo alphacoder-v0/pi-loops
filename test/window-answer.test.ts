@@ -35,7 +35,8 @@ const JOB = "cron-fedcba9876543210fedcba9876543210";
 const MAYBE = "The command may or may not have run.";
 
 /** A call of a tool other than bash, as the model makes it. */
-type ToolUse = { toolName: string; input: Record<string, unknown> };
+/** A tool call; `parentToolCallId` makes it a nested call, made inside another tool's call. */
+type ToolUse = { toolName: string; input: Record<string, unknown>; parentToolCallId?: string };
 
 /** A pid no process has: a child that ran and exited. */
 const deadPid = (): number => spawnSync(process.execPath, ["-e", ""]).pid!;
@@ -102,9 +103,9 @@ function window(dir: string, cwd: string, sm: SessionManager, opts: { holder: { 
 	/** The model makes one call in the run going now, through the guard, and its result is written: a bash command, or `{ toolName, input }`. `ran` gets the command, or `<tool> <input as JSON>`. */
 	async function modelCalls(use: string | ToolUse): Promise<{ block?: boolean; reason?: string } | undefined> {
 		const id = `call-${opts.instance}-${++calls}`;
-		const { toolName, input } = typeof use === "string" ? { toolName: "bash", input: { command: use } } : use;
+		const { toolName, input, parentToolCallId } = typeof use === "string" ? { toolName: "bash", input: { command: use }, parentToolCallId: undefined } : use;
 		sm.appendMessage({ role: "assistant", content: [{ type: "toolCall", id, name: toolName, arguments: input }], timestamp: Date.now() } as any);
-		const verdict = await guard({ toolName, toolCallId: id, input }, { cwd, sessionManager: sm });
+		const verdict = await guard({ toolName, toolCallId: id, ...(parentToolCallId ? { parentToolCallId } : {}), input }, { cwd, sessionManager: sm });
 		if (!verdict?.block) ran.push(typeof use === "string" ? use : `${toolName} ${JSON.stringify(input)}`);
 		sm.appendMessage({ role: "toolResult", toolCallId: id, toolName, content: [{ type: "text", text: verdict?.reason ?? "ran" }], isError: verdict?.block === true, timestamp: Date.now() } as any);
 		return verdict;
@@ -145,7 +146,7 @@ function setup() {
 	return { dir, cwd, ...conv };
 }
 
-test("[M5b.3b] a yes to a question a window's scheduled turn asked runs in that window once pi is idle: one turn, the granted call once and the same call asked again, done with its record, no news, the row gone", async () => {
+test("[M5b.3b] [E4w] [C3w] a yes to a question a window's scheduled turn asked runs in that window once pi is idle: one turn, the granted call once and the same call asked again, done with its record, no news, the row gone", async () => {
 	const { dir, cwd, sm, sessionId, file } = setup();
 	const w = window(dir, cwd, sm, { holder: { pid: process.pid, procStart: procStart(process.pid) }, instance: "w1" });
 	await w.stores.jobs.add(plainJob(sessionId, cwd));
@@ -183,6 +184,37 @@ test("[M5b.3b] a yes to a question a window's scheduled turn asked runs in that 
 	await w.windowAnswers.tick(Date.now());
 	await w.piSettles();
 	assert.deepEqual([w.answerMessages().length, w.answerRecords().length], [1, 1], "nothing more");
+});
+
+test("[M5b.3b] a nested dangerous call in a window's scheduled turn is refused as in the background, and files no question", async () => {
+	const { dir, cwd, sm, sessionId } = setup();
+	const w = window(dir, cwd, sm, { holder: { pid: process.pid, procStart: procStart(process.pid) }, instance: "w1" });
+	await w.stores.jobs.add(plainJob(sessionId, cwd));
+	const row = plainJobRow(plainJob(sessionId, cwd), plainRunId(JOB, stamp(Date.now() - 30_000)), `cron:${JOB}`, "", { pid: process.pid, instance: "w1", version: "0" } as any);
+	w.stores.requests.appendIfAbsent(row);
+	assert.equal(w.executor.turn(row), "sent");
+	const [verdict] = await w.piRuns(w.sent.at(-1), [{ toolName: "bash", input: { command: CMD }, parentToolCallId: "outer-1" }]);
+	assert.match(verdict?.reason ?? "", /^refused by pi-loops: .* This run is unattended/);
+	assert.deepEqual([w.ran, w.stores.inbox.list().filter((f) => f.ask)], [[], []], "nothing ran and nobody was asked");
+});
+
+test("[M5b.3b] a nested call in the answer's turn is refused as in the background: no question, and the grant is left for the call itself", async () => {
+	const { dir, cwd, sm, sessionId } = setup();
+	const w = window(dir, cwd, sm, { holder: { pid: process.pid, procStart: procStart(process.pid) }, instance: "w1" });
+	await w.stores.jobs.add(plainJob(sessionId, cwd));
+	const question = await w.scheduledTurnAsks();
+	assert.equal((await w.answers.say(question.id, "yes", person(sessionId))).said, "Y1");
+	await w.windowAnswers.tick(Date.now());
+	const [turn] = w.answerMessages();
+	const asksBefore = w.stores.inbox.list().filter((f) => f.ask).length;
+	const verdicts = await w.piRuns(turn, [{ toolName: "bash", input: { command: CMD }, parentToolCallId: "outer-1" }, CMD]);
+	assert.equal(verdicts[0]?.block, true, "the nested call is blocked");
+	assert.match(verdicts[0]?.reason ?? "", /^refused by pi-loops: .* This run is unattended/, "refused as a nested call in the background is (no-transcript)");
+	assert.equal(w.stores.inbox.list().filter((f) => f.ask).length, asksBefore, "no question is filed");
+	assert.equal(verdicts[1], undefined, "the grant is still there for the call itself");
+	assert.deepEqual(w.ran, [CMD], "only the granted call ran, once");
+	await w.piSettles();
+	assert.equal(w.answerRecords()[0]?.grant_used, true);
 });
 
 test("[M5b.9] a yes to a control-plane call a window's scheduled turn asked about runs that one call in the window, also when the job declares its tools", async () => {
@@ -234,6 +266,33 @@ test("[M5b.3b] a yes that arrives while a turn runs waits for that turn to settl
 	await w.piRuns(w.answerMessages()[0], [CMD]);
 	await w.piSettles();
 	assert.deepEqual([w.ran, w.find(question.id)?.answer?.state, w.answerRecords().length], [[CMD], "done", 1]);
+});
+
+test("[M5b.3b] [H1w] [no-row-window] a pending yes whose row was lost gets its row back at the window's next tick, then runs once when pi is idle", async () => {
+	const { dir, cwd, sm, sessionId } = setup();
+	const w = window(dir, cwd, sm, { holder: { pid: process.pid, procStart: procStart(process.pid) }, instance: "w1" });
+	await w.stores.jobs.add(plainJob(sessionId, cwd));
+	const question = await w.scheduledTurnAsks();
+	w.state.idle = false;
+	w.executor.agentStarted(Date.now());
+	assert.equal((await w.answers.say(question.id, "yes", person(sessionId))).said, "Y1");
+	const rowId = answerRowId(question.id);
+	w.stores.requests.remove(sessionId, [rowId]);
+	assert.deepEqual([w.stores.requests.list(sessionId), w.find(question.id)?.answer?.state], [[], "pending"], "a pending answer with no row");
+
+	const met = await w.windowAnswers.tick(Date.now());
+	assert.deepEqual(w.stores.requests.list(sessionId).map((r) => [r.id, r.run]), [[rowId, undefined]], "the tick puts the row back");
+	assert.deepEqual(met.map((m) => m.met), ["hold"], "and it waits for the turn that runs");
+	assert.equal(w.answerMessages().length, 0);
+
+	w.executor.agentEnded();
+	await w.piSettles();
+	assert.deepEqual((await w.windowAnswers.drain(Date.now())).map((m) => m.met), ["E4"]);
+	assert.equal(w.answerMessages().length, 1, "one turn handed to pi");
+	await w.piRuns(w.answerMessages()[0], [CMD]);
+	await w.piSettles();
+	assert.deepEqual([w.ran, w.find(question.id)?.answer?.state, w.answerRecords().length], [[CMD], "done", 1], "the granted call ran once and the answer is done");
+	assert.deepEqual(w.stores.requests.list(sessionId), [], "the row is gone");
 });
 
 test("[M5b.3b] the person stops the answer's turn: it closes unfinished, stopped by a person, with the careful news once", async () => {

@@ -281,12 +281,15 @@ const deny = (text: string) => ({ content: [{ type: "text" as const, text }], is
 const WATCH_SENTENCE = " A message that starts with `Watch for:` comes from the page's Watch box: answer it with one of these two tools (new_trigger or cron_create); if it names no time and nothing to wait for, call neither, do nothing, and say it reads like something to do now. Never do the action of a `Watch for:` message yourself.";
 
 /**
- * Whose turn calls a create tool (design 2.5): the person's own at hop 0; a scheduled or held turn,
- * which pi-loops started and nobody may be watching; or a sub-agent's run at hop 1.
+ * Whose turn calls a create tool (design 2.5): the person's own at hop 0 with a UI; the person's own
+ * in a pi with no UI (`pi -p`), where nobody could answer a proposal; a scheduled or held turn, which
+ * pi-loops started and nobody may be watching; or a sub-agent's run at hop 1.
  */
-type CreateTurn = "person" | "unattended" | "sub-agent";
-function turnOf(scope: ToolScope, host: ToolHost): CreateTurn {
-	return scope.hop > 0 ? "sub-agent" : host.scheduledTurn?.() ? "unattended" : "person";
+type CreateTurn = "person" | "no-ui" | "unattended" | "sub-agent";
+function turnOf(scope: ToolScope, host: ToolHost, ctx: Pick<ExtensionContext, "hasUI"> | undefined): CreateTurn {
+	if (scope.hop > 0) return "sub-agent";
+	if (host.scheduledTurn?.()) return "unattended";
+	return ctx?.hasUI ? "person" : "no-ui";
 }
 
 /** Where a create tool makes a job at once, a gate is refused whole: only a person sets one (design 3.3). */
@@ -375,6 +378,17 @@ function renderCronJobsForTool(jobs: readonly ListedJob[], host: Pick<ToolHost, 
 	return lines.join("\n");
 }
 
+/** A rule made at once, as `new_trigger` made one before proposals: the person's own turn with no UI, after `confirmTool`. */
+async function addRule(host: ToolHost, input: Parameters<TriggerStore["add"]>[0]) {
+	const rule = await host.triggers.store.add(input);
+	host.refreshBadge();
+	host.ensureHost?.();
+	return {
+		content: [{ type: "text" as const, text: `created dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}\nfire_once: ${rule.fireOnce}\npromote_to_chat: ${rule.promoteToChat}\n(checked every ${host.triggers.pollIntervalSecs}s by a sub-agent in the background)${pausedLine(ownerOf(host).hostPaused)}` }],
+		details: { id: rule.id as string | undefined, condition: rule.condition, action: rule.action, enabled: rule.enabled, fire_once: rule.fireOnce, fired_at: rule.firedAt, promote_to_chat: rule.promoteToChat },
+	};
+}
+
 /** P1 for a rule (design 2.5): the proposal, one write under the store's lock, then the audit line `add`. `new_trigger` creates nothing else. */
 async function proposeRule(host: ToolHost, scope: ToolScope, input: Parameters<TriggerStore["add"]>[0]) {
 	const rule = await host.triggers.store.add(input);
@@ -396,7 +410,7 @@ async function createCron(host: ToolHost, scope: ToolScope, input: CreateJobInpu
 	const tools = job.tools ? `the tools ${job.tools.join(", ")}` : job.builtinTools ? `this chat's built-in tools (${job.builtinTools.join(", ") || "none"})` : "pi's default tools";
 	const where = job.stateful
 		? `Findings will appear in /inbox${job.verify ? " after an independent checker reviews them" : ""}. It runs in the background with ${tools}, not this window's -e extensions or flags.`
-		: `Its result will appear in this chat. While this chat is closed it still runs, in the background, and each run is a model turn. Its turns run with ${tools} under the dangerous-command guard: a dangerous command or a tool outside them is not run: pi-loops asks the person, in the conversation and in the inbox, and the turn goes on without it. In the background they also run without this window's -e extensions or flags.`;
+		: `Its result will appear in this chat. While this chat is closed it still runs, in the background, and each run is a model turn. Its turns run with ${tools} under the dangerous-command guard: a dangerous command, or a command outside them, is not run: pi-loops asks the person, in the conversation and in the inbox, and the turn goes on without it. Another tool outside them is refused. In the background they also run without this window's -e extensions or flags.`;
 	const runsAt = whereRuns(job, ownerOf(host));
 	// Three lines — what was created, when it runs, what it will do — then where its output goes.
 	return {
@@ -442,7 +456,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			},
 			{ additionalProperties: false },
 		),
-		async execute(_id, params) {
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			let condition = cleanCondition(params.condition ?? "");
 			let action = params.action?.trim() ?? "";
 			const fromSpec = !condition || !action;
@@ -459,12 +473,21 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			// The condition alone is where a schedule request lives: an action that names a routine ("post the daily report") is never one.
 			if (!fromSpec && looksLikeFixedScheduleRequest(params.condition ?? "")) return deny("fixed scheduled jobs must use cron_create, not new_trigger");
 			const s = host.session();
+			const turn = turnOf(scope, host, ctx);
+			if (turn === "no-ui") {
+				// Nobody could answer a proposal here: the rule is asked for as before proposals, with
+				// `confirmTool`, which a pi with no UI refuses.
+				const reason = fromSpec ? "create dynamic trigger from `spec` field" : "create dynamic trigger from `condition` + `action` fields";
+				const denied = await host.confirmTool(ctx, { label: "create dynamic trigger", tool: "new_trigger", reason, preview: `when ${previewRedacted(condition, 80)} -> ${previewRedacted(action, 80)}`, args: params }, scope.hop);
+				if (denied) return deny(denied);
+				return addRule(host, { condition, action, cwd: s.cwd, sessionId: s.sessionId, model: s.model, thinking: s.thinking, fireOnce: params.fire_once ?? true, promoteToChat: params.promote_to_chat ?? false });
+			}
 			if (!s.sessionId) return deny(NO_CONVERSATION);
-			// Always a proposal: in the person's own turn and in a scheduled or held one alike, a rule
-			// runs only after the person says yes. Its defaults are the question's first option: in the
-			// person's own turn Result starts at this conversation whatever `promote_to_chat` said (its
-			// documented default is not a choice anyone made); Repeats follows `fire_once`.
-			const promoteToChat = turnOf(scope, host) === "person" ? true : (params.promote_to_chat ?? false);
+			// A proposal: in the person's own turn and in a scheduled or held one alike, a rule runs only
+			// after the person says yes. Its defaults are the question's first option: in the person's own
+			// turn Result starts at this conversation whatever `promote_to_chat` said (its documented
+			// default is not a choice anyone made); Repeats follows `fire_once`.
+			const promoteToChat = turn === "person" ? true : (params.promote_to_chat ?? false);
 			return proposeRule(host, scope, { condition, action, cwd: s.cwd, sessionId: s.sessionId, model: s.model, thinking: s.thinking, fireOnce: params.fire_once ?? true, promoteToChat, proposed: { at: stamp(), session: s.sessionId } });
 		},
 	});
@@ -555,14 +578,14 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			cwd: Type.Optional(Type.String({ description: "Directory a stateful job's sub-agent runs in. Default: current project." })),
 			catch_up: Type.Optional(Type.Boolean({ description: "Run once for a missed tick (default: true for stateful jobs, false for plain jobs)." })),
 		}),
-		async execute(_id, params) {
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			let schedule: LoopJob["schedule"];
 			try {
 				schedule = parseSchedule(params.schedule);
 			} catch (err: any) {
 				return deny(err?.message ?? String(err));
 			}
-			const turn = turnOf(scope, host);
+			const turn = turnOf(scope, host, ctx);
 			// Not in the schema until a gate is something a job can carry; a model that sends one anyway
 			// gets the refusal of design 6.3 where nobody can see the card, and creates nothing.
 			if ((params as { gate?: unknown }).gate !== undefined) return deny(turn === "person" ? "a gate is not something this version of pi-loops can set up: propose the watch without one" : GATE_NEEDS_PERSON);

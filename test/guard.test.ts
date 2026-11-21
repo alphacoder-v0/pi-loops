@@ -323,7 +323,7 @@ test("[PR271] judgeCall: a run that reads the page's token, pairs a browser or s
 	assert.deepEqual(judgeCall(bash("pi-loops status"), turn(), cfg), { kind: "allow" }, "status without its address");
 });
 
-test("[M5b.2] one decider: a call gets the same verdict in a background turn and in a window's scheduled turn; only what each handler does with it differs", async () => {
+test("[M5b.2] [one-decider] one decider: a call gets the same verdict in a background turn and in a window's scheduled turn; only what each handler does with it differs", async () => {
 	const { loops, proj } = ownFiles();
 	const ALLOWED = "rm -rf /var/cache/x";
 	const policy = { allowCommands: [ALLOWED], loopsDir: loops };
@@ -473,7 +473,7 @@ const sudo = { toolName: "bash", toolCallId: "call-1", input: { command: SUDO } 
 /** What the background's guard tells a model whose call a person is asked about (src/guard.ts). */
 const askedWords = (reason: string) => `asked a person: ${reason}. pi-loops did not run this and put the question in front of them. Do not wait for the answer and do not try another way to do the same thing. Finish what does not need it.`;
 
-test("[M5b.3] a scheduled turn in a window that reaches sudo files one question in the conversation's lane, blocks the call with the asked message and opens no dialog; the same call again is told it is asked and files nothing", async () => {
+test("[M5b.3] [Q1w] a scheduled turn in a window that reaches sudo files one question in the conversation's lane, blocks the call with the asked message and opens no dialog; the same call again is told it is asked and files nothing", async () => {
 	const w = window();
 	const row = w.clockFired();
 	const first = await w.call(sudo);

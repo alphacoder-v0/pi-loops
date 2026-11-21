@@ -1123,7 +1123,7 @@ export interface WindowGuardDeps {
  * in force (nothing of ours is running: between settle cycles), the one unknown that is allowed.
  * Whose turn it is comes first, and a failure to learn even that refuses.
  */
-export function windowGuard(deps: WindowGuardDeps): (event: { toolName: string; toolCallId?: string; input?: unknown }, ctx: WindowContext | undefined) => Promise<ToolCallEventResult | undefined> {
+export function windowGuard(deps: WindowGuardDeps): (event: { toolName: string; toolCallId?: string; parentToolCallId?: string; input?: unknown }, ctx: WindowContext | undefined) => Promise<ToolCallEventResult | undefined> {
 	const seats = deps.seats ?? new GuardSeats();
 	/** The seat in force: for one session and one cap object, the one the turn in force runs under. */
 	let held: { session: object; cap: RowCap; seat?: GuardSeat; leave?: () => void; answer?: AnswerSeatOffer } | undefined;
@@ -1161,7 +1161,7 @@ export function windowGuard(deps: WindowGuardDeps): (event: { toolName: string; 
 			const cfg = deps.config();
 			if (!unattendedTurn(current)) return undefined;
 			const trace = current.id.slice(0, 8);
-			const call = { toolName: event.toolName, toolCallId: event.toolCallId ?? "", input: event.input, ...(ctx?.cwd ? { cwd: ctx.cwd } : {}) };
+			const call = { toolName: event.toolName, toolCallId: event.toolCallId ?? "", ...(event.parentToolCallId !== undefined ? { parentToolCallId: event.parentToolCallId } : {}), input: event.input, ...(ctx?.cwd ? { cwd: ctx.cwd } : {}) };
 			const guard: GuardDeps = { inbox: deps.inbox, allowCommands: () => cfg.allowCommands, loopsDir: cfg.loopsDir ?? defaultLoopsDir(), now: deps.now, log: (line) => deps.log(`${line} in scheduled turn ${trace}`), ...(deps.controlTarget ? { controlTarget: deps.controlTarget } : {}) };
 			const declared = { ...(current.tools ? { tools: current.tools } : {}), ...(current.builtinTools ? { builtinTools: current.builtinTools } : {}) };
 			const notShown = (reason: string) => {

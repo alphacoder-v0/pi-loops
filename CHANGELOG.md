@@ -42,6 +42,18 @@ All notable changes to pi-loops are documented here. The format follows
   commands and the tools its job did not declare ran with no question. `cron_remove`,
   `set_cron_job_state`, `remove_trigger` and `set_trigger_state` still asked there, with the
   60-second confirm that refused when nobody answered.
+- **In a pi started with `--no-session`, `cron_create` and `new_trigger` refuse where they would
+  propose.** A proposal waits in a saved conversation for your answer, and its receipt lands there.
+  In your own turn in such a pi, both tools now answer `a watch is proposed in a saved
+  conversation, and this one is not saved (--no-session): /cron add or /new-trigger in a saved one
+  sets it up`, and nothing is created. Before, they asked in the same call and created the job or
+  the rule. In a pi with no UI (`pi -p`) nothing changed: `cron_create` creates the job at once,
+  and `new_trigger` is refused because nobody can confirm it.
+- **A scheduled turn in an open window no longer opens the 60-second dialog for a dangerous
+  command.** The call is blocked, the question goes to the inbox (and to pi's selector when the
+  turn settles), and a yes runs the call in a later turn, not in the same one. A tool that is not a
+  command and that the job did not declare is refused, and nobody is asked, since a card cannot
+  show what it would do. Before, the dialog let you allow it.
 - **Close every pi-loops 0.22 window before you upgrade.** This version no longer holds such a
   window back, and a window no longer warns you that an older one has the same conversation open.
   Windows of 0.23 and later are not affected. While a 0.22 window stays open:
@@ -60,7 +72,7 @@ All notable changes to pi-loops are documented here. The format follows
 ### Changed
 
 - **A watch the agent sets up in your own turn waits for your yes.** `cron_create` and
-  `new_trigger` in your own turn, and `new_trigger` in a scheduled turn, now write a proposal: the
+  `new_trigger` in your own turn in a pi with a UI, and `new_trigger` in a scheduled turn, now write a proposal: the
   job or the rule, with `enabled: false` and `proposed: { at, session }`. Nothing runs it until you
   say "Set it up". The agent is told not to wait and not to do the action now. `/cron enable
   <name>` and `/triggers enable <id>` on a proposal ask the question in pi's selector; Esc leaves it
@@ -126,7 +138,8 @@ All notable changes to pi-loops are documented here. The format follows
   back. A note of the loop's clock is `note: <the note>`, and a run that waits to start is `queued
   since <time>: <why>`. `cron_list` gives the model the same facts as `last_error`, `note` and
   `queued`. The panel above the editor counts a proposal as proposed: `Loops  2 · 1 proposed`, where
-  it said `1 disabled`.
+  it said `1 disabled`, and the page's Loops panel says `proposed` of a proposed job or rule, where
+  it said `disabled`.
 - **CONTRACT.md §2.5 names the texts that pi-loops writes itself**, so a reader can tell them from
   what a run said. No line was added to section 2.
 - **A terminal asks about a proposal or a question of its conversation when a turn settles.** pi's
@@ -148,13 +161,16 @@ All notable changes to pi-loops are documented here. The format follows
   finding's text. A card comes to your conversation when the run ends. Before, a claim was a turn
   in the conversation that created the loop, and **Yes, do it here** is gone. A yes to a finding of
   a removed loop, or a finding with nowhere to run it, does not run, and says why. A yes to a
-  finding of a conversation runs when nobody has the conversation open: pi-loops in the background
-  takes the conversation, runs the yes as a turn in it, and gives it back. While a window or the
-  page has it open, the yes waits. A yes to a finding of a deleted conversation does not run, and
-  says why. `pi-loops inbox claim` marks the finding claimed, and nothing runs. On a question it is
-  refused, and the question stays new: answer it on the page or in pi with `/inbox`. Only pi-loops
-  in the background runs a yes, so a yes that waits to run starts it, and while it is not running
-  `/inbox claim` says that the yes runs when it does.
+  finding of a conversation runs in that conversation. While a window or the page has it open, the
+  yes runs there as a turn after the current one, and `/inbox claim` in that window says `approved:
+  it runs in this conversation after the current turn, with this one command allowed.` When nobody
+  has it open, pi-loops in the background takes the conversation, runs the yes as a turn in it,
+  and gives it back. A yes to a finding of a deleted conversation does not run, and says why.
+  `pi-loops inbox claim` marks the finding claimed, and nothing runs. On a question it is refused,
+  and the question stays new: answer it on the page or in pi with `/inbox`. A yes to a loop's or a
+  rule check's finding, or to one of a closed conversation, is work for pi-loops in the background,
+  so a yes that waits to run starts it, and while it is not running `/inbox claim` says that the
+  yes runs when it does.
 - **You can cancel a yes that has not started.** `/inbox cancel <n|id>`, `pi-loops inbox cancel
   <id>` and the page's **Cancel** make the finding `new` again, under the same id. `/inbox cancel`
   with no argument lists the answers that wait or run. A yes that started or ended cannot be

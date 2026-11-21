@@ -15,7 +15,7 @@ import { ownerViewOf } from "../src/job-owner.ts";
 import { switchTargets } from "../src/job-status.ts";
 import { ruleLines } from "../src/rule-lines.ts";
 import { openStores, type Stores } from "../src/stores.ts";
-import { type ToolHost, GATE_NEEDS_PERSON, automationTools, createLoopJob } from "../src/tools.ts";
+import { type ToolHost, GATE_NEEDS_PERSON, automationTools, confirmControlPlane, createLoopJob } from "../src/tools.ts";
 import { TriggerRuntime } from "../src/trigger-runtime.ts";
 import { RUNTIME_RIDERS } from "../src/ticker.ts";
 import { type AnswerContext, type Proposal, answerProposal, askProposal, planOf, receiptRowId, watchChoice } from "../src/watch-plan.ts";
@@ -98,6 +98,34 @@ test("[P1] cron_create at hop 1 and in a scheduled or held turn creates an enabl
 	} finally {
 		await host.stop();
 	}
+});
+
+test("[P1] in a person's own turn in a pi with no UI (pi -p) nobody could answer a proposal: cron_create creates an enabled job at once and new_trigger asks pi's confirm, as before proposals; with a UI both propose", async () => {
+	const NO_UI = { hasUI: false } as any;
+	const w = world();
+	const tools = automationTools({ hop: 0, actor: "tool" }, w.host);
+	const run = (name: string, args: Record<string, unknown>, ctx: unknown) => tools.find((t) => t.name === name)!.execute("i", args, undefined, undefined, ctx as any);
+	const made = await run("cron_create", { schedule: "every 10m", action: "look", stateful: true, name: "pr-watch" }, NO_UI);
+	const [j] = w.stores.jobs.load();
+	assert.match(String(made.content[0].text), new RegExp(`^created cron job ${j.id} "pr-watch"\\nschedule: every 10m\\n`), "the model reads the created line");
+	assert.deepEqual([j.enabled, j.proposed, j.stateful], [true, undefined, true]);
+	const rule = await run("new_trigger", { condition: "~/build.done appears", action: "run cargo test" }, NO_UI);
+	const [r] = w.stores.rules.load();
+	assert.match(String(rule.content[0].text), new RegExp(`^created dynamic trigger ${r.id}\\ncondition: ~/build.done appears\\naction: run cargo test\\nfire_once: true\\npromote_to_chat: false\\n`), "the confirm said yes: the rule is made");
+	assert.deepEqual([r.enabled, r.proposed], [true, undefined]);
+
+	// The window's own confirm, which a pi with no UI refuses: the rule is not made, as on 0.24.2.
+	const refusing = world();
+	const host: ToolHost = { ...refusing.host, confirmTool: (ctx, req, hop) => confirmControlPlane(ctx, req, hop, { kind: "person" }) };
+	const refused = await automationTools({ hop: 0, actor: "tool" }, host).find((t) => t.name === "new_trigger")!.execute("i", { condition: "c", action: "a" }, undefined, undefined, NO_UI);
+	assert.equal(refused.isError, true);
+	assert.equal(String(refused.content[0].text), "create dynamic trigger requires interactive confirmation; a person can do it with the slash command");
+	assert.deepEqual(refusing.stores.rules.load(), []);
+
+	const ui = world();
+	await ui.call("cron_create", { schedule: "every 10m", action: "look", stateful: true });
+	await ui.call("new_trigger", { condition: "c", action: "a" });
+	assert.deepEqual([ui.stores.jobs.load()[0].proposed?.session, ui.stores.rules.load()[0].proposed?.session], ["s", "s"], "with a UI both propose");
 });
 
 test("[P1] a gate passed to cron_create where it creates at once is refused whole: a gate needs a person", async () => {

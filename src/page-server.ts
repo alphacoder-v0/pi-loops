@@ -1251,6 +1251,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			schedule: j.schedule && typeof j.schedule === "object" ? (scheduleWords(j.schedule) ?? "?") : "?",
 			stateful: !!j.stateful,
 			enabled: !!j.enabled,
+			// A proposal is not a disabled job: it waits for a yes (design 2.5).
+			proposed: !!j.proposed,
 			prompt: maskSecrets(j.prompt),
 			runs: j.status.runs,
 			lastError: maskSecrets(j.status.error),
@@ -1288,7 +1290,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const allRules = readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? [];
 		const rules = allRules
 			.filter(inThisProject)
-			.map((r: any) => ({ id: r.id, condition: maskSecrets(r.condition), action: maskSecrets(r.action), enabled: !!r.enabled, fireOnce: !!r.fireOnce, firedAt: r.firedAt, ...ruleWait(r) }));
+			.map((r: any) => ({ id: r.id, condition: maskSecrets(r.condition), action: maskSecrets(r.action), enabled: !!r.enabled, proposed: !!r.proposed, fireOnce: !!r.fireOnce, firedAt: r.firedAt, ...ruleWait(r) }));
 		// Two counts, not one. They used to be added together, and `/cron` counts jobs only — so the
 		// panel's number disagreed with the command's whenever a rule lived somewhere else, and the line
 		// that exists to say "your job is not gone, it is elsewhere" pointed at `/cron all`, where a

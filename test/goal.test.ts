@@ -46,7 +46,7 @@ test("the evaluator's decision drives the turn, with a budget and pause-on-failu
 	assert.equal(goalActive(paused.state), true, "a paused goal is still the session's goal");
 });
 
-test("a goal waiting on a person waits for them instead of sending the agent back, and is charged nothing", () => {
+test("[goal-waiting] a goal waiting on a person waits for them instead of sending the agent back, and is charged nothing", () => {
 	const decision = parseDecision('{"ok": false, "needs_person": true, "reason": "the agent asked which branch to deploy"}');
 	assert.deepEqual(decision, { ok: false, needsPerson: true, reason: "the agent asked which branch to deploy" });
 	const before = { ...newGoal("the app is deployed"), iterations: 3 };
@@ -354,7 +354,7 @@ test("the extension wires the goal decisions in: the settle judges skipped turns
 	assert.match(source, /: resumeGoal\(goal\);/, "/goal resume goes through resumeGoal");
 });
 
-test("a waiting goal: a person's input resumes it, /goal pause and /goal clear end it, and input leaves a paused or budget-limited goal alone", () => {
+test("[goal-resume] [goal-pause-from-waiting] [goal-clear-from-waiting] a waiting goal: a person's input resumes it, /goal pause and /goal clear end it, and input leaves a paused or budget-limited goal alone", () => {
 	const now = new Date("2026-06-01T12:00:00Z");
 	const waiting = applyDecision({ ...newGoal("the app is deployed", now), iterations: 2 }, { ok: false, needsPerson: true, reason: "which branch?" }, now).state;
 	assert.equal(waiting.status, "waiting");

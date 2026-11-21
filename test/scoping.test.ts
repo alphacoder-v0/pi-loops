@@ -434,7 +434,7 @@ test("cron_create says so while nothing runs in the background, as cron_list doe
 	}
 });
 
-test("cron_create tells the model a plain job's turns are capped, and that a call outside the cap is not run: pi-loops asks the person (design 6.9)", async () => {
+test("cron_create tells the model a plain job's turns are capped, and that a command outside the cap is asked about and another tool refused (design 6.9)", async () => {
 	// The agent said "it will run at 9" without knowing that the run will stop and ask, or refuse,
 	// before a dangerous command or a tool outside the chat's built-ins.
 	const f = fixture();
@@ -443,10 +443,10 @@ test("cron_create tells the model a plain job's turns are capped, and that a cal
 		// A scheduled turn creates at once; a person's own turn proposes (test/proposal.test.ts).
 		const host: ToolHost = { ...f.host, session: () => session, createJob: (input, scope) => createLoopJob(host, input, scope), scheduledTurn: () => true };
 		const plain = await automationTools({ hop: 0, actor: "tool" }, host).find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 5m", action: "ping" }, undefined, undefined, ctx);
-		assert.match(String(plain.content[0].text), /Its turns run with this chat's built-in tools \(read, bash\) under the dangerous-command guard: a dangerous command or a tool outside them is not run: pi-loops asks the person, in the conversation and in the inbox, and the turn goes on without it\. In the background they also run without this window's -e extensions or flags\./);
+		assert.match(String(plain.content[0].text), /Its turns run with this chat's built-in tools \(read, bash\) under the dangerous-command guard: a dangerous command, or a command outside them, is not run: pi-loops asks the person, in the conversation and in the inbox, and the turn goes on without it\. Another tool outside them is refused\. In the background they also run without this window's -e extensions or flags\./);
 		// The skill is what the model reads before it ever calls the tool: the same sentence, with no list.
 		const skill = fs.readFileSync(path.join(process.cwd(), "skills", "pi-loops", "SKILL.md"), "utf8");
-		assert.ok(skill.includes("Its turns run with the chat's built-in tools under the dangerous-command guard: a dangerous command or a tool outside them is not run: pi-loops asks the person, in the conversation and in the inbox, and the turn goes on without it. In the background they also run without this window's -e extensions or flags"), "SKILL.md says the same");
+		assert.ok(skill.includes("Its turns run with the chat's built-in tools under the dangerous-command guard: a dangerous command, or a command outside them, is not run: pi-loops asks the person, in the conversation and in the inbox, and the turn goes on without it. Another tool outside them is refused. In the background they also run without this window's -e extensions or flags"), "SKILL.md says the same");
 	} finally {
 	}
 });
@@ -571,7 +571,7 @@ test("a schedule that cannot be parsed, or a job that would be refused, gives an
 	}
 });
 
-test("a sub-agent has no new_trigger; in a scheduled turn new_trigger proposes and cron_create creates; with no dialog the person's own turn proposes both", async () => {
+test("a sub-agent has no new_trigger; in a scheduled turn new_trigger proposes and cron_create creates; with no dialog the person's own turn keeps 0.24.2's gate: new_trigger asks the host's confirm once and cron_create creates", async () => {
 	const sub = askFixture();
 	try {
 		// Hop 1: a call nobody can approve is not offered at all, so the agent does not try it first.
@@ -581,16 +581,16 @@ test("a sub-agent has no new_trigger; in a scheduled turn new_trigger proposes a
 		assert.equal(sub.selects.length, 0);
 	} finally {
 	}
-	for (const [label, f, ctxOf, created] of [
+	for (const [label, f, ctxOf, proposes] of [
 		["a scheduled turn", askFixture(undefined, { scheduled: true }), (p: any) => p, true],
 		["no dialog", askFixture(), () => ctx, false],
 	] as const) {
 		try {
 			const rule = await f.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "c", action: "a" }, undefined, undefined, ctxOf(f.person));
-			assert.deepEqual(f.asked, [], `${label}: a proposal asks no confirm`);
-			assert.match(String(rule.content[0].text), /^proposed dynamic trigger dyn-/, label);
+			assert.deepEqual(f.asked, proposes ? [] : ["create dynamic trigger"], `${label}: a proposal asks no confirm; with no dialog the host's confirm is asked once`);
+			assert.match(String(rule.content[0].text), proposes ? /^proposed dynamic trigger dyn-/ : /^created dynamic trigger dyn-/, label);
 			const job = await f.tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 5m", action: "a", stateful: true }, undefined, undefined, ctxOf(f.person));
-			assert.match(String(job.content[0].text), created ? /^created cron job cron-/ : /^proposed cron job cron-/, label);
+			assert.match(String(job.content[0].text), /^created cron job cron-/, label);
 			assert.equal(f.selects.length, 0, `${label}: nobody waited on`);
 		} finally {
 		}

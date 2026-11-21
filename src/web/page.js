@@ -59,6 +59,8 @@ const STREAM_PARK_MS = 15000;
 /** How long a send may take before the page says that it is taking long. */
 const SEND_WATCHDOG_MS = 6000;
 let state = {}, cwd = "", busy = false, atBottom = true, takesImages = true;
+/** Every proposal GET /watch listed last, as `kind:id`: the Loops panel says `proposed` of these, not `disabled`. */
+let proposedKeys = new Set();
 /** pi-loops did not answer the last poll: the page keeps what it had, says so once, and sends nothing. */
 let down = false;
 /** Installed once the stream is up; until then a poll has nothing to compare against. */
@@ -1385,7 +1387,7 @@ function renderSidebar(s) {
       const fired = [j.fired ? "last fired " + safeText(clock(j.fired)) : "", j.collapsed ? "skipped overlaps " + num(j.collapsed) : ""].filter(Boolean).join(" · ");
       html += '<details class="card job' + (j.enabled ? "" : " off") + '" data-key="job:' + safeText(j.id) + '">' +
         '<summary><span class="t"><span class="nm"><b>' + safeText(j.label || j.name || j.id) + "</b>" +
-        '<span class="m">' + safeText(j.schedule) + (j.stateful ? "" : " · in its conversation") + (j.enabled ? "" : " · disabled") +
+        '<span class="m">' + safeText(j.schedule) + (j.stateful ? "" : " · in its conversation") + (j.enabled ? "" : j.proposed || proposedKeys.has("schedule:" + str(j.id)) ? " · proposed" : " · disabled") +
         // Decided by the server, with the rule /cron and the Background view use (src/job-health.ts).
         (num(j.failing) ? ' · <span class="bad">failing ×' + num(j.failing) + "</span>" : "") + "</span></span>" +
         '<button data-run="' + safeText(j.id) + '"' + (down ? " disabled" : "") + ">run</button></span>" +
@@ -1414,7 +1416,7 @@ function renderSidebar(s) {
       const when = str(r.condition);
       const cut = clipChars(when, 80);
       html += '<details class="card rule' + (r.enabled ? "" : " off") + '" data-key="rule:' + safeText(r.id) + '">' +
-        '<summary><span class="t"><b>' + safeText(cut) + '</b><span class="m">' + (r.enabled ? "" : "disabled · ") + (r.fireOnce ? "once" : "repeat") + "</span></span>" +
+        '<summary><span class="t"><b>' + safeText(cut) + '</b><span class="m">' + (r.enabled ? "" : r.proposed || proposedKeys.has("rule:" + str(r.id)) ? "proposed · " : "disabled · ") + (r.fireOnce ? "once" : "repeat") + "</span></span>" +
         (r.look ? '<span class="m looks" data-rulelook="' + safeText(r.id) + '"></span>' : "") +
         "</summary>" +
         '<div class="body">' +
@@ -3940,8 +3942,13 @@ async function refreshWatch() {
     return; // the list says the server is not answering; the cards drawn stay
   }
   if (!body || !Array.isArray(body.proposals)) return;
-  proposalsHere = body.proposals.filter((p) => p && typeof p === "object" && p.session === SESSION && (p.kind === "schedule" || p.kind === "rule") && typeof p.id === "string");
+  const valid = body.proposals.filter((p) => p && typeof p === "object" && (p.kind === "schedule" || p.kind === "rule") && typeof p.id === "string");
+  proposalsHere = valid.filter((p) => p.session === SESSION);
+  const keys = new Set(valid.map(proposalKey));
+  const changed = keys.size !== proposedKeys.size || [...keys].some((k) => !proposedKeys.has(k));
+  proposedKeys = keys;
   drawProposals();
+  if (changed && state && state.automation) renderSidebar(state);
 }
 /**
  * A card for each proposal listed and not drawn yet: in the box when it appeared while the box
