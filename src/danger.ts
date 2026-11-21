@@ -4,7 +4,7 @@
  * pi has no built-in denylist — it asks the person at the keyboard instead, which is the right
  * answer while there is one. A scheduled run has nobody to ask, so an unattended loop would
  * otherwise be free to run `rm -rf /` or `git push --force main`. This module is the whole policy
- * as one function; `src/subagent-guard.ts` is what applies it inside every sub-session.
+ * as one function; `judgeCall` in src/guard.ts applies it, inside every sub-session and in a window.
  */
 import * as os from "node:os";
 import * as path from "node:path";

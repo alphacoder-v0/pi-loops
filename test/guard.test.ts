@@ -8,9 +8,9 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type AskOrigin, type Call, type DeclaredCap, type Grant, type ResolvedCap, askFindingId, askId, callKey, inputHash, resolveCap } from "../src/ask.ts";
-import { type GuardDeps, type GuardSeed, type GuardTurn, GuardSeats, guardCall, guardTurn, judgeCall } from "../src/guard.ts";
+import { type CallVerdict, type GuardDeps, type GuardSeed, type GuardTurn, type Question, type ToolCallFacts, GuardSeats, guardCall, guardTurn, judgeCall, subagentGuardExtension, unhandledAsk } from "../src/guard.ts";
 import { Inbox, type InboxEntry as Finding } from "../src/inbox.ts";
-import { subagentGuardExtension } from "../src/subagent-guard.ts";
+import { refusal, windowGuard, windowTurn } from "../src/window-guard.ts";
 import { tmp } from "./tmp.ts";
 
 const LANE = "@cron-a1";
@@ -26,7 +26,7 @@ const grantOf = (command: string, reason = PUSH_REASON): Grant => ({ finding: "i
 /** A run's own SessionManager, as the guard sees it: an object with its session id. */
 const sm = (id: string) => ({ getSessionId: () => id });
 const capOf = (declared: DeclaredCap): ResolvedCap => resolveCap(declared, 900_000);
-const turn = (over: Partial<GuardTurn> = {}): GuardTurn => ({ resumable: true, lane: LANE, open: new Map(), refused: new Map(), asked: 0, ...over });
+const turn = (over: Partial<GuardTurn> = {}): GuardTurn => ({ asksThrough: "inbox", resumable: true, lane: LANE, open: new Map(), refused: new Map(), asked: 0, ...over });
 
 test("[Q1] judgeCall: the policy passes a call, whatever the inbox says", () => {
 	assert.deepEqual(judgeCall(bash("ls -la"), turn(), cfg), { kind: "allow" });
@@ -58,7 +58,7 @@ test("[Q1] judgeCall: an open question for the same call is asked, and files no 
 test("[Q1] judgeCall: a call that needs a person and can be asked is a question", () => {
 	assert.deepEqual(judgeCall(bash(PUSH, { toolCallId: "call-7" }), turn({ asked: 2, open: new Map([["bash other", "ask-x"], ["bash more", "ask-y"], ["bash third", "ask-z"]]) }), cfg), {
 		kind: "question",
-		call: { tool: "bash", tool_call_id: "call-7", command: PUSH, input_sha256: inputHash({ command: PUSH }), reason: PUSH_REASON },
+		ask: { kind: "call", call: { tool: "bash", tool_call_id: "call-7", command: PUSH, input_sha256: inputHash({ command: PUSH }), reason: PUSH_REASON } },
 	});
 });
 
@@ -131,7 +131,6 @@ function world(allow: string[] = []) {
 	const deps: GuardDeps = {
 		inbox: { list: () => (reads++, inbox.list()), fileOnce: (entry, id) => inbox.fileOnce(entry, id) },
 		allowCommands: () => allow,
-		hop: 1,
 		now: () => NOW,
 		log: (m) => log.push(m),
 	};
@@ -262,7 +261,7 @@ test("[M5a.8d] judgeCall: a read, a write, an edit or a grep into the loops dire
 	const seatless = judgeCall(write(path.join(loops, "inbox.jsonl"), proj), turn({ resumable: false, lane: undefined }), policy);
 	assert.deepEqual(seatless, { kind: "refuse", reason: OWN, whyNot: { why: "no-transcript" } }, "with no seat it is refused with the words of a run that has none");
 	assert.equal(judgeCall(bash(`echo '{}' >> ${loops}/inbox.jsonl`), t, policy).kind, "question", "a shell command that names it is shown as written: a question");
-	assert.deepEqual(judgeCall(bash("pi-loops inbox claim inb-1"), t, policy), { kind: "question", call: { tool: "bash", tool_call_id: "call-1", command: "pi-loops inbox claim inb-1", input_sha256: inputHash({ command: "pi-loops inbox claim inb-1" }), reason: "answers for a person" } });
+	assert.deepEqual(judgeCall(bash("pi-loops inbox claim inb-1"), t, policy), { kind: "question", ask: { kind: "call", call: { tool: "bash", tool_call_id: "call-1", command: "pi-loops inbox claim inb-1", input_sha256: inputHash({ command: "pi-loops inbox claim inb-1" }), reason: "answers for a person" } } });
 	assert.deepEqual(judgeCall(bash("pi-loops inbox claim inb-1"), t, { ...policy, allowCommands: ["pi-loops inbox claim inb-1"] }), { kind: "allow" }, "an allow entry permits it, as for any other rule");
 });
 
@@ -292,7 +291,64 @@ test("[M5a.8d] the sub-agent guard judges a relative path against the run's cwd:
 test("[PR271] judgeCall: a run that reads the page's token, pairs a browser or starts a pi of the person's is asked about, as a call that answers for a person", () => {
 	const via = `T=$(pi-loops status --url | sed 's/.*token=//'); curl -s -X POST -H "x-pi-web-token: $T" -H 'content-type: application/json' -d '{"id":"inb-0123456789abcdef0123456789abcdef"}' http://127.0.0.1:4173/inbox/claim`;
 	for (const command of ["pi-loops status --url", "pi-loops pair", "pi-loops open", via, 'pi -p "/inbox claim 1"', "echo '/inbox claim 1' | pi -p"]) {
-		assert.deepEqual(judgeCall(bash(command), turn(), cfg), { kind: "question", call: { tool: "bash", tool_call_id: "call-1", command, input_sha256: inputHash({ command }), reason: "answers for a person" } }, command);
+		assert.deepEqual(judgeCall(bash(command), turn(), cfg), { kind: "question", ask: { kind: "call", call: { tool: "bash", tool_call_id: "call-1", command, input_sha256: inputHash({ command }), reason: "answers for a person" } } }, command);
 	}
 	assert.deepEqual(judgeCall(bash("pi-loops status"), turn(), cfg), { kind: "allow" }, "status without its address");
+});
+
+test("[M5b.2] one decider: a call gets the same verdict in a background turn and in a window's scheduled turn; only what each handler does with it differs", async () => {
+	const { loops, proj } = ownFiles();
+	const ALLOWED = "rm -rf /var/cache/x";
+	const policy = { allowCommands: [ALLOWED], loopsDir: loops };
+	const at = (call: ReturnType<typeof bash> | ReturnType<typeof write>): ToolCallFacts => ({ ...call, toolCallId: "call-1", cwd: proj });
+	const question = (command: string, reason: string): CallVerdict => ({ kind: "question", ask: { kind: "call", call: { tool: "bash", tool_call_id: "call-1", command, input_sha256: inputHash({ command }), reason } } });
+	const undeclared = "bash is not among the tools the job declared (read)";
+	const rows: Array<{ name: string; call: ToolCallFacts; declared?: { tools: string[] }; verdict: CallVerdict; background?: "asked" | "not-shown" | "allowed"; window: "asked" | "blind" | "allowed" }> = [
+		{ name: "a dangerous command", call: at(bash(PUSH)), verdict: question(PUSH, PUSH_REASON), background: "asked", window: "asked" },
+		{ name: "a path tool into the loops directory", call: at(write("../loops/inbox.jsonl", proj)), verdict: { kind: "refuse", reason: OWN, whyNot: { why: "not-shown" } }, background: "not-shown", window: "blind" },
+		// The runner gives a background run only the tools its cap declares, so its turn declares none and the handler is not driven here.
+		{ name: "a tool outside what the row declared", call: at(bash("echo hi")), declared: { tools: ["read"] }, verdict: question("echo hi", undeclared), window: "asked" },
+		{ name: "an allowed call", call: at(bash("ls -la")), verdict: { kind: "allow" }, background: "allowed", window: "allowed" },
+		{ name: "an allow-listed command", call: at(bash(ALLOWED)), verdict: { kind: "allow" }, background: "allowed", window: "allowed" },
+	];
+	for (const row of rows) {
+		const cap = { kind: "row" as const, id: "run-1111222233334444", mode: "unattended" as const, ...(row.declared ?? {}) };
+		const seat = new GuardSeats().enter(sm("s1"), "/runs/s1.jsonl", { lane: LANE, origin: { ...ORIGIN, cwd: proj }, cap: capOf({ cwd: proj }) }).seat;
+		const background: GuardTurn = { ...guardTurn(seat, [], NOW), ...(row.declared ? { declared: row.declared } : {}) };
+		const inWindow = windowTurn(cap, true)!;
+		assert.deepEqual(judgeCall(row.call, background, policy), row.verdict, `${row.name}: background`);
+		assert.deepEqual(judgeCall(row.call, inWindow, policy), row.verdict, `${row.name}: window`);
+		const reason = row.verdict.kind === "question" ? row.verdict.ask.call.reason : row.verdict.kind === "refuse" ? row.verdict.reason : "";
+
+		if (row.background) {
+			const w = world([ALLOWED]);
+			const out = await guardCall(row.call, seat, { ...w.deps, loopsDir: loops });
+			const expected = { asked: { block: true, reason: `asked a person: ${reason}. pi-loops did not run this and put the question in front of them. Do not wait for the answer and do not try another way to do the same thing. Finish what does not need it.` }, "not-shown": { block: true, reason: `refused by pi-loops: ${reason}. Nobody was asked: ${NOT_SHOWN}. Finish what does not need it, and report what you would need a person for.` }, allowed: undefined }[row.background];
+			assert.deepEqual(out, expected, `${row.name}: the background's handler`);
+			assert.equal(w.inbox.list().length, row.background === "asked" ? 1 : 0, `${row.name}: the background files a question only for a question`);
+		}
+
+		const titles: string[] = [];
+		const ctx = { hasUI: true, mode: "tui" as const, cwd: proj, ui: { select: async (title: string) => (titles.push(title), undefined) } } as any;
+		const handler = windowGuard({ current: () => cap, config: () => ({ windowGuard: true, ...policy }), log: () => undefined, confirmTimeoutMs: 20 });
+		const out = await handler({ toolName: row.call.toolName, toolCallId: row.call.toolCallId, input: row.call.input }, ctx);
+		const expected = { asked: { block: true, reason: refusal(reason) }, blind: { block: true, reason: refusal(reason, "blind") }, allowed: undefined }[row.window];
+		assert.deepEqual(out, expected, `${row.name}: the window's handler`);
+		assert.equal(titles.length, row.window === "asked" ? 1 : 0, `${row.name}: the window asks the person only for a question`);
+	}
+});
+
+test("[M5b.2] a question of a kind a handler does not take does not compile", () => {
+	type Wider = Question | { kind: "proposal"; job: string };
+	const handled = (ask: Wider): string => {
+		switch (ask.kind) {
+			case "call":
+				return ask.call.tool;
+			default:
+				// @ts-expect-error a proposal reaches the default: M5b.5 adds its case to every handler
+				return unhandledAsk(ask.kind);
+		}
+	};
+	assert.equal(handled({ kind: "call", call: callOf(PUSH, PUSH_REASON) }), "bash");
+	assert.throws(() => unhandledAsk("proposal" as never), /a question of kind proposal has no handler/);
 });

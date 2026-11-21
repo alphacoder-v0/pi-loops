@@ -14,10 +14,9 @@ import type { Model } from "@earendil-works/pi-ai";
 import { envFlag } from "./config.ts";
 import { realpathish } from "./paths.ts";
 import { previewRedacted } from "./redact.ts";
-import { type GuardDeps, type GuardReport, GuardSeats } from "./guard.ts";
+import { type GuardDeps, type GuardReport, GuardSeats, subagentGuardExtension } from "./guard.ts";
 import { type ParentRuntimeFlags, type RunnerResult, type SubagentRequest, type SubagentRunner, failedRun, opensExisting } from "./runner.ts";
 import type { ToolLimit } from "./ask.ts";
-import { subagentGuardExtension } from "./subagent-guard.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { projectNeedsTrust } from "./trust.ts";
 

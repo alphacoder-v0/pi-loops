@@ -9,7 +9,8 @@ import { type RowCap, WindowExecutor } from "../src/window-executor.ts";
 import { stamp } from "../src/schedule.ts";
 import { automationTools } from "../src/tools.ts";
 import { tmp } from "./tmp.ts";
-import { GUARD_CHOICES, type GuardConfig, askRefusingFirst, SELF_GATED_AUTOMATION_TOOLS, READ_ONLY_AUTOMATION_TOOLS, WINDOW_GUARD_COMMAND_CHARS, WINDOW_GUARD_CONFIRM_MS, allows, guardDecision, refusal, windowGuard } from "../src/window-guard.ts";
+import { READ_ONLY_AUTOMATION_TOOLS, SELF_GATED_AUTOMATION_TOOLS, judgeCall } from "../src/guard.ts";
+import { GUARD_CHOICES, type GuardConfig, askRefusingFirst, WINDOW_GUARD_COMMAND_CHARS, WINDOW_GUARD_CONFIRM_MS, allows, refusal, windowGuard, windowTurn } from "../src/window-guard.ts";
 
 const T0 = Date.parse("2026-06-01T12:00:00Z");
 const by = { pid: 1, instance: "w", version: "0" };
@@ -496,15 +497,22 @@ test("a failure inside the handler refuses a scheduled turn's call and lets the 
 	assert.deepEqual(await rejecting.call(rmrf), { block: true, reason: refusal("the guard could not decide") });
 });
 
-test("guardDecision: pure, and allows everything outside an unattended row", () => {
+test("the window's turn and judgeCall: pure, and allow everything outside an unattended row", () => {
 	const cfg: GuardConfig = { windowGuard: true, allowCommands: [] };
-	assert.deepEqual(guardDecision(rmrf, undefined, cfg), { kind: "allow" });
-	assert.deepEqual(guardDecision(rmrf, { kind: "person" }, cfg), { kind: "allow" });
-	assert.deepEqual(guardDecision(rmrf, { kind: "row", id: "r", mode: "attended" }, cfg), { kind: "allow" });
-	assert.deepEqual(guardDecision(rmrf, { kind: "row", id: "r", mode: "unattended" }, cfg), { kind: "ask", reason: "rm recursive+force on absolute path" });
-	assert.deepEqual(guardDecision({ toolName: "powershell", input: { command: "sudo rm x" } }, { kind: "row", id: "r", mode: "unattended" }, cfg), { kind: "ask", reason: "sudo invocation" });
-	assert.deepEqual(guardDecision({ toolName: "bash", input: {} }, { kind: "row", id: "r", mode: "unattended" }, cfg), { kind: "allow" }, "no command, nothing to judge");
-	assert.deepEqual(guardDecision(rmrf, { kind: "row", id: "r", mode: "unattended" }, { ...cfg, windowGuard: false }), { kind: "allow" });
+	/** What the window decides of a call: allow when it gives `judgeCall` no turn, else the reason a question asks. */
+	const decide = (call: { toolName: string; input?: unknown }, current: Parameters<typeof windowTurn>[0], on = cfg.windowGuard) => {
+		const turn = windowTurn(current, on);
+		if (turn === undefined) return { kind: "allow" };
+		const v = judgeCall({ ...call, toolCallId: "c" }, turn, cfg);
+		return v.kind === "question" ? { kind: "ask", reason: v.ask.call.reason } : v;
+	};
+	assert.deepEqual(decide(rmrf, undefined), { kind: "allow" });
+	assert.deepEqual(decide(rmrf, { kind: "person" }), { kind: "allow" });
+	assert.deepEqual(decide(rmrf, { kind: "row", id: "r", mode: "attended" }), { kind: "allow" });
+	assert.deepEqual(decide(rmrf, { kind: "row", id: "r", mode: "unattended" }), { kind: "ask", reason: "rm recursive+force on absolute path" });
+	assert.deepEqual(decide({ toolName: "powershell", input: { command: "sudo rm x" } }, { kind: "row", id: "r", mode: "unattended" }), { kind: "ask", reason: "sudo invocation" });
+	assert.deepEqual(decide({ toolName: "bash", input: {} }, { kind: "row", id: "r", mode: "unattended" }), { kind: "allow" }, "no command, nothing to judge");
+	assert.deepEqual(decide(rmrf, { kind: "row", id: "r", mode: "unattended" }, false), { kind: "allow" });
 });
 
 test("one of this window's own rows that a capped turn rewrote in the file runs capped", async () => {

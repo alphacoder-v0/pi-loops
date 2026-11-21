@@ -5,8 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { budgetStopReason, collect, createInFlightCosts, createInProcessRunner, disposeSubSession, isInsideDir, resolveRunModel, sharedSubSessionResources, subSessionResources, subSessionTools, keepBuiltins, unwrapModelRuntime, usageSince, heldSubSessionResources, releaseHeldResources, releaseSharedResources, HELD_IDLE_MS } from "../src/sdk-runner.ts";
-import { GuardSeats } from "../src/guard.ts";
-import { GUARD_PATH, subagentGuardExtension } from "../src/subagent-guard.ts";
+import { GUARD_PATH, GuardSeats, subagentGuardExtension } from "../src/guard.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 const flags = { extensionPaths: [], skillPaths: [], promptTemplatePaths: [], appendSystemPrompt: [], noSkills: false, noExtensions: false, noContextFiles: false, noPromptTemplates: false };

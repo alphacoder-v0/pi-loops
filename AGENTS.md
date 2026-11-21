@@ -74,9 +74,8 @@ running a sub-agent
 src/runner.ts               SubagentRunner interface, result shape, the parent's inheritable flags
 src/sdk-runner.ts           the in-process runner on pi's SDK (createAgentSession per run)
 src/danger.ts               the dangerous-command policy for unattended runs
-src/window-guard.ts         the cap on a scheduled turn in an open window: declared tools and the dangerous-command policy
-src/subagent-guard.ts       the synthetic extension that applies it inside every sub-session
-src/guard.ts                the guard of a background run: which call needs a person, the question it files, and the one call a yes admits once (seats)
+src/window-guard.ts         the cap on a scheduled turn in an open window: the turn it gives `judgeCall`, and the dialog that asks the person
+src/guard.ts                the guard of every unattended turn: `judgeCall`, the one decision (declared tools, the dangerous-command policy, which call needs a person) for a background run and a window's scheduled turn; the question a background run files, the one call a yes admits once (seats), and the synthetic extension that applies it inside every sub-session
 src/transcript.ts           a sub-agent's session file, folded into readable lines
 
 running with no pi open
