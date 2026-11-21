@@ -265,6 +265,22 @@ test("[clear] /inbox clear says how many questions it left, and nothing when it 
 	assert.equal(clearLeftTail(3), "; left 3 questions for you to answer: /inbox claim <n> or /inbox dismiss <n>");
 });
 
+test("[M5b.3] a question from a scheduled prompt in a conversation: the card's who-asks line and who waits name the prompt by its job's name; a loop's question names the loop", () => {
+	const conversation = "0199aaaa-0000-7000-8000-0000000000a1";
+	const command = "sudo systemctl restart api";
+	const call = { tool: "bash", tool_call_id: "c1", command, input_sha256: "a".repeat(64), reason: "sudo invocation" };
+	const cap = { cwd: "/home/u/acme-api", model: null, thinking: null, tools: "session", builtinTools: "session", timeoutMs: 1000 } as unknown as Parameters<typeof questionFinding>[1]["cap"];
+	const origin = { source: "cron:deploy-check", run_id: "run-1", cwd: "/home/u/acme-api", job_id: "cron-0123", session_id: conversation, who: "deploy-check" };
+	const made = questionFinding(call, { lane: conversation, sessionId: conversation, sessionFile: `/sessions/${conversation}.jsonl`, cap }, origin, "2026-11-20T00:00:00.000+00:00");
+	const names = { ...ctx, loopName: (id: string) => (id === "cron-0123" ? "deploy-check" : undefined) };
+	const card = inboxCard(entry({ ...made.entry, id: made.id, kind: "checkpoint" }), names)!;
+	assert.deepEqual([card.headline, card.waits], ['The scheduled prompt "deploy-check" asks to run a command', 'the scheduled prompt "deploy-check" went on without it']);
+	assert.deepEqual(cardLines(card, "  1. ", ""), ['  1. ⚑ The scheduled prompt "deploy-check" asks to run a command', `       command: ${command}`, "       reason: sudo invocation", '       waiting on: the scheduled prompt "deploy-check" went on without it', "       if you don't: it stays undone"]);
+	const loop = questionFinding(call, { lane: "@cron-0123", sessionId: "sid-1", sessionFile: "/runs/sid-1.jsonl", cap }, { ...origin, session_id: undefined }, "2026-11-20T00:00:00.000+00:00");
+	const loopCard = inboxCard(entry({ ...loop.entry, id: loop.id, kind: "checkpoint" }), names)!;
+	assert.deepEqual([loopCard.headline, loopCard.waits], ["deploy-check asks to run a command", "deploy-check went on without it"], "a loop is no scheduled prompt in a conversation");
+});
+
 test("who picks up a yes: the loop by its name, the check of the project, the job of a conversation, else the conversation", () => {
 	const names = (id: string) => (id === "cron-0123" ? "night\u001b[31mly" : undefined);
 	assert.equal(answerWho(entry({}), "@cron-0123", names), "nightly", "the loop's name, screened");

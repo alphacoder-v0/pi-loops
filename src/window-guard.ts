@@ -1,22 +1,29 @@
 /**
- * The cap on a scheduled turn in an open window (design §6.3, owner decision O1). A plain job's
- * prompt runs under the job's declared tools and the dangerous-command policy wherever it runs, as
- * `judgeCall` of src/guard.ts decides it: in the background the question goes to the inbox; in a
- * window the person is there, so the same call asks them, with a countdown, and is refused when
- * nobody answers. `windowTurn` is the turn the window gives the decider; `windowGuard` is the
- * `tool_call` handler that asks, built here so a test can drive it without the extension.
+ * The cap on a scheduled turn in an open window (design 6.3 and 6.4, owner decision O1). A plain
+ * job's prompt runs under the job's declared tools and the dangerous-command policy wherever it runs,
+ * as `guardCall` of src/guard.ts decides and applies it. A call that needs a person files the question
+ * a background run files (Q1): a finding whose lane is the conversation, answered in `/inbox` or on
+ * the page. The call is blocked and the turn goes on. `windowGuard` is the `tool_call` handler, built
+ * here so a test can drive it without the extension. `askRefusingFirst` is the dialog a control-plane
+ * tool still asks through in a scheduled turn (src/pi-loops.ts `confirmTool`).
  */
 import type { ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
-import { type GuardPolicy, type GuardTurn, judgeCall, unhandledAsk } from "./guard.ts";
-import { capRedacted } from "./redact.ts";
-import { defaultLoopsDir } from "./store.ts";
-import { type CurrentTurn, unattendedTurn } from "./window-executor.ts";
+import { heldCap } from "./background-executor.ts";
+import type { JobClock } from "./clock.ts";
+import { plainRunId } from "./engine.ts";
+import { type GuardDeps, type GuardPolicy, type GuardSeat, type GuardSeed, GuardSeats, guardCall } from "./guard.ts";
+import type { Inbox } from "./inbox.ts";
+import { parseLane } from "./lane.ts";
+import { DEFAULT_RUN_TIMEOUT_MS } from "./loop-run.ts";
+import type { Row } from "./requests.ts";
+import { type LoopJob, defaultLoopsDir } from "./store.ts";
+import { type CurrentTurn, type RowCap, unattendedTurn } from "./window-executor.ts";
 
-/** How long the person has to answer before an unanswered question refuses the call. */
+/** How long the person has to answer a control-plane tool's question in a scheduled turn before it refuses. */
 export const WINDOW_GUARD_CONFIRM_MS = 60_000;
 
 /**
- * The two answers to the guard's question, the refusing one first: pi's selector starts on the
+ * The two answers to a scheduled turn's dialog, the refusing one first: pi's selector starts on the
  * first option and Enter picks it, so a reflexive Enter refuses. pi's confirm starts on Yes.
  */
 export const GUARD_CHOICES = { refuse: "No, refuse it", allow: "Yes, run it once" } as const;
@@ -57,53 +64,93 @@ export interface GuardConfig extends GuardPolicy {
 }
 
 /**
- * Pure. The turn `judgeCall` judges a window's call in, or undefined when nothing is judged: the
- * guard is off, or the turn is not a scheduled row's (the person's own turn, an attended row, or
- * nothing of ours in force). Its questions go to a dialog, and it carries the row's declared tools.
+ * What the model is told when the window refuses a call itself: the sub-agent guard's wording, with
+ * why. `nobody`: the guard could not decide; `blind`: a call nobody was asked about, since a person
+ * could not see it on a card.
  */
-export function windowTurn(current: CurrentTurn | undefined, windowGuard: boolean): GuardTurn | undefined {
-	if (!windowGuard || !unattendedTurn(current)) return undefined;
-	const declared = { ...(current.tools ? { tools: current.tools } : {}), ...(current.builtinTools ? { builtinTools: current.builtinTools } : {}) };
-	return { asksThrough: "dialog", resumable: false, open: new Map(), refused: new Map(), asked: 0, declared };
-}
-
-/**
- * What the model is told: the sub-agent guard's wording, with who refused. `nobody` is the default:
- * the question timed out, was escaped, or there was no UI to ask; `person` is a No the person gave;
- * `blind` is a call nobody was asked about, since a person could not see it.
- */
-export function refusal(reason: string, by: "nobody" | "person" | "blind" = "nobody"): string {
-	const who = by === "person" ? "The person at the window refused it" : by === "blind" ? "Nobody was asked, since a person could not see what this call would read or write" : "This scheduled turn ran with nobody answering";
+export function refusal(reason: string, by: "nobody" | "blind" = "nobody"): string {
+	const who = by === "blind" ? "Nobody was asked, since a person could not see what this call would read or write" : "This scheduled turn ran with nobody answering";
 	return `refused by pi-loops: ${reason}. ${who}; commands that can destroy data or the machine, and tools the job did not declare, are not allowed; do the safe part and report what you would need a human for.`;
 }
 
+/** The plain job a scheduled turn runs, as its question names it. */
+export type TurnJob = Pick<LoopJob, "id" | "name" | "cwd" | "timeoutMs">;
+
 /**
- * How much of the command the question shows. Cut in characters and marked with `…`, so a person
- * asked to say yes can tell when they have not seen all of it: a code-unit cut with no marker showed
- * a 300-character command as if it ended at 200, and could end it on half of an emoji.
+ * Pure. The plain job whose row `rowId` is: by the row's source while the row is in the file; once a
+ * drain took the delivered row out, by its id, which is `plainRunId` of the job and the slot the clock
+ * last spent or fired for it (src/clock.ts).
  */
-export const WINDOW_GUARD_COMMAND_CHARS = 200;
+export function turnJob(rowId: string, jobs: readonly LoopJob[], rows: readonly Pick<Row, "id" | "source">[], clock: Readonly<Record<string, JobClock>>): LoopJob | undefined {
+	const source = rows.find((row) => row.id === rowId)?.source;
+	const named = source?.match(/^cron(?:-run)?:(.+)$/)?.[1];
+	if (source !== undefined) return named === undefined ? undefined : jobs.find((job) => job.id === named);
+	return jobs.find((job) => !job.stateful && [clock[job.id]?.slot, clock[job.id]?.fired].some((at) => at !== undefined && plainRunId(job.id, at) === rowId));
+}
+
+/**
+ * Pure. The seed of a scheduled turn's seat: its lane is the conversation, its origin the job as a
+ * turn in a closed conversation names it (src/background-executor.ts `runTurn`), and its cap the
+ * row's declared tools under the job's time limit (`heldCap`, which an answer is narrowed to). With
+ * no job found the question names none.
+ */
+export function windowSeed(cap: RowCap, sessionId: string, cwd: string, job: TurnJob | undefined): GuardSeed {
+	const name = job ? (job.name ?? job.id) : undefined;
+	const tools = { tools: cap.tools ? [...cap.tools] : undefined, builtinTools: cap.builtinTools ? [...cap.builtinTools] : undefined, timeoutMs: job?.timeoutMs };
+	return {
+		lane: sessionId,
+		origin: { source: `cron:${name ?? cap.id}`, run_id: cap.id, cwd, ...(job ? { job_id: job.id } : {}), session_id: sessionId, who: name ?? "a scheduled prompt" },
+		cap: heldCap(tools, cwd, DEFAULT_RUN_TIMEOUT_MS),
+	};
+}
+
+/** What the handler reads of pi's context: the conversation's session and the turn's directory. */
+export type WindowContext = { cwd?: string; sessionManager?: { getSessionId(): string; getSessionFile(): string | undefined } };
 
 export interface WindowGuardDeps {
 	current(): CurrentTurn | undefined;
 	config(): GuardConfig;
 	log(line: string): void;
-	/** WINDOW_GUARD_CONFIRM_MS unless a test shortens it. */
-	confirmTimeoutMs?: number;
+	/** Where a question is filed and read back, as a background run's guard has it. */
+	inbox: Pick<Inbox, "list" | "fileOnce">;
+	now(): number;
+	/** The plain job whose row `rowId` is, in conversation `sessionId` (`turnJob`). */
+	jobOf(rowId: string, sessionId: string): TurnJob | undefined;
 }
 
 /**
- * The `tool_call` handler: judge, ask when the verdict is a question, refuse when the answer is not
- * the allowing one or never comes. pi resolves an unanswered or escaped select to undefined, at the
- * timeout in the terminal and over rpc alike, so the countdown is pi's and the refusal is ours. The
- * question has no body of its own, so the body rides in the title. This is a boundary that fails closed:
- * with no UI to ask, or with anything in here throwing, a scheduled turn's call is refused. The
- * person's own turn goes on as if the guard were not there, and so does a turn with no row in force
- * (nothing of ours is running: between settle cycles), the one unknown that is allowed. Whose turn
- * it is comes first, and a failure to learn even that refuses.
+ * The `tool_call` handler: a scheduled turn's call is judged and applied by `guardCall`, as a
+ * background run's is, in a seat of this window's own `GuardSeats`: keyed by the window's
+ * `ctx.sessionManager`, so a question's ask id and session are the conversation's. A turn takes its
+ * seat at its first judged call and leaves it when another turn's first call comes. With no session
+ * file there is no transcript an answer could resume, so there is no seat, and a call that needs a
+ * person is refused. A call no card could show is refused in the window's own words (`blind`).
+ *
+ * This is a boundary that fails closed: anything in here that throws refuses a scheduled turn's
+ * call. The person's own turn goes on as if the guard were not there, and so does a turn with no row
+ * in force (nothing of ours is running: between settle cycles), the one unknown that is allowed.
+ * Whose turn it is comes first, and a failure to learn even that refuses.
  */
-export function windowGuard(deps: WindowGuardDeps): (event: { toolName: string; toolCallId?: string; input?: unknown }, ctx: (Pick<ExtensionContext, "hasUI" | "ui" | "mode"> & { cwd?: string }) | undefined) => Promise<ToolCallEventResult | undefined> {
-	const timeout = deps.confirmTimeoutMs ?? WINDOW_GUARD_CONFIRM_MS;
+export function windowGuard(deps: WindowGuardDeps): (event: { toolName: string; toolCallId?: string; input?: unknown }, ctx: WindowContext | undefined) => Promise<ToolCallEventResult | undefined> {
+	const seats = new GuardSeats();
+	let held: { session: object; row: string; seat?: GuardSeat; leave?: () => void } | undefined;
+	const seatOf = (cap: RowCap, ctx: WindowContext | undefined): GuardSeat | undefined => {
+		const session = ctx?.sessionManager;
+		if (held && held.session === session && held.row === cap.id) return held.seat;
+		held?.leave?.();
+		held = undefined;
+		if (!session) return undefined;
+		const sessionId = session.getSessionId();
+		const file = session.getSessionFile();
+		if (file === undefined || parseLane(sessionId)?.kind !== "conversation") {
+			held = { session, row: cap.id };
+			return undefined;
+		}
+		const job = deps.jobOf(cap.id, sessionId);
+		const entered = seats.enter(session, file, windowSeed(cap, sessionId, ctx?.cwd ?? job?.cwd ?? process.cwd(), job));
+		held = { session, row: cap.id, seat: entered.seat, leave: () => void entered.leave() };
+		return entered.seat;
+	};
 	return async (event, ctx) => {
 		let current: CurrentTurn | undefined;
 		try {
@@ -114,38 +161,16 @@ export function windowGuard(deps: WindowGuardDeps): (event: { toolName: string; 
 		}
 		try {
 			const cfg = deps.config();
-			const turn = windowTurn(current, cfg.windowGuard);
-			if (turn === undefined || !unattendedTurn(current)) return undefined;
-			const call = { toolName: event.toolName, toolCallId: event.toolCallId ?? "", input: event.input, ...(ctx?.cwd ? { cwd: ctx.cwd } : {}) };
-			const verdict = judgeCall(call, turn, { allowCommands: cfg.allowCommands, loopsDir: cfg.loopsDir ?? defaultLoopsDir() });
+			if (!cfg.windowGuard || !unattendedTurn(current)) return undefined;
 			const trace = current.id.slice(0, 8);
-			switch (verdict.kind) {
-				case "allow":
-					return undefined;
-				case "refuse": {
-					// A dialog refuses only what it cannot show (`not-shown`): a window turn has no grant, no open question and no no.
-					const blind = verdict.whyNot.why === "not-shown";
-					deps.log(`refused ${event.toolName} in scheduled turn ${trace}: ${verdict.reason}${blind ? " (nobody asked: it cannot be shown)" : ""}`);
-					return { block: true, reason: refusal(verdict.reason, blind ? "blind" : "nobody") };
-				}
-				case "question": {
-					const ask = verdict.ask;
-					switch (ask.kind) {
-						case "call": {
-							const { reason, command } = ask.call;
-							const body = [`A scheduled prompt (trace ${trace}) wants to run ${event.toolName}: ${reason}.`, ...(command === undefined ? [] : [capRedacted(command, WINDOW_GUARD_COMMAND_CHARS)]), `Yes runs it this once. No, or no answer in ${Math.round(timeout / 1000)} s, refuses it and tells the model why.`].join("\n");
-							const answer = ctx?.hasUI ? await askRefusingFirst(ctx, "Allow this in a scheduled turn?", body, timeout) : "none";
-							deps.log(`${answer === "yes" ? "allowed" : "refused"} ${event.toolName} in scheduled turn ${trace}: ${reason}${ctx?.hasUI ? (answer === "no" ? " (the person said no)" : "") : " (no UI to ask)"}`);
-							return answer === "yes" ? undefined : { block: true, reason: refusal(reason, answer === "no" ? "person" : "nobody") };
-						}
-						default:
-							return unhandledAsk(ask.kind);
-					}
-				}
-				case "asked":
-				case "granted":
-					throw new Error(`a window's turn has no open question and no grant, yet the verdict is ${verdict.kind}`);
-			}
+			const call = { toolName: event.toolName, toolCallId: event.toolCallId ?? "", input: event.input, ...(ctx?.cwd ? { cwd: ctx.cwd } : {}) };
+			const guard: GuardDeps = { inbox: deps.inbox, allowCommands: () => cfg.allowCommands, loopsDir: cfg.loopsDir ?? defaultLoopsDir(), now: deps.now, log: (line) => deps.log(`${line} in scheduled turn ${trace}`) };
+			const declared = { ...(current.tools ? { tools: current.tools } : {}), ...(current.builtinTools ? { builtinTools: current.builtinTools } : {}) };
+			const notShown = (reason: string) => {
+				deps.log(`refused ${event.toolName} in scheduled turn ${trace}: ${reason} (nobody asked: it cannot be shown)`);
+				return { block: true as const, reason: refusal(reason, "blind") };
+			};
+			return await guardCall(call, seatOf(current, ctx), guard, { declared, notShown });
 		} catch (err: any) {
 			deps.log(`window guard failed on ${event.toolName}: ${err?.message ?? err}`);
 			return unattendedTurn(current) ? { block: true, reason: refusal("the guard could not decide") } : undefined;

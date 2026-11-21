@@ -53,7 +53,7 @@ import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOu
 import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
 import type { Row, UnclaimedRow } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
-import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
+import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, turnJob, windowGuard } from "./window-guard.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { budgetState, jobCounts, type ListedJob, listedJobs } from "./job-status.ts";
 import { runClockTick, decideRunNow } from "./clock.ts";
@@ -3250,8 +3250,19 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 	for (const def of automationTools({ hop, actor: "tool" }, toolHost)) pi.registerTool(def);
 	// The cap on a scheduled turn's calls while this window runs it (src/window-guard.ts): the
-	// decision is there, this only hands it what pi is in and what config.toml says.
-	pi.on("tool_call", windowGuard({ current: () => executor.currentTurn(), config: () => ({ windowGuard: config.windowGuard, allowCommands: config.allowCommands }), log: (line) => log.info(line) }));
+	// decision is there, this only hands it what pi is in, what config.toml says, the inbox a question
+	// is filed in, and where the turn's job is read.
+	pi.on(
+		"tool_call",
+		windowGuard({
+			current: () => executor.currentTurn(),
+			config: () => ({ windowGuard: config.windowGuard, allowCommands: config.allowCommands }),
+			log: (line) => log.info(line),
+			inbox: stores.inbox,
+			now: () => Date.now(),
+			jobOf: (rowId, sessionId) => turnJob(rowId, stores.jobs.load(), requests.list(sessionId), stores.clock.read().jobs),
+		}),
+	);
 
 	/* -------------------------------------------------------- lifecycle */
 

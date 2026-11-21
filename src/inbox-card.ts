@@ -11,7 +11,7 @@
 import * as path from "node:path";
 import { deadLetterParts } from "./engine.ts";
 import { loopLabel } from "./job-lines.ts";
-import { type StepRefusal, answerStatus } from "./ask.ts";
+import { type StepRefusal, answerStatus, fromScheduledPrompt, scheduledPromptWords } from "./ask.ts";
 import type { InboxEntry, InboxStatus } from "./inbox.ts";
 import { type LaneId, parseLane } from "./lane.ts";
 import { INBOX_TEXT_MAX_CHARS, capChars } from "./protocol.ts";
@@ -128,10 +128,12 @@ export function questionHeadline(ask: NonNullable<InboxEntry["ask"]>): string {
 
 function questionParts(entry: InboxEntry, ask: NonNullable<InboxEntry["ask"]>, ctx: CardContext): Pick<InboxCard, "headline" | "waits" | "ifNot" | "question"> {
 	const { tool, command, reason } = ask.call;
+	const who = answerWho(entry, ask.lane, ctx.loopName);
 	return {
 		headline: questionHeadline(ask),
 		question: { tool: cardText(tool), ...(command !== undefined ? { command: cardText(command) } : {}), reason: cardText(reason) },
-		waits: `${answerWho(entry, ask.lane, ctx.loopName)} went on without it`,
+		// A scheduled prompt's question says whose prompt went on (design 6.4), as `questionFinding` wrote it.
+		waits: `${fromScheduledPrompt(ask.lane, entry.job_id) ? scheduledPromptWords(who) : who} went on without it`,
 		ifNot: "it stays undone",
 	};
 }

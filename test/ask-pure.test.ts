@@ -251,6 +251,18 @@ test("[Q1] the finding of a blocked call: derived id, the ask, and a checkpoint 
 	assert.equal(questionFinding(CALL, { lane: LOOP, sessionId: SID, sessionFile: "/elsewhere/b.jsonl", cap: resolveCap({ cwd: "/proj" }, 900_000) }, { source: "s", run_id: "r2", cwd: "/proj", who: "x" }, LATER).id, made.id, "one blocked call, one finding, whatever its file is called");
 });
 
+test("[M5b.3] a question a plain job's turn files in its conversation names the scheduled prompt by its job's name; with no job it names none", () => {
+	const cap = resolveCap({ cwd: "/proj" }, 900_000);
+	const made = questionFinding(CALL, { lane: SID, sessionId: SID, sessionFile: "/s/a.jsonl", cap }, { source: "cron:deploy-check", run_id: "r1", cwd: "/proj", job_id: "cron-a1", session_id: SID, who: "deploy-check" }, AT);
+	assert.equal(made.entry.ask!.title, 'The scheduled prompt "deploy-check" asks to run a command');
+	assert.equal(made.entry.text, 'Run `git push --force origin main`? (git push --force on main/master) · waits: the scheduled prompt "deploy-check" went on without it · if not: it stays undone');
+	assert.equal(made.entry.kind, "checkpoint", "still a checkpoint");
+	const tool = questionFinding({ ...CALL, command: undefined, tool: "write" }, { lane: SID, sessionId: SID, sessionFile: "/s/a.jsonl", cap }, { source: "cron:deploy-check", run_id: "r1", cwd: "/proj", job_id: "cron-a1", session_id: SID, who: "deploy-check" }, AT);
+	assert.equal(tool.entry.ask!.title, 'The scheduled prompt "deploy-check" asks to use write');
+	const nameless = questionFinding(CALL, { lane: SID, sessionId: SID, sessionFile: "/s/a.jsonl", cap }, { source: "cron", run_id: "r1", cwd: "/proj", session_id: SID, who: "a scheduled prompt" }, AT);
+	assert.equal(nameless.entry.ask!.title, "a scheduled prompt asks to run a command", "a finding that names no job is not said to be any job's");
+});
+
 test("laneOf: a finding's lane, else its job's lane as jobs.json has it now, else none", () => {
 	assert.equal(laneOf(base({ lane: CHECK, job_id: "cron-a1" }), jobs), CHECK, "the finding's lane first");
 	assert.equal(laneOf(base({ lane: undefined, job_id: "cron-a1" }), jobs), "@cron-a1", "a loop's job");

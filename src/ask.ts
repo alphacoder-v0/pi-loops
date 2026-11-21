@@ -604,23 +604,37 @@ function callWords(call: Call): string {
 	return call.command !== undefined ? `\`${call.command}\`` : `the ${call.tool} call`;
 }
 
+/** Whether a finding is a scheduled prompt's: a plain job's turn in a conversation (design 6.4), which names the job. */
+export function fromScheduledPrompt(lane: LaneId | undefined, jobId: string | undefined): boolean {
+	return jobId !== undefined && lane !== undefined && parseLane(lane)?.kind === "conversation";
+}
+
+/** A scheduled prompt as a person reads it, by its job's name: `the scheduled prompt "deploy-check"`. */
+export function scheduledPromptWords(name: string): string {
+	return `the scheduled prompt "${name}"`;
+}
+
 /**
  * The finding Q1 files for a blocked call, and its id. The text is owner decision 3:
  * `Run \`<command>\`? (<reason>) · waits: <who> went on without it · if not: it stays undone`,
- * which `findingKind` reads as a checkpoint.
+ * which `findingKind` reads as a checkpoint. A scheduled prompt's question says so (design 6.4):
+ * `The scheduled prompt "deploy-check" asks to run a command`.
  */
 export function questionFinding(call: Call, asked: { lane: LaneId; sessionId: string; sessionFile: string; cap: ResolvedCap }, origin: AskOrigin, at: string): { id: string; entry: NewFinding } {
+	const scheduled = fromScheduledPrompt(asked.lane, origin.job_id);
+	const who = scheduled ? scheduledPromptWords(origin.who) : origin.who;
+	const asker = scheduled ? `The scheduled prompt "${origin.who}"` : who;
 	const ask: Ask = {
 		kind: "call",
 		id: askId(asked.sessionId, call.tool_call_id),
 		lane: asked.lane,
 		session_id: asked.sessionId,
-		title: call.command !== undefined ? `${origin.who} asks to run a command` : `${origin.who} asks to use ${call.tool}`,
+		title: call.command !== undefined ? `${asker} asks to run a command` : `${asker} asks to use ${call.tool}`,
 		call,
 		run: recordedCap(asked.cap),
 		created_at: at,
 	};
-	const text = `${call.command !== undefined ? `Run \`${call.command}\`` : `Use ${call.tool}`}? (${call.reason}) · waits: ${origin.who} went on without it · if not: it stays undone`;
+	const text = `${call.command !== undefined ? `Run \`${call.command}\`` : `Use ${call.tool}`}? (${call.reason}) · waits: ${who} went on without it · if not: it stays undone`;
 	const entry: NewFinding = defined({
 		source: origin.source,
 		run_id: origin.run_id,

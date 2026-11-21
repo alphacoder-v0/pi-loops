@@ -1,12 +1,12 @@
 /**
  * The guard of an unattended turn (design 2.3 and 3.1). A dangerous call is never run unattended: a
- * person is asked, and the call is blocked while the turn goes on. In a background run the question
- * is a finding (Q1), and a yes comes back as an answer row whose run admits that one call (`Grant`).
- * In a window's scheduled turn the question is a dialog (src/window-guard.ts).
+ * person is asked, and the call is blocked while the turn goes on. The question is a finding (Q1),
+ * and a yes comes back as an answer row whose run admits that one call (`Grant`). A window's
+ * scheduled turn files the same finding, in its conversation's lane (src/window-guard.ts, 6.4).
  *
- * `judgeCall` is the whole decision, pure, for both. `guardCall` applies it for a background run on
- * plain values, so a test drives it with no SDK; `subagentGuardExtension` hangs it on every
- * sub-session. `GuardSeats` finds a run's place in the guard by its session manager: the guard is one
+ * `judgeCall` is the whole decision, pure, for both. `guardCall` applies it on plain values, so a
+ * test drives it with no SDK, and a window's handler calls it too. `subagentGuardExtension` hangs it
+ * on every sub-session. `GuardSeats` finds a run's place in the guard by its session manager: the guard is one
  * handler per loaded extension set, shared by every run of a directory.
  */
 import { createSyntheticSourceInfo, type Extension } from "@earendil-works/pi-coding-agent";
@@ -32,12 +32,6 @@ export interface ToolCallFacts {
 
 /** What `judgeCall` is given for the lane the turn runs in (design 3.1, without `repo`). */
 export interface GuardTurn {
-	/**
-	 * Where a question goes. `inbox`: a finding a person answers later, which the card must show as
-	 * written (step 5). `dialog`: the person at the window, now, who is shown the tool, the reason and
-	 * the command cut to fit; only a call no one can see (`not-shown`) is refused there.
-	 */
-	asksThrough: "inbox" | "dialog";
 	/**
 	 * What a window's scheduled row declared. `tools` names the whole set; `builtinTools` caps only
 	 * pi's built-ins. pi-loops' own tools pass either. Absent: nothing is undeclared (a background run
@@ -121,26 +115,22 @@ export const READ_ONLY_AUTOMATION_TOOLS: readonly string[] = ["cron_list", "list
 export const SELF_GATED_AUTOMATION_TOOLS: readonly string[] = ["cron_create", "cron_remove", "set_cron_job_state", "new_trigger", "remove_trigger", "set_trigger_state"];
 const AUTOMATION_TOOLS: readonly string[] = [...READ_ONLY_AUTOMATION_TOOLS, ...SELF_GATED_AUTOMATION_TOOLS];
 
-/** Why the policy needs a person for a call, by the rule that says so. `own-files` (a path tool into the loops directory) is a call no one can be shown. */
-type Need = { rule: "own-files" | "undeclared" | "command"; reason: string };
-
 /**
- * The policy's need for a call, or undefined when it may run, in this order: a path tool into the
- * loops directory (`pathToolReason`, its relative path against `cwd`); a tool outside `declared`; a
- * shell command `dangerousCommandReason` refuses.
+ * Why the policy needs a person for a call, or undefined when it may run, in this order: a path
+ * tool into the loops directory (`pathToolReason`, its relative path against `cwd`); a tool outside
+ * `declared`; a shell command `dangerousCommandReason` refuses.
  */
-function policyNeed(call: Pick<ToolCallFacts, "toolName" | "input">, cwd: string | undefined, declared: GuardTurn["declared"], cfg: GuardPolicy): Need | undefined {
+function policyNeed(call: Pick<ToolCallFacts, "toolName" | "input">, cwd: string | undefined, declared: GuardTurn["declared"], cfg: GuardPolicy): string | undefined {
 	const own = cfg.loopsDir === undefined ? undefined : pathToolReason(call, cwd, cfg.loopsDir);
-	if (own !== undefined) return { rule: "own-files", reason: own };
+	if (own !== undefined) return own;
 	const tool = call.toolName;
 	if (declared?.tools) {
-		if (!declared.tools.includes(tool) && !AUTOMATION_TOOLS.includes(tool)) return { rule: "undeclared", reason: `${tool} is not among the tools the job declared (${declared.tools.join(", ") || "none"})` };
+		if (!declared.tools.includes(tool) && !AUTOMATION_TOOLS.includes(tool)) return `${tool} is not among the tools the job declared (${declared.tools.join(", ") || "none"})`;
 	} else if (declared?.builtinTools && PI_BUILTIN_TOOL_NAMES.includes(tool) && !declared.builtinTools.includes(tool)) {
-		return { rule: "undeclared", reason: `${tool} is not among the built-in tools the job declared (${declared.builtinTools.join(", ") || "none"})` };
+		return `${tool} is not among the built-in tools the job declared (${declared.builtinTools.join(", ") || "none"})`;
 	}
 	const command = commandOf(call);
-	const danger = command === undefined ? undefined : dangerousCommandReason(command, undefined, cfg.allowCommands, cfg.loopsDir);
-	return danger === undefined ? undefined : { rule: "command", reason: danger };
+	return command === undefined ? undefined : dangerousCommandReason(command, undefined, cfg.allowCommands, cfg.loopsDir);
 }
 
 /**
@@ -152,19 +142,17 @@ function policyNeed(call: Pick<ToolCallFacts, "toolName" | "input">, cwd: string
  *   2. the call is `turn.granted` (its tool, and `inputHash` of its input): granted;
  *   3. `turn.refused` has its key: refuse, `a person said no to this on <date>`;
  *   4. `turn.open` has its key: asked;
- *   5. it can be asked (`whyNotAsked`: through the inbox, `turn.resumable`, a command, at most
- *      `ASK_COMMAND_MAX_CHARS`, unchanged by `cardText`, and the caps; through a dialog, any call
- *      that can be shown): question;
+ *   5. it can be asked (`whyNotAsked`: `turn.resumable`, a command, at most `ASK_COMMAND_MAX_CHARS`,
+ *      unchanged by `cardText`, and the caps): question;
  *   6. else refuse, with why nobody was asked.
  */
 export function judgeCall(call: ToolCallFacts, turn: GuardTurn, cfg: GuardPolicy): CallVerdict {
 	const command = commandOf(call);
-	const need = policyNeed(call, call.cwd, turn.declared, cfg);
+	const reason = policyNeed(call, call.cwd, turn.declared, cfg);
 	const hash = inputHash(call.input);
 	const nested = call.parentToolCallId !== undefined;
 	const granted = !nested && turn.granted !== undefined && turn.granted.call.tool === call.toolName && turn.granted.call.input_sha256 === hash;
-	if (need === undefined) return granted ? { kind: "allow", grantUsed: true } : { kind: "allow" };
-	const reason = need.reason;
+	if (reason === undefined) return granted ? { kind: "allow", grantUsed: true } : { kind: "allow" };
 	if (nested) return { kind: "refuse", reason, whyNot: { why: "no-transcript" } };
 	if (granted) return { kind: "granted", ask: turn.granted!.ask };
 	const key = callKey(call.toolName, hash);
@@ -172,14 +160,13 @@ export function judgeCall(call: ToolCallFacts, turn: GuardTurn, cfg: GuardPolicy
 	if (date !== undefined) return { kind: "refuse", reason, whyNot: { why: "no", date } };
 	const open = turn.open.get(key);
 	if (open !== undefined) return { kind: "asked", ask: open };
-	const whyNot = whyNotAsked(need, command, turn);
+	const whyNot = whyNotAsked(command, turn);
 	if (whyNot) return { kind: "refuse", reason, whyNot };
 	return { kind: "question", ask: { kind: "call", call: { tool: call.toolName, tool_call_id: call.toolCallId, command, input_sha256: hash, reason } } };
 }
 
 /** Step 5 of `judgeCall`, as the reason it fails, or undefined when the call can be asked about. */
-function whyNotAsked(need: Need, command: string | undefined, turn: GuardTurn): WhyNot | undefined {
-	if (turn.asksThrough === "dialog") return need.rule === "own-files" ? { why: "not-shown" } : undefined;
+function whyNotAsked(command: string | undefined, turn: GuardTurn): WhyNot | undefined {
 	if (!turn.resumable || turn.lane === undefined) return { why: "no-transcript" };
 	if (command === undefined) return { why: "not-shown" };
 	if ([...command].length > ASK_COMMAND_MAX_CHARS) return { why: "too-long" };
@@ -295,9 +282,9 @@ export class GuardSeats {
 /**
  * The view of one lane's questions that `judgeCall` reads. Pure. A question with a yes that waits to
  * run or runs is open: a later run of the lane that makes the same call is told it is asked, and no
- * second question is filed beside the yes.
+ * second question is filed beside the yes. `declared` is a window's scheduled row's (`GuardTurn`).
  */
-export function guardTurn(seat: GuardSeat | undefined, findings: readonly Finding[], now: number): GuardTurn {
+export function guardTurn(seat: GuardSeat | undefined, findings: readonly Finding[], now: number, declared?: GuardTurn["declared"]): GuardTurn {
 	const open = new Map<string, string>();
 	const refused = new Map<string, string>();
 	for (const f of seat ? findings : []) {
@@ -307,7 +294,7 @@ export function guardTurn(seat: GuardSeat | undefined, findings: readonly Findin
 		else if (f.status === "dismissed" && f.dismissed_at !== undefined && now - Date.parse(f.dismissed_at) < NO_HOLDS_MS) refused.set(key, f.dismissed_at.slice(0, 10));
 	}
 	return {
-		asksThrough: "inbox",
+		...(declared ? { declared } : {}),
 		resumable: seat !== undefined,
 		...(seat ? { lane: seat.lane } : {}),
 		...(seat?.seed.grant && !seat.grantUsed ? { granted: seat.seed.grant } : {}),
@@ -326,15 +313,24 @@ export interface GuardDeps {
 	log?(message: string): void;
 }
 
-type Blocked = { block: true; reason: string };
+export type Blocked = { block: true; reason: string };
+
+/**
+ * What a window's scheduled turn gives `guardCall` beside its seat: the tools its row declared, and
+ * its own refusal of a call no card could show (src/window-guard.ts `refusal`, `blind`).
+ */
+export interface WindowCall {
+	declared?: GuardTurn["declared"];
+	notShown(reason: string): Blocked;
+}
 
 /**
  * The whole `tool_call` handler, on plain values. The policy and the grant are judged first on a
  * turn with no findings, since neither reads them, so a call the policy passes reads no inbox. It
  * never sets `terminate`: the run goes on with what does not need the command. Anything that throws
- * blocks the call.
+ * blocks the call. A background run gives no `window`.
  */
-export async function guardCall(call: ToolCallFacts, seat: GuardSeat | undefined, deps: GuardDeps): Promise<Blocked | undefined> {
+export async function guardCall(call: ToolCallFacts, seat: GuardSeat | undefined, deps: GuardDeps, window?: WindowCall): Promise<Blocked | undefined> {
 	const block = (reason: string, message: string): Blocked => {
 		deps.log?.(`blocked a ${call.toolName} call: ${reason}`);
 		return { block: true, reason: message };
@@ -342,8 +338,8 @@ export async function guardCall(call: ToolCallFacts, seat: GuardSeat | undefined
 	let verdict: CallVerdict;
 	try {
 		const cfg: GuardPolicy = { allowCommands: deps.allowCommands(), loopsDir: deps.loopsDir ?? defaultLoopsDir() };
-		verdict = judgeCall(call, guardTurn(seat, [], deps.now()), cfg);
-		if (verdict.kind !== "allow" && verdict.kind !== "granted") verdict = judgeCall(call, guardTurn(seat, seat ? deps.inbox.list() : [], deps.now()), cfg);
+		verdict = judgeCall(call, guardTurn(seat, [], deps.now(), window?.declared), cfg);
+		if (verdict.kind !== "allow" && verdict.kind !== "granted") verdict = judgeCall(call, guardTurn(seat, seat ? deps.inbox.list() : [], deps.now(), window?.declared), cfg);
 	} catch (err: any) {
 		return block("the guard could not decide", refusedMessage("the guard could not decide", `the guard failed (${err?.message ?? err})`));
 	}
@@ -355,7 +351,7 @@ export async function guardCall(call: ToolCallFacts, seat: GuardSeat | undefined
 			// Set before the call goes through: a second call with the same input finds no grant and is asked about.
 			if (seat) seat.grantUsed = true;
 			return undefined;
-			case "question": {
+		case "question": {
 			const ask = verdict.ask;
 			switch (ask.kind) {
 				case "call": {
@@ -374,17 +370,18 @@ export async function guardCall(call: ToolCallFacts, seat: GuardSeat | undefined
 			}
 		}
 		case "asked": {
-			const reason = askedReason(call, deps);
+			const reason = askedReason(call, deps, window?.declared);
 			return block(reason, askedMessage(reason));
 		}
 		case "refuse":
+			if (window && verdict.whyNot.why === "not-shown") return window.notShown(verdict.reason);
 			return block(verdict.reason, verdict.whyNot.why === "no-transcript" ? unattendedMessage(verdict.reason) : refusedMessage(verdict.reason, whyNotWords(verdict.whyNot)));
 	}
 }
 
 /** The policy's reason for a call that `judgeCall` found already asked about. */
-function askedReason(call: ToolCallFacts, deps: GuardDeps): string {
-	return policyNeed(call, call.cwd, undefined, { allowCommands: deps.allowCommands(), loopsDir: deps.loopsDir ?? defaultLoopsDir() })?.reason ?? call.toolName;
+function askedReason(call: ToolCallFacts, deps: GuardDeps, declared: GuardTurn["declared"]): string {
+	return policyNeed(call, call.cwd, declared, { allowCommands: deps.allowCommands(), loopsDir: deps.loopsDir ?? defaultLoopsDir() }) ?? call.toolName;
 }
 
 export const GUARD_PATH = "<pi-loops sub-agent guard>";

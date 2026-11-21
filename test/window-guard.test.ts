@@ -3,14 +3,17 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { dangerousCommandReason } from "../src/danger.ts";
-import { decideDrain, goalRow, modeOf, personRow, plainJobRow, recipeRow, requestFingerprint, ringProduced } from "../src/engine.ts";
+import { decideDrain, goalRow, modeOf, personRow, plainJobRow, plainRunId, recipeRow, requestFingerprint, ringProduced } from "../src/engine.ts";
 import type { Row } from "../src/requests.ts";
 import { type RowCap, WindowExecutor } from "../src/window-executor.ts";
 import { stamp } from "../src/schedule.ts";
 import { automationTools } from "../src/tools.ts";
 import { tmp } from "./tmp.ts";
-import { READ_ONLY_AUTOMATION_TOOLS, SELF_GATED_AUTOMATION_TOOLS, judgeCall } from "../src/guard.ts";
-import { GUARD_CHOICES, type GuardConfig, askRefusingFirst, WINDOW_GUARD_COMMAND_CHARS, WINDOW_GUARD_CONFIRM_MS, allows, refusal, windowGuard, windowTurn } from "../src/window-guard.ts";
+import { askFindingId, askId, inputHash, questionFinding, recordedCap, resolveCap } from "../src/ask.ts";
+import { Inbox, type InboxEntry, type NewFinding } from "../src/inbox.ts";
+import { READ_ONLY_AUTOMATION_TOOLS, SELF_GATED_AUTOMATION_TOOLS } from "../src/guard.ts";
+import type { LoopJob } from "../src/store.ts";
+import { GUARD_CHOICES, type GuardConfig, askRefusingFirst, WINDOW_GUARD_CONFIRM_MS, allows, refusal, turnJob, windowGuard, windowSeed } from "../src/window-guard.ts";
 
 const T0 = Date.parse("2026-06-01T12:00:00Z");
 const by = { pid: 1, instance: "w", version: "0" };
@@ -21,35 +24,42 @@ const echo = { toolName: "bash", input: { command: "echo hi" } };
 const MUTATING_TOOLS = ["cron_create", "cron_remove", "set_cron_job_state", "new_trigger", "remove_trigger", "set_trigger_state"];
 
 /**
- * A window in the middle of a run: the real executor over a fake pi, and a select that behaves as
- * pi's does, resolving undefined once the timeout passes unless the test answers (`answer` is given
- * the options, as pi gives the person; undefined is Escape). `typed` is what the person submits
+ * A window in the middle of a run: the real executor over a fake pi, and a real inbox the guard files
+ * its questions in (`filed`), beside the findings a test puts in `earlier`. `asked` records any
+ * dialog the handler opens, which it never should. The session is `s`, with a file unless
+ * `sessionFile` says otherwise, and each call gets its own tool call id. `typed` is what the person submits
  * (pi's `input` event, then the user message); `extensionSends` is another extension's
  * `sendUserMessage` (pi's `input` with the source `extension`, then the user message); `started` is
  * a user message alone. `turnStarted` is pi starting the custom message the window sent for a row.
  * `queued` is the request file. `mode` is `tui` unless a test is of the page's pi.
  */
-function window(cfg: Partial<GuardConfig> = {}, opts: { hasUI?: boolean; answer?: (options: string[]) => string | undefined; confirmTimeoutMs?: number; mode?: "tui" | "rpc" } = {}) {
+function window(cfg: Partial<GuardConfig> = {}, opts: { hasUI?: boolean; mode?: "tui" | "rpc"; sessionFile?: string | undefined } = {}) {
 	const asked: Array<{ title: string; options: string[]; timeout: number | undefined }> = [];
 	const logged: string[] = [];
 	const queued = new Map<string, Row>();
 	const sent: Array<{ customType: string; content: unknown; details: any }> = [];
+	const inbox = new Inbox(tmp("pi-loops-window-inbox-"));
+	/** Findings beside the inbox file: a question a person already answered, as `list` gives it. */
+	const earlier: InboxEntry[] = [];
 	const ctx = {
 		hasUI: opts.hasUI ?? true,
 		aborts: 0,
+		sessionManager: { getSessionId: () => "s", getSessionFile: () => ("sessionFile" in opts ? opts.sessionFile : "/sessions/s.jsonl") },
 		ui: {
 			notify: () => undefined,
 			select: (title: string, options: string[], o?: { timeout?: number }) => {
 				asked.push({ title, options, timeout: o?.timeout });
-				if (opts.answer) return Promise.resolve(opts.answer(options));
-				return new Promise<string | undefined>((resolve) => setTimeout(() => resolve(undefined), o?.timeout ?? 0));
+				return Promise.resolve(undefined);
 			},
 		},
 	} as any;
 	// The rows here live in memory, so their image bytes do too: every image in these tests is the same four bytes.
 	const executor = new WindowExecutor({ sendMessage: (message: any) => void sent.push(message), sendUserMessage: () => undefined }, { here: () => ({ sessionId: "s", holds: true }), hold: () => true, letGo: () => undefined }, () => ({ ...ctx, mode: opts.mode ?? "tui", isIdle: () => true, sessionManager: { getEntries: () => [] }, abort: () => void ctx.aborts++ }), { pid: 1 }, () => true, () => [...queued.values()], (row) => (row.payload?.images ?? []).map((i) => ({ type: "image" as const, data: "AAAA", mimeType: i.mimeType })));
 	const config = (): GuardConfig => ({ windowGuard: true, allowCommands: [], ...cfg });
-	const handler = windowGuard({ current: () => executor.currentTurn(), config, log: (line) => void logged.push(line), confirmTimeoutMs: opts.confirmTimeoutMs ?? 20 });
+	const guardInbox = { list: () => [...earlier, ...inbox.list()], fileOnce: (entry: NewFinding, id: string) => inbox.fileOnce(entry, id) };
+	const handler = windowGuard({ current: () => executor.currentTurn(), config, log: (line) => void logged.push(line), inbox: guardInbox, now: () => Date.now(), jobOf: (rowId, sessionId) => (sessionId === "s" && rowId.startsWith("run-") ? DEPLOY : undefined) });
+	/** The questions this window filed. */
+	const filed = () => inbox.list();
 	const started = (text: string) => executor.messageStarted({ role: "user", content: text });
 	/** pi starts the custom message the window sent for `row`: the newest one, as a second hand-over of a row would be. */
 	const turnStarted = (row: Pick<Row, "id">) => executor.messageStarted({ role: "custom", ...sent.findLast((message) => message.details?.piLoopsRow?.id === row.id)! });
@@ -82,48 +92,85 @@ function window(cfg: Partial<GuardConfig> = {}, opts: { hasUI?: boolean; answer?
 		executor.turn(row);
 		turnStarted(row);
 	};
-	const call = (c: { toolName: string; input?: unknown }) => handler(c, ctx);
-	const blocked = async (c: { toolName: string; input?: unknown }) => (await call(c))?.block === true;
-	return { asked, logged, ctx, executor, handler, queued, sent, started, turnStarted, typed, extensionSends, clockFired, ownRowStarted, call, blocked };
+	let calls = 0;
+	const call = (c: { toolName: string; toolCallId?: string; input?: unknown }) => handler({ toolCallId: `call-auto-${++calls}`, ...c }, ctx);
+	const blocked = async (c: { toolName: string; toolCallId?: string; input?: unknown }) => (await call(c))?.block === true;
+	return { asked, logged, ctx, executor, handler, queued, sent, started, turnStarted, typed, extensionSends, clockFired, ownRowStarted, call, blocked, inbox, earlier, filed };
 }
 
-test("a clock-fired turn in a window asks before rm -rf and refuses with no answer", async () => {
+/** The job whose rows `clockFired` hands over, as jobs.json names it. */
+const DEPLOY = { id: "job-1", name: "deploy-check", cwd: "/p" };
+const SUDO = "sudo systemctl restart api";
+const sudo = { toolName: "bash", toolCallId: "call-1", input: { command: SUDO } };
+/** What the background's guard tells a model whose call a person is asked about (src/guard.ts). */
+const askedWords = (reason: string) => `asked a person: ${reason}. pi-loops did not run this and put the question in front of them. Do not wait for the answer and do not try another way to do the same thing. Finish what does not need it.`;
+
+test("[M5b.3] a scheduled turn in a window that reaches sudo files one question in the conversation's lane, blocks the call with the asked message and opens no dialog; the same call again is told it is asked and files nothing", async () => {
+	const w = window();
+	const row = w.clockFired();
+	const first = await w.call(sudo);
+	assert.deepEqual(first, { block: true, reason: askedWords("sudo invocation") });
+	assert.deepEqual(w.asked, [], "no dialog opens");
+	const [q, ...more] = w.filed();
+	assert.deepEqual(more, [], "one question");
+	const ask = askId("s", "call-1");
+	assert.deepEqual(
+		[q.id, q.lane, q.session_id, q.job_id, q.run_id, q.cwd, q.transcript, q.kind, q.status],
+		[askFindingId(ask), "s", "s", "job-1", row.id, "/p", "/sessions/s.jsonl", "checkpoint", "new"],
+		"a finding of the conversation: its lane and its session are the window's, and it names the job and the row",
+	);
+	assert.deepEqual(
+		[q.ask?.id, q.ask?.lane, q.ask?.session_id, q.ask?.title, q.ask?.call.command, q.ask?.call.input_sha256, q.ask?.call.reason],
+		[ask, "s", "s", 'The scheduled prompt "deploy-check" asks to run a command', SUDO, inputHash({ command: SUDO }), "sudo invocation"],
+	);
+	const again = await w.call({ ...sudo, toolCallId: "call-2" });
+	assert.deepEqual(again, first, "the same call later in the turn is told it is asked");
+	assert.equal(w.filed().length, 1, "and files nothing");
+	assert.deepEqual(w.asked, []);
+});
+
+test("[M5b.3] a no that holds in the conversation's lane refuses the call without a new question; a no in another lane does not hold here", async () => {
+	const dismissedAt = stamp(Date.now() - 3_600_000);
+	const no = (lane: string): InboxEntry => {
+		const call = { tool: "bash", tool_call_id: "earlier", command: SUDO, input_sha256: inputHash({ command: SUDO }), reason: "sudo invocation" };
+		const made = questionFinding(call, { lane, sessionId: lane, sessionFile: `/sessions/${lane}.jsonl`, cap: resolveCap({ cwd: "/p" }, 60_000) }, { source: "cron:deploy-check", run_id: "run-0", cwd: "/p", job_id: "job-1", session_id: lane, who: "deploy-check" }, dismissedAt);
+		return { ...made.entry, id: made.id, created_at: dismissedAt, status: "dismissed", kind: "checkpoint", verified: null, dismiss_reason: null, dismissed_at: dismissedAt };
+	};
+	const w = window();
+	w.earlier.push(no("s"));
+	w.clockFired();
+	assert.deepEqual(await w.call(sudo), { block: true, reason: `refused by pi-loops: sudo invocation. Nobody was asked: a person said no to this on ${dismissedAt.slice(0, 10)}. Finish what does not need it, and report what you would need a person for.` });
+	assert.deepEqual([w.filed().length, w.asked.length], [0, 0], "no new question, no dialog");
+
+	const other = window();
+	other.earlier.push(no("another-conversation"));
+	other.clockFired();
+	assert.deepEqual(await other.call(sudo), { block: true, reason: askedWords("sudo invocation") });
+	assert.equal(other.filed().length, 1, "another conversation's no is not this lane's");
+});
+
+test("[M5b.3] the person's own turn is not judged: after a scheduled turn asked, the same call in the person's turn runs and files nothing", async () => {
+	const w = window();
+	w.clockFired();
+	assert.deepEqual(await w.call(sudo), { block: true, reason: askedWords("sudo invocation") });
+	w.executor.agentEnded();
+	w.executor.settled();
+	w.executor.agentStarted(T0 + 1);
+	w.typed("restart the api");
+	assert.deepEqual(w.executor.currentTurn(), { kind: "person" });
+	assert.equal(await w.call({ ...sudo, toolCallId: "call-3" }), undefined);
+	assert.equal(w.filed().length, 1, "only the scheduled turn's question");
+	assert.deepEqual(w.asked, []);
+});
+
+test("a clock-fired turn in a window asks before rm -rf: a question in the inbox, the call blocked, no dialog", async () => {
 	const w = window();
 	w.clockFired();
 	const result = await w.call(rmrf);
-	assert.equal(w.asked.length, 1, "asked once");
-	// A select has no body of its own: the question is the first line, what is asked about follows.
-	assert.equal(w.asked[0].title.split("\n")[0], "Allow this in a scheduled turn?");
-	assert.match(w.asked[0].title, /trace run-1111.*bash: rm recursive\+force on absolute path/);
-	assert.match(w.asked[0].title, /rm -rf \/var\/cache\/x/);
-	assert.match(w.asked[0].title, /Yes runs it this once\. No, or no answer in 0 s, refuses it and tells the model why\.$/);
-	assert.equal(w.asked[0].timeout, 20, "the countdown is pi's, from the timeout handed to select");
-	assert.deepEqual(result, { block: true, reason: refusal("rm recursive+force on absolute path") });
-	assert.match(result!.reason!, /^refused by pi-loops: rm recursive\+force on absolute path\. This scheduled turn ran with nobody answering/);
-	assert.deepEqual(w.logged, ["refused bash in scheduled turn run-1111: rm recursive+force on absolute path"]);
-});
-
-test("the question shows a long command cut in characters and marked, and a short one whole", async () => {
-	/**
-	 * The command line is the only place the person sees what they are asked to allow. It used to be
-	 * `slice(0, 200)` with no marker: a longer command looked complete, and a cut could end on half
-	 * of an emoji. 199 ASCII characters put a two-unit character across the old cut.
-	 */
-	const commandLine = (title: string) => title.split("\n")[2];
-	const w = window();
-	w.clockFired();
-	const long = "rm -rf /var/cache/" + "x".repeat(181) + "🚀".repeat(10) + " && echo the end";
-	await w.call({ toolName: "bash", input: { command: long } });
-	const shown = commandLine(w.asked[0].title);
-	assert.equal(Array.from(shown).length, WINDOW_GUARD_COMMAND_CHARS + 1, "200 characters and the marker");
-	assert.ok(shown.endsWith("🚀…"), `cut on a whole character, then marked; got ${JSON.stringify(shown.slice(-4))}`);
-	assert.doesNotMatch(shown, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/, "no half character");
-	assert.doesNotMatch(shown, /the end/);
-
-	const s = window();
-	s.clockFired();
-	await s.call(rmrf);
-	assert.equal(commandLine(s.asked[0].title), "rm -rf /var/cache/x", "a short command is shown whole, unmarked");
+	assert.deepEqual(result, { block: true, reason: askedWords("rm recursive+force on absolute path") });
+	assert.deepEqual(w.asked, [], "no dialog");
+	assert.deepEqual(w.filed().map((f) => f.ask?.call.command), ["rm -rf /var/cache/x"]);
+	assert.deepEqual(w.logged, ["blocked a bash call: rm recursive+force on absolute path in scheduled turn run-1111"]);
 });
 
 test("a person's turn does not ask", async () => {
@@ -139,13 +186,13 @@ test("a person's turn does not ask", async () => {
 test("an undeclared tool asks; a declared one, an extension or MCP tool and pi-loops' read-only tools do not", async () => {
 	const w = window();
 	w.clockFired({ tools: ["read", "grep"] });
-	assert.deepEqual(await w.call(echo), { block: true, reason: refusal("bash is not among the tools the job declared (read, grep)") });
+	assert.deepEqual(await w.call(echo), { block: true, reason: askedWords("bash is not among the tools the job declared (read, grep)") });
 	assert.equal(await w.call({ toolName: "read", input: { path: "x" } }), undefined, "declared");
 	assert.equal(await w.call({ toolName: "cron_list", input: {} }), undefined, "a read-only pi-loops tool rides along");
-	assert.deepEqual(await w.call({ toolName: "mcp__gh__list", input: {} }), { block: true, reason: refusal("mcp__gh__list is not among the tools the job declared (read, grep)") }, "--tools names the whole set");
+	assert.deepEqual(await w.call({ toolName: "mcp__gh__list", input: {} }), { block: true, reason: refusal("mcp__gh__list is not among the tools the job declared (read, grep)", "blind") }, "--tools names the whole set; a call with no command cannot be shown on a card");
 	w.executor.settled();
 	w.clockFired({ builtinTools: ["read"] });
-	assert.deepEqual(await w.call(echo), { block: true, reason: refusal("bash is not among the built-in tools the job declared (read)") });
+	assert.deepEqual(await w.call(echo), { block: true, reason: askedWords("bash is not among the built-in tools the job declared (read)") });
 	assert.equal(await w.call({ toolName: "mcp__gh__list", input: {} }), undefined, "a built-in list caps only pi's built-ins");
 	assert.equal(await w.call({ toolName: "read", input: { path: "x" } }), undefined);
 	w.executor.settled();
@@ -178,7 +225,7 @@ test("[danger] allow lets a command through in a window as it does in the backgr
 	assert.equal(await w.call(rmrf), undefined);
 	const chained = await w.call({ toolName: "bash", input: { command: "rm -rf /var/cache/x; rm -rf /" } });
 	assert.equal(chained?.block, true, "nothing chained onto the allowed command");
-	assert.match(chained!.reason!, /^refused by pi-loops: rm recursive\+force on /);
+	assert.match(chained!.reason!, /^asked a person: rm recursive\+force on /);
 });
 
 test("a /goal continuation does not ask", async () => {
@@ -197,7 +244,7 @@ test("a person's message queued into a clock-fired run makes what follows attend
 	w.typed("actually, go ahead and clear it");
 	assert.deepEqual(w.executor.currentTurn(), { kind: "person" });
 	assert.equal(await w.call(rmrf), undefined, "from the person's message on, the turn is theirs");
-	assert.equal(w.asked.length, 1);
+	assert.equal(w.filed().length, 1);
 });
 
 test("another extension's message inside a scheduled turn stays capped, and so does every user message after its input until the turn settles", async () => {
@@ -209,7 +256,7 @@ test("another extension's message inside a scheduled turn stays capped, and so d
 	assert.equal(await w.blocked(rmrf), true, "nor does one with a prefix");
 	w.typed("go ahead");
 	assert.equal(await w.blocked(rmrf), true, "the window does not read whose words a message has: after another extension's input the cap stays, and the person is asked");
-	assert.equal(w.asked.length, 3);
+	assert.equal(w.filed().length, 1, "one question: the same call again in the turn is told it is asked");
 	w.executor.agentEnded();
 	w.executor.settled();
 	w.executor.agentStarted(T0 + 1);
@@ -294,7 +341,7 @@ test("the cap ends when the turn settles, not when a run ends", async () => {
 	w.executor.settled();
 	assert.equal(w.executor.currentTurn(), undefined);
 	assert.equal(await w.call(rmrf), undefined, "nothing of ours in force: the one unknown that is allowed");
-	assert.equal(w.asked.length, 1);
+	assert.equal(w.filed().length, 1);
 });
 
 test("a retry inside a scheduled turn stays capped", async () => {
@@ -418,62 +465,25 @@ test("a turn row's message runs under the cap this window gave its row, its row'
 	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: row.id, mode: "unattended", tools: ["read"] }, "a custom message of another type changes nothing");
 });
 
-test("with no UI a scheduled turn's call is refused at once", async () => {
+test("with no UI a scheduled turn's call files its question all the same; with no session file, or no ctx, it is refused and nobody is asked", async () => {
 	const w = window({}, { hasUI: false });
 	w.clockFired();
-	const result = await w.call(rmrf);
-	assert.deepEqual(result, { block: true, reason: refusal("rm recursive+force on absolute path") });
-	assert.deepEqual(w.asked, [], "nothing to ask through");
-	assert.deepEqual(w.logged, ["refused bash in scheduled turn run-1111: rm recursive+force on absolute path (no UI to ask)"]);
-	assert.deepEqual(await w.handler(rmrf, undefined), { block: true, reason: refusal("rm recursive+force on absolute path") }, "and with no ctx at all");
+	assert.deepEqual(await w.call(rmrf), { block: true, reason: askedWords("rm recursive+force on absolute path") });
+	assert.equal(w.filed().length, 1, "the inbox needs no dialog");
+	const unattended = "refused by pi-loops: rm recursive+force on absolute path. This run is unattended, so commands that can destroy data or the machine are not allowed; do the safe part and report what you would need a human for.";
+	const unsaved = window({}, { sessionFile: undefined });
+	unsaved.clockFired();
+	assert.deepEqual(await unsaved.call(rmrf), { block: true, reason: unattended }, "no transcript an answer could resume");
+	assert.equal(unsaved.filed().length, 0);
+	assert.deepEqual(await w.handler(rmrf, undefined), { block: true, reason: unattended }, "and with no ctx at all");
+	assert.equal(w.filed().length, 1);
 });
 
-test("the guard's question focuses the refusing option, and Enter refuses", async () => {
-	// pi's selector starts on the first option and Enter picks it; pi's confirm started on Yes, and a
-	// reflexive Enter ran the rm -rf. Whatever Enter picks here is read back as the first option.
-	const w = window({}, { answer: (options) => options[0] });
-	w.clockFired();
-	const result = await w.call(rmrf);
-	assert.deepEqual(w.asked[0].options, ["No, refuse it", "Yes, run it once"]);
-	assert.equal(w.asked[0].options[0], GUARD_CHOICES.refuse, "the first option is the refusal");
-	assert.deepEqual(result, { block: true, reason: refusal("rm recursive+force on absolute path", "person") }, "and Enter on it is the person's No");
-	assert.deepEqual(w.logged, ["refused bash in scheduled turn run-1111: rm recursive+force on absolute path (the person said no)"]);
-});
-
-test("an Escape refuses", async () => {
-	// pi resolves an escaped select to undefined, as it does one that times out.
-	const w = window({}, { answer: () => undefined });
-	w.clockFired();
-	assert.deepEqual(await w.call(rmrf), { block: true, reason: refusal("rm recursive+force on absolute path") });
-	assert.equal(w.asked.length, 1, "it was asked");
-	assert.deepEqual(w.logged, ["refused bash in scheduled turn run-1111: rm recursive+force on absolute path"]);
-});
-
-test("only the yes option runs it", async () => {
-	for (const other of ["No, refuse it", "Yes", "yes, run it once", "", "run it"]) {
-		const w = window({}, { answer: () => other });
-		w.clockFired();
-		assert.equal((await w.call(rmrf))?.block, true, `${JSON.stringify(other)} is not the yes option`);
-		assert.equal(allows(other), false);
-	}
-	const yes = window({}, { answer: () => GUARD_CHOICES.allow });
-	yes.clockFired();
-	assert.equal(await yes.call(rmrf), undefined);
+test("only the yes option runs it", () => {
+	for (const other of ["No, refuse it", "Yes", "yes, run it once", "", "run it"]) assert.equal(allows(other), false, `${JSON.stringify(other)} is not the yes option`);
 	assert.equal(allows(GUARD_CHOICES.allow), true);
 	assert.equal(allows(undefined), false);
-});
-
-test("a yes allows, once, and the question gives the person a minute", async () => {
-	const w = window({}, { answer: () => GUARD_CHOICES.allow });
-	const handler = windowGuard({ current: () => w.executor.currentTurn(), config: () => ({ windowGuard: true, allowCommands: [] }), log: (line) => void w.logged.push(line) });
-	w.clockFired();
-	assert.equal(await handler(rmrf, w.ctx), undefined);
-	assert.equal(w.asked.length, 1);
-	assert.equal(w.asked[0].timeout, WINDOW_GUARD_CONFIRM_MS);
-	assert.equal(WINDOW_GUARD_CONFIRM_MS, 60_000);
-	assert.deepEqual(w.logged, ["allowed bash in scheduled turn run-1111: rm recursive+force on absolute path"]);
-	assert.equal((await handler(rmrf, w.ctx))?.block, undefined, "each call is its own question");
-	assert.equal(w.asked.length, 2);
+	assert.equal(WINDOW_GUARD_CONFIRM_MS, 60_000, "a control-plane question in a scheduled turn gives the person a minute");
 });
 
 test("a failure inside the handler refuses a scheduled turn's call and lets the person's through", async () => {
@@ -490,29 +500,29 @@ test("a failure inside the handler refuses a scheduled turn's call and lets the 
 	// Not knowing whose turn it is refuses.
 	assert.deepEqual(await broken(() => { throw new Error("no executor"); }, logged)(echo, w.ctx), { block: true, reason: refusal("the guard could not decide") });
 	assert.equal(logged.at(-1), "window guard failed on bash: no executor");
-	// A select that rejects is a no.
-	const rejecting = window();
-	rejecting.ctx.ui.select = () => Promise.reject(new Error("dialog gone"));
-	rejecting.clockFired();
-	assert.deepEqual(await rejecting.call(rmrf), { block: true, reason: refusal("the guard could not decide") });
+	// A question that cannot be filed refuses: a call is never let through on an error.
+	const failing = window();
+	failing.inbox.fileOnce = () => Promise.reject(new Error("disk full"));
+	failing.clockFired();
+	assert.deepEqual(await failing.call(rmrf), { block: true, reason: "refused by pi-loops: rm recursive+force on absolute path. Nobody was asked: the question could not be filed (disk full). Finish what does not need it, and report what you would need a person for." });
 });
 
-test("the window's turn and judgeCall: pure, and allow everything outside an unattended row", () => {
-	const cfg: GuardConfig = { windowGuard: true, allowCommands: [] };
-	/** What the window decides of a call: allow when it gives `judgeCall` no turn, else the reason a question asks. */
-	const decide = (call: { toolName: string; input?: unknown }, current: Parameters<typeof windowTurn>[0], on = cfg.windowGuard) => {
-		const turn = windowTurn(current, on);
-		if (turn === undefined) return { kind: "allow" };
-		const v = judgeCall({ ...call, toolCallId: "c" }, turn, cfg);
-		return v.kind === "question" ? { kind: "ask", reason: v.ask.call.reason } : v;
-	};
-	assert.deepEqual(decide(rmrf, undefined), { kind: "allow" });
-	assert.deepEqual(decide(rmrf, { kind: "person" }), { kind: "allow" });
-	assert.deepEqual(decide(rmrf, { kind: "row", id: "r", mode: "attended" }), { kind: "allow" });
-	assert.deepEqual(decide(rmrf, { kind: "row", id: "r", mode: "unattended" }), { kind: "ask", reason: "rm recursive+force on absolute path" });
-	assert.deepEqual(decide({ toolName: "powershell", input: { command: "sudo rm x" } }, { kind: "row", id: "r", mode: "unattended" }), { kind: "ask", reason: "sudo invocation" });
-	assert.deepEqual(decide({ toolName: "bash", input: {} }, { kind: "row", id: "r", mode: "unattended" }), { kind: "allow" }, "no command, nothing to judge");
-	assert.deepEqual(decide(rmrf, { kind: "row", id: "r", mode: "unattended" }, false), { kind: "allow" });
+test("the window's seat and its job: pure; a scheduled turn's question is the conversation's and names its job, found by its row or by the clock once the row left", () => {
+	const cap: RowCap = { kind: "row", id: "run-1111222233334444", mode: "unattended", tools: ["read", "bash"] };
+	const seed = windowSeed(cap, "s", "/p", { id: "job-1", name: "deploy-check", cwd: "/p", timeoutMs: 120_000 });
+	assert.equal(seed.lane, "s", "the conversation's lane");
+	assert.deepEqual(seed.origin, { source: "cron:deploy-check", run_id: cap.id, cwd: "/p", job_id: "job-1", session_id: "s", who: "deploy-check" });
+	assert.deepEqual(recordedCap(seed.cap), { cwd: "/p", tools: ["read", "bash"], timeout_ms: 120_000 }, "the row's declared tools under the job's time limit");
+	assert.deepEqual(windowSeed({ ...cap, tools: undefined }, "s", "/p", undefined).origin, { source: `cron:${cap.id}`, run_id: cap.id, cwd: "/p", session_id: "s", who: "a scheduled prompt" }, "with no job found the question names none");
+	const jobs = [{ id: "job-1", stateful: false }, { id: "job-2", stateful: false }, { id: "loop-1", stateful: true }] as LoopJob[];
+	assert.equal(turnJob("r1", jobs, [{ id: "r1", source: "cron:job-2" }], {})?.id, "job-2", "by its row's source while the row is in the file");
+	assert.equal(turnJob("r1", jobs, [{ id: "r1", source: "cron-run:job-1" }], {})?.id, "job-1", "/cron run's row too");
+	assert.equal(turnJob("r1", jobs, [{ id: "r1", source: "recipe:x" }], {}), undefined, "a row of no job names none");
+	const slot = "2026-06-01T12:00:00.000Z";
+	assert.equal(turnJob(plainRunId("job-1", slot), jobs, [], { "job-1": { slot, runs: 1 } })?.id, "job-1", "once a drain took it out, by the slot the clock spent");
+	assert.equal(turnJob(plainRunId("job-2", slot), jobs, [], { "job-2": { fired: slot, runs: 1 } })?.id, "job-2", "or the run it fired");
+	assert.equal(turnJob(plainRunId("loop-1", slot), jobs, [], { "loop-1": { slot, runs: 1 } }), undefined, "a loop's run is no turn of a conversation");
+	assert.equal(turnJob("run-unknown", jobs, [], { "job-1": { slot, runs: 1 } }), undefined);
 });
 
 test("one of this window's own rows that a capped turn rewrote in the file runs capped", async () => {
@@ -604,21 +614,6 @@ test("/cron run's row this window wrote runs as the person's turn: the guard doe
 	assert.equal(await theirs.blocked(push), true, "an attended source nobody here produced runs capped, as before");
 });
 
-test("a person's No is reported to the model as the person's refusal; no answer as nobody's", async () => {
-	const no = window({}, { answer: (options) => options[0] });
-	no.clockFired();
-	assert.deepEqual(await no.call(rmrf), { block: true, reason: refusal("rm recursive+force on absolute path", "person") });
-	assert.match(refusal("x", "person"), /The person at the window refused it/);
-	assert.deepEqual(no.logged, ["refused bash in scheduled turn run-1111: rm recursive+force on absolute path (the person said no)"]);
-	const nobody = window({}, { answer: () => undefined });
-	nobody.clockFired();
-	assert.deepEqual(await nobody.call(rmrf), { block: true, reason: refusal("rm recursive+force on absolute path") });
-	assert.match(refusal("x"), /ran with nobody answering/);
-	const silent = window({}, { hasUI: false });
-	silent.clockFired();
-	assert.deepEqual(await silent.call(rmrf), { block: true, reason: refusal("rm recursive+force on absolute path") });
-});
-
 /* ------------------------------------------------------------------ the browser page's rows (design §5) */
 
 const pageRow = (id: string, text: string) => personRow(id, text, undefined, { sessionId: "s", cwd: "/p", createdBy: { pid: 4242, instance: "page", version: "0" } }, T0);
@@ -650,7 +645,7 @@ test("a person row nobody rang for runs capped", async () => {
 	pageSent(w, pageRow("p1", "clear the cache: rm -rf /var/cache/x"));
 	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: "p1", mode: "unattended" });
 	assert.equal((await w.call(rmrf))?.block, true);
-	assert.equal(w.asked.length, 1);
+	assert.equal(w.filed().length, 1);
 	assert.equal(await w.call(echo), undefined, "a safe command is not asked about");
 });
 
@@ -666,7 +661,7 @@ test("a forged person row runs capped", async () => {
 	w.executor.turn(forged, T0);
 	w.turnStarted(forged);
 	assert.equal((await w.call(rmrf))?.block, true);
-	assert.equal(w.asked.length, 1);
+	assert.equal(w.filed().length, 1);
 });
 
 test("/pi-loops ring refuses a fingerprint that does not match the file", async () => {
@@ -675,7 +670,7 @@ test("/pi-loops ring refuses a fingerprint that does not match the file", async 
 	const other = requestFingerprint(pageRow("p1", "something else"));
 	assert.equal(pageSent(w, row, other), false, "nothing recorded");
 	assert.equal((await w.call(rmrf))?.block, true, "so the turn runs capped");
-	assert.equal(w.asked.length, 1);
+	assert.equal(w.filed().length, 1);
 });
 
 test("the person's own page message is known by its text, and a stop for it takes effect as it starts", async () => {
@@ -767,15 +762,19 @@ test("in the browser the question is a confirm, whose cancel comes first; in a t
 
 test("[M5a.8d] a scheduled turn in a window asks before a command that reaches the loops directory or answers for a person; an allow entry permits it", async () => {
 	const loopsDir = "/srv/x/loops";
-	const w = window({ loopsDir, allowCommands: ["pi-loops inbox claim inb-allowed"] });
-	w.clockFired();
+	const cfg = { loopsDir, allowCommands: ["pi-loops inbox claim inb-allowed"] };
+	// One window each: a turn asks at most ASKS_PER_TURN questions.
 	for (const [command, reason] of [["cat $PI_LOOPS_DIR/inbox.jsonl", "reads or writes pi-loops' own files"], [`echo y >> ${loopsDir}/inbox.jsonl`, "reads or writes pi-loops' own files"], ["pi-loops inbox claim inb-1", "answers for a person"], ["cd /tmp && pi-loops inbox dismiss x", "answers for a person"]]) {
-		assert.deepEqual(await w.call({ toolName: "bash", input: { command } }), { block: true, reason: refusal(reason) }, command);
+		const one = window(cfg);
+		one.clockFired();
+		assert.deepEqual(await one.call({ toolName: "bash", input: { command } }), { block: true, reason: askedWords(reason) }, command);
+		assert.equal(one.filed().length, 1, `${command}: asked`);
 	}
-	assert.equal(w.asked.length, 4, "each was asked");
+	const w = window(cfg);
+	w.clockFired();
 	assert.equal(await w.call({ toolName: "bash", input: { command: "pi-loops inbox claim inb-allowed" } }), undefined, "an allow entry permits it");
 	assert.equal(await w.call({ toolName: "bash", input: { command: "pi-loops inbox list" } }), undefined);
-	assert.equal(w.asked.length, 4);
+	assert.equal(w.filed().length, 0);
 });
 
 test("[M5a.8d] a scheduled turn in a window refuses a path tool into the loops directory without asking, as the background does; the person's own turn is not judged", async () => {

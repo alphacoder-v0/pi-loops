@@ -10,7 +10,7 @@ import * as path from "node:path";
 import { type AskOrigin, type Call, type DeclaredCap, type Grant, type ResolvedCap, askFindingId, askId, callKey, inputHash, resolveCap } from "../src/ask.ts";
 import { type CallVerdict, type GuardDeps, type GuardSeed, type GuardTurn, type Question, type ToolCallFacts, GuardSeats, guardCall, guardTurn, judgeCall, subagentGuardExtension, unhandledAsk } from "../src/guard.ts";
 import { Inbox, type InboxEntry as Finding } from "../src/inbox.ts";
-import { refusal, windowGuard, windowTurn } from "../src/window-guard.ts";
+import { refusal, windowGuard, windowSeed } from "../src/window-guard.ts";
 import { tmp } from "./tmp.ts";
 
 const LANE = "@cron-a1";
@@ -26,7 +26,7 @@ const grantOf = (command: string, reason = PUSH_REASON): Grant => ({ finding: "i
 /** A run's own SessionManager, as the guard sees it: an object with its session id. */
 const sm = (id: string) => ({ getSessionId: () => id });
 const capOf = (declared: DeclaredCap): ResolvedCap => resolveCap(declared, 900_000);
-const turn = (over: Partial<GuardTurn> = {}): GuardTurn => ({ asksThrough: "inbox", resumable: true, lane: LANE, open: new Map(), refused: new Map(), asked: 0, ...over });
+const turn = (over: Partial<GuardTurn> = {}): GuardTurn => ({ resumable: true, lane: LANE, open: new Map(), refused: new Map(), asked: 0, ...over });
 
 test("[Q1] judgeCall: the policy passes a call, whatever the inbox says", () => {
 	assert.deepEqual(judgeCall(bash("ls -la"), turn(), cfg), { kind: "allow" });
@@ -303,6 +303,7 @@ test("[M5b.2] one decider: a call gets the same verdict in a background turn and
 	const at = (call: ReturnType<typeof bash> | ReturnType<typeof write>): ToolCallFacts => ({ ...call, toolCallId: "call-1", cwd: proj });
 	const question = (command: string, reason: string): CallVerdict => ({ kind: "question", ask: { kind: "call", call: { tool: "bash", tool_call_id: "call-1", command, input_sha256: inputHash({ command }), reason } } });
 	const undeclared = "bash is not among the tools the job declared (read)";
+	const asked = (reason: string) => `asked a person: ${reason}. pi-loops did not run this and put the question in front of them. Do not wait for the answer and do not try another way to do the same thing. Finish what does not need it.`;
 	const rows: Array<{ name: string; call: ToolCallFacts; declared?: { tools: string[] }; verdict: CallVerdict; background?: "asked" | "not-shown" | "allowed"; window: "asked" | "blind" | "allowed" }> = [
 		{ name: "a dangerous command", call: at(bash(PUSH)), verdict: question(PUSH, PUSH_REASON), background: "asked", window: "asked" },
 		{ name: "a path tool into the loops directory", call: at(write("../loops/inbox.jsonl", proj)), verdict: { kind: "refuse", reason: OWN, whyNot: { why: "not-shown" } }, background: "not-shown", window: "blind" },
@@ -314,8 +315,9 @@ test("[M5b.2] one decider: a call gets the same verdict in a background turn and
 	for (const row of rows) {
 		const cap = { kind: "row" as const, id: "run-1111222233334444", mode: "unattended" as const, ...(row.declared ?? {}) };
 		const seat = new GuardSeats().enter(sm("s1"), "/runs/s1.jsonl", { lane: LANE, origin: { ...ORIGIN, cwd: proj }, cap: capOf({ cwd: proj }) }).seat;
-		const background: GuardTurn = { ...guardTurn(seat, [], NOW), ...(row.declared ? { declared: row.declared } : {}) };
-		const inWindow = windowTurn(cap, true)!;
+		const background = guardTurn(seat, [], NOW, row.declared);
+		const windowSeat = new GuardSeats().enter(sm("s"), "/sessions/s.jsonl", windowSeed(cap, "s", proj, undefined)).seat;
+		const inWindow = guardTurn(windowSeat, [], NOW, row.declared);
 		assert.deepEqual(judgeCall(row.call, background, policy), row.verdict, `${row.name}: background`);
 		assert.deepEqual(judgeCall(row.call, inWindow, policy), row.verdict, `${row.name}: window`);
 		const reason = row.verdict.kind === "question" ? row.verdict.ask.call.reason : row.verdict.kind === "refuse" ? row.verdict.reason : "";
@@ -323,18 +325,18 @@ test("[M5b.2] one decider: a call gets the same verdict in a background turn and
 		if (row.background) {
 			const w = world([ALLOWED]);
 			const out = await guardCall(row.call, seat, { ...w.deps, loopsDir: loops });
-			const expected = { asked: { block: true, reason: `asked a person: ${reason}. pi-loops did not run this and put the question in front of them. Do not wait for the answer and do not try another way to do the same thing. Finish what does not need it.` }, "not-shown": { block: true, reason: `refused by pi-loops: ${reason}. Nobody was asked: ${NOT_SHOWN}. Finish what does not need it, and report what you would need a person for.` }, allowed: undefined }[row.background];
+			const expected = { asked: { block: true, reason: asked(reason) }, "not-shown": { block: true, reason: `refused by pi-loops: ${reason}. Nobody was asked: ${NOT_SHOWN}. Finish what does not need it, and report what you would need a person for.` }, allowed: undefined }[row.background];
 			assert.deepEqual(out, expected, `${row.name}: the background's handler`);
 			assert.equal(w.inbox.list().length, row.background === "asked" ? 1 : 0, `${row.name}: the background files a question only for a question`);
 		}
 
-		const titles: string[] = [];
-		const ctx = { hasUI: true, mode: "tui" as const, cwd: proj, ui: { select: async (title: string) => (titles.push(title), undefined) } } as any;
-		const handler = windowGuard({ current: () => cap, config: () => ({ windowGuard: true, ...policy }), log: () => undefined, confirmTimeoutMs: 20 });
+		const w = world([ALLOWED]);
+		const ctx = { cwd: proj, sessionManager: { getSessionId: () => "s", getSessionFile: () => "/sessions/s.jsonl" } };
+		const handler = windowGuard({ current: () => cap, config: () => ({ windowGuard: true, ...policy }), log: () => undefined, inbox: w.deps.inbox, now: () => NOW, jobOf: () => undefined });
 		const out = await handler({ toolName: row.call.toolName, toolCallId: row.call.toolCallId, input: row.call.input }, ctx);
-		const expected = { asked: { block: true, reason: refusal(reason) }, blind: { block: true, reason: refusal(reason, "blind") }, allowed: undefined }[row.window];
+		const expected = { asked: { block: true, reason: asked(reason) }, blind: { block: true, reason: refusal(reason, "blind") }, allowed: undefined }[row.window];
 		assert.deepEqual(out, expected, `${row.name}: the window's handler`);
-		assert.equal(titles.length, row.window === "asked" ? 1 : 0, `${row.name}: the window asks the person only for a question`);
+		assert.deepEqual(w.inbox.list().map((f) => f.ask?.lane), row.window === "asked" ? ["s"] : [], `${row.name}: the window files a question only for a question, in the conversation's lane`);
 	}
 });
 
