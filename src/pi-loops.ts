@@ -34,7 +34,7 @@ import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { capRedacted, previewRedacted, redact, screenText } from "./redact.ts";
 import { CANCELLED_LINE, answerLine, answerWho, cancelRefusal, cardLines, cardOrigin, clearLeftTail, dismissOutcome, dismissTail, inboxCard, noQuestionLine, yesTerminalLine } from "./inbox-card.ts";
-import { type PersonAnswers, conversationFile, personAnswers } from "./answers.ts";
+import { type Answers, conversationFile, createAnswers } from "./answers.ts";
 import { type StepRefusal, answerOpen, answerRowId } from "./ask.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { FRESH_RUNS_READ, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardLines, runCardsHere, runLine } from "./run-card.ts";
@@ -49,10 +49,11 @@ import { jobLines as cronJobLines } from "./job-lines.ts";
 import { plural } from "./plural.ts";
 import { type OwnerView, type PlainJobLeases, type SessionSnapshot, openWhere, ownerViewOf, runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, closedConversation, openWindowPids, procStart } from "./lease.ts";
-import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, newTriggerRow, promotionTarget, promotionView, proofOf, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
+import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, newTriggerRow, promotionTarget, promotionView, proofOf, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, sessionFileEntries, stopRow, waitingLine } from "./engine.ts";
 import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
 import type { Row, UnclaimedRow } from "./requests.ts";
-import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
+import { WindowExecutor, createWindowAnswers, unattendedTurn } from "./window-executor.ts";
+import { RunList } from "./run-list.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, turnJob, windowGuard } from "./window-guard.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { budgetState, jobCounts, type ListedJob, listedJobs } from "./job-status.ts";
@@ -70,7 +71,7 @@ import { SubagentSlots } from "./slots.ts";
 import { askHost, noticesToShow, renderHostSnapshot, ringHost, type HostSnapshot } from "./host-control-channel.ts";
 import { HOST_LOG, crashPaused, crashPauseText, decideEviction, ensureHost, evictHost, heartbeatFresh, hostPushWork, hostServiceAlive, LEAVE_WAIT_MS, RESTART_WAIT_LINE, piPackageDir, readHostService, readSpawnLog, type HostServiceRecord } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
-import { TriggerRuntime, type TriggerOutcome, promotionToInbox, checkLane } from "./trigger-runtime.ts";
+import { TriggerRuntime, type TriggerOutcome, promotionToInbox, checkLane, checkSessionDir } from "./trigger-runtime.ts";
 import { scheduleAudit } from "./job-tune.ts";
 import { auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
@@ -135,6 +136,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** The engine's executor here: the pi this extension runs in (src/window-executor.ts). */
 	/** This process, as the rows it produces name it: the one that runs them while it is on the conversation. */
 	const self: Producer = { pid: process.pid, procStart: ownStart };
+	/** The answers' turns this window runs (src/window-executor.ts createWindowAnswers): a claim of this window is live while its run is here. */
+	const windowRuns = new RunList();
 	const executor = new WindowExecutor(
 		pi,
 		binding,
@@ -148,6 +151,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		(row) => requests.images(row),
 		() => stores.jobs.allRuns(),
 		{ resizeImage, formatDimensionNote },
+		(runId) => windowRuns.get(runId) !== undefined,
 	);
 	let requestWatch: fs.FSWatcher | undefined;
 	let storeWatch: fs.FSWatcher | undefined;
@@ -632,7 +636,9 @@ export default function piLoops(pi: ExtensionAPI) {
 		const sessionId = binding.here().sessionId;
 		if (!sessionId) return undefined;
 		const now = Date.now();
-		const result = await drain(sessionId, requests, executor, now, engineSinks(), opts);
+		// The window's one drain: a yes first (it runs after the current turn, before the next turn row,
+		// design 6.4), then the engine's, under one lock, so pi is handed one turn of ours at a time.
+		const result = await windowAnswers.drainWith(now, opts.tick === true, () => drain(sessionId, requests, executor, now, engineSinks(), opts));
 		if (result.retryAt !== undefined) armRetry(retryTimers, sessionId, result.retryAt - now + 50, () => void drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`)));
 		// The badge counts what waits in the file: a drain is when that changes.
 		if (result.delivered.length || result.removed.length || result.dead.length) refreshBadge();
@@ -651,9 +657,25 @@ export default function piLoops(pi: ExtensionAPI) {
 		return out;
 	}
 
-	/** A person's yes, no, clear and cancel typed here (src/answers.ts). The rows it appends are signed by this window. */
+	/** A person's yes, no, clear and cancel typed here, and the answers of the conversation this window holds (src/answers.ts). The rows it appends are signed by this window. */
 	const answerLeases = new LeaseStore(dir);
-	const answers: PersonAnswers = personAnswers({ inbox: stores.inbox, requests, jobs: stores.jobs, audit: stores.rules, sessionFile: conversationFile(answerLeases, new ConversationIndex(path.join(getAgentDir(), "sessions"))), self: createdBy, now: Date.now, log: (line) => log.info(line) });
+	const answers: Answers = createAnswers({
+		inbox: stores.inbox, requests, jobs: stores.jobs, audit: stores.rules,
+		sessionFile: conversationFile(answerLeases, new ConversationIndex(path.join(getAgentDir(), "sessions"))),
+		entries: (file) => (fs.existsSync(file) ? sessionFileEntries(file) : undefined),
+		checkSessionDir: (cwd) => checkSessionDir(stores.jobs, cwd), checkLaneOf: checkLane,
+		// A window meets only its own conversation's rows, and a conversation fires no run_end.
+		runEnd: (record, lane) => log.info(`answer ${record.runId.slice(0, 12)}: no run_end in a window for ${lane}`),
+		self: createdBy, now: Date.now, log: (line) => log.info(line),
+	});
+	/** The answers of the conversation this window holds: a yes runs here, after the current turn (design 6.4). */
+	const windowAnswers = createWindowAnswers({
+		answers, requests, runs: windowRuns, executor,
+		here: () => ({ sessionId: binding.here().sessionId, cwd: session.cwd, sessionFile: lastCtx?.sessionManager.getSessionFile() }),
+		jobs: () => stores.book().jobs,
+		holder: () => ({ pid: process.pid, procStart: ownStart }),
+		log: (line) => log.info(line),
+	});
 
 	function noteBinding(outcome: AcquireOutcome): void {
 		if (outcome.outcome === "acquired" && outcome.tookFromPid) log.info(`took session ${shortSessionId(outcome.lease.sessionId)} from dead pid ${outcome.tookFromPid}`);
@@ -718,6 +740,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (!sessionId) return;
 		const left = releaseLocalRows(requests, sessionId, self, (row) => executor.delivered(row));
 		if (left.length) log.info(`left ${left.length} queued request(s) of session ${shortSessionId(sessionId)} to its holder`);
+		windowAnswers.leave(Date.now()).catch((err: any) => log.info(`answers: ${err?.message ?? err}`));
 	}
 
 	/** A request written for this conversation lands without waiting for the tick; the tick drains as well, because fs.watch can miss events. */
@@ -3261,6 +3284,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			inbox: stores.inbox,
 			now: () => Date.now(),
 			jobOf: (rowId, sessionId) => turnJob(rowId, stores.jobs.load(), requests.list(sessionId), stores.clock.read().jobs),
+			answerTurn: (cap) => windowAnswers.seat(cap),
 		}),
 	);
 
@@ -3565,6 +3589,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		markTurn("agent_settled");
 		// pi is idle now: what it no longer has is offered again by the drain below, unless a stop named it.
 		executor.settled(event.aborted);
+		// An answer's turn that ran closes now; a stop closes it unfinished.
+		await windowAnswers.settled(event.aborted, Date.now()).catch((err: any) => log.info(`answers: ${err?.message ?? err}`));
 		// The tracker description `/recipe add` was waiting for: written during this turn, so the
 		// wizard picks up where it stopped — in the same project, with the same words.
 		if (pendingRecipeAdd && sameProject(pendingRecipeAdd.project, session.cwd) && fs.existsSync(path.join(pendingRecipeAdd.project, TRACKER_FILE))) {
@@ -3647,6 +3673,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		storeWatch = undefined;
 		clearTimeout(storeWatchTimer);
 		storeWatchTimer = undefined;
+		// An answer's turn this window runs closes before the lease goes back.
+		await windowAnswers.leave(Date.now()).catch((err: any) => log.info(`answers: ${err?.message ?? err}`));
 		try {
 			leaveSession();
 		} catch (err: any) {

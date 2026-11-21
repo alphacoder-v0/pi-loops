@@ -107,6 +107,13 @@ export function windowSeed(cap: RowCap, sessionId: string, cwd: string, job: Tur
 /** What the handler reads of pi's context: the conversation's session and the turn's directory. */
 export type WindowContext = { cwd?: string; sessionManager?: { getSessionId(): string; getSessionFile(): string | undefined } };
 
+/** An answer's turn, as the guard seats it: its seed with the grant, the seat it is told of, and whether the answer is still open. */
+export interface AnswerSeatOffer {
+	readonly seed: GuardSeed;
+	seated(seat: GuardSeat): void;
+	open(): boolean;
+}
+
 export interface WindowGuardDeps {
 	current(): CurrentTurn | undefined;
 	config(): GuardConfig;
@@ -116,15 +123,24 @@ export interface WindowGuardDeps {
 	now(): number;
 	/** The plain job whose row `rowId` is, in conversation `sessionId` (`turnJob`). */
 	jobOf(rowId: string, sessionId: string): TurnJob | undefined;
+	/**
+	 * The seed of an answer's turn this window runs, for the cap in force (src/window-executor.ts
+	 * `createWindowAnswers`): its grant and the cap of the question it answers, only for the very cap
+	 * the window handed that turn with. `seated` is told the seat, so the closing reads whether the
+	 * grant was used; `open` is false from the moment the answer closes, and its seat leaves then.
+	 * undefined: the turn is no answer of this window's.
+	 */
+	answerTurn?(cap: RowCap): AnswerSeatOffer | undefined;
 }
 
 /**
  * The `tool_call` handler: a scheduled turn's call is judged and applied by `guardCall`, as a
  * background run's is, in a seat of this window's own `GuardSeats`: keyed by the window's
  * `ctx.sessionManager`, so a question's ask id and session are the conversation's. A turn takes its
- * seat at its first judged call and leaves it when another turn's first call comes. With no session
- * file there is no transcript an answer could resume, so there is no seat, and a call that needs a
- * person is refused. A call no card could show is refused in the window's own words (`blind`).
+ * seat at its first judged call and leaves it when another turn's first call comes. The turn of an
+ * answer this window runs takes the seed `answerTurn` gives, so its one granted call passes once.
+ * With no session file there is no transcript an answer could resume, so there is no seat, and a
+ * call that needs a person is refused. A call no card could show is refused in the window's own words (`blind`).
  *
  * This is a boundary that fails closed: anything in here that throws refuses a scheduled turn's
  * call. The person's own turn goes on as if the guard were not there, and so does a turn with no row
@@ -133,22 +149,28 @@ export interface WindowGuardDeps {
  */
 export function windowGuard(deps: WindowGuardDeps): (event: { toolName: string; toolCallId?: string; input?: unknown }, ctx: WindowContext | undefined) => Promise<ToolCallEventResult | undefined> {
 	const seats = new GuardSeats();
-	let held: { session: object; row: string; seat?: GuardSeat; leave?: () => void } | undefined;
+	/** The seat in force: for one session and one cap object, the one the turn in force runs under. */
+	let held: { session: object; cap: RowCap; seat?: GuardSeat; leave?: () => void; answer?: AnswerSeatOffer } | undefined;
 	const seatOf = (cap: RowCap, ctx: WindowContext | undefined): GuardSeat | undefined => {
 		const session = ctx?.sessionManager;
-		if (held && held.session === session && held.row === cap.id) return held.seat;
+		// The very cap of the turn in force, not its row's id: a later message that names the row runs
+		// under a cap of its own. A seat with a grant leaves once its answer closes.
+		if (held && held.session === session && held.cap === cap && (!held.answer || held.answer.open())) return held.seat;
 		held?.leave?.();
 		held = undefined;
 		if (!session) return undefined;
 		const sessionId = session.getSessionId();
 		const file = session.getSessionFile();
 		if (file === undefined || parseLane(sessionId)?.kind !== "conversation") {
-			held = { session, row: cap.id };
+			held = { session, cap };
 			return undefined;
 		}
-		const job = deps.jobOf(cap.id, sessionId);
-		const entered = seats.enter(session, file, windowSeed(cap, sessionId, ctx?.cwd ?? job?.cwd ?? process.cwd(), job));
-		held = { session, row: cap.id, seat: entered.seat, leave: () => void entered.leave() };
+		// An answer's turn is seated with its grant; a scheduled turn with the seed of its job.
+		const answer = deps.answerTurn?.(cap);
+		const job = answer ? undefined : deps.jobOf(cap.id, sessionId);
+		const entered = seats.enter(session, file, answer?.seed ?? windowSeed(cap, sessionId, ctx?.cwd ?? job?.cwd ?? process.cwd(), job));
+		held = { session, cap, seat: entered.seat, leave: () => void entered.leave(), ...(answer ? { answer } : {}) };
+		answer?.seated(entered.seat);
 		return entered.seat;
 	};
 	return async (event, ctx) => {

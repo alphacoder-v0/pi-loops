@@ -1,4 +1,4 @@
-/** Pure decisions about the window's slots: whose a user message is, and what a settled run leaves. */
+/** Pure decisions about the window's slots: whose a user message is, what a settled run leaves, and what became of an answer's turn. */
 import { type Gone, stripImageNotes } from "./engine.ts";
 import type { RowMark } from "./mark.ts";
 import type { RowCap } from "./window-executor.ts";
@@ -39,6 +39,17 @@ export interface TurnSlot {
 	at: "unstarted" | "held" | "started";
 	/** The cap the window gave the row as it sent it, or the one a ring for the row vouched for since. Its message's details say it too, and are not read for it: any extension can send a message of that type. */
 	cap: RowCap;
+	/**
+	 * What the window handed pi, as `canonicalJson` of the message's content. A message that names the
+	 * row is this slot's only with this very content: the mark is in the request file for anyone to
+	 * copy, and a message of another sender that carries it takes neither this slot nor its cap.
+	 */
+	handed: string;
+	/**
+	 * The turn of an answer (src/window-executor.ts `answerTurn`): it leaves by its own message only,
+	 * the one that started from this slot. A copied mark in the conversation is not its message.
+	 */
+	answer?: true;
 	/** A stop named the row while pi held it: its run is aborted as its message starts, and when it goes unwritten it is `stopped`. */
 	stop?: true;
 	/** Its row left the queue file. No exit is owed for it, so it never goes into `gone`: the same row may be queued again. */
@@ -80,6 +91,19 @@ export interface PersonClaim {
 
 /** The slot that owns a user message, if any. It decides a mark, and, as it takes a waiting input out of the list, whether that input still keeps a cap. */
 export type Claim = PersonClaim | { by: "other"; slot: OtherSlot } | { by: "nobody" };
+
+/**
+ * What became of an answer's turn when pi settled. `ran`: its message, known by its mark, started in
+ * the run that settled, so that run was its turn. `waits`: pi still holds it and has not started it.
+ * `unwritten`: pi has it no more and never started it (a stop dropped it, or pi lost it).
+ */
+export type AnswerTurnEnd = "ran" | "waits" | "unwritten";
+
+/** Pure. `started`: the turn's message started in the run that settled. `held`: its slot is still in flight. */
+export function answerTurnEnd(started: boolean, held: boolean): AnswerTurnEnd {
+	if (started) return "ran";
+	return held ? "waits" : "unwritten";
+}
 
 /** The slots left after a run ends, and the rows that went unwritten. */
 export interface Settled {
@@ -142,7 +166,7 @@ export function settleSlots(slots: readonly Slot[], how: { aborted: boolean; ter
 		const gone = slot.whose !== "append" && slot.left ? new Map<string, Gone>() : goneOf;
 		const unwritten = slot.stop ? "stopped" : how.aborted ? "dropped" : "lost";
 		if (slot.whose === "turn") {
-			if ((slot.at === "started" || !slot.left) && landed(slot.mark)) continue;
+			if ((slot.at === "started" || (!slot.left && !slot.answer)) && landed(slot.mark)) continue;
 			if (slot.at === "unstarted" || (slot.at === "held" && keeps)) kept.push(slot);
 			else gone.set(slot.mark.id, slot.at === "started" && !slot.stop ? "lost" : unwritten);
 			continue;

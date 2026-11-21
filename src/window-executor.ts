@@ -17,15 +17,31 @@
  * extension's waiting input takes that input out of the list (`claimOf`), and it keeps the cap no
  * more; and an older version's text proof (a version 2 row) can end a turn's slot before its message
  * starts, which then runs under its row's cap in the file, or the strictest.
+ *
+ * The answers of the conversation the window holds (`createWindowAnswers`): a yes to a question its
+ * turn asked runs here, as one turn row of `TURN_TYPE`, once pi is idle (design 6.4).
  */
 import type { ExtensionAPI, ExtensionContext, InputEvent, formatDimensionNote, resizeImage } from "@earendil-works/pi-coding-agent";
-import { CEILING, type Executor, type ExecutorView, type Producer, type TurnSent, proofOf, landed, modeOf, queuedTriggeredTurn, requestFingerprint, sameProducer, type Proof, claimAlive , type Gone } from "./engine.ts";
+import * as path from "node:path";
+import { conversationOrigin, plainOf } from "./answer-lanes.ts";
+import type { AnswerExecutor, AnswerStart, Answers, MeetOutcome } from "./answers.ts";
+import { answerPrompt, canonicalJson, isAnswerRow, limitNames, narrowCap, type ResolvedCap } from "./ask.ts";
+import { heldCap } from "./background-executor.ts";
+import { CEILING, type Executor, type ExecutorView, type Producer, type TurnSent, proofOf, landed, modeOf, queuedTriggeredTurn, requestFingerprint, sameProducer, type Proof, claimAlive , type Gone, answerClaimLive } from "./engine.ts";
+import type { GuardSeat, GuardSeed } from "./guard.ts";
+import type { AnswerSeatOffer } from "./window-guard.ts";
+import { type Lane, parseLane } from "./lane.ts";
 import { type LeaseBinding, type ProcessProbe, systemProbe } from "./lease.ts";
+import { DEFAULT_RUN_TIMEOUT_MS } from "./loop-run.ts";
+import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { type RowMark, TURN_TYPE, type TurnDetails, markDetails, markFor, turnOn, withMark } from "./mark.ts";
-import type { ImageContent, RequestMode, Row, UnclaimedRow } from "./requests.ts";
-import type { RunRecord } from "./store.ts";
+import { previewRedacted } from "./redact.ts";
+import type { ClaimedRow, ImageContent, RequestMode, RequestStore, Row, UnclaimedRow } from "./requests.ts";
+import { type RunList, STOPPED_BY_PERSON } from "./run-list.ts";
+import type { LoopJob, RunRecord } from "./store.ts";
 import { stamp } from "./schedule.ts";
-import { type PersonSlot, type Slot, type TurnSlot, claimOf, settleSlots } from "./window-claim.ts";
+import { shortSessionId } from "./session-head.ts";
+import { type PersonSlot, type Slot, type TurnSlot, answerTurnEnd, claimOf, settleSlots } from "./window-claim.ts";
 
 /**
  * Whose turn the agent is in, and under what cap (design §4.4, §6.3): a pi-loops row, with the mode
@@ -194,6 +210,9 @@ export class WindowExecutor implements Executor {
 	private compacting = false;
 	/** The generation of the turn whose message the window aborted as it started: its mark says so (`messageEnded`). */
 	private abortedAtStart: string | undefined;
+	/** The generations of the turn messages that started in the run going now, and in the run that settled last (`startedInSettledRun`). */
+	private startedThisRun = new Set<string>();
+	private startedInLastRun: ReadonlySet<string> = new Set();
 	/** Turn rows whose images are being resized before the send (`resizedTurn`). */
 	private readonly resizing = new Set<string>();
 	/**
@@ -209,8 +228,11 @@ export class WindowExecutor implements Executor {
 	/** The run log, read only when a row a run can claim is asked about (src/engine.ts `proofOf`). */
 	private readonly runs: () => readonly RunRecord[];
 	private readonly resizer: ImageResizer;
+	/** Whether a run is in this window's list of answer runs (its `RunList`); absent, an `ans-` claim is judged by its pid alone. */
+	private readonly listed: ((runId: string) => boolean) | undefined;
 
-	constructor(pi: Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">, binding: WindowBinding, ctx: () => WindowCtx | undefined, self: Producer, alive: (row: Row) => boolean = producerAlive, rows: () => Row[] = () => [], images: (row: Row) => ImageContent[] = noImages, runs: () => readonly RunRecord[], resizer: ImageResizer = noResizer) {
+	constructor(pi: Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">, binding: WindowBinding, ctx: () => WindowCtx | undefined, self: Producer, alive: (row: Row) => boolean = producerAlive, rows: () => Row[] = () => [], images: (row: Row) => ImageContent[] = noImages, runs: () => readonly RunRecord[], resizer: ImageResizer = noResizer, listed?: (runId: string) => boolean) {
+		this.listed = listed;
 		this.rows = rows;
 		this.runs = runs;
 		this.resizer = resizer;
@@ -282,7 +304,8 @@ export class WindowExecutor implements Executor {
 				// So it leaves here only by its mark in the conversation. One whose row left the file stays
 				// for the message pi may still write, which is aborted if a stop named it; a mark it did
 				// not write itself is another hand-over's of the same row, queued again.
-				if ((slot.at === "started" || !slot.left) && this.delivered(rowOf(slot.mark))) continue;
+				// An answer's turn leaves by its own message only: a mark is in the request file for anyone to copy.
+				if ((slot.at === "started" || (!slot.left && !slot.answer)) && this.delivered(rowOf(slot.mark))) continue;
 				next.push(queuedNow.has(generation(rowOf(slot.mark))) || slot.left ? slot : { ...slot, left: true });
 				continue;
 			}
@@ -324,7 +347,9 @@ export class WindowExecutor implements Executor {
 			kind: "window",
 			ceiling: CEILING.window,
 			blocked: (row) => (row.wake === "turn" && this.compactingNow() ? "pi is compacting the conversation" : undefined),
-			claimLive: (row) => claimAlive(row),
+			// An `ans-` claim of this window holds the lane while its run is in this window's list; one whose
+			// closing threw holds nothing, and the answers' drain closes it (F2, F3).
+			claimLive: (row) => (this.listed && isAnswerRow(row) ? answerClaimLive(row, { pid: this.self.pid, procStart: this.self.procStart }, this.listed) : claimAlive(row)),
 			idle: ctx?.isIdle() ?? true,
 			running: this.running,
 			inFlight: new Set([...handed, ...this.resizing]),
@@ -460,17 +485,38 @@ export class WindowExecutor implements Executor {
 	}
 
 	/**
+	 * Why the turn of an answer cannot go to pi now, or undefined when it can: as a turn row goes, to an
+	 * idle pi with no run on, no compaction, and no turn of ours that pi has not started.
+	 */
+	answerFree(): string | undefined {
+		const ctx = this.ctx();
+		if (!ctx) return "the window has no conversation open";
+		if (this.compactingNow()) return "pi is compacting the conversation";
+		if (this.running || !ctx.isIdle()) return "pi is busy: it runs after the current turn";
+		if (this.handedOver.size || this.resizing.size) return "pi has a turn of pi-loops to start first";
+		return undefined;
+	}
+
+	/**
+	 * The turn of an answer row this window claimed (src/answers.ts E4): the prompt as a custom
+	 * message of `TURN_TYPE` with the row's mark, as any turn row goes, under `cap`: the cap of the
+	 * question it answers, not one read from the row.
+	 */
+	answerTurn(row: ClaimedRow, prompt: string, cap: RowCap, now = Date.now()): TurnSent {
+		return this.customTurn(row, prompt, now, cap, true);
+	}
+
+	/**
 	 * The lease says a row is held, the slot is in the list, then the send. Sent to an idle pi, the
 	 * slot is `unstarted` and has the lane until a run takes it up: pi starts that run at once, or when
 	 * the `agent_settled` handler this was called from returns (probe P17), and never refuses it in
 	 * silence, so nothing here waits out a grace.
 	 */
-	private customTurn(row: UnclaimedRow, content: TurnContent, now: number): TurnSent {
+	private customTurn(row: Row, content: TurnContent, now: number, cap: RowCap = this.capOf(row), answer = false): TurnSent {
 		if (!this.binding.hold(stamp(now))) return "lease-lost";
 		const mark = markFor(row);
-		const cap = this.capOf(row);
 		const details: TurnDetails = { ...markDetails(mark), cap };
-		const slot: TurnSlot = { whose: "turn", mark, at: (this.ctx()?.isIdle() ?? true) ? "unstarted" : "held", cap };
+		const slot: TurnSlot = { whose: "turn", mark, at: (this.ctx()?.isIdle() ?? true) ? "unstarted" : "held", cap, handed: canonicalJson(content), ...(answer ? { answer: true as const } : {}) };
 		this.slots.push(slot);
 		try {
 			this.pi.sendMessage({ customType: TURN_TYPE, content, display: true, details }, { triggerTurn: true, deliverAs: "followUp" });
@@ -481,6 +527,11 @@ export class WindowExecutor implements Executor {
 		}
 		if (showsTriggeredTurnLine(row.source)) triggeredTurnLine(this.ctx(), row.id, true);
 		return "sent";
+	}
+
+	/** Whether the message of `row`'s turn (its mark, at its `created_at`) started in the run that settled last: that settle was its turn's. */
+	startedInSettledRun(row: Pick<Row, "id" | "created_at">): boolean {
+		return this.startedInLastRun.has(generation(row));
 	}
 
 	/** Whose turn pi is in now, for the `tool_call` cap: a row's, the person's, or none. */
@@ -522,6 +573,8 @@ export class WindowExecutor implements Executor {
 	 */
 	settled(aborted = false): string[] {
 		this.current = undefined;
+		this.startedInLastRun = this.startedThisRun;
+		this.startedThisRun = new Set();
 		this.foreign = false;
 		// A row that left the file since the last look (an exit in the drain that ran since) owes no exit:
 		// what pi did with its prompt must not reach the same row queued again.
@@ -592,7 +645,9 @@ export class WindowExecutor implements Executor {
 			// Two hand-overs of one row carry the same message: the one no stop named takes it first, so
 			// that a stop for a request that left does not abort the message of the same row queued again.
 			const named = turn.mark;
-			const held = this.slots.filter((slot): slot is TurnSlot => slot.whose === "turn" && named !== undefined && slot.mark.id === named.id && slot.mark.at === named.at && slot.at !== "started");
+			// Its mark and the very content this window handed: a message of another sender with a copied mark is no slot's.
+			const content = canonicalJson((message as { content?: unknown }).content);
+			const held = this.slots.filter((slot): slot is TurnSlot => slot.whose === "turn" && named !== undefined && slot.mark.id === named.id && slot.mark.at === named.at && slot.at !== "started" && slot.handed === content);
 			const slot = held.find((s) => !s.stop) ?? held[0];
 			this.slots = this.slots.map((s) => (s === slot ? { ...slot, at: "started" } : s));
 			if (this.current?.kind !== "row") this.foreign = false;
@@ -602,6 +657,8 @@ export class WindowExecutor implements Executor {
 			const row = named === undefined ? undefined : this.rows().find((r) => r.id === named.id && r.created_at === named.at);
 			this.current = slot?.cap ?? (row ? this.capOf(row) : { kind: "row", id: named?.id ?? "unknown", mode: "unattended", tools: [] });
 			if (this.running && named !== undefined) this.running = { ...this.running, requestId: named.id };
+			// Only the message this window handed counts as its row's turn having started.
+			if (slot) this.startedThisRun.add(generation(rowOf(slot.mark)));
 			this.abortedAtStart = slot?.stop ? generation(rowOf(slot.mark)) : undefined;
 			if (slot?.stop) this.ctx()?.abort();
 			return;
@@ -658,4 +715,260 @@ export class WindowExecutor implements Executor {
 	private letGoWhenFree(): void {
 		if (!this.slots.some((slot) => inFlight(slot))) this.binding.letGo();
 	}
+}
+
+/** What the window's answers are made of: the protocol, this window's runs, and the executor that hands a turn to pi. */
+export interface WindowAnswerDeps {
+	readonly answers: Pick<Answers, "meet" | "close" | "repair">;
+	readonly requests: Pick<RequestStore, "list" | "claim">;
+	/** This window's runs: an answer's turn is in it from its claim (E4a) to the end of its closing. */
+	readonly runs: RunList;
+	readonly executor: Pick<WindowExecutor, "holds" | "answerFree" | "answerTurn" | "startedInSettledRun" | "handedOver">;
+	/** The conversation this window is on: its id, its directory, and its session file as pi writes it. */
+	here(): { readonly sessionId?: string; readonly cwd: string; readonly sessionFile?: string };
+	/** The jobs of `jobs.json` now. */
+	jobs(): readonly LoopJob[];
+	/** This process, as its claims name it. */
+	holder(): { readonly pid: number; readonly procStart: string | undefined };
+	log(line: string): void;
+}
+
+/**
+ * The answers of the conversation a window holds (answer protocol, sections E, W, F, C and H1; design
+ * 6.4: "It runs in this conversation after the current turn"). The window is the lane's executor while
+ * it holds the conversation: the background meets the lane only once it is closed.
+ */
+export interface WindowAnswers {
+	/** At every tick: H1 for the conversation this window holds, then `drain`. */
+	tick(now: number): Promise<MeetOutcome[]>;
+	/**
+	 * Every `ans-` row of the conversation this window holds, oldest first, through `answers.meet`. E4
+	 * claims a row only while pi would take a turn row (`WindowExecutor.answerFree`) and no other answer
+	 * runs here, and hands the turn to pi. It runs under the window's one drain lock (`drainWith`).
+	 */
+	drain(now: number): Promise<MeetOutcome[]>;
+	/**
+	 * The window's one drain: the answers (`tick` or `drain`), then `engine`, the engine's drain of the
+	 * conversation, under one lock that every drain of this window takes. So the engine reads the rows
+	 * after an E4 claim is written, and an answer is claimed only once the engine's hand-over is in
+	 * pi's slots: neither hands pi a turn beside the other's. A failure of the answers is logged and the
+	 * engine's drain runs all the same.
+	 */
+	drainWith<T>(now: number, tick: boolean, engine: () => Promise<T>): Promise<T>;
+	/** At `agent_settled`, after `WindowExecutor.settled`: an answer's turn whose own message started in the run that settled, or that pi has no more, closes (C1 to C4). */
+	settled(aborted: boolean, now: number): Promise<void>;
+	/** The window leaves the conversation (`/new`, `/resume`, a quit): each answer's turn it has not closed closes unfinished. */
+	leave(now: number): Promise<void>;
+	/** The guard's seed for the turn whose cap is `cap` (`WindowGuardDeps.answerTurn`): only the cap object this window handed an answer's turn with, while the answer is open. */
+	seat(cap: RowCap): AnswerSeatOffer | undefined;
+}
+
+/** One answer's turn this window started, from E4 to its closing. */
+interface AnswerTurn {
+	readonly start: AnswerStart;
+	readonly job: LoopJob | undefined;
+	readonly cwd: string;
+	readonly sessionId: string;
+	readonly sessionFile: string | undefined;
+	/** The guard's seed of the turn, and the cap it was handed with; absent for a turn that was refused before it was handed. */
+	seed?: GuardSeed;
+	rowCap?: RowCap;
+	/** The seat the guard gave the turn at its first judged call. */
+	seat?: GuardSeat;
+	/** The turn was handed to pi. */
+	handed: boolean;
+	closing: boolean;
+}
+
+/** Whether a run under `cap` is offered `tool`: its tool list, and for one of pi's built-ins its built-in list, name it (or set no limit). */
+function capOffers(cap: ResolvedCap, tool: string): boolean {
+	const tools = limitNames(cap.tools);
+	if (tools && !tools.includes(tool)) return false;
+	const builtins = limitNames(cap.builtinTools);
+	return !(builtins && PI_BUILTIN_TOOL_NAMES.includes(tool) && !builtins.includes(tool));
+}
+
+/** How an answer's turn ended, for its record. */
+type TurnOutcome = { readonly ok: true } | { readonly ok: false; readonly error: string; readonly aborted?: true; readonly byPerson?: true };
+
+const STOPPED: TurnOutcome = { ok: false, error: STOPPED_BY_PERSON, aborted: true, byPerson: true };
+
+/** The record of an answer's turn in a window (C1): the conversation's session file is the transcript it resumed. */
+function answerTurnRecord(turn: AnswerTurn, outcome: TurnOutcome, now: number): RunRecord {
+	const { row, finding } = turn.start;
+	const requestedBy = row.payload?.requested_by ?? finding.claimed_by;
+	return {
+		runId: row.run.id, row: row.id, jobId: turn.start.jobId, ...(turn.job?.name ? { jobName: turn.job.name } : {}), stateful: false, cwd: turn.seed?.cap.cwd ?? turn.cwd,
+		pid: row.run.pid, startedAt: row.run.started_at, finishedAt: stamp(now), ok: outcome.ok, ...(outcome.ok ? {} : { error: outcome.error }),
+		findings: 0, droppedFindings: 0, stateUpdated: false,
+		sessionId: turn.sessionId, ...(turn.sessionFile ? { sessionFile: turn.sessionFile, resumed: turn.sessionFile } : {}),
+		forSession: turn.job?.createdBy?.sessionId ?? turn.sessionId, cause: "answer",
+		...(turn.start.grant ? { grant_used: turn.seat?.grantUsed ?? false } : {}),
+		...(requestedBy ? { requestedBy: { sessionId: requestedBy } } : {}),
+		...(!outcome.ok && outcome.aborted ? { aborted: true as const } : {}),
+		...(!outcome.ok && outcome.byPerson ? { stoppedBy: "person" as const } : {}),
+	};
+}
+
+export function createWindowAnswers(deps: WindowAnswerDeps): WindowAnswers {
+	/** The answer turns this window started, by run id (the row's id), until their closing ends. */
+	const turns = new Map<string, AnswerTurn>();
+	const listed = (runId: string): boolean => deps.runs.get(runId) !== undefined;
+	/** The conversation this window holds now, or undefined. */
+	const heldLane = (): Lane | undefined => {
+		const sessionId = deps.here().sessionId;
+		const lane = sessionId === undefined ? undefined : parseLane(sessionId);
+		return lane?.kind === "conversation" && deps.executor.holds(lane.id) ? lane : undefined;
+	};
+
+	function executorFor(lane: Lane): AnswerExecutor {
+		const self = deps.holder();
+		/** Why E4 waits in this window now: it holds the conversation no more, the finding's job is off (as the background holds a disabled loop's answer), another answer runs here, or pi would not take a turn row now. */
+		const why = (finding: { job_id?: string } | undefined): string | undefined => {
+			if (!deps.executor.holds(lane.id)) return "this window does not hold the conversation";
+			const job = plainOf(deps.jobs(), lane, finding?.job_id);
+			if (job && !job.enabled) return "its job is disabled";
+			if (deps.runs.all().some((run) => run.answer?.lane === lane.id)) return "another answer runs in this conversation";
+			return deps.executor.answerFree();
+		};
+		return {
+			blocked: (_lane, finding) => why(finding),
+			live: (row) => answerClaimLive(row, self, listed),
+			claim: (row, finding, lock, at) => {
+				// Asked again inside the locks: pi may have begun a turn since the read before them.
+				if (why(finding) !== undefined) return undefined;
+				const job = plainOf(deps.jobs(), lane, finding.job_id);
+				const label = job ? (job.name ?? job.id) : `an answer in conversation ${shortSessionId(lane.id)}`;
+				return deps.runs.claim(deps.requests, row, self, { jobId: job?.id ?? lane.id, label, promptPreview: previewRedacted(finding.text, 120), ctrl: new AbortController(), answer: { lane: lane.id, finding: finding.id } }, at, lock);
+			},
+			release: (runId) => void deps.runs.remove(runId),
+		};
+	}
+
+	/** C1 to C4 for `turn`, once; the run leaves the list after them, whatever they came to. */
+	async function close(turn: AnswerTurn, outcome: TurnOutcome, now: number): Promise<void> {
+		if (turn.closing) return;
+		turn.closing = true;
+		const { row } = turn.start;
+		try {
+			const closed = await deps.answers.close(row, now, answerTurnRecord(turn, outcome, now));
+			deps.log(`answer ${row.id.slice(0, 12)} in ${row.lane}: ${closed.state}${outcome.ok ? "" : ` (${outcome.error})`}`);
+		} catch (error) {
+			// The claim stays on the row and the run leaves the list: the next drain finds it not live (F2, F3).
+			deps.log(`answer ${row.id.slice(0, 12)} in ${row.lane}: could not close (${error instanceof Error ? error.message : String(error)})`);
+		} finally {
+			deps.runs.remove(row.run.id);
+			turns.delete(row.run.id);
+		}
+	}
+
+	/**
+	 * After E4b: the seat of the turn (the conversation's plain job's cap, narrowed by the cap the
+	 * question recorded), then the turn to pi. A turn that cannot run here runs nothing and closes now.
+	 */
+	async function begin(start: AnswerStart, lane: Lane, now: number): Promise<void> {
+		const here = deps.here();
+		const job = plainOf(deps.jobs(), lane, start.finding.job_id);
+		const turn: AnswerTurn = { start, job, cwd: here.cwd, sessionId: lane.id, sessionFile: here.sessionFile, handed: false, closing: false };
+		turns.set(start.row.run.id, turn);
+		const capped = narrowCap(heldCap(job, here.cwd, DEFAULT_RUN_TIMEOUT_MS), start.finding.ask?.run);
+		if ("refused" in capped) return close(turn, { ok: false, error: `refused: the question was asked in ${capped.asked}, and this run would be in ${capped.cwd}` }, now);
+		// The transcript E3 checked is the file this window writes, or nothing runs.
+		if (start.resume !== undefined && (here.sessionFile === undefined || path.resolve(start.resume.file) !== path.resolve(here.sessionFile))) return close(turn, { ok: false, error: `refused: the question's transcript ${start.resume.file} is not the conversation's file ${here.sessionFile ?? "(none)"}` }, now);
+		const cap: ResolvedCap = capped;
+		// The cap of the turn is the job as jobs.json has it now: a granted call whose tool it no longer
+		// declares is not run, as the background would not offer it (src/sdk-runner.ts `capTools`).
+		if (start.grant && !capOffers(cap, start.grant.call.tool)) return close(turn, { ok: false, error: `refused: ${start.grant.call.tool} is not among the tools the job declares now` }, now);
+		turn.seed = { lane: lane.id, origin: conversationOrigin(start, lane.id, cap.cwd, job), cap, ...(start.grant ? { grant: start.grant } : {}) };
+		const tools = limitNames(cap.tools);
+		const builtinTools = limitNames(cap.builtinTools);
+		const rowCap: RowCap = { kind: "row", id: start.row.id, mode: "unattended", ...(tools ? { tools } : {}), ...(builtinTools ? { builtinTools } : {}) };
+		turn.rowCap = rowCap;
+		let sent: TurnSent | undefined;
+		let why = "this window could not hold the conversation";
+		try {
+			sent = deps.executor.answerTurn(start.row, answerPrompt(start.finding, start.row.id, now), rowCap, now);
+		} catch (error) {
+			why = error instanceof Error ? error.message : String(error);
+		}
+		if (sent === "sent") turn.handed = true;
+		else await close(turn, { ok: false, error: why }, now);
+	}
+
+	/** The window's drain lock: one drain at a time, answers and engine alike. */
+	let queue: Promise<unknown> = Promise.resolve();
+	const serial = <T>(work: () => Promise<T>): Promise<T> => {
+		const next = queue.then(work);
+		queue = next.catch(() => undefined);
+		return next;
+	};
+	const repairHere = async (now: number): Promise<void> => {
+		const lane = heldLane();
+		if (!lane) return;
+		try {
+			await deps.answers.repair((candidate) => candidate.id === lane.id && deps.executor.holds(lane.id), now);
+		} catch (error) {
+			deps.log(`answers: the rows of open answers in ${lane.id} could not be checked: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	};
+	const answersOnce = async (now: number, tick: boolean): Promise<MeetOutcome[]> => {
+		if (tick) await repairHere(now);
+		return drainOnce(now);
+	};
+
+	async function drainOnce(now: number): Promise<MeetOutcome[]> {
+		const lane = heldLane();
+		if (!lane) return [];
+		const rows = deps.requests.list(lane.id).filter(isAnswerRow).sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+		const out: MeetOutcome[] = [];
+		for (const row of rows) {
+			let met: MeetOutcome;
+			try {
+				met = await deps.answers.meet(lane, row.id, executorFor(lane), now);
+			} catch (error) {
+				deps.log(`answer ${row.id.slice(0, 12)} in ${lane.id}: ${error instanceof Error ? error.message : String(error)}`);
+				continue;
+			}
+			out.push(met);
+			if (met.met === "E4") await begin(met.start, lane, now);
+		}
+		return out;
+	}
+
+	return {
+		tick: (now) => serial(() => answersOnce(now, true)),
+		drain: (now) => serial(() => answersOnce(now, false)),
+		drainWith: (now, tick, engine) =>
+			serial(async () => {
+				try {
+					await answersOnce(now, tick);
+				} catch (error) {
+					deps.log(`answers: ${error instanceof Error ? error.message : String(error)}`);
+				}
+				return engine();
+			}),
+		async settled(aborted, now) {
+			for (const turn of [...turns.values()]) {
+				if (!turn.handed || turn.closing) continue;
+				const { row } = turn.start;
+				// Its own mark decides: the run that settled is its turn's only if its message started in it.
+				const end = answerTurnEnd(deps.executor.startedInSettledRun(row), deps.executor.handedOver.has(row.id));
+				if (end === "waits") continue;
+				if (aborted) await close(turn, STOPPED, now);
+				else await close(turn, end === "ran" ? { ok: true } : { ok: false, error: "pi did not write the turn it was handed" }, now);
+			}
+		},
+		async leave(now) {
+			for (const turn of [...turns.values()]) await close(turn, { ok: false, error: "the window left the conversation", aborted: true }, now);
+		},
+		seat(cap) {
+			// The very cap object the turn was handed with. The cap in force is that object only while the
+			// message that started is the one this window handed, its content and all (`messageStarted`):
+			// a message of another sender that copies the row's mark runs under a cap of its own, with no grant.
+			const turn = turns.get(cap.id);
+			const seed = turn?.seed;
+			if (!turn || !seed || turn.closing || turn.rowCap !== cap) return undefined;
+			return { seed, seated: (seat) => void (turn.seat = seat), open: () => turns.get(cap.id) === turn && !turn.closing };
+		},
+	};
 }

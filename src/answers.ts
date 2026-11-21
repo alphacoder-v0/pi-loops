@@ -35,6 +35,7 @@ import { type Inbox, type InboxEntry as Finding, UNDER_INBOX_LOCK, screenFinding
 import { type ConversationId, type Lane, type LaneId, parseLane } from "./lane.ts";
 import type { LeaseStore } from "./lease.ts";
 import type { LockOptions } from "./lock.ts";
+import { markOn } from "./mark.ts";
 import type { ClaimedRow, RequestStore, Row, UnclaimedRow } from "./requests.ts";
 import type { Resume } from "./runner.ts";
 import { stamp } from "./schedule.ts";
@@ -160,10 +161,18 @@ export interface Answers extends PersonAnswers {
 	repair(executes: (lane: Lane) => boolean, now: number): Promise<string[]>;
 }
 
-/** Whether a user message of `entries` carries `[Trigger <rowId>] `: the prompt of an answer's run was written. */
+/**
+ * Whether the prompt of an answer's run was written: a user message of `entries` carries
+ * `[Trigger <rowId>] `, as a held turn writes it, or a custom message carries the row's mark, as a
+ * window hands the turn to pi (src/window-executor.ts `answerTurn`).
+ */
 function holdsPrompt(entries: readonly unknown[], rowId: string): boolean {
 	const head = `[Trigger ${rowId}] `;
 	return entries.some((entry) => {
+		if ((entry as { type?: unknown } | null)?.type === "custom_message") {
+			const content = (entry as { content?: unknown }).content;
+			return markOn(entry)?.id === rowId || (typeof content === "string" && content.includes(head));
+		}
 		const message = (entry as { type?: unknown; message?: { role?: unknown; content?: unknown } } | null)?.message;
 		if ((entry as { type?: unknown } | null)?.type !== "message" || !message || message.role !== "user") return false;
 		const content = message.content;

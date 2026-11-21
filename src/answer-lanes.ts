@@ -66,7 +66,7 @@ type AnswerSeat =
 const NOT_TAKEN = "its conversation cannot be taken now";
 
 export interface AnswerLanes {
-	/** The `answers` rider: `answers.repair` (H1, for closed conversations too) first, then `drain` for every loop and check lane with an `ans-` row, whether or not its job is still in `jobs.json` (E2 needs the drain of a removed loop's lane). A conversation's lane is drained by `deliverSession`. */
+	/** The `answers` rider: `answers.repair` (H1, for closed conversations too) first, then `drain` for every loop and check lane with an `ans-` row, whether or not its job is still in `jobs.json` (E2 needs the drain of a removed loop's lane). A closed conversation's lane is drained by `deliverSession`; in an open one only this process's claims whose run left the list are met (F1 to F3), and nothing starts. */
 	tick(now: number): Promise<void>;
 	/**
 	 * Every `ans-` row of one lane, oldest first, through `answers.meet`. E4 starts the run, and the
@@ -84,8 +84,8 @@ export interface AnswerLanes {
 
 /** The loop of a lane as `jobs.json` has it now. */
 const loopOf = (jobs: readonly LoopJob[], lane: Lane): LoopJob | undefined => (lane.kind === "loop" ? jobs.find((job) => job.stateful && `@${job.id}` === lane.id) : undefined);
-/** The plain job of a conversation's finding, as `jobs.json` has it now. */
-const plainOf = (jobs: readonly LoopJob[], lane: Lane, jobId: string | undefined): LoopJob | undefined => (lane.kind === "conversation" && jobId !== undefined ? jobs.find((job) => !job.stateful && job.id === jobId && job.sessionId === lane.id) : undefined);
+/** The plain job of a conversation's finding, as `jobs.json` has it now. A window's answer turn finds its job the same way. */
+export const plainOf = (jobs: readonly LoopJob[], lane: Lane, jobId: string | undefined): LoopJob | undefined => (lane.kind === "conversation" && jobId !== undefined ? jobs.find((job) => !job.stateful && job.id === jobId && job.sessionId === lane.id) : undefined);
 
 export function createAnswerLanes(deps: AnswerLaneDeps): AnswerLanes {
 	const { answers, stores, runs, slots } = deps;
@@ -242,6 +242,28 @@ export function createAnswerLanes(deps: AnswerLaneDeps): AnswerLanes {
 		return out;
 	}
 
+	/**
+	 * An open conversation's `ans-` rows that carry a claim of this process whose run left the list
+	 * (its closing threw, or a window took the conversation back and the closing failed): each is met
+	 * with no lease, so F1 to F3 close it and nothing can start. The window that holds the conversation
+	 * reads such a claim as live and waits on it, so nobody else closes it while this process lives.
+	 */
+	async function meetOrphans(at: number): Promise<void> {
+		const self = deps.holder();
+		for (const sessionId of stores.requests.sessions()) {
+			const lane = parseLane(sessionId);
+			if (lane?.kind !== "conversation" || deps.conversations.closed(lane.id)) continue;
+			const orphans = stores.requests.list(lane.id).filter((row) => isAnswerRow(row) && row.run !== undefined && row.run.pid === self.pid && row.run.procStart === self.procStart && !listed(row.run.id));
+			for (const row of orphans) {
+				try {
+					await answers.meet(lane, row.id, executorFor(lane), at);
+				} catch (error) {
+					deps.log(`answer ${row.id.slice(0, 12)} in ${lane.id}: ${error instanceof Error ? error.message : String(error)}`);
+				}
+			}
+		}
+	}
+
 	const wait = async (ms: number): Promise<void> => {
 		const deadline = Date.now() + ms;
 		while (inFlight.size && Date.now() < deadline) await Promise.race([Promise.allSettled([...inFlight.values()]), new Promise((resolve) => setTimeout(resolve, 25))]);
@@ -254,7 +276,7 @@ export function createAnswerLanes(deps: AnswerLaneDeps): AnswerLanes {
 			} catch (error) {
 				deps.log(`answers: the rows of open answers could not be checked: ${error instanceof Error ? error.message : String(error)}`);
 			}
-			// The loop and check lanes; a conversation's answers are met where its queue is delivered (`deliverSession`), before `bury`.
+			// The loop and check lanes; a closed conversation's answers are met where its queue is delivered (`deliverSession`), before `bury`.
 			for (const lane of stores.requests.lanes()) {
 				try {
 					if (stores.requests.list(lane.id).some(isAnswerRow)) await drain(lane, at);
@@ -262,6 +284,7 @@ export function createAnswerLanes(deps: AnswerLaneDeps): AnswerLanes {
 					deps.log(`answers in ${lane.id}: ${error instanceof Error ? error.message : String(error)}`);
 				}
 			}
+			await meetOrphans(at);
 		},
 		drain,
 		async stop(drainMs) {
@@ -309,14 +332,15 @@ function originOf(start: AnswerStart, seat: Extract<AnswerSeat, { lane: "loop" |
 		const job = seat.job;
 		return { source: `cron:${job.name ?? job.id.slice(0, "cron-".length + 8)}`, run_id: runId, cwd: job.cwd, job_id: job.id, ...(job.createdBy?.sessionId ? { session_id: job.createdBy.sessionId } : {}), who: job.name ?? job.id };
 	}
-	if (seat.lane === "conversation") {
-		const sessionId = seat.held.sessionId;
-		const job = seat.job;
-		return job ? { source: `cron:${job.name ?? job.id}`, run_id: runId, cwd, job_id: job.id, session_id: sessionId, who: job.name ?? job.id } : { source: start.finding.source, run_id: runId, cwd, session_id: sessionId, who: `conversation ${shortSessionId(sessionId)}` };
-	}
+	if (seat.lane === "conversation") return conversationOrigin(start, seat.held.sessionId, cwd, seat.job);
 	return { source: start.finding.source, run_id: runId, cwd, who: `the check of ${path.basename(cwd) || cwd}` };
 }
 
+/** Who asks, for a question an answer's turn in conversation `sessionId` opens: its plain job, else the conversation. A window's answer turn names it the same way. */
+export function conversationOrigin(start: AnswerStart, sessionId: string, cwd: string, job: LoopJob | undefined): AskOrigin {
+	const runId = start.row.run.id;
+	return job ? { source: `cron:${job.name ?? job.id}`, run_id: runId, cwd, job_id: job.id, session_id: sessionId, who: job.name ?? job.id } : { source: start.finding.source, run_id: runId, cwd, session_id: sessionId, who: `conversation ${shortSessionId(sessionId)}` };
+}
 /**
  * One run of an answer row, from E4b to C4. It never rejects. A seat that is gone (the loop was
  * removed since E4, a window took the conversation) runs nothing: the record says `aborted`, and the
