@@ -24,6 +24,12 @@ test("ensure: no loop, rule or push server means no host; any one of them is eno
 	assert.equal(hostPushWork([{ injectSummary: true }, {}], 1), 2, "with rules, every push gets evaluated");
 });
 
+test("[yes-waits] ensure: a yes that waits to run or runs is work for the background, with nothing else to run", () => {
+	const base = { auto: true, stopped: false, envOff: false, now: Date.now(), spawns: { attempts: [] }, myVersion: "0.23.0" };
+	assert.deepEqual(decideEnsure({ ...base, automation: { loops: 0, rules: 0, pushServers: 0, openAnswers: 1 } }), { kind: "spawn" }, "only pi-loops in the background runs a yes");
+	assert.deepEqual(decideEnsure({ ...base, automation: { loops: 0, rules: 0, pushServers: 0, openAnswers: 0 } }), { kind: "none", reason: "nothing to run" });
+});
+
 test("hostSpawnArgs: TypeScript stripping flag only before Node 23.6; piPackageDir walks up from pi's cli.js", () => {
 	assert.deepEqual(hostSpawnArgs("v22.6.0", "/r.mjs", "/h.mjs"), ["--experimental-strip-types", "--import", "/r.mjs", "/h.mjs"]);
 	assert.deepEqual(hostSpawnArgs("v24.14.1", "/r.mjs", "/h.mjs"), ["--import", "/r.mjs", "/h.mjs"]);

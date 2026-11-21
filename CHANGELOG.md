@@ -14,6 +14,11 @@ All notable changes to pi-loops are documented here. The format follows
   `jobs.json.v2.bak` back as `jobs.json`: it has the jobs and the run counts of the moment you
   upgraded, and not the jobs you made since. 0.24.2 does not run a loop's run that this version
   queued (`requests/@cron-*.jsonl`): it waits there until you upgrade again.
+- **A claim that 0.24.2 queued and that pi did not start is a new finding again.** 0.24.2 queued
+  `/inbox claim` and the page's Yes as a turn in a conversation. The first start of this version
+  removes each such turn from its queue. If pi had the turn before the upgrade, the finding stays
+  claimed. If pi did not have it, the finding is `new` again: say yes to it again, and it runs as
+  described under Changed. Each removed turn is in the audit of requests as `converted`.
 - **Restart every pi terminal that runs pi-loops 0.24.2 or earlier after you upgrade.** What
   this version queues for a conversation is a line an earlier version cannot read. While a
   terminal of an earlier version has a conversation open, none of these reaches it: a rule's
@@ -46,6 +51,58 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Changed
 
+- **A dangerous call of a loop or a rule check in the background asks you in the inbox.** Before,
+  it was only refused. Now the call does not run, and the inbox gets a question with Yes and No.
+  The run does not wait for your answer: it is told that a person was asked, and it finishes the
+  work that does not need the call. A yes resumes the run that asked, from its transcript, and lets
+  that one call through once. A no is told to the loop or the rule on its next run, and the same
+  command is refused for 14 days. A plain job's turn in a closed conversation asks in the same
+  way, and its yes runs as a turn in that conversation. The checker and a `/goal` continuation are
+  refused as before. `/inbox clear` leaves every question for its own yes or no, and says how many
+  it left: a no refuses the command for 14 days.
+- **A yes to a finding runs in the background, in the run that reported it.** `/inbox claim` and
+  the page's **Yes, do it** and **Look into it** resume the loop's or the rule check's run from its
+  transcript, and tell it what you said yes to. If the transcript is gone, the run starts from the
+  finding's text. A card comes to your conversation when the run ends. Before, a claim was a turn
+  in the conversation that created the loop, and **Yes, do it here** is gone. A yes to a finding of
+  a removed loop, or a finding with nowhere to run it, does not run, and says why. A yes to a
+  finding of a conversation runs when nobody has the conversation open: pi-loops in the background
+  takes the conversation, runs the yes as a turn in it, and gives it back. While a window or the
+  page has it open, the yes waits. A yes to a finding of a deleted conversation does not run, and
+  says why. `pi-loops inbox claim` marks the finding claimed, and nothing runs. On a question it is
+  refused, and the question stays new: answer it on the page or in pi with `/inbox`. Only pi-loops
+  in the background runs a yes, so a yes that waits to run starts it, and while it is not running
+  `/inbox claim` says that the yes runs when it does.
+- **You can cancel a yes that has not started.** `/inbox cancel <n|id>`, `pi-loops inbox cancel
+  <id>` and the page's **Cancel** make the finding `new` again, under the same id. `/inbox cancel`
+  with no argument lists the answers that wait or run. A yes that started or ended cannot be
+  cancelled. CONTRACT.md §2.3 and §2.4 now name the cancel, the one way from `claimed` back to `new`.
+- **A run in the background cannot answer for you.** A built-in file tool (`read`, `write`, `edit`,
+  `grep`, `find`, `ls`) is refused when its path is in the loops directory, and nobody is asked. A
+  shell command that reads or writes the files of pi-loops is a question in the inbox. So is
+  `pi-loops` with a verb that answers or changes state: `inbox claim`, `dismiss`, `cancel` and
+  `clear`, `recipe add`, `import` and `start`. So is a command that gives out what signs a browser
+  in to the page: `pi-loops status --url`, `pair`, `open`, `web`, `tui` and `pi-loops` with no
+  verb, and a command that reaches the control socket's directory in the temporary directory. So is
+  `pi` itself with anything but `--version` or `--help`: a pi that a run starts is your session,
+  and its `/inbox claim` is your yes. A scheduled turn in a window meets the same rules. These rules
+  stop a model when it types a command that answers for you through these known ways. They do not
+  stop a run that sets out to make a yes another way: it runs as your user, as every file and
+  process of pi-loops does, and your own sandbox is the boundary for that.
+- **A question's card shows the command as a field of its own.** The terminal, `pi-loops inbox
+  list` and the page draw a question from its fields: who asks, the command whole and as written
+  (on its own line in a terminal, in a monospace face on the page), the reason, and what waits on
+  it. The card is never cut from the finding's text, so a command that holds `· waits:` cannot
+  make the card show another command.
+- **A finding's words are screened where they are read.** The terminal, `pi-loops inbox`, the page
+  and a loop's prompt get a finding's text, source, reasons and asked command as the card shows
+  them: no control characters, secrets masked, on one line, and capped. `inbox.jsonl` keeps the
+  words as they were written. A run that resumes after a yes reads the finding's text as a quote
+  of what its earlier run reported, not as your words. A line of `inbox.jsonl` whose id is not
+  `inb-` and 32 hex digits is not a finding: it is not listed, and it stays in the file as it is.
+- **A rule check of a project that you reach through a symlink keeps its transcripts in one
+  directory, named after the project's real path.** The transcripts in the directory of the
+  symlink's path stay there. pi-loops does not prune them, and a yes does not resume them.
 - **pi-loops hands its prompts to pi as its own messages, not as yours.** A scheduled prompt, a
   rule's or a push's turn, a claim, a recipe hand-off, `/new-trigger` and a goal's continuation go
   to pi as a message of type `pi-loops:turn`, which the model reads as before. Another extension

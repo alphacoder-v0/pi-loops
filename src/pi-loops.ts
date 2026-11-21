@@ -32,8 +32,10 @@ import { LoopsLog, pruneLogs } from "./log.ts";
 import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
-import { capRedacted, previewRedacted, redact } from "./redact.ts";
-import { cardLines, cardOrigin, claimPrompt, dismissOutcome, dismissTail, inboxCard, screenText } from "./inbox-card.ts";
+import { capRedacted, previewRedacted, redact, screenText } from "./redact.ts";
+import { CANCELLED_LINE, answerLine, answerWho, cancelRefusal, cardLines, cardOrigin, clearLeftTail, dismissOutcome, dismissTail, inboxCard, noQuestionLine, yesTerminalLine } from "./inbox-card.ts";
+import { type PersonAnswers, conversationFile, personAnswers } from "./answers.ts";
+import { type StepRefusal, answerOpen, answerRowId } from "./ask.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { FRESH_RUNS_READ, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardLines, runCardsHere, runLine } from "./run-card.ts";
 import { type ShareMessage, renderShare, shareSummary, shareableMessages } from "./share.ts";
@@ -47,7 +49,7 @@ import { jobLines as cronJobLines } from "./job-lines.ts";
 import { plural } from "./plural.ts";
 import { type OwnerView, type PlainJobLeases, type SessionSnapshot, openWhere, ownerViewOf, runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, closedConversation, openWindowPids, procStart } from "./lease.ts";
-import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, proofOf, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
+import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, newTriggerRow, promotionTarget, promotionView, proofOf, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
 import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
 import type { Row, UnclaimedRow } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
@@ -62,6 +64,7 @@ import { TURN_TYPE } from "./mark.ts";
 import { renderTurn } from "./turn-render.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
+import { GuardSeats } from "./guard.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
 import { SubagentSlots } from "./slots.ts";
 import { askHost, noticesToShow, renderHostSnapshot, ringHost, type HostSnapshot } from "./host-control-channel.ts";
@@ -86,7 +89,7 @@ import { PI_LOOPS_VERSION } from "./version.ts";
 import { pidAlive } from "./lock.ts";
 import { shortSessionId } from "./session-head.ts";
 import { ruleLines as listRules, triggerStatusLines } from "./rule-lines.ts";
-import { projectLabel } from "./conversation-rows.ts";
+import { ConversationIndex, projectLabel } from "./conversation-rows.ts";
 
 interface ViewData {
 	title: string;
@@ -194,6 +197,10 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * unless the job pins one, its own transcript file. `customTools` hands each run the parent's
 	 * MCP tools plus the automation tools at hop 1.
 	 */
+	const subagentLog = (msg: string): void => {
+		log.warn(`sub-agent: ${msg}`);
+		if (lastCtx?.hasUI) lastCtx.ui.notify(`[sub-agent] ${msg}`, "warning");
+	};
 	const runner = createInProcessRunner({
 		agentDir: getAgentDir(),
 		parentFlags: parentRuntimeFlags(process.argv),
@@ -225,13 +232,15 @@ export default function piLoops(pi: ExtensionAPI) {
 		isTrusted: (cwd) => (!!session.trusted && sessionTrustCovers(session.cwd, cwd)) || isExactlyTrusted(getAgentDir(), cwd),
 		ownDir: PACKAGE_DIR,
 		allowCommands: () => config.allowCommands,
+		// One set of seats for this process: a loop's or a check's dangerous call files a question in this inbox.
+		guard: {
+			seats: new GuardSeats(),
+			deps: { inbox: stores.inbox, allowCommands: () => config.allowCommands, now: Date.now, log: subagentLog },
+		},
 		// The daily cap, read while a run is in flight and not only before it is dispatched. Lazy: the
 		// scheduler is built with this runner, and asking it anything before then would be a cycle.
 		budget: () => budgetState(stores.jobs, config.dailyBudgetUsd, Date.now()),
-		log: (msg) => {
-			log.warn(`sub-agent: ${msg}`);
-			if (lastCtx?.hasUI) lastCtx.ui.notify(`[sub-agent] ${msg}`, "warning");
-		},
+		log: subagentLog,
 	});
 
 	/**
@@ -636,11 +645,15 @@ export default function piLoops(pi: ExtensionAPI) {
 	const delivered = (row: Row) => executor.delivered(row);
 	const handOverDeps = (): HandOverDeps => ({ store: requests, delivered, produced: (row) => executor.produced(row), drain: drainRequests });
 	/** A prompt one of this window's sources has for the chat (src/engine.ts handOver), and the line that says it waits. */
-	async function handOver(row: UnclaimedRow, claim?: { inbox: Inbox; entryId: string }): Promise<HandOverOutcome> {
-		const out = await engineHandOver(handOverDeps(), row, claim);
+	async function handOver(row: UnclaimedRow): Promise<HandOverOutcome> {
+		const out = await engineHandOver(handOverDeps(), row);
 		if (out.line && lastCtx?.hasUI) lastCtx.ui.notify(out.line, "info");
 		return out;
 	}
+
+	/** A person's yes, no, clear and cancel typed here (src/answers.ts). The rows it appends are signed by this window. */
+	const answerLeases = new LeaseStore(dir);
+	const answers: PersonAnswers = personAnswers({ inbox: stores.inbox, requests, jobs: stores.jobs, audit: stores.rules, sessionFile: conversationFile(answerLeases, new ConversationIndex(path.join(getAgentDir(), "sessions"))), self: createdBy, now: Date.now, log: (line) => log.info(line) });
 
 	function noteBinding(outcome: AcquireOutcome): void {
 		if (outcome.outcome === "acquired" && outcome.tookFromPid) log.info(`took session ${shortSessionId(outcome.lease.sessionId)} from dead pid ${outcome.tookFromPid}`);
@@ -796,7 +809,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** Whether anything waits on the host: a pause with nothing to run is not news. */
 	const hostHasWork = (): boolean => {
 		const work = automationCounts();
-		return !!(work.loops || work.rules || work.pushServers || work.closedSessionJobs || work.closedMailboxes);
+		return !!(work.loops || work.rules || work.pushServers || work.closedSessionJobs || work.closedMailboxes || work.openAnswers);
 	};
 	let hostChannelBroken: string | undefined;
 	/** The pause reason last said to the person, so a pause is announced once. */
@@ -881,7 +894,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	let shownHostPid: number | undefined;
 
 	/** What there is for the host to run, as `ensureHost` counts it. */
-	function automationCounts(): { loops: number; rules: number; pushServers: number; closedSessionJobs: number; closedMailboxes: number } {
+	function automationCounts(): { loops: number; rules: number; pushServers: number; closedSessionJobs: number; closedMailboxes: number; openAnswers: number } {
 		// Each store on its own: a damaged rules file stopped the loops too, because nothing then started
 		// the background process.
 		const rules = loadOrNone(() => triggers.store.load()).filter((r) => r.enabled).length;
@@ -892,6 +905,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			pushServers: hostPushWork(loadMcpConfigFiles({ dir, projectTrusted: false }).servers, rules),
 			closedSessionJobs: jobs.filter((j) => !j.stateful && closedHere(j.sessionId)).length,
 			closedMailboxes: requests.sessions().filter((id) => closedHere(id)).length,
+			// A yes that waits to run, or runs: only pi-loops in the background runs it.
+			openAnswers: loadOrNone(() => stores.inbox.list()).filter(answerOpen).length,
 		};
 	}
 
@@ -1727,13 +1742,14 @@ export default function piLoops(pi: ExtensionAPI) {
 	pi.registerCommand("crontab", { description: "Alias of /cron", getArgumentCompletions: cronCompletions, handler: cronHandler });
 	pi.registerCommand("loop", { description: "Alias of /cron", getArgumentCompletions: cronCompletions, handler: cronHandler });
 
-	const INBOX_USAGE = "[list|all|claim <n>|dismiss <n> [reason]|open <n>|clear|help] [--all]";
+	const INBOX_USAGE = "[list|all|claim <n>|dismiss <n> [reason]|cancel [n]|open <n>|clear|help] [--all]";
 
 	const INBOX_HELP = [
 		"/inbox                list new findings of this project    /inbox --all   every project on this machine",
 		"/inbox all [--all]    include claimed/dismissed history",
-		"/inbox claim <n|id>   mark claimed and hand it to the agent as a real turn",
+		"/inbox claim <n|id>   say yes: the run that reported it picks it up in the background",
 		"/inbox dismiss <n|id> [reason]   mark dismissed; a reason is shown to the loop's next run",
+		"/inbox cancel [n|id]  take back a yes that waits to run; alone, lists the answers waiting or running",
 		"/inbox clear [--all]  dismiss the ones listed",
 		"/inbox open <n|id>    start a new conversation from the run that filed it",
 	];
@@ -1746,10 +1762,15 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * prefix, project, source, when it arrived. The numbers are positions in `entries`, which is what
 	 * `claim` and `dismiss` resolve a number against.
 	 */
-	function inboxLines(entries: InboxEntry[], numbered: boolean): string[] {
+	function inboxLines(entries: InboxEntry[], numbered: boolean, answered = false): string[] {
 		const names = new Map(stores.jobs.load().map((j) => [j.id, j.name]));
 		const ctx = { here: session.sessionId, loopName: (id: string) => names.get(id) };
 		return entries.flatMap((e, i) => {
+			const lines = entryLines(e, i);
+			const said = answered ? answerLineOf(e) : undefined;
+			return said && lines.length ? [...lines, `       ${said}`] : lines;
+		});
+		function entryLines(e: InboxEntry, i: number): string[] {
 			const card = inboxCard(e, ctx);
 			if (!card) return [];
 			// Stored as an instant (ISO, UTC) and shown in this machine's timezone, like every other
@@ -1759,14 +1780,36 @@ export default function piLoops(pi: ExtensionAPI) {
 			const when = formatLocal(Date.parse(e.created_at));
 			// The project comes first of the three: with loops running in several checkouts it is what
 			// decides whether a finding is this morning's problem, and claiming runs it in that cwd.
-			// Every field from the file goes through screenText, as the card's text does: none of them
-			// may repaint the terminal this prints in.
-			const why = e.dismiss_reason ? ` — dismissed: ${redact(screenText(e.dismiss_reason))}` : "";
+			// The inbox screens every field it reads from the file (`Inbox.list`); a loop's label comes
+			// from jobs.json and is screened here. None of them may repaint the terminal this prints in.
+			const why = e.dismiss_reason ? ` — dismissed: ${e.dismiss_reason}` : "";
 			const where = `${screenText(projectOf(e.cwd))}, ${screenText(cardOrigin(card))}`;
 			if (!numbered) return cardLines(card, `  [${e.status}] `, `${why}  (${where})`);
 			return cardLines(card, `  ${i + 1}. [${e.id.slice(0, 12)}] `, `  (${where}, ${when})`);
-		});
+		}
 	}
+
+	/** What became of a finding's answer, as the page's card says it (design 6.1). */
+	function answerLineOf(e: InboxEntry): string | undefined {
+		let row: Row | undefined;
+		if (e.answer?.state === "pending" && e.lane !== undefined) {
+			try {
+				row = requests.list(e.lane).find((r) => r.id === answerRowId(e.id));
+			} catch {
+				row = undefined; // a lane the store refuses has no row
+			}
+		}
+		const runId = e.answer?.state === "done" ? e.answer.run.id : undefined;
+		const summary = runId === undefined ? undefined : stores.jobs.allRuns().find((r) => r.runId === runId)?.summary;
+		return answerLine(e, row, summary);
+	}
+
+	/** Who picks up a yes to `e`, by the loop's name in jobs.json. */
+	const whoOf = (e: InboxEntry, lane: InboxEntry["lane"]): string => answerWho(e, lane, (id) => stores.jobs.load().find((j) => j.id === id)?.name);
+
+	/** Why a yes or a no wrote nothing, for `target` as the person typed it. */
+	const refusedLine = (target: string, refusal: StepRefusal): string =>
+		refusal.refused === "missing" ? `inbox entry ${target} is gone` : refusal.refused === "already" ? `inbox entry ${target} was already ${refusal.status}` : `inbox entry ${target} is already answered`;
 
 	/* ------------------------------------------------------------------ /goal */
 
@@ -1992,7 +2035,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	pi.registerCommand("inbox", {
 		description: "Triage findings from stateful cron jobs — /inbox help",
 		getArgumentCompletions: (prefix) => {
-			const subs = ["list", "all", "claim", "dismiss", "open", "clear", "help", "--all"];
+			const subs = ["list", "all", "claim", "dismiss", "cancel", "open", "clear", "help", "--all"];
 			const items = subs.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
 			return items.length ? items : null;
 		},
@@ -2028,7 +2071,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					}
 					case "all": {
 						const entries = scoped(stores.inbox.list());
-						show(ctx, `Inbox history (${where}, ${entries.length} total):`, entries.length ? inboxLines(entries, false) : ["(empty)"]);
+						show(ctx, `Inbox history (${where}, ${entries.length} total):`, entries.length ? inboxLines(entries, false, true) : ["(empty)"]);
 						return;
 					}
 					case "help":
@@ -2075,7 +2118,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							// The run worked in its own project; a conversation forked from it here would be a
 							// conversation about that project with this one's directory and tools.
 							if (entry.cwd && !sameProject(entry.cwd, session.cwd)) {
-								ctx.ui.notify(`inbox entry ${target} is from ${homeRel(entry.cwd)}: open it from a pi in that project`, "warning");
+								ctx.ui.notify(`inbox entry ${target} is from ${screenText(homeRel(entry.cwd))}: open it from a pi in that project`, "warning");
 								return;
 							}
 							const transcript = entry.transcript ?? stores.jobs.allRuns().find((record) => record.runId === entry.run_id)?.sessionFile;
@@ -2088,28 +2131,62 @@ export default function piLoops(pi: ExtensionAPI) {
 							if (forkedFile) await ctx.switchSession(forkedFile);
 							return;
 						}
+						// A person's yes or no (src/answers.ts): the finding is checked again under the inbox lock.
+						const from = { by: "terminal" as const, session: rowAddress().sessionId };
 						if (sub === "dismiss") {
-							const decided = await stores.inbox.decide(entry.id, "dismissed", { reason: reason || undefined });
+							const said = await answers.say(entry.id, "no", from, reason ? { reason } : {});
 							refreshBadge();
-							if (!("ok" in decided)) {
-								ctx.ui.notify("missing" in decided ? `inbox entry ${target} is gone` : `inbox entry ${target} was already ${decided.already}`, "warning");
+							if (said.said !== "N1") {
+								ctx.ui.notify(said.said === "nothing" ? refusedLine(target, said.refusal) : `inbox entry ${target}: a no came to ${said.said}`, "warning");
+								return;
+							}
+							if (said.finding.ask) {
+								ctx.ui.notify(noQuestionLine("terminal", whoOf(said.finding, said.finding.ask.lane)), "info");
 								return;
 							}
 							const loop = stores.jobs.load().find((j) => j.id === entry.job_id);
-							ctx.ui.notify(`dismissed: ${previewRedacted(screenText(entry.text), 80)}${dismissTail(dismissOutcome(entry, loop, reason))}`, "info");
+							ctx.ui.notify(`dismissed: ${previewRedacted(entry.text, 80)}${dismissTail(dismissOutcome(entry, loop, reason))}`, "info");
 							return;
 						}
-						// The hand-off is queued before the finding is marked claimed (src/engine.ts handOver).
-						await handOver(inboxClaimRow(claimPrompt(entry, stores.jobs.load().find((j) => j.id === entry.job_id)?.name), entry.id, rowAddress()), { inbox: stores.inbox, entryId: entry.id });
+						const said = await answers.say(entry.id, "yes", from);
 						refreshBadge();
+						if (said.said !== "Y1" && said.said !== "Y2") {
+							ctx.ui.notify(said.said === "nothing" ? refusedLine(target, said.refusal) : `inbox entry ${target}: a yes came to ${said.said}`, "warning");
+							return;
+						}
+						ctx.ui.notify(yesTerminalLine(said, whoOf(said.finding, said.said === "Y1" ? said.lane : said.finding.lane), !!liveHostRecord()), said.said === "Y1" ? "info" : "warning");
+						return;
+					}
+					case "cancel": {
+						// The answers a cancel can name: a yes that waits or runs, in this project (or every
+						// project with --all), in the inbox's order. Numbers are positions in this list.
+						const open = scoped(stores.inbox.list()).filter((e) => e.answer?.state === "pending" || e.answer?.state === "started");
+						if (!ref) {
+							show(ctx, `Answers waiting or running (${where}):`, open.length ? inboxLines(open, true, true) : ["(none)"]);
+							return;
+						}
+						const named = /^\d+$/.test(ref) ? open[Number(ref) - 1] : resolveInboxRef(stores.inbox.list(), ref);
+						if (/^\d+$/.test(ref) && !named) {
+							ctx.ui.notify(`no answer #${ref} waiting or running in ${where} (have ${open.length}; /inbox cancel lists them)`, "warning");
+							return;
+						}
+						const out = await answers.cancel(named?.id ?? ref);
+						refreshBadge();
+						if ("refusal" in out) {
+							ctx.ui.notify(out.refusal.refused === "missing" ? `no inbox entry matching '${ref}'` : `cannot cancel: ${cancelRefusal(out.refusal)}`, "warning");
+							return;
+						}
+						ctx.ui.notify(CANCELLED_LINE, "info");
 						return;
 					}
 					case "clear": {
 						// What was listed is what is dismissed: with loops in several checkouts, a clear that
 						// also wiped four other projects' unread findings would be unrecoverable.
-						const n = await stores.inbox.dismissAllNew(everywhere ? undefined : (e) => belongsToProject(e, session.cwd, sameProject));
+						const listed = (e: InboxEntry): boolean => everywhere || belongsToProject(e, session.cwd, sameProject);
+						const n = (await answers.clear(listed, { by: "terminal", session: rowAddress().sessionId })).length;
 						refreshBadge();
-						ctx.ui.notify(`dismissed ${n} inbox entr${n === 1 ? "y" : "ies"} in ${where}`, "info");
+						const left = stores.inbox.listNew().filter((e) => e.ask && listed(e)).length;
+						ctx.ui.notify(`dismissed ${n} inbox entr${n === 1 ? "y" : "ies"} in ${where}${clearLeftTail(left)}`, "info");
 						return;
 					}
 					default:

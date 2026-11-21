@@ -14,3 +14,9 @@ test("redacts known secret shapes, leaves normal text alone", () => {
 	assert.equal(redact("check the repo issues since last run"), "check the repo issues since last run");
 	assert.equal(previewRedacted("  a  \n b ".repeat(50), 10), "a b a b a …");
 });
+
+test("[redact-shapes] a key is masked wherever it sits: after a dash, URL-encoded, JSON-escaped, or behind a bearer", () => {
+	const sk = "sk-ant-api03-" + "a".repeat(40);
+	const shapes = [`Authorization%3A%20Bearer%20${sk}`, `?q=x%20${sk}`, `api_key%3D${sk}`, `"key:\\n${sk}"`, `"\\t${sk}"`, `-${sk}`, "-AKIAIOSFODNN7EXAMPLE", "--ghp_" + "a".repeat(36), "id-xoxb-" + "1".repeat(12)];
+	for (const s of shapes) assert.match(redact(s), /\[REDACTED:/, `masked: ${s}`);
+});

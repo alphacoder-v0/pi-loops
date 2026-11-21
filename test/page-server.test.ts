@@ -10,7 +10,12 @@ import { tmp } from "./tmp.ts";
 import { addedMessage, type CheckOptions, checkRequest, historyWithCards, type HostStatus, openForLaunch, type PageServer, readHeldConversation, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
 import { entriesReadable, HELD_READ_MAX_BYTES } from "../src/held-read.ts";
 import { openFileDir } from "../src/open-file.ts";
-import { PAGE_INSTANCE, pageClaimRow } from "../src/engine.ts";
+import { answerStep, answerRowId, besideId } from "../src/ask.ts";
+import { personAnswers } from "../src/answers.ts";
+import { JobStore } from "../src/store.ts";
+import { TriggerStore } from "../src/triggers.ts";
+import { Inbox } from "../src/inbox.ts";
+import { stamp } from "../src/schedule.ts";
 import { RequestStore } from "../src/requests.ts";
 import { convertStores, fromV2 } from "../src/convert-v2.ts";
 import { DELIVERY_JOB_ID, LeaseStore } from "../src/lease.ts";
@@ -1249,7 +1254,7 @@ test("the inbox's POST routes take the checks every POST takes, a 4 KB body, and
 	try {
 		writeInbox(page.loops, [finding({})]);
 		const before = fs.readFileSync(path.join(page.loops, "inbox.jsonl"), "utf8");
-		for (const route of ["inbox/claim", "inbox/dismiss"]) {
+		for (const route of ["inbox/claim", "inbox/dismiss", "inbox/cancel"]) {
 			const send = (headers: Record<string, string>, b: unknown = { id: `inb-${hex(1)}` }, at = route) => fetch(`${page.url}${at}`, { method: "POST", headers, body: typeof b === "string" ? b : JSON.stringify(b) });
 			const json = { "content-type": "application/json" };
 			assert.equal((await send(json)).status, 401, `${route}: no token`);
@@ -1272,46 +1277,14 @@ test("the inbox's POST routes take the checks every POST takes, a 4 KB body, and
 	}
 });
 
-test("a claim from the page queues the born-left inbox: row for the terminal that holds the conversation, once", { timeout: 20_000 }, async () => {
-	const dir = tmp("pi-loops-page-inbox-");
-	const project = path.join(dir, "proj");
-	fs.mkdirSync(project);
-	const file = path.join(dir, "held-1");
-	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "held-1", cwd: project })}\n`);
-	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
-	let opens = 0;
-	const open = page.pool.open.bind(page.pool);
-	page.pool.open = (how) => (opens++, open(how));
-	try {
-		liveLease(page.loops, "held-1", file, project);
-		writeInbox(page.loops, [finding({ kind: "checkpoint", text: "ship it · waits: you · if not: it waits", cwd: project, session_id: "held-1" }), finding({ id: `inb-${hex(2)}`, cwd: project, session_id: "held-1" })]);
-		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-1", name: "issue-triage", cwd: project }] }));
-		const claimed = await page.post("inbox/claim", { id: `inb-${hex(1)}`, from: "s1", extra: "ignored" });
-		assert.equal(claimed.status, 200);
-		assert.deepEqual([claimed.body.delivery, claimed.body.conversation, claimed.body.line], ["terminal", "held-1", "Queued for your terminal."]);
-		const rows = rowsOf(page.loops, "held-1");
-		assert.equal(rows.length, 1);
-		assert.deepEqual([rows[0].source, rows[0].collapse_key, rows[0].mode, rows[0].created_by.instance, rows[0].created_by.pid], [`inbox:inb-${hex(1)}`, `inbox:inb-${hex(1)}`, "attended", "page", process.pid]);
-		assert.ok(rows[0].created_by.left, "born left: the holder runs it");
-		assert.match(rows[0].payload.text, /^\[Trigger claim-[0-9a-f]{32}\] ship it · waits: you · if not: it waits\n\n\(from loop issue-triage in proj; investigate and address it\)\nThis finding is a checkpoint/, "the finding first, so a conversation the claim starts is titled by it");
-		const stored = inboxNow(page.loops).find((e) => e.id === `inb-${hex(1)}`);
-		assert.deepEqual([stored.status, stored.claimed_by], ["claimed", "held-1"], "claimed by the conversation it runs in, as /inbox claim marks it");
-		const audit = audits(page.loops).filter((a) => a.state === "claimed");
-		assert.equal(audit.length, 1);
-		assert.deepEqual([audit[0].type, audit[0].traceId, audit[0].sourceLabel, audit[0].eventLabel, audit[0].details.from], ["request", rows[0].id, `inbox:inb-${hex(1)}`, "held-1", "page"]);
-		assert.equal(opens, 0, "the terminal answers it: no pi was started");
-
-		const again = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
-		assert.deepEqual([again.status, again.body], [409, { error: "already claimed", status: "claimed" }]);
-		assert.equal(rowsOf(page.loops, "held-1").length, 1, "still one row");
-
-		const race = await Promise.all([page.post("inbox/claim", { id: `inb-${hex(2)}` }), page.post("inbox/claim", { id: `inb-${hex(2)}` })]);
-		assert.deepEqual(race.map((r) => r.status).sort(), [200, 409], "two pages: one wins");
-		assert.equal(rowsOf(page.loops, "held-1").filter((r) => r.source === `inbox:inb-${hex(2)}`).length, 1, "and one row");
-	} finally {
-		await page.stop();
-	}
-});
+/** A loop the answers can find a lane for: stateful, in jobs.json as this version writes it. */
+async function addLoop(loops: string, id: string, name: string, cwd: string) {
+	await new JobStore(loops).add({ id, name, schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd, enabled: true, catchUp: true, createdAt: stamp() });
+}
+/** A person's word from another surface (a terminal), over the same files. */
+const otherSurface = (loops: string) => personAnswers({ inbox: new Inbox(loops), requests: new RequestStore(loops), jobs: new JobStore(loops), audit: new TriggerStore(loops), sessionFile: () => undefined, self: () => ({ pid: process.pid, instance: "w", version: "0" }), now: Date.now, log: () => undefined });
+/** The `ans-` rows of a lane. */
+const answerRows = (loops: string, lane: string) => rowsOf(loops, lane).filter((r) => r.source === "answer" && r.wake === "turn");
 
 /** Hold `inbox.lock` as another process writing the inbox would: the mkdir lock, released after `ms`. */
 function holdInboxLock(loops: string, ms: number): Promise<void> {
@@ -1320,61 +1293,100 @@ function holdInboxLock(loops: string, ms: number): Promise<void> {
 	return new Promise((r) => setTimeout(() => { fs.rmSync(lock, { recursive: true, force: true }); r(); }, ms));
 }
 
-test("while another process holds the inbox lock, a claim from the page queues nothing until it can mark the finding", { timeout: 30_000 }, async () => {
+test("a yes from the page queues one answer row in the loop's lane and says it runs in the background, in the run that reported it; a second yes from any surface is refused with the state it found", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-inbox-");
 	const project = path.join(dir, "proj");
 	fs.mkdirSync(project);
-	const file = path.join(dir, "held-1");
-	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "held-1", cwd: project })}\n`);
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
 	try {
-		liveLease(page.loops, "held-1", file, project);
-		writeInbox(page.loops, [finding({ cwd: project, session_id: "held-1" })]);
-		const held = holdInboxLock(page.loops, 600);
-		const claim = page.post("inbox/claim", { id: `inb-${hex(1)}` });
-		await new Promise((r) => setTimeout(r, 300));
-		assert.equal(rowsOf(page.loops, "held-1").length, 0, "a holder that ran a row queued now could run it for a claim that then loses");
-		await held;
-		assert.equal((await claim).status, 200);
-		assert.equal(rowsOf(page.loops, "held-1").length, 1);
+		await addLoop(page.loops, "cron-1", "issue-triage", project);
+		// The conversation the page shows, where the run's card comes.
+		const here = path.join(dir, "s1");
+		fs.writeFileSync(here, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: project })}\n`);
+		liveLease(page.loops, "s1", here, project);
+		const runs = path.join(page.loops, "sessions", "cron-1");
+		fs.mkdirSync(runs, { recursive: true });
+		const transcript = path.join(runs, "run-1.jsonl");
+		fs.writeFileSync(transcript, `${JSON.stringify({ type: "session", version: 3, id: "sid-1", cwd: project })}\n`);
+		const of = { cwd: project, job_id: "cron-1", lane: "@cron-1" };
+		writeInbox(page.loops, [finding({ ...of, kind: "checkpoint", text: "ship it · waits: you · if not: it waits", transcript }), finding({ ...of, id: `inb-${hex(2)}`, transcript: path.join(runs, "gone.jsonl") }), finding({ ...of, id: `inb-${hex(3)}` }), finding({ ...of, id: `inb-${hex(4)}` })]);
+		const claimed = await page.post("inbox/claim", { id: `inb-${hex(1)}`, from: "s1", extra: "ignored" });
+		assert.equal(claimed.status, 200);
+		assert.deepEqual([claimed.body.said, claimed.body.lane, claimed.body.line], ["Y1", "@cron-1", "Running in the background, in the run that reported it."]);
+		const rows = answerRows(page.loops, "@cron-1");
+		assert.deepEqual(rows.map((r) => [r.id, r.mode, r.payload.finding]), [[answerRowId(`inb-${hex(1)}`), "unattended", `inb-${hex(1)}`]], "one row of the yes, run by pi-loops in the background");
+		const stored = inboxNow(page.loops).find((e) => e.id === `inb-${hex(1)}`);
+		assert.deepEqual([stored.status, stored.answered_by, stored.claimed_by, stored.answer.state], ["claimed", "page", "s1", "pending"], "the conversation it was said from gets the run's card");
+		const audit = audits(page.loops).filter((a) => a.state === "claimed");
+		assert.deepEqual(audit.map((a) => [a.type, a.traceId, a.eventLabel, a.details.from, a.details.said]), [["request", `inb-${hex(1)}`, "@cron-1", "page", "Y1"]]);
+
+		const gone = await page.post("inbox/claim", { id: `inb-${hex(2)}`, from: "s1" });
+		assert.equal(gone.body.line, "Running in the background. The run's transcript is gone, so issue-triage starts from the finding's text.");
+
+		const again = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
+		assert.deepEqual([again.status, again.body], [409, { error: "already claimed", status: "claimed" }]);
+		assert.equal(answerRows(page.loops, "@cron-1").filter((r) => r.payload.finding === `inb-${hex(1)}`).length, 1, "still one row");
+
+		const race = await Promise.all([page.post("inbox/claim", { id: `inb-${hex(3)}` }), page.post("inbox/claim", { id: `inb-${hex(3)}` })]);
+		assert.deepEqual(race.map((r) => r.status).sort(), [200, 409], "two pages: one wins");
+		assert.equal(answerRows(page.loops, "@cron-1").filter((r) => r.payload.finding === `inb-${hex(3)}`).length, 1, "and one row");
+
+		// A terminal said yes first: the page is refused with what it found.
+		assert.equal((await otherSurface(page.loops).say(`inb-${hex(4)}`, "yes", { by: "terminal", session: "t1" })).said, "Y1");
+		const late = await page.post("inbox/claim", { id: `inb-${hex(4)}`, from: "s1" });
+		assert.deepEqual([late.status, late.body], [409, { error: "already claimed", status: "claimed" }]);
+		assert.equal(answerRows(page.loops, "@cron-1").filter((r) => r.payload.finding === `inb-${hex(4)}`).length, 1);
 	} finally {
 		await page.stop();
 	}
 });
-
+test("while another process holds the inbox lock, a yes from the page queues nothing until it can mark the finding", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		await addLoop(page.loops, "cron-1", "issue-triage", project);
+		writeInbox(page.loops, [finding({ cwd: project, lane: "@cron-1" })]);
+		const held = holdInboxLock(page.loops, 600);
+		const claim = page.post("inbox/claim", { id: `inb-${hex(1)}` });
+		await new Promise((r) => setTimeout(r, 300));
+		assert.equal(answerRows(page.loops, "@cron-1").length, 0, "a row queued now could run for a yes that then loses");
+		await held;
+		assert.equal((await claim).status, 200);
+		assert.equal(answerRows(page.loops, "@cron-1").length, 1);
+	} finally {
+		await page.stop();
+	}
+});
 test("two page claims racing a held inbox lock: one wins, and its row is there every time", { timeout: 60_000 }, async () => {
 	const dir = tmp("pi-loops-page-inbox-");
 	const project = path.join(dir, "proj");
 	fs.mkdirSync(project);
-	const file = path.join(dir, "held-1");
-	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "held-1", cwd: project })}\n`);
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
 	try {
-		liveLease(page.loops, "held-1", file, project);
+		await addLoop(page.loops, "cron-1", "issue-triage", project);
 		const rounds = 8;
-		writeInbox(page.loops, Array.from({ length: rounds }, (_, i) => finding({ id: `inb-${hex(10 + i)}`, cwd: project, session_id: "held-1" })));
+		writeInbox(page.loops, Array.from({ length: rounds }, (_, i) => finding({ id: `inb-${hex(10 + i)}`, cwd: project, lane: "@cron-1" })));
 		for (let i = 0; i < rounds; i++) {
 			const id = `inb-${hex(10 + i)}`;
 			const held = holdInboxLock(page.loops, 150);
 			const answers = await Promise.all([page.post("inbox/claim", { id }), page.post("inbox/claim", { id }), held]);
 			assert.deepEqual(answers.slice(0, 2).map((a: any) => a.status).sort(), [200, 409], `round ${i}: one wins`);
-			assert.equal(rowsOf(page.loops, "held-1").filter((r) => r.source === `inbox:${id}`).length, 1, `round ${i}: the winner's row is queued once`);
+			assert.equal(answerRows(page.loops, "@cron-1").filter((r) => r.payload.finding === id).length, 1, `round ${i}: the winner's row is queued once`);
 		}
 	} finally {
 		await page.stop();
 	}
 });
-
 test("a shell's pi-loops inbox claim racing a page claim under a held lock: one wins, and a row exactly when the page did", { timeout: 60_000 }, async () => {
 	const dir = tmp("pi-loops-page-inbox-");
 	const project = path.join(dir, "proj");
 	fs.mkdirSync(project);
-	const file = path.join(dir, "held-1");
-	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "held-1", cwd: project })}\n`);
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
 	try {
-		liveLease(page.loops, "held-1", file, project);
-		writeInbox(page.loops, [finding({ cwd: project, session_id: "held-1" })]);
+		await addLoop(page.loops, "cron-1", "issue-triage", project);
+		writeInbox(page.loops, [finding({ cwd: project, lane: "@cron-1" })]);
 		const held = holdInboxLock(page.loops, 300);
 		const cli = new Promise<number>((resolve) => {
 			const child = spawn(process.execPath, [path.resolve("src/cli-entry.mjs"), "inbox", "claim", `inb-${hex(1)}`, "--json"], { env: { ...process.env, PI_LOOPS_DIR: page.loops, PI_CODING_AGENT_DIR: path.join(dir, "agent") }, stdio: "ignore" });
@@ -1382,141 +1394,64 @@ test("a shell's pi-loops inbox claim racing a page claim under a held lock: one 
 		});
 		const [web, shell] = await Promise.all([page.post("inbox/claim", { id: `inb-${hex(1)}` }), cli, held]);
 		assert.equal([web.status === 200, shell === 0].filter(Boolean).length, 1, `one wins: page ${web.status}, shell exit ${shell}`);
-		assert.equal(rowsOf(page.loops, "held-1").length, web.status === 200 ? 1 : 0, "a row only for the page's win");
-		assert.equal(inboxNow(page.loops)[0].claimed_by, web.status === 200 ? "held-1" : "cli");
+		assert.equal(answerRows(page.loops, "@cron-1").length, web.status === 200 ? 1 : 0, "a row only for the page's win: a claim from a shell runs nothing");
+		assert.equal(inboxNow(page.loops)[0].answered_by, web.status === 200 ? "page" : "cli");
 	} finally {
 		await page.stop();
 	}
 });
-
-test("a project-owned finding (a starter's loop installed before its conversation was saved) says it runs where it is claimed from, and is claimed into the asking conversation", { timeout: 20_000 }, async () => {
+test("a yes on a finding with no lane is not run: its answer says why and a news finding says so, in the same rewrite, and no row is queued", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-inbox-");
-	const project = path.join(dir, "proj");
-	fs.mkdirSync(project);
-	const file = path.join(dir, "here-1");
-	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "here-1", cwd: project })}\n`);
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
 	try {
-		liveLease(page.loops, "here-1", file, project);
-		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-1", name: "changelog-draft", recipe: "changelog-draft", cwd: project }] }));
-		writeInbox(page.loops, [finding({ cwd: project, job_id: "cron-1", source: "cron:changelog-draft" })]);
-		const listed = await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=here-1`);
-		assert.deepEqual(listed.body.cards[0].owner, { holder: "project" }, "not 'gone': it never had a conversation");
-		assert.equal(listed.body.cards[0].fromThisConversation, false);
-		const refused = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
-		assert.equal(refused.status, 409);
-		assert.match(refused.body.error, /^this loop belongs to its project; open a conversation in .*proj to claim it there$/);
-		const here = await page.post("inbox/claim", { id: `inb-${hex(1)}`, from: "here-1" });
-		assert.deepEqual([here.status, here.body.conversation], [200, "here-1"], "claimed into the conversation it was claimed from");
-		assert.equal(rowsOf(page.loops, "here-1").length, 1);
-		const after = await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=here-1`);
-		assert.deepEqual(after.body.handled.map((c: any) => [c.id, c.owner.holder, c.line]), [[`inb-${hex(1)}`, "terminal", "Queued for your terminal."]], "handled, and waiting where it was claimed into");
+		writeInbox(page.loops, [finding({ job_id: "cron-gone", lane: "@cron-gone", text: "the cache is cold" }), finding({ id: `inb-${hex(2)}`, job_id: undefined })]);
+		const removed = await page.post("inbox/claim", { id: `inb-${hex(1)}`, from: "s1" });
+		assert.deepEqual([removed.status, removed.body.said, removed.body.line], [200, "Y2", "Not run (the loop was removed)"]);
+		const after = inboxNow(page.loops);
+		const stored = after.find((e) => e.id === `inb-${hex(1)}`);
+		assert.deepEqual([stored.status, stored.answered_by, stored.answer.state, stored.answer.why], ["claimed", "page", "not_run", "the loop was removed"]);
+		const news = after.find((e) => e.id === besideId(`inb-${hex(1)}`, "not-run"));
+		assert.deepEqual([news?.status, news?.kind, news?.text], ["new", "news", 'Your yes to "the cache is cold" could not be started (the loop was removed).']);
+		const nowhere = await page.post("inbox/claim", { id: `inb-${hex(2)}`, from: "s1" });
+		assert.deepEqual([nowhere.body.said, nowhere.body.line], ["Y2", "Not run (there is nowhere to run it)"]);
+		assert.ok(!fs.existsSync(path.join(page.loops, "requests")), "nothing was queued anywhere");
 	} finally {
 		await page.stop();
 	}
 });
-
-test("a project-owned card being claimed says where it waits: the conversation it was claimed into, not the loop's", { timeout: 20_000 }, async () => {
+test("a cancel from the page opens the question again; one that started or ended is refused in design 6.2's words", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-inbox-");
 	const project = path.join(dir, "proj");
 	fs.mkdirSync(project);
-	const file = path.join(dir, "quiet-1");
-	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "quiet-1", cwd: project })}\n`);
-	// No sweep in the test's time: the claim stays queued with the finding still new.
-	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { claimSweepMs: 600_000 } });
-	try {
-		liveLease(page.loops, "quiet-1", file, project, { mode: "print" });
-		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-1", name: "changelog-draft", recipe: "changelog-draft", cwd: project, owner: "project" }] }));
-		writeInbox(page.loops, [finding({ cwd: project, job_id: "cron-1", source: "cron:changelog-draft" })]);
-		queuedPageClaim(page.loops, "quiet-1", `inb-${hex(1)}`, project);
-		const listed = await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=quiet-1`);
-		const card = listed.body.cards[0];
-		assert.deepEqual([card.claiming, card.owner], [true, { holder: "project" }], "the card is still the project's");
-		assert.equal(card.line, "Queued; the terminal that has this conversation is not taking messages (/resume there).", "the line is the claimed-into conversation's, not 'its conversation is gone'");
-	} finally {
-		await page.stop();
-	}
-});
-
-test("a claim whose conversation is gone runs in the page's own when it is in the project, and is refused otherwise", { timeout: 20_000 }, async () => {
-	const dir = tmp("pi-loops-page-inbox-");
-	const project = path.join(dir, "proj");
-	fs.mkdirSync(project);
-	const file = path.join(dir, "here-1");
-	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "here-1", cwd: project })}\n`);
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
 	try {
-		liveLease(page.loops, "here-1", file, project);
-		writeInbox(page.loops, [finding({ cwd: project, session_id: "gone-1" }), finding({ id: `inb-${hex(2)}`, cwd: path.join(dir, "elsewhere"), session_id: "gone-1" })]);
-		const refused = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
-		assert.equal(refused.status, 409);
-		assert.match(refused.body.error, /^the conversation that made this loop is gone; open a conversation in .*proj to claim it there$/);
-		assert.equal(inboxNow(page.loops)[0].status, "new", "the finding stays new");
-		const here = await page.post("inbox/claim", { id: `inb-${hex(1)}`, from: "here-1" });
-		assert.deepEqual([here.status, here.body.conversation], [200, "here-1"]);
-		assert.equal(rowsOf(page.loops, "here-1").length, 1);
-		const other = await page.post("inbox/claim", { id: `inb-${hex(2)}`, from: "here-1" });
-		assert.equal(other.status, 409, "a finding of another project does not run here");
+		await addLoop(page.loops, "cron-1", "issue-triage", project);
+		writeInbox(page.loops, [finding({ cwd: project, lane: "@cron-1", text: "the cache is cold" }), finding({ id: `inb-${hex(2)}`, cwd: project, lane: "@cron-1" })]);
+		assert.equal((await page.post("inbox/claim", { id: `inb-${hex(1)}`, from: "s1" })).status, 200);
+		assert.equal(answerRows(page.loops, "@cron-1").length, 1);
+		const cancelled = await page.post("inbox/cancel", { id: `inb-${hex(1)}` });
+		assert.deepEqual([cancelled.status, cancelled.body], [200, { ok: true, id: `inb-${hex(1)}`, line: "Cancelled. The question is open again" }]);
+		assert.deepEqual(answerRows(page.loops, "@cron-1"), [], "the row of the yes left its lane");
+		const listed = await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=s1`);
+		assert.ok(listed.body.cards.some((c: any) => c.id === `inb-${hex(1)}` && c.status === "new" && c.headline === "the cache is cold"), "the same finding is a new card again");
+		assert.deepEqual(listed.body.handled, [], "and nothing is handled");
+		const twice = await page.post("inbox/cancel", { id: `inb-${hex(1)}` });
+		assert.deepEqual([twice.status, twice.body], [409, { error: "it has no queued answer to cancel" }]);
+		// One that started is stopped with Stop.
+		assert.equal((await page.post("inbox/claim", { id: `inb-${hex(2)}`, from: "s1" })).status, 200);
+		await new Inbox(page.loops).section((tx) => {
+			const step = answerStep("E4", tx.find(`inb-${hex(2)}`), { to: "started", run: { id: answerRowId(`inb-${hex(2)}`), pid: process.pid, started_at: stamp() } }, { at: stamp(), lane: "@cron-1" });
+			if ("refused" in step) throw new Error(step.refused);
+			return void tx.write(step);
+		});
+		const started = await page.post("inbox/cancel", { id: `inb-${hex(2)}` });
+		assert.deepEqual([started.status, started.body], [409, { error: "it has already started: stop it instead" }]);
+		const news = await page.post("inbox/cancel", { id: `inb-${hex(99)}` });
+		assert.equal(news.status, 404);
 	} finally {
 		await page.stop();
 	}
 });
-
-test("a claim for a conversation nobody holds starts its pi and rings it with the row's fingerprint", { timeout: 30_000 }, async () => {
-	const dir = tmp("pi-loops-page-inbox-");
-	const project = path.join(dir, "proj");
-	fs.mkdirSync(project);
-	const file = path.join(dir, "idle-1");
-	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "idle-1", cwd: project })}\n`);
-	const log = path.join(dir, "child.log");
-	const page = await startTestPage(dir, fakePi(dir, { commands: ["pi-loops"], log }));
-	try {
-		liveLease(page.loops, "idle-1", file, project, { pid: 2 ** 22 + 7 });
-		writeInbox(page.loops, [finding({ cwd: project, session_id: "idle-1" })]);
-		const claimed = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
-		assert.deepEqual([claimed.status, claimed.body.delivery], [200, "started"]);
-		assert.ok(page.pool.has("idle-1"), "its pi was started");
-		const row = rowsOf(page.loops, "idle-1")[0];
-		assert.ok(await until(() => fs.existsSync(log) && fs.readFileSync(log, "utf8").includes(`/pi-loops ring ${row.id} `)), "and rung for the row");
-		const rang = fs.readFileSync(log, "utf8").split("\n").filter((l) => l.includes("/pi-loops ring"));
-		assert.equal(rang.length, 1, "once");
-		assert.match(rang[0], new RegExp(`/pi-loops ring ${row.id} [0-9a-f]{32}"`));
-	} finally {
-		await page.stop();
-	}
-});
-
-test("a claim for a conversation whose pi has no pi-loops sends that pi nothing, and is not started again for it", { timeout: 30_000 }, async () => {
-	const dir = tmp("pi-loops-page-inbox-");
-	const project = path.join(dir, "proj");
-	fs.mkdirSync(project);
-	const file = path.join(dir, "bare-1");
-	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "bare-1", cwd: project })}\n`);
-	const log = path.join(dir, "child.log");
-	const page = await startTestPage(dir, fakePi(dir, { commands: [], log }));
-	let opens = 0;
-	const open = page.pool.open.bind(page.pool);
-	page.pool.open = (how) => (opens++, open(how));
-	try {
-		liveLease(page.loops, "bare-1", file, project, { pid: 2 ** 22 + 7 });
-		writeInbox(page.loops, [finding({ cwd: project, session_id: "bare-1" }), finding({ id: `inb-${hex(2)}`, cwd: project })]);
-		const claimed = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
-		assert.deepEqual([claimed.status, claimed.body.delivery, claimed.body.line], [200, "no-pi-loops", "Queued; the pi of that conversation has no pi-loops, so nothing runs it here. Open it in a terminal with pi-loops."]);
-		const prompts = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "").split("\n").filter((l) => l.includes('"type":"prompt"'));
-		assert.deepEqual(prompts(), [], "no ring: without pi-loops it would reach the model as the person's message");
-		assert.equal(opens, 1);
-		await page.pool.stopAll();
-		// A dismiss runs a sweep, as the ten-second timer does.
-		assert.equal((await page.post("inbox/dismiss", { id: `inb-${hex(2)}` })).status, 200);
-		await new Promise((r) => setTimeout(r, 300));
-		assert.equal(opens, 1, "the sweep does not start that pi again for the claim");
-		assert.deepEqual(prompts(), []);
-		assert.equal(rowsOf(page.loops, "bare-1").length, 1, "the row waits for a pi that has pi-loops");
-	} finally {
-		await page.stop();
-	}
-});
-
 test("a dismiss from the page stores the reason for the loop's next run and says so; past 500 characters it is refused", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-inbox-");
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
@@ -1565,7 +1500,7 @@ test("GET /inbox: one project's cards, decisions first, fifty at most, a torn li
 		assert.equal(got.body.more, 6);
 		assert.equal(got.body.elsewhere, 1);
 		const first = got.body.cards[0];
-		assert.deepEqual([first.id, first.kind, first.headline, first.waits, first.ifNot, first.owner], [`inb-${hex(1)}`, "decision", "ship it", "you", undefined, { holder: "gone" }]);
+		assert.deepEqual([first.id, first.kind, first.headline, first.waits, first.ifNot], [`inb-${hex(1)}`, "decision", "ship it", "you", undefined]);
 		assert.deepEqual([got.body.cards[1].headline, got.body.cards[1].body], ["news 0.", "<b>bold</b>"], "text stays text; the page draws it as such");
 		assert.ok(got.body.cards.every((c: any) => /^inb-[0-9a-f]{32}$/.test(c.id)), "no card without an id");
 		assert.deepEqual(got.body.chips, ["Not a bug", "Already fixed", "Duplicate", "Too noisy", "Not now"]);
@@ -1753,142 +1688,57 @@ test("the panel counts the findings the inbox lists: one with no text is not cou
 	}
 });
 
-/** A page claim row as the page writes it, for a test that starts with one queued. */
-function queuedPageClaim(loops: string, sessionId: string, findingId: string, cwd: string) {
-	const row = pageClaimRow("investigate", findingId, { sessionId, cwd, createdBy: { pid: process.pid, instance: PAGE_INSTANCE, version: "0" } });
-	new RequestStore(loops).append(row);
-	return row;
-}
-
-test("pi-loops starting finishes a claim it was cut short in, and the ten-second sweep does what it finds later", { timeout: 30_000 }, async () => {
+test("GET /inbox lists the project's answers with design 6.1's line, and Cancel only while one waits", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-inbox-");
 	const project = path.join(dir, "proj");
 	fs.mkdirSync(project);
-	const file = path.join(dir, "held-1");
-	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "held-1", cwd: project })}\n`);
-	const loops = path.join(dir, "loops");
-	liveLease(loops, "held-1", file, project);
-	// Cut short between the row and the status: the row is queued, the finding still new.
-	writeInbox(loops, [finding({ cwd: project, session_id: "held-1" }), finding({ id: `inb-${hex(2)}`, cwd: project, session_id: "held-1" }), finding({ id: `inb-${hex(3)}`, cwd: project, status: "claimed", claimed_by: "cli" })]);
-	queuedPageClaim(loops, "held-1", `inb-${hex(1)}`, project);
-	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { claimSweepMs: 200 } });
-	try {
-		assert.ok(await until(() => inboxNow(page.loops)[0].status === "claimed"), "the sweep at start marks it claimed");
-		assert.equal(inboxNow(page.loops)[0].claimed_by, "held-1");
-		assert.equal(rowsOf(page.loops, "held-1").length, 1, "and leaves the row to the terminal that holds the conversation");
-		// Later: another row cut short, and one for a finding a shell claimed meanwhile.
-		queuedPageClaim(page.loops, "held-1", `inb-${hex(2)}`, project);
-		queuedPageClaim(page.loops, "held-1", `inb-${hex(3)}`, project);
-		assert.ok(await until(() => inboxNow(page.loops)[1].status === "claimed", 3000), "the timer's sweep finishes the next one");
-		assert.ok(await until(() => !rowsOf(page.loops, "held-1").some((r) => r.source === `inbox:inb-${hex(3)}`), 3000), "and takes back the row of a finding claimed elsewhere: its turn would run twice");
-		assert.equal(inboxNow(page.loops)[2].claimed_by, "cli", "the shell's claim stands");
-	} finally {
-		await page.stop();
-	}
-});
-
-test("a claim from the page says where it waits: a terminal not taking messages, pi-loops' scheduled turn, and lists it as handled", { timeout: 20_000 }, async () => {
-	const dir = tmp("pi-loops-page-inbox-");
-	const project = path.join(dir, "proj");
-	fs.mkdirSync(project);
-	const files = ["quiet-1", "busy-1"].map((id) => {
-		const file = path.join(dir, id);
-		fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id, cwd: project })}\n`);
-		return file;
-	});
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
 	try {
-		liveLease(page.loops, "quiet-1", files[0], project, { mode: "print" });
-		liveLease(page.loops, "busy-1", files[1], project, { kind: "host", mode: undefined, busy: { runId: "run-x", jobId: "cron-1", since: new Date().toISOString() } });
-		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-1", name: "issue-triage", cwd: project }] }));
-		writeInbox(page.loops, [finding({ cwd: project, session_id: "quiet-1" }), finding({ id: `inb-${hex(2)}`, cwd: project, session_id: "busy-1" })]);
-		const quiet = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
-		assert.deepEqual([quiet.body.delivery, quiet.body.line], ["terminal-quiet", "Queued; the terminal that has this conversation is not taking messages (/resume there)."]);
-		const busy = await page.post("inbox/claim", { id: `inb-${hex(2)}` });
-		assert.deepEqual([busy.body.delivery, busy.body.line], ["background", "Queued; runs after pi-loops finishes its scheduled run there."]);
-		assert.deepEqual(page.pool.list(), [], "neither started a pi");
-		const listed = (await page.get(`inbox?cwd=${encodeURIComponent(project)}`)).body;
-		assert.deepEqual(listed.cards, []);
-		assert.deepEqual(listed.handled.map((c: any) => [c.id, c.status, c.line]), [[`inb-${hex(1)}`, "claimed", "Queued; the terminal that has this conversation is not taking messages (/resume there)."], [`inb-${hex(2)}`, "claimed", "Queued; runs after pi-loops finishes its scheduled run there."]], "claimed, still queued: handled, with where it waits");
+		await addLoop(page.loops, "cron-1", "issue-triage", project);
+		const at = stamp();
+		const run = { id: "ans-x", pid: 1, started_at: at };
+		const long = new Date(Date.now() - 2 * 86_400_000).toISOString();
+		const of = { cwd: project, lane: "@cron-1", status: "claimed", answered_by: "page" };
+		writeInbox(page.loops, [
+			finding({ ...of, id: `inb-${hex(1)}`, answer: { state: "pending", at } }),
+			finding({ ...of, id: `inb-${hex(2)}`, answer: { state: "started", run, at } }),
+			finding({ ...of, id: `inb-${hex(3)}`, answer: { state: "done", run: { ...run, id: "run-done" }, at } }),
+			finding({ ...of, id: `inb-${hex(4)}`, answer: { state: "not_run", why: "it could not be started", at } }),
+			finding({ ...of, id: `inb-${hex(5)}`, answer: { state: "done", run, at: long } }),
+			finding({ ...of, id: `inb-${hex(6)}`, answered_by: "cli" }),
+			finding({ ...of, id: `inb-${hex(7)}`, cwd: path.join(dir, "other"), answer: { state: "pending", at } }),
+		]);
+		// Why the pending one waits is on its row; the done one's summary is in the run log.
+		new RequestStore(page.loops).append({ v: 3, id: answerRowId(`inb-${hex(1)}`), lane: "@cron-1", kind: "input", source: "answer", mode: "unattended", wake: "turn", payload: { text: "[Trigger x] y", cwd: project, finding: `inb-${hex(1)}` }, created_at: at, created_by: { pid: 1, instance: "w", version: "0" }, attempts: 0, waiting: "no free slot" });
+		new JobStore(page.loops).appendRunOnce(() => ({ runId: "run-done", jobId: "cron-1", stateful: true, cwd: project, startedAt: at, finishedAt: at, ok: true, findings: 0, droppedFindings: 0, stateUpdated: false, summary: "Closed #412." }));
+		const listed = await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=s1`);
+		assert.deepEqual(listed.body.handled.map((c: any) => [c.id, c.line, c.cancel]), [
+			[`inb-${hex(1)}`, "Waiting to run: no free slot", true],
+			[`inb-${hex(2)}`, "Running", undefined],
+			[`inb-${hex(3)}`, "Done · Closed #412.", undefined],
+			[`inb-${hex(4)}`, "Not run (it could not be started)", undefined],
+		], "open answers, and those that ended within a day; another project's is not listed");
 	} finally {
 		await page.stop();
 	}
 });
-
-test("a claim answers at once while a sweep waits on another conversation's pi", { timeout: 40_000 }, async () => {
+test("a no to a question from a conversation dismisses it with its reason, tells the conversation by its row, and says so", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-inbox-");
-	const project = path.join(dir, "proj");
-	fs.mkdirSync(project);
-	const hung = path.join(dir, "hung-pi");
-	fs.writeFileSync(hung, "#!/usr/bin/env node\nprocess.stdin.resume();\nsetInterval(() => {}, 1e9);\n", { mode: 0o755 });
-	const loops = path.join(dir, "loops");
-	const files = ["slow-1", "held-1"].map((id) => {
-		const file = path.join(dir, id);
-		fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id, cwd: project })}\n`);
-		return file;
-	});
-	liveLease(loops, "slow-1", files[0], project, { pid: 2 ** 22 + 7 });
-	liveLease(loops, "held-1", files[1], project);
-	writeInbox(loops, [finding({ cwd: project, session_id: "slow-1", status: "claimed", claimed_by: "slow-1" }), finding({ id: `inb-${hex(2)}`, cwd: project, session_id: "held-1" })]);
-	queuedPageClaim(loops, "slow-1", `inb-${hex(1)}`, project);
-	const page = await startTestPage(dir, hung, { server: { claimSweepMs: 100 } });
-	try {
-		assert.ok(await until(() => page.pool.has("slow-1")), "the sweep at start is waiting on a pi that does not answer");
-		const started = Date.now();
-		const claimed = await page.post("inbox/claim", { id: `inb-${hex(2)}` });
-		assert.equal(claimed.status, 200);
-		assert.ok(Date.now() - started < 3000, `answered in ${Date.now() - started} ms, not after the other conversation's pi`);
-		assert.equal(claimed.body.delivery, "terminal");
-	} finally {
-		await page.stop();
-	}
-});
-
-test("a claim into a conversation open in the page names it", { timeout: 20_000 }, async () => {
-	const dir = tmp("pi-loops-page-inbox-");
-	const project = path.join(dir, "proj");
-	fs.mkdirSync(project);
-	const file = path.join(dir, "open-1");
-	fs.writeFileSync(file, [{ type: "session", version: 3, id: "open-1", cwd: project }, { type: "message", message: { role: "user", content: [{ type: "text", text: "release notes" }] } }].map((l) => JSON.stringify(l)).join("\n") + "\n");
-	const page = await startTestPage(dir, fakePi(dir, { commands: ["pi-loops"] }));
-	try {
-		liveLease(page.loops, "open-1", file, project, { pid: 2 ** 22 + 7 });
-		await page.pool.open({ sessionId: "open-1", sessionFile: file, cwd: project, piArgs: [] });
-		writeInbox(page.loops, [finding({ cwd: project, session_id: "open-1" })]);
-		const listed = (await page.get(`inbox?session=open-1`)).body;
-		assert.deepEqual(listed.cards[0].owner, { holder: "page", title: "release notes" });
-		const claimed = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
-		assert.equal(claimed.body.line, 'Running in "release notes".');
-	} finally {
-		await page.stop();
-	}
-});
-
-test("a claim whose conversation's queue is locked gives up after five seconds and leaves the finding new", { timeout: 40_000 }, async () => {
-	const dir = tmp("pi-loops-page-inbox-");
-	const project = path.join(dir, "proj");
-	fs.mkdirSync(project);
-	const file = path.join(dir, "held-1");
-	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "held-1", cwd: project })}\n`);
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
 	try {
-		liveLease(page.loops, "held-1", file, project);
-		writeInbox(page.loops, [finding({ cwd: project, session_id: "held-1" })]);
-		// A queue lock nobody releases: held past the inbox lock's own ten-second stale point, another
-		// process would break the inbox lock and its write would be lost under this one's rewrite.
-		fs.mkdirSync(path.join(page.loops, "requests", "held-1.lock"), { recursive: true });
-		const started = Date.now();
-		const claimed = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
-		const took = Date.now() - started;
-		assert.equal(claimed.status, 500);
-		assert.ok(took >= 4_500 && took < 9_000, `gave up at the queue lock's timeout, well inside the inbox lock's stale point: ${took} ms`);
-		assert.equal(inboxNow(page.loops)[0].status, "new", "the finding is as it was");
-		fs.rmSync(path.join(page.loops, "requests", "held-1.lock"), { recursive: true, force: true });
+		await new JobStore(page.loops).add({ id: "cron-9", name: "nightly", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId: "conv-1", prompt: "p", cwd: "/p", enabled: true, catchUp: true, createdAt: stamp() });
+		const call = { tool: "bash", tool_call_id: "c1", command: "git push --force origin fix/login", input_sha256: "a".repeat(64), reason: "git push --force on main/master" };
+		writeInbox(page.loops, [finding({ job_id: "cron-9", lane: "conv-1", kind: "checkpoint", text: "Run it? · waits: nightly · if not: it stays undone", ask: { kind: "call", id: `ask-${"c".repeat(32)}`, lane: "conv-1", session_id: "conv-1", title: "nightly asks to run a command", call, created_at: stamp() } })]);
+		const no = await page.post("inbox/dismiss", { id: `inb-${hex(1)}`, reason: "Too risky" });
+		assert.deepEqual([no.status, no.body.line], [200, "You said no. nightly is told on its next run, and the same command is refused for 14 days."]);
+		const stored = inboxNow(page.loops)[0];
+		assert.deepEqual([stored.status, stored.answered_by, stored.dismiss_reason], ["dismissed", "page", "Too risky"]);
+		const told = rowsOf(page.loops, "conv-1");
+		assert.deepEqual(told.map((r) => [r.source, r.wake, r.mode, r.payload.finding]), [["answer", "append", "none", `inb-${hex(1)}`]], "the no- row that tells the conversation");
 	} finally {
 		await page.stop();
 	}
 });
-
 test("a dismiss reason from the page is stored without control characters", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-inbox-");
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
@@ -2539,6 +2389,24 @@ test("the waiting page's Stop it goes through the same stop as a loop row's, as 
 		const stop = await fetch(`${page.url}c/s1/stop-turn`, { method: "POST", headers: { "x-pi-web-token": TEST_TOKEN, "sec-fetch-site": "same-origin" } });
 		assert.equal(stop.status, 204);
 		assert.deepEqual([stops, aborted], [[RUN], []], "stopRun, which writes the request row and records the page, never the bare abort");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("GET /inbox draws a question's card from its ask: the command whole in its own field, and the headline names who asks", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		await new JobStore(page.loops).add({ id: "cron-9", name: "nightly", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: "/p", enabled: true, catchUp: true, createdAt: stamp() });
+		const command = "true · waits: your review · if not: nothing happens; git push --force origin main";
+		const call = { tool: "bash", tool_call_id: "c1", command, input_sha256: "a".repeat(64), reason: "git push --force on main/master" };
+		const text = `Run \`${command}\`? (git push --force on main/master) · waits: nightly went on without it · if not: it stays undone`;
+		writeInbox(page.loops, [finding({ job_id: "cron-9", lane: "@cron-9", kind: "checkpoint", text, ask: { kind: "call", id: `ask-${"c".repeat(32)}`, lane: "@cron-9", session_id: "sid-1", title: "nightly asks to run a command", call, created_at: stamp() } })]);
+		const got = await page.get("inbox?cwd=%2Fp");
+		assert.equal(got.status, 200);
+		const [card] = got.body.cards;
+		assert.deepEqual([card.kind, card.headline, card.question, card.waits, card.ifNot], ["decision", "nightly asks to run a command", { tool: "bash", command, reason: "git push --force on main/master" }, "nightly went on without it", "it stays undone"]);
 	} finally {
 		await page.stop();
 	}

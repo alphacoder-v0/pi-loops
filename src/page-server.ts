@@ -15,7 +15,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConversationIndex, holderOf, NeedsYouCounts, plainText, projectArgs, type RowReaders, titleOf } from "./conversation-rows.ts";
-import { CLAIM_QUEUE_LOCK, cancelRow, isPageClaim, jobClaim, PAGE_INSTANCE, pageClaimRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
+import { cancelRow, jobClaim, personRow, queueOrder, requestFingerprint } from "./engine.ts";
 import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines, type StopAnswer } from "./host-control-channel.ts";
 import { buildSessionProjection, migrateSessionEntries, parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName, shouldReadAgain } from "./lease.ts";
@@ -31,9 +31,11 @@ import { loopSignal, type LoopSignal, SIGNAL_WINDOW_MS } from "./job-signal.ts";
 import { applyTune, rowSignal, scheduleAudit, suggestTune } from "./job-tune.ts";
 import { HELD_READ_MAX_BYTES } from "./held-read.ts";
 import { Inbox, type InboxEntry, inProject } from "./inbox.ts";
-import { type ClaimDelivery, type InboxCard, DISMISS_CHIPS, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, screenText } from "./inbox-card.ts";
+import { type InboxCard, CANCELLED_LINE, DISMISS_CHIPS, answerLine, answerWho, cancelRefusal, cardsOf, dismissLine, dismissOutcome, noQuestionLine, yesPageLine } from "./inbox-card.ts";
+import { type PersonAnswers, personAnswers } from "./answers.ts";
+import { type StepRefusal, answerRowId } from "./ask.ts";
 import { INBOX_TEXT_MAX_CHARS } from "./protocol.ts";
-import { redact } from "./redact.ts";
+import { redact, screenText } from "./redact.ts";
 import { readSessionHead, shortSessionId } from "./session-head.ts";
 import { JobStore, type LoopJob, MAX_PROMPT_BYTES } from "./store.ts";
 import { summarizeSessionFile } from "./transcript.ts";
@@ -98,8 +100,6 @@ export interface PageServerOptions {
 	background?: () => HostStatus;
 	/** Today's automation spend against the daily cap, for `GET /activity`'s attention block. */
 	budget?: () => { spent: number; cap: number; over: boolean };
-	/** How often queued page claims are looked at again; `PAGE_CLAIM_SWEEP_MS` unless a test says otherwise. */
-	claimSweepMs?: number;
 	log: (line: string) => void;
 	onListenError: (err: NodeJS.ErrnoException) => void;
 }
@@ -727,8 +727,6 @@ const TUNE_KEY_MAX = 300;
 const INBOX_ID = /^inb-[0-9a-f]{32}$/;
 /** The cards one `GET /inbox` answers with; past it, `more` counts the rest. */
 const INBOX_CARDS_MAX = 50;
-/** How often queued page claims are looked at again, so one tapped and forgotten still runs. */
-const PAGE_CLAIM_SWEEP_MS = 10_000;
 
 const json = (res: http.ServerResponse, data: unknown, code = 200) => {
 	// Some of these carry a session, a transcript, or a live pairing code; none are worth caching.
@@ -1771,9 +1769,19 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	/* -------------------------------------------------------- the inbox as cards (docs/loops.md) */
 
 	const inbox = new Inbox(LOOPS_DIR);
-	/** `project`: the loop belongs to its project (no creating conversation, recipe.ts installScope); a claim runs where it is made. */
-	type Owner = { holder: "page" | "terminal" | "terminal-quiet" | "background" | "none" | "gone" | "project"; title?: string };
-	type PageCard = InboxCard & { owner: Owner; line?: string };
+	/** A card as `GET /inbox` gives it: `line` says what became of its answer, `cancel` offers Cancel while the answer waits. */
+	type PageCard = InboxCard & { line?: string; cancel?: true };
+	/** A person's yes, no and cancel from the page (src/answers.ts). The rows it appends are signed by this process. */
+	const answers: PersonAnswers = personAnswers({
+		inbox,
+		requests,
+		jobs: jobStore,
+		audit,
+		sessionFile: (id) => conversationThere(id)?.file,
+		self: () => ({ pid: process.pid, instance: "page", procStart: procStart(process.pid), version: VERSION }),
+		now: Date.now,
+		log: opts.log,
+	});
 
 	/** A lease, or undefined for an id the store refuses or no lease directory yet. */
 	function leaseOf(sessionId: string): SessionLease | undefined {
@@ -1808,35 +1816,6 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const found = index.byId(id);
 		if (found && fs.existsSync(found.sessionFile)) return { sessionId: id, file: found.sessionFile, cwd: found.cwd };
 		return undefined;
-	}
-
-	/** Who would run a claim queued for `sessionId` now, and what the conversation is called. */
-	function ownerOf(sessionId: string | undefined, titles: Map<string, string | undefined>): Owner {
-		if (sessionId === undefined) return { holder: "project" };
-		const there = conversationThere(sessionId);
-		if (!there) return { holder: "gone" };
-		if (!titles.has(there.sessionId)) titles.set(there.sessionId, there.file ? titleOf(readSessionHead(there.file)) : undefined);
-		const title = titles.get(there.sessionId);
-		const lease = leaseOf(there.sessionId);
-		const h = holderOf(lease, (x) => holderAlive(x), pool.has(there.sessionId));
-		const busy = lease?.holder?.kind === "host" && !!lease.holder.busy;
-		const holder: Owner["holder"] = h.kind === "terminal" ? (h.delivers ? "terminal" : "terminal-quiet") : h.kind === "background" ? (busy ? "background" : "none") : h.kind === "page" ? "page" : "none";
-		return title === undefined ? { holder } : { holder, title };
-	}
-
-	/** Every queued `inbox:` row on this machine, by the finding it claims. */
-	function queuedClaims(): Map<string, { sessionId: string; row: Row }> {
-		const out = new Map<string, { sessionId: string; row: Row }>();
-		for (const sessionId of requests.sessions()) {
-			let rows: Row[];
-			try {
-				rows = requests.list(sessionId);
-			} catch {
-				continue; // an id the store refuses has no rows
-			}
-			for (const row of rows) if (row.kind === "input" && row.source.startsWith("inbox:")) out.set(row.source.slice("inbox:".length), { sessionId, row });
-		}
-		return out;
 	}
 
 	const jobNames = () => {
@@ -1877,8 +1856,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 
 	/**
 	 * `GET /inbox`: one project's new findings as cards, decisions first, at most fifty (`more` counts
-	 * the rest); the claimed ones whose hand-off is still queued (`handled`); and how many are new in
-	 * other projects. `cwd` is the project asked for; without it, the project of `session`, else the
+	 * the rest); the answers of the project, each with the line its state reads as (`handled`); and
+	 * how many are new in other projects. `cwd` is the project asked for; without it, the project of `session`, else the
 	 * whole machine. A file read: it starts no pi.
 	 */
 	function inboxListing(cwdAsked: string | null, sessionAsked: string | null): { status: number; body: Record<string, unknown> } {
@@ -1897,28 +1876,30 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			return yes;
 		};
 		const scoped = (entries: InboxEntry[]) => (cwd ? inProject(entries, cwd, sameAsked) : entries);
-		const queued = queuedClaims();
 		const jobs = jobNames();
 		const rules = new Map(objectsIn(readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules).map((r) => [String(r.id), r.condition]));
-		const ctx = { here, loopName: (id: string) => jobs.get(id)?.name, ruleCondition: (id: string) => (typeof rules.get(id) === "string" ? (rules.get(id) as string) : undefined), claiming: (id: string) => { const q = queued.get(id); return !!q && isPageClaim(q.row); } };
-		const titles = new Map<string, string | undefined>();
+		const ctx = { here, loopName: (id: string) => jobs.get(id)?.name, ruleCondition: (id: string) => (typeof rules.get(id) === "string" ? (rules.get(id) as string) : undefined) };
 		const cards = cardsOf(scoped(fresh), ctx);
 		const transcripts = new Map(fresh.map((e) => [e.id, e.transcript]));
 		const shown: PageCard[] = cards.slice(0, INBOX_CARDS_MAX).map((card) => {
 			// See the run is offered only for a transcript `GET /inbox/run` would read.
 			const named = transcripts.get(card.id);
-			const c = card.hasTranscript && !(named && readableRun(named)) ? { ...card, hasTranscript: false } : card;
-			const owner = ownerOf(c.sessionId, titles);
-			if (!c.claiming) return { ...c, owner };
-			// Claimed and still queued: where it waits is the conversation it was claimed into.
-			const waits = c.sessionId === undefined ? ownerOf(queued.get(c.id)?.sessionId ?? "", titles) : owner;
-			return { ...c, owner, line: claimLine(deliveryOf(waits), waits.title) };
+			return card.hasTranscript && !(named && readableRun(named)) ? { ...card, hasTranscript: false } : card;
 		});
-		const handled: PageCard[] = cardsOf(scoped(all.filter((e) => e.status === "claimed" && queued.has(e.id))), ctx)
+		// The answers of the project: each open one, and each that ended within the activity strip's day.
+		const now = Date.now();
+		const answered = all.filter((e) => {
+			const a = e.answer;
+			if (!a || a.state === "unreadable") return false;
+			return a.state === "pending" || a.state === "started" || now - Date.parse(a.at) < ACTIVITY_WINDOW_MS;
+		});
+		const byId = new Map(answered.map((e) => [e.id, e]));
+		const handled: PageCard[] = cardsOf(scoped(answered), ctx)
 			.slice(0, INBOX_CARDS_MAX)
 			.map((c) => {
-				const owner = ownerOf(queued.get(c.id)?.sessionId, titles);
-				return { ...c, owner, line: claimLine(deliveryOf(owner), owner.title) };
+				const e = byId.get(c.id)!;
+				const line = answerLine(e, answerRowOf(e), runSummary(e));
+				return { ...c, ...(line ? { line } : {}), ...(e.answer?.state === "pending" ? { cancel: true as const } : {}) };
 			});
 		// What happened in the project while nobody looked: the terminal's session-start line counts the same (src/seen.ts).
 		// A run log that cannot be read costs the card, not the cards.
@@ -1974,118 +1955,6 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		opts.log(`pi-loops web: marked ${plainText(b.cwd)} seen at ${since}`);
 		return { status: 200, body: { since } };
 	}
-
-	/** What a claim queued for a conversation with `owner` is waiting on, before anything is rung. */
-	// A project-owned finding's claim waits in the conversation it was claimed into, which the caller asks about instead.
-	const deliveryOf = (owner: Owner): ClaimDelivery => (owner.holder === "none" ? "started" : owner.holder === "project" ? "gone" : owner.holder);
-
-	/** Conversations whose pi had no pi-loops when a claim was to be rung there (`deliverTo`). */
-	const withoutPiLoops = new Set<string>();
-	/** The rows each page pi was rung for, so the sweep does not ring one twice. A restarted pi is a new child and is rung again. */
-	const rungFor = new WeakMap<PageChild, Set<string>>();
-	function ringOnce(child: PageChild, row: Row) {
-		const rung = rungFor.get(child) ?? new Set<string>();
-		rungFor.set(child, rung);
-		if (rung.has(row.id)) return;
-		rung.add(row.id);
-		ring(child, row.id, requestFingerprint(row)).catch((err) => opts.log(`pi-loops web: ring: ${err?.message ?? err}`));
-	}
-
-	/**
-	 * Take the page's claims queued for `sessionId` one step on: ring the page pi that holds the
-	 * conversation, leave them to a terminal that holds it (its watcher drains them), wait for
-	 * pi-loops' scheduled turn there, or start a page pi when nobody holds it. Says which.
-	 */
-	async function deliverTo(sessionId: string, rows: Row[]): Promise<ClaimDelivery> {
-		const lease = leaseOf(sessionId);
-		const h = lease?.holder && holderAlive(lease.holder) ? lease.holder : undefined;
-		const child = pool.get(sessionId);
-		if (h?.kind === "terminal" && h.page !== true && child?.pid !== h.pid) return holderDelivers(h) ? "terminal" : "terminal-quiet";
-		if (h?.kind === "host" && h.busy) return "background";
-		// A conversation whose pi was found without pi-loops is not started again for its claims: nothing
-		// there would drain the row, and each start would cost a pi for nothing. One open with pi-loops now
-		// (opened from the list after a fix) is tried again.
-		if (withoutPiLoops.has(sessionId) && child?.catalog.piLoopsLoaded !== true) return "no-pi-loops";
-		const opened = child && h?.pid === child.pid ? { child } : await conversation(sessionId);
-		if ("status" in opened) {
-			if (opened.decision?.kind === "wait-background") return "background";
-			if (opened.decision?.kind === "wait-terminal") return "terminal";
-			if (opened.decision?.kind === "crash-looping") return "stopped";
-			if (opened.status === 404) return "gone";
-			return "full";
-		}
-		// As `/prompt` does: the command list first, since without pi-loops the ring would reach the model
-		// as the person's message. A list that did not come is asked for again at the next sweep.
-		if (opened.child.catalog.piLoopsLoaded === undefined) await opened.child.refreshCommands();
-		if (opened.child.catalog.piLoopsLoaded === false) {
-			withoutPiLoops.add(sessionId);
-			return "no-pi-loops";
-		}
-		if (opened.child.catalog.piLoopsLoaded !== true) return child === opened.child ? "page" : "started";
-		withoutPiLoops.delete(sessionId);
-		for (const row of rows) ringOnce(opened.child, row);
-		return child === opened.child ? "page" : "started";
-	}
-
-	/**
-	 * The page's queued claims, finished from the files alone: a finding still new (pi-loops stopped
-	 * between the row and the status) is marked claimed; one dismissed meanwhile, or claimed into
-	 * another conversation or by a shell, takes its row back; the rest are delivered (`deliverTo`).
-	 * Run after each claim, at start and every ten seconds, one sweep at a time: asked for while one
-	 * runs, it answers undefined and one more full sweep follows; a tick of the timer then is skipped.
-	 * `only` limits it to one conversation.
-	 */
-	let sweepRunning: Promise<Map<string, ClaimDelivery>> | undefined;
-	let sweepAgain = false;
-	function deliverPageClaims(only?: string): Promise<Map<string, ClaimDelivery>> | undefined {
-		if (sweepRunning) {
-			sweepAgain = true;
-			return undefined;
-		}
-		const run = sweepPageClaims(only).finally(() => {
-			sweepRunning = undefined;
-			if (!sweepAgain) return;
-			sweepAgain = false;
-			deliverPageClaims()?.catch((err) => opts.log(`pi-loops web: inbox: ${err?.message ?? err}`));
-		});
-		sweepRunning = run;
-		return run;
-	}
-	async function sweepPageClaims(only?: string): Promise<Map<string, ClaimDelivery>> {
-		const out = new Map<string, ClaimDelivery>();
-		const sessions = only === undefined ? requests.sessions() : [only];
-		let findings: Map<string, InboxEntry> | undefined;
-		for (const sessionId of sessions) {
-			let rows: Row[];
-			try {
-				rows = requests.list(sessionId).filter(isPageClaim);
-			} catch {
-				continue; // an id the store refuses has no rows
-			}
-			if (!rows.length) continue;
-			findings ??= new Map(inbox.list().map((e) => [e.id, e]));
-			const live: Row[] = [];
-			for (const row of rows) {
-				const id = row.source.slice("inbox:".length);
-				const found = findings.get(id);
-				const decided = found?.status === "new" ? await inbox.decide(id, "claimed", { by: sessionId }) : undefined;
-				const now = decided === undefined ? found : "ok" in decided ? decided.ok : "already" in decided ? { status: decided.already, claimed_by: decided.by } : undefined;
-				// Delivered only for a claim into this conversation: one dismissed meanwhile, or claimed by a
-				// shell or into another conversation, would run its turn a second time. A finding no longer
-				// in the file (rotated out once handled) keeps its row.
-				if (now && !(now.status === "claimed" && now.claimed_by === sessionId)) {
-					requests.removeIf(sessionId, row.id, (r) => r.handed_at === undefined);
-					continue;
-				}
-				live.push(row);
-			}
-			if (live.length) out.set(sessionId, await deliverTo(sessionId, live));
-		}
-		return out;
-	}
-
-	/** Who signs the page's claims: this process, and the row is born left (`pageClaimRow`). */
-	const pageSigner = () => ({ pid: process.pid, instance: PAGE_INSTANCE, procStart: procStart(process.pid), version: VERSION });
 
 	/** An inbox action's body: a JSON object of at most `max` bytes, or the answer that refuses it. */
 	async function inboxBody(req: http.IncomingMessage, max = INBOX_BODY_MAX): Promise<{ ok: Record<string, unknown> } | { status: number; error: string }> {
@@ -2192,39 +2061,54 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		return { status: 200, body: { ok: true, op: applied.op, line: `now ${scheduleWords(after.schedule)}`, schedule: scheduleWords(after.schedule), ...next } };
 	}
 
+	/** The `ans-` row of a finding's answer, for why a pending one waits; undefined when there is none to read. */
+	function answerRowOf(e: InboxEntry): Row | undefined {
+		if (e.answer?.state !== "pending" || e.lane === undefined) return undefined;
+		try {
+			return requests.list(e.lane).find((r) => r.id === answerRowId(e.id));
+		} catch {
+			return undefined; // a lane the store refuses has no row
+		}
+	}
+
+	/** The summary of the run a done answer ran, while the run log has its record. */
+	function runSummary(e: InboxEntry): string | undefined {
+		if (e.answer?.state !== "done") return undefined;
+		const runId = e.answer.run.id;
+		return signalSources().runs.find((r) => r.runId === runId)?.summary;
+	}
+
+	/** A yes or a no that wrote nothing: the finding is gone, or a person answered it first. */
+	function refusedAnswer(refusal: StepRefusal): { status: number; body: Record<string, unknown> } {
+		if (refusal.refused === "missing") return { status: 404, body: { error: "no such finding" } };
+		if (refusal.refused === "already") return { status: 409, body: { error: `already ${refusal.status}`, status: refusal.status } };
+		return { status: 409, body: { error: "already answered" } };
+	}
+
+	/** Who picks up a yes to `e`, by the name jobs.json gives the loop. */
+	const whoOf = (e: InboxEntry, lane: string | undefined): string => answerWho(e, lane as InboxEntry["lane"], (id) => jobNames().get(id)?.name);
+
 	/**
-	 * `POST /inbox/claim`: the row `/inbox claim` writes, for the conversation that created the loop
-	 * (else `from`, the page's own, when it is in the finding's project), born left so its holder runs
-	 * it. Written under the inbox lock once the finding is found new, then the finding marked claimed
-	 * (`decide`), as `handOver` orders them; a claim that loses writes nothing.
+	 * `POST /inbox/claim`: **Yes, do it** or **Look into it** is a person's yes (src/answers.ts). With a
+	 * lane, it queues the row the background runs, in the run that reported the finding (Y1); with
+	 * none, it says why nothing runs (Y2). `from` is the conversation the page shows, where the run's
+	 * card comes when it ends.
 	 */
 	async function claimFinding(b: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
 		const named = findingNamed(b.id);
 		if (!("entry" in named)) return named;
-		const entry = named.entry;
-		const from = typeof b.from === "string" ? conversationThere(idFrom(b.from)) : undefined;
-		const owner = conversationThere(entry.session_id);
-		const target = owner ?? (from && from.cwd && (!entry.cwd || sameProject(entry.cwd, from.cwd)) ? from : undefined);
-		if (!target) return { status: 409, body: { error: `${entry.session_id === undefined ? "this loop belongs to its project" : "the conversation that made this loop is gone"}; open a conversation in ${plainText(entry.cwd || "its project")} to claim it there` } };
-		const row = pageClaimRow(claimPrompt(entry, jobStore.load().find((j) => j.id === entry.job_id)?.name), entry.id, { sessionId: target.sessionId, cwd: entry.cwd || target.cwd || "", createdBy: pageSigner() });
-		// Queued under the inbox lock once the finding is found still new: of claims racing one finding
-		// (another page, a terminal, a shell, a held lock), only the winner queues a row.
-		let written = false;
-		const decided = await inbox.decide(entry.id, "claimed", { by: target.sessionId, before: () => void (written = requests.appendIfAbsent(row, { collapse: true }, CLAIM_QUEUE_LOCK)) });
-		if (!("ok" in decided)) {
-			return "missing" in decided ? { status: 404, body: { error: "no such finding" } } : { status: 409, body: { error: `already ${decided.already}`, status: decided.already } };
-		}
-		const titles = new Map<string, string | undefined>();
-		const ownerNow = ownerOf(target.sessionId, titles);
-		// Delivered now, unless a sweep is already running (it may be waiting on another conversation's
-		// pi): then the next sweep delivers it, and the answer says where it will run.
-		const swept = deliverPageClaims(target.sessionId);
-		const delivery = (swept ? (await swept).get(target.sessionId) : undefined) ?? deliveryOf(ownerNow);
-		audit.appendAudit({ cwd: entry.cwd, type: "request", traceId: row.id, state: "claimed", sourceLabel: row.source, eventLabel: target.sessionId, details: { session_id: target.sessionId, finding: entry.id, from: "page", delivery, ...(written ? {} : { collapsed: true }) } });
-		return { status: 200, body: { ok: true, id: entry.id, delivery, conversation: target.sessionId, line: claimLine(delivery, ownerNow.title) } };
+		const from = typeof b.from === "string" ? conversationThere(idFrom(b.from))?.sessionId : undefined;
+		const said = await answers.say(named.entry.id, "yes", { by: "page", session: from ?? "" });
+		if (said.said === "nothing") return refusedAnswer(said.refusal);
+		if (said.said !== "Y1" && said.said !== "Y2") return { status: 500, body: { error: `a yes from the page came to ${said.said}` } };
+		const entry = said.finding;
+		const lane = said.said === "Y1" ? said.lane : entry.lane;
+		const kept = !!entry.transcript && fs.existsSync(entry.transcript);
+		audit.appendAudit({ cwd: entry.cwd, type: "request", traceId: entry.id, state: "claimed", sourceLabel: entry.source, eventLabel: lane, details: { finding: entry.id, from: "page", said: said.said, ...(said.said === "Y1" && !said.queued ? { queued: false } : {}) } });
+		return { status: 200, body: { ok: true, id: entry.id, said: said.said, ...(lane ? { lane } : {}), line: yesPageLine(said, whoOf(entry, lane), kept) } };
 	}
 
-	/** `POST /inbox/dismiss`: a reason (a chip's words, or typed, at most 500 characters) goes to the loop's next run; none is a silent dismiss. */
+	/** `POST /inbox/dismiss`: a person's no. A reason (a chip's words, or typed, at most 500 characters) goes to the loop's next run; none is a silent dismiss. */
 	async function dismissFinding(b: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
 		if (b.reason !== undefined && b.reason !== null && typeof b.reason !== "string") return { status: 400, body: { error: "a reason is text" } };
 		// Stored as it will be shown: no escape sequence or control character reaches a terminal from it.
@@ -2232,15 +2116,26 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		if (Array.from(reason).length > INBOX_TEXT_MAX_CHARS) return { status: 400, body: { error: `reason is longer than ${INBOX_TEXT_MAX_CHARS} characters` } };
 		const named = findingNamed(b.id);
 		if (!("entry" in named)) return named;
-		const decided = await inbox.decide(named.entry.id, "dismissed", { reason: reason || undefined });
-		if ("missing" in decided) return { status: 404, body: { error: "no such finding" } };
-		if ("already" in decided) return { status: 409, body: { error: `already ${decided.already}`, status: decided.already } };
-		const entry = decided.ok;
+		const said = await answers.say(named.entry.id, "no", { by: "page", session: "" }, reason ? { reason } : {});
+		if (said.said === "nothing") return refusedAnswer(said.refusal);
+		if (said.said !== "N1") return { status: 500, body: { error: `a no from the page came to ${said.said}` } };
+		const entry = said.finding;
 		const told = dismissOutcome(entry, entry.job_id ? jobNames().get(entry.job_id) : undefined, reason);
 		audit.appendAudit({ cwd: entry.cwd, type: "request", traceId: entry.id, state: "dismissed", sourceLabel: entry.source, eventLabel: entry.session_id, details: { finding: entry.id, from: "page", reason: reason ? redact(reason) : null, chip: (DISMISS_CHIPS as readonly string[]).includes(reason) } });
-		// A claim the page queued for it before pi-loops stopped takes its row back now, not at the next sweep.
-		deliverPageClaims()?.catch((err) => opts.log(`pi-loops web: inbox: ${err?.message ?? err}`));
-		return { status: 200, body: { ok: true, id: entry.id, told, line: dismissLine(told) } };
+		const line = entry.ask ? noQuestionLine("page", whoOf(entry, entry.ask.lane)) : dismissLine(told);
+		return { status: 200, body: { ok: true, id: entry.id, told, line } };
+	}
+
+	/**
+	 * `POST /inbox/cancel {id}`: a person takes back a yes that waits (V2, V1). The finding is `new`
+	 * again, under its own id. One that started is stopped with Stop, as any run is; one that ended is
+	 * not cancelled.
+	 */
+	async function cancelAnswer(b: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
+		if (typeof b.id !== "string" || !INBOX_ID.test(b.id)) return { status: 400, body: { error: "bad id" } };
+		const out = await answers.cancel(b.id);
+		if ("refusal" in out) return out.refusal.refused === "missing" ? { status: 404, body: { error: "no such finding" } } : { status: 409, body: { error: cancelRefusal(out.refusal) } };
+		return { status: 200, body: { ok: true, id: out.cancelled.id, line: CANCELLED_LINE } };
 	}
 
 	/**
@@ -2270,13 +2165,6 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			return undefined; // not there any more, or gone between resolving it and looking at it
 		}
 	}
-
-	deliverPageClaims()?.catch((err) => opts.log(`pi-loops web: inbox: ${err?.message ?? err}`));
-	// A tick while a sweep runs is skipped, not queued behind it.
-	const claimSweep = setInterval(() => {
-		if (!sweepRunning) deliverPageClaims()?.catch((err) => opts.log(`pi-loops web: inbox: ${err?.message ?? err}`));
-	}, opts.claimSweepMs ?? PAGE_CLAIM_SWEEP_MS);
-	claimSweep.unref();
 
 	/**
 	 * The script a plain page carries, under a nonce of its own: the device secret, when this answer is
@@ -2687,10 +2575,10 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					const done = markSeenFromPage(b.ok);
 					return void json(res, done.body, done.status);
 				}
-				if (!prefixed && (url.pathname === "/inbox/claim" || url.pathname === "/inbox/dismiss") && req.method === "POST") {
+				if (!prefixed && (url.pathname === "/inbox/claim" || url.pathname === "/inbox/dismiss" || url.pathname === "/inbox/cancel") && req.method === "POST") {
 					const b = await inboxBody(req);
 					if (!("ok" in b)) return void json(res, { error: b.error }, b.status);
-					const done = url.pathname === "/inbox/claim" ? await claimFinding(b.ok) : await dismissFinding(b.ok);
+					const done = url.pathname === "/inbox/claim" ? await claimFinding(b.ok) : url.pathname === "/inbox/dismiss" ? await dismissFinding(b.ok) : await cancelAnswer(b.ok);
 					return void json(res, done.body, done.status);
 				}
 				if (pathId == null) return void json(res, prefixed ? NO_SUCH : { error: "not found" }, 404);
@@ -3211,7 +3099,6 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		clients,
 		close: () => {
 			server.close();
-			clearInterval(claimSweep);
 			for (const key of [...openKeys.keys()]) dropOpenKey(key);
 		},
 	};

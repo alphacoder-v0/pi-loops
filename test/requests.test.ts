@@ -4,7 +4,8 @@ import * as fs from "node:fs";
 import { tmp } from "./tmp.ts";
 import * as path from "node:path";
 import { RequestStore, imageRef, parseRow, type Row, type UnclaimedRow } from "../src/requests.ts";
-import { personRow } from "../src/engine.ts";
+import { modeOf, personRow } from "../src/engine.ts";
+import { repairRows } from "../src/ask.ts";
 
 test("each conversation's queue has its own lock, and a requests.lock an older version left is nobody's", () => {
 	// One `requests.lock` for every session meant a rewrite of one session's file (or a lock left by
@@ -394,4 +395,50 @@ test("[collapse-skipped] a skip is counted only on a row whose run goes, and a n
 	store.update("s", "loop-row", { run: undefined, attempts: 1 });
 	assert.equal(store.claim("s", "loop-row", { id: "run-1", pid: process.pid, started_at: "2026-01-01T00:03:00.000Z" } as any), true);
 	assert.equal(store.list("s")[0].skipped, undefined, "the retry has skipped nothing yet");
+});
+
+test("[answer-row] a row with source answer and payload.finding round-trips, and modeOf runs a yes unattended", () => {
+	const store = new RequestStore(tmp());
+	const answer = row(`ans-${"c".repeat(32)}`, { lane: "@cron-abc", source: "answer", mode: "unattended", wake: "turn", payload: { text: "[Trigger ans-c] go", cwd: "/p", finding: `inb-${"c".repeat(32)}` } });
+	store.append(answer);
+	assert.deepEqual(store.list("@cron-abc"), [answer]);
+	assert.equal(store.list("@cron-abc")[0].payload?.finding, `inb-${"c".repeat(32)}`);
+	assert.equal(modeOf("conversation", "input", "answer", "turn"), "unattended", "a yes runs in the background");
+	assert.equal(modeOf("conversation", "input", "answer", "append"), "none", "a no only tells");
+	assert.equal(modeOf("conversation", "input", "cli", "turn"), "attended", "other sources as before");
+});
+
+test("[restored-row] appendIfAbsent takes a restored row with its claim, once", () => {
+	const store = new RequestStore(tmp());
+	const at = "2026-11-20T00:00:00.000+00:00";
+	const claim = { id: "ans-run", pid: 7, started_at: at };
+	const finding = { id: `inb-${"d".repeat(32)}`, created_at: at, status: "claimed" as const, kind: "news" as const, source: "cron:x", run_id: "r", cwd: "/p", text: "t", verified: null, dismiss_reason: null, claimed_by: "s1", answered_by: "page" as const, lane: "@cron-abc", answer: { state: "started" as const, run: claim, at } };
+	const [restored] = repairRows([finding], new Map([["@cron-abc", []]]), { at, self: { pid: 1, instance: "w", version: "0" } });
+	assert.ok(restored?.run, "repairRows made a restored row");
+	assert.equal(store.appendIfAbsent(restored), true);
+	assert.equal(store.appendIfAbsent(restored), false, "a second time is a no-op");
+	assert.deepEqual(store.list("@cron-abc").map((r) => [r.id, r.run]), [[restored.id, claim]]);
+});
+
+test("[lane-lock] claim, remove, update and removeIf give up at the lock timeout they are given", () => {
+	const dir = tmp();
+	const store = new RequestStore(dir);
+	store.append(row("1"));
+	const lock = path.join(dir, "requests", "s.lock");
+	fs.mkdirSync(lock);
+	fs.writeFileSync(path.join(lock, "owner"), `${process.pid}.-.deadbeef0000`);
+	const quick = { timeoutMs: 50 };
+	const writes: Array<[string, () => unknown]> = [
+		["claim", () => store.claim("s", "1", { id: "1", pid: 1, started_at: "2026-01-01T00:00:00Z" } as Parameters<RequestStore["claim"]>[2], quick)],
+		["remove", () => store.remove("s", ["1"], quick)],
+		["update", () => store.update("s", "1", { attempts: 1 }, quick)],
+		["removeIf", () => store.removeIf("s", "1", () => true, quick)],
+	];
+	for (const [name, write] of writes) {
+		const started = Date.now();
+		assert.throws(write, /timed out waiting for lock/, `${name} throws`);
+		assert.ok(Date.now() - started < 2_000, `${name} waited for its own timeout, not the stale point (${Date.now() - started} ms)`);
+	}
+	fs.rmSync(lock, { recursive: true });
+	assert.deepEqual(store.list("s").map((r) => [r.id, r.attempts, r.run]), [["1", 0, undefined]], "none of them wrote");
 });

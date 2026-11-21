@@ -1,0 +1,1284 @@
+/**
+ * src/answers.ts against the stores, and the `PROTOCOL` harness. Each transition's durable writes are
+ * logged with the lock held at each and compared with `PROTOCOL` of test/answer-protocol.ts. Then the process is
+ * stopped after each prefix of those writes, a new process takes over with the same stores, and its
+ * next ticks, drains and closings run until nothing moves. The final state is checked each time.
+ *
+ * A stop is a `Crash` thrown just after a write lands; from then on every write of the dead process
+ * throws before it is made, so a catch on the way out cannot write more. No model runs: a run of an
+ * answer is a stand-in that writes the record its runner would.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { type AnswerExecutor, type AnswerStart, type Answers, type AnswersDeps, type MeetOutcome, createAnswers } from "../src/answers.ts";
+import { type Call, WHY, answerRow, answerRowId, answerStep, besideId, inputHash, isAnswerRow, noRowId, questionFinding, resolveCap } from "../src/ask.ts";
+import { Inbox, type InboxEntry as Finding, type InboxSection, type NewFinding, type Sync, UNDER_INBOX_LOCK } from "../src/inbox.ts";
+import { type Lane, type LaneId, parseLane } from "../src/lane.ts";
+import { type ClaimedRow, type Listed, type Row, RequestStore } from "../src/requests.ts";
+import { stamp } from "../src/schedule.ts";
+import { JobStore, type LoopJob, type RunRecord } from "../src/store.ts";
+import { type ProtocolWrite, PROTOCOL } from "./answer-protocol.ts";
+import { TriggerStore } from "../src/triggers.ts";
+import { tmp } from "./tmp.ts";
+
+const JOB = "cron-a1";
+const LOOP = "@cron-a1";
+const CONV = "01a1dce4-8ad1-77c0-89b0-475ccfeaf683";
+const CHECK = "@check-proj-1a2b3c4d";
+const PERSON = { by: "terminal", session: CONV } as const;
+/** pi's session id of a loop's or a check's run that asked. */
+const SID = "0199aaaa-0000-7000-8000-0000000000a1";
+const NOW = Date.parse("2026-11-20T02:00:00.000Z");
+const COMMAND = "git push --force origin main";
+const CALL: Call = { tool: "bash", tool_call_id: "call-1", command: COMMAND, input_sha256: inputHash({ command: COMMAND }), reason: "git push --force on main/master" };
+
+class Crash extends Error {
+	constructor() {
+		super("the process stopped");
+	}
+}
+
+type Logged = { write: ProtocolWrite["write"]; lock: ProtocolWrite["lock"] };
+
+/** The stores of one loops directory, the process that runs on them now, and what the harness saw. */
+interface World {
+	dir: string;
+	cwd: string;
+	inbox: Inbox;
+	requests: RequestStore;
+	jobs: JobStore;
+	audit: TriggerStore;
+	log: Logged[];
+	/** The process stops after this many logged writes. */
+	stopAfter: number;
+	dead: boolean;
+	/** A write of this kind fails once, before it is made, in a living process. */
+	failNext?: ProtocolWrite["write"];
+	inboxHeld: boolean;
+	sections: number;
+	runEnds: RunRecord[];
+	/** Runs started, by finding: a yes is run at most once. */
+	starts: Map<string, number>;
+	/** A conversation's session file, as its lease names it. */
+	conversations: Map<string, string>;
+	/** Pids of other processes that are alive. */
+	alive: Set<number>;
+	/** Why E4 waits beside a disabled loop, when the test says so. */
+	block?: string;
+	proc: Proc;
+	answers: Answers;
+	wrapped: AnswersDeps;
+}
+
+function durable<T>(w: World, write: Logged["write"], lock: Logged["lock"], make: () => T, wrote: (result: T) => boolean): T {
+	if (w.dead) throw new Crash();
+	if (w.failNext === write) {
+		w.failNext = undefined;
+		throw new Error(`the ${write} write failed`);
+	}
+	const result = make();
+	if (wrote(result)) {
+		w.log.push({ write, lock });
+		if (w.log.length >= w.stopAfter) {
+			w.dead = true;
+			throw new Crash();
+		}
+	}
+	return result;
+}
+
+/** The stand-in executor of one process: a run list, and a claim that goes through the logged store. */
+class Proc implements AnswerExecutor {
+	readonly pid: number;
+	readonly runs = new Set<string>();
+	readonly w: World;
+	n = 0;
+	constructor(w: World, pid: number) {
+		this.w = w;
+		this.pid = pid;
+	}
+	blocked(lane: Lane): string | undefined {
+		if (this.w.block !== undefined) return this.w.block;
+		const job = lane.kind === "loop" ? this.w.jobs.load().find((j) => `@${j.id}` === lane.id) : undefined;
+		return job && !job.enabled ? "its job is disabled" : undefined;
+	}
+	live(row: ClaimedRow): boolean {
+		return row.run.pid === this.pid ? this.runs.has(row.run.id) : this.w.alive.has(row.run.pid);
+	}
+	claim(row: Row, _finding: Finding, lock: typeof UNDER_INBOX_LOCK, now: number): ClaimedRow | undefined {
+		const run = { id: `run-${this.pid}-${++this.n}`, pid: this.pid, started_at: stamp(now) };
+		if (!this.w.wrapped.requests.claim(row.lane, row.id, run as Listed, lock)) return undefined;
+		this.runs.add(run.id);
+		return { ...row, kind: "input", run };
+	}
+	release(runId: string): void {
+		this.runs.delete(runId);
+	}
+}
+
+function readEntries(file: string): readonly unknown[] | undefined {
+	let text: string;
+	try {
+		text = fs.readFileSync(file, "utf8");
+	} catch {
+		return undefined; // the file is gone
+	}
+	return text.split("\n").filter(Boolean).map((line) => JSON.parse(line) as unknown);
+}
+
+function wrap(w: World): AnswersDeps {
+	const laneLock = (): Logged["lock"] => (w.inboxHeld ? "inbox+lane" : "lane");
+	const requests = w.requests;
+	return {
+		inbox: {
+			file: w.inbox.file,
+			list: () => w.inbox.list(),
+			section: <T>(fn: (tx: InboxSection) => Sync<T>): Promise<T> => {
+				w.sections++;
+				return w.inbox.section((tx) => {
+					w.inboxHeld = true;
+					try {
+						return fn({ list: () => tx.list(), find: (id) => tx.find(id), fileOnce: (entry, id) => tx.fileOnce(entry, id), write: (c, ...more) => durable(w, "finding", "inbox", () => tx.write(c, ...more), () => true) });
+					} finally {
+						w.inboxHeld = false;
+					}
+				});
+			},
+		},
+		requests: {
+			list: (lane) => requests.list(lane),
+			appendIfAbsent: (row, opts, lock) => durable(w, "row+", laneLock(), () => requests.appendIfAbsent(row, opts, lock), (r) => r),
+			claim: (lane, id, run, lock) => durable(w, "row.run", laneLock(), () => requests.claim(lane, id, run, lock), (r) => r),
+			update: (lane, id, patch, lock) => durable(w, "row~", laneLock(), () => requests.update(lane, id, patch, lock), (r) => r),
+			remove: (lane, ids, lock) => {
+				const gone = [...ids];
+				const there = requests.list(lane).some((r) => gone.includes(r.id));
+				durable(w, "row-", laneLock(), () => requests.remove(lane, gone, lock), () => there);
+			},
+			removeIf: (lane, id, when, lock) => durable(w, "row-", laneLock(), () => requests.removeIf(lane, id, when, lock), (r) => r.outcome === "removed"),
+		},
+		jobs: {
+			load: () => w.jobs.load(),
+			appendRunOnce: (make) => durable(w, "record", "runs", () => w.jobs.appendRunOnce(make), (r) => r !== undefined),
+			listRuns: (jobId, limit) => w.jobs.listRuns(jobId, limit),
+			sessionDirFor: (jobId) => w.jobs.sessionDirFor(jobId),
+		},
+		audit: { appendAudit: (record) => durable(w, "audit", "none", () => w.audit.appendAudit(record), () => true) },
+		sessionFile: (id) => w.conversations.get(id),
+		entries: readEntries,
+		checkSessionDir: (cwd) => w.jobs.sessionDirFor(`check-${path.basename(cwd)}`),
+		checkLaneOf: (cwd) => (cwd === w.cwd ? CHECK : undefined),
+		runEnd: (record) => durable(w, "run_end", "none", () => w.runEnds.push(record), () => true),
+		self: () => ({ pid: w.proc.pid, instance: `proc-${w.proc.pid}`, version: "0.24.3" }),
+		now: () => NOW,
+		log: () => undefined,
+	};
+}
+
+/** A new process on the same stores: nothing of the dead one's memory, its run list or its pid. */
+function restart(w: World): void {
+	w.dead = false;
+	w.stopAfter = Infinity;
+	w.failNext = undefined;
+	w.proc = new Proc(w, w.proc.pid + 1);
+	w.answers = createAnswers(w.wrapped);
+}
+
+function loopJob(cwd: string): LoopJob {
+	return { id: JOB, schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "watch", cwd, enabled: true, catchUp: true, createdAt: "2026-11-01T00:00:00.000Z" } as LoopJob;
+}
+
+async function world(): Promise<World> {
+	const dir = tmp("pi-loops-ask-");
+	const cwd = path.join(dir, "proj");
+	fs.mkdirSync(cwd, { recursive: true });
+	const w = {
+		dir,
+		cwd,
+		inbox: new Inbox(dir),
+		requests: new RequestStore(dir),
+		jobs: new JobStore(dir),
+		audit: new TriggerStore(dir),
+		log: [],
+		stopAfter: Infinity,
+		dead: false,
+		inboxHeld: false,
+		sections: 0,
+		runEnds: [],
+		starts: new Map(),
+		conversations: new Map(),
+		alive: new Set(),
+	} as unknown as World;
+	w.proc = new Proc(w, 1000);
+	w.wrapped = wrap(w);
+	w.answers = createAnswers(w.wrapped);
+	await w.jobs.add(loopJob(cwd));
+	return w;
+}
+
+/** A transcript that holds `call`, blocked: the call and an error result. `spoil` takes one of them away or changes it. */
+function writeTranscript(file: string, call: Call, spoil?: "no-call" | "another-tool" | "another-input" | "no-error-result", id = SID): void {
+	const lines: unknown[] = [{ type: "session", id }];
+	if (spoil !== "no-call") {
+		const name = spoil === "another-tool" ? "powershell" : call.tool;
+		const args = spoil === "another-input" ? { command: "ls" } : { command: call.command };
+		lines.push({ type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: call.tool_call_id, name, arguments: args }] } });
+		if (spoil !== "no-error-result") lines.push({ type: "message", message: { role: "toolResult", toolCallId: call.tool_call_id, isError: true, content: [] } });
+	}
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(file, `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
+}
+
+/** A question from a run in `lane`, filed as Q1 files it. */
+async function ask(w: World, lane: "loop" | "conversation" | "check", opts: { spoil?: Parameters<typeof writeTranscript>[2]; outside?: boolean } = {}): Promise<Finding> {
+	const laneId = lane === "loop" ? LOOP : lane === "conversation" ? CONV : CHECK;
+	let file: string;
+	if (opts.outside) file = path.join(w.dir, "elsewhere", "t1.jsonl");
+	else if (lane === "loop") file = path.join(w.jobs.sessionDirFor(JOB), `t1_${SID}.jsonl`);
+	else if (lane === "check") file = path.join(w.wrapped.checkSessionDir(w.cwd), `t1_${SID}.jsonl`);
+	else {
+		file = path.join(w.dir, "conversations", `${CONV}.jsonl`);
+		w.conversations.set(CONV, file);
+	}
+	// pi's session id of the run that asked: a conversation's own id in its lane.
+	const sessionId = lane === "conversation" ? CONV : SID;
+	writeTranscript(file, CALL, opts.spoil, sessionId);
+	const origin = { source: lane === "loop" ? `cron:${JOB}` : lane, run_id: "r0", cwd: w.cwd, ...(lane === "loop" ? { job_id: JOB } : {}), who: "the loop" };
+	const { id, entry } = questionFinding(CALL, { lane: laneId, sessionId, sessionFile: file, cap: resolveCap({ cwd: w.cwd }, 900_000) }, origin, stamp(NOW));
+	return w.inbox.fileOnce(entry, id);
+}
+
+/** A finding that is no question, from the loop. */
+async function news(w: World, over: Partial<NewFinding> = {}): Promise<Finding> {
+	return w.inbox.append({ source: `cron:${JOB}`, run_id: "r0", cwd: w.cwd, text: "The nightly build is red since the last merge", job_id: JOB, lane: LOOP, ...over });
+}
+
+const find = (w: World, id: string): Finding | undefined => w.inbox.list().find((f) => f.id === id);
+const answerRows = (w: World): Row[] => [...w.requests.sessions(), ...w.requests.lanes().map((l) => l.id)].flatMap((lane) => w.requests.list(lane).filter((r) => r.id.startsWith("ans-")));
+const audits = (w: World): Array<{ state: string; traceId: string }> => (fs.existsSync(w.audit.auditFile) ? fs.readFileSync(w.audit.auditFile, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+
+/** The stand-in of an answer's run: it ends ok, makes the granted call when it has a grant, and closes. */
+async function run(w: World, start: AnswerStart, how: { ok?: boolean; grantUsed?: boolean; aborted?: boolean } = {}, at = NOW): Promise<void> {
+	w.starts.set(start.finding.id, (w.starts.get(start.finding.id) ?? 0) + 1);
+	const record: RunRecord = {
+		runId: start.row.run.id,
+		jobId: start.jobId,
+		stateful: start.row.lane.startsWith("@cron-"),
+		cwd: start.finding.cwd,
+		pid: start.row.run.pid,
+		startedAt: start.row.run.started_at,
+		finishedAt: stamp(at),
+		ok: how.ok ?? !how.aborted,
+		findings: 0,
+		droppedFindings: 0,
+		stateUpdated: false,
+		row: start.row.id,
+		cause: "answer",
+		...(how.aborted ? { aborted: true as const } : {}),
+		...(start.resume ? { resumed: start.resume.file } : {}),
+		...(start.grant ? { grant_used: how.grantUsed ?? true } : {}),
+	};
+	await w.answers.close(start.row, at, record);
+	w.proc.release(start.row.run.id);
+}
+
+/** The next ticks and drains of the process that runs now, until nothing moves: H1, then every `ans-` row met, and a run started by E4 run and closed. */
+async function settle(w: World): Promise<void> {
+	// The clock moves only to the end of a backoff: a later tick finds the row F1 held until then.
+	let at = NOW;
+	for (let round = 0; round < 12; round++) {
+		let moved = (await w.answers.repair(() => true, at)).length > 0;
+		let wake = Infinity;
+		for (const row of answerRows(w)) {
+			const met = await w.answers.meet(parseLane(row.lane)!, row.id, w.proc, at);
+			if (met.met === "E4") await run(w, met.start, {}, at);
+			if (met.met !== "nothing" && met.met !== "hold" && met.met !== "W1") moved = true;
+			const until = Date.parse(w.requests.list(row.lane).find((r) => r.id === row.id)?.not_before ?? "");
+			if (met.met === "hold" && until > at) wake = Math.min(wake, until);
+		}
+		if (!moved && wake === Infinity) return;
+		if (!moved) at = wake;
+	}
+	assert.fail("the drains did not settle");
+}
+
+const COMPANION = { done: undefined, unfinished: "outcome", not_run: "not-run" } as const;
+
+/** What holds after every settle: a yes run once, one record per run, a final state with its one companion, no row beside a final answer, a row beside an open one. */
+function invariants(w: World): void {
+	for (const [id, n] of w.starts) assert.equal(n, 1, `the yes to ${id} ran ${n} times`);
+	const runs = w.jobs.listRuns(undefined, Number.MAX_SAFE_INTEGER).map((r) => r.runId);
+	assert.equal(new Set(runs).size, runs.length, "one record per run id");
+	const all = w.inbox.list();
+	const ids = all.map((f) => f.id);
+	assert.equal(new Set(ids).size, ids.length, "each finding once");
+	for (const f of all) {
+		const state = f.answer?.state;
+		if (state === undefined || state === "unreadable") continue;
+		const rows = answerRows(w).filter((r) => r.payload?.finding === f.id);
+		if (state === "pending" || state === "started") {
+			assert.equal(rows.length, 1, `an open answer of ${f.id} has its row`);
+			continue;
+		}
+		assert.equal(rows.length, 0, `no row beside the ${state} answer of ${f.id}`);
+		for (const what of ["outcome", "not-run"] as const) assert.equal(ids.filter((i) => i === besideId(f.id, what)).length, COMPANION[state] === what ? 1 : 0, `${state} has ${what} ${COMPANION[state] === what ? "once" : "never"}`);
+	}
+}
+
+const want = (writes: readonly ProtocolWrite[]): Logged[] => writes.map(({ write, lock }) => ({ write, lock }));
+
+/**
+ * The crash table of one transition. `setup` makes the stores as they are before it; `act` is the
+ * transition; its log must be `writes`. `after` is what the living process does next (it runs the
+ * answer it started). Then a stop after each prefix, a new process, its drains; `final` checks the
+ * state with `stop` the number of writes made before the stop (undefined: no stop).
+ */
+async function crashTable<T>(opts: { setup: () => Promise<World>; act: (w: World) => Promise<T>; writes: readonly ProtocolWrite[]; after?: (w: World, out: T) => Promise<void>; stopped?: (w: World, stop: number) => void; final: (w: World, stop: number | undefined) => void }): Promise<void> {
+	const writes = want(opts.writes);
+	const w = await opts.setup();
+	w.log = [];
+	const out = await opts.act(w);
+	assert.deepEqual(w.log, writes, "the writes and their locks are PROTOCOL's");
+	await opts.after?.(w, out);
+	await settle(w);
+	invariants(w);
+	opts.final(w, undefined);
+	for (let stop = 1; stop <= writes.length; stop++) {
+		const v = await opts.setup();
+		v.log = [];
+		v.stopAfter = stop;
+		await opts.act(v).catch((err: unknown) => {
+			if (!(err instanceof Crash)) throw err;
+		});
+		assert.ok(v.dead, `the process stopped after write ${stop}`);
+		assert.deepEqual(v.log, writes.slice(0, stop), `the first ${stop} writes`);
+		restart(v);
+		opts.stopped?.(v, stop);
+		await settle(v);
+		invariants(v);
+		opts.final(v, stop);
+	}
+}
+
+/** A yes to `finding`, made and queued before the transition under test. */
+async function yes(w: World, finding: Finding): Promise<void> {
+	const said = await w.answers.say(finding.id, "yes", PERSON);
+	assert.equal(said.said, "Y1");
+}
+
+/** A yes, met and started by the process, with no run behind it yet. */
+async function started(w: World, finding: Finding): Promise<AnswerStart> {
+	await yes(w, finding);
+	const met = await w.answers.meet(parseLane(LOOP)!, answerRowId(finding.id), w.proc, NOW);
+	assert.equal(met.met, "E4");
+	return (met as Extract<MeetOutcome, { met: "E4" }>).start;
+}
+
+const meetRow = (w: World, f: Finding, lane: LaneId = LOOP): Promise<MeetOutcome> => w.answers.meet(parseLane(lane)!, answerRowId(f.id), w.proc, NOW);
+
+/* ================================================================================================ */
+
+test("[Y1] a yes is pending with its row; a stop after each write ends done once", async () => {
+	let f!: Finding;
+	await crashTable({
+		setup: async () => {
+			const w = await world();
+			f = await ask(w, "loop");
+			return w;
+		},
+		act: (w) => w.answers.say(f.id, "yes", PERSON),
+		writes: PROTOCOL.Y1,
+		final: (w) => {
+			assert.equal(find(w, f.id)?.answer?.state, "done");
+			assert.equal(w.starts.get(f.id), 1);
+		},
+	});
+});
+
+test("[Y1] two yeses at once give one Y1; a finding with no lane gets one; the row carries the finding only", async () => {
+	const w = await world();
+	const f = await news(w, { lane: undefined });
+	const [a, b] = await Promise.all([w.answers.say(f.id, "yes", PERSON), w.answers.say(f.id, "yes", { by: "page", session: CONV })]);
+	assert.deepEqual([a.said, b.said].sort(), ["Y1", "nothing"]);
+	assert.equal(find(w, f.id)?.lane, LOOP);
+	const rows = w.requests.list(LOOP);
+	assert.equal(rows.length, 1);
+	assert.deepEqual(Object.keys(rows[0].payload ?? {}).sort(), ["cwd", "finding", "requested_by", "text"]);
+	assert.equal(rows[0].payload?.finding, f.id);
+});
+
+test("[Y2] a yes with no lane is not_run with its news, in one rewrite", async () => {
+	for (const lane of ["loop", "conversation"] as const) {
+		let f!: Finding;
+		await crashTable({
+			setup: async () => {
+				const w = await world();
+				f = await ask(w, lane);
+				if (lane === "loop") await w.jobs.remove(JOB);
+				else fs.rmSync(w.conversations.get(CONV)!);
+				return w;
+			},
+			act: (w) => w.answers.say(f.id, "yes", PERSON),
+			writes: PROTOCOL.Y2,
+			final: (w) => {
+				const a = find(w, f.id)?.answer;
+				assert.equal(a?.state, "not_run");
+				assert.equal(a?.state === "not_run" && a.why, lane === "loop" ? WHY.loopRemoved : WHY.conversationDeleted);
+				assert.ok(find(w, besideId(f.id, "not-run"))?.text.includes(COMMAND));
+				assert.equal(answerRows(w).length, 0);
+			},
+		});
+	}
+});
+
+test("[YC] a yes from the command line has no answer and no row; a forged row for it meets E1", async () => {
+	let f!: Finding;
+	await crashTable({
+		setup: async () => {
+			const w = await world();
+			f = await news(w);
+			return w;
+		},
+		act: (w) => w.answers.say(f.id, "yes", { by: "cli" }),
+		writes: PROTOCOL.YC,
+		final: (w) => {
+			const got = find(w, f.id)!;
+			assert.equal(got.status, "claimed");
+			assert.equal(got.answered_by, "cli");
+			assert.equal(got.answer, undefined);
+			assert.equal(answerRows(w).length, 0);
+		},
+	});
+	const w = await world();
+	f = await news(w);
+	await w.answers.say(f.id, "yes", { by: "cli" });
+	w.requests.appendIfAbsent(answerRow(find(w, f.id)!, LOOP, stamp(NOW), w.wrapped.self()));
+	assert.deepEqual(await meetRow(w, f), { met: "E1", exit: "stale" });
+	assert.equal(answerRows(w).length, 0);
+});
+
+test("[N1] a no to a conversation's question dismisses it and writes the no- row", async () => {
+	let f!: Finding;
+	await crashTable({
+		setup: async () => {
+			const w = await world();
+			f = await ask(w, "conversation");
+			return w;
+		},
+		act: (w) => w.answers.say(f.id, "no", PERSON, { reason: "not on main" }),
+		writes: PROTOCOL.N1,
+		final: (w, stop) => {
+			const got = find(w, f.id)!;
+			assert.equal(got.status, "dismissed");
+			assert.equal(got.dismiss_reason, "not on main");
+			assert.equal(got.answer, undefined);
+			// A stop between N1a and N1b leaves the conversation untold; the no holds on the finding.
+			assert.equal(w.requests.list(CONV).some((r) => r.id === noRowId(f.id)), stop !== 1);
+		},
+	});
+	const w = await world();
+	const loopAsk = await ask(w, "loop");
+	w.log = [];
+	const said = await w.answers.say(loopAsk.id, "no", PERSON);
+	assert.deepEqual(said.said === "N1" && said.told, false);
+	assert.deepEqual(w.log, want(PROTOCOL.N1.filter((p) => !("when" in p))), "a loop's question gets no no- row");
+});
+
+test("[clear] /inbox clear dismisses what is no question and leaves every question new: a clear is no 14-day no, and tells no conversation of one", async () => {
+	const w = await world();
+	const loopQuestion = await ask(w, "loop");
+	const conversationQuestion = await ask(w, "conversation");
+	const f = await news(w);
+	const dismissed = await w.answers.clear(undefined, PERSON);
+	assert.deepEqual(dismissed.map((d) => d.id), [f.id], "only the finding that is no question");
+	assert.deepEqual([find(w, loopQuestion.id)!.status, find(w, conversationQuestion.id)!.status, find(w, f.id)!.status], ["new", "new", "dismissed"]);
+	assert.deepEqual(w.requests.list(CONV), [], "no no- row: the conversation is told of no no");
+});
+
+test("[E1] a row that means nothing leaves, audit stale: each condition", async () => {
+	const forged = async (w: World, finding: Finding, over: Partial<Row> = {}, lane: LaneId = LOOP): Promise<Row> => {
+		const row = { ...answerRow(finding, lane, stamp(NOW), w.wrapped.self()), ...over } as Row;
+		if (row.run) {
+			fs.mkdirSync(path.dirname(w.requests.file(lane)), { recursive: true });
+			fs.appendFileSync(w.requests.file(lane), `${JSON.stringify(row)}\n`);
+		} else w.requests.appendIfAbsent(row as Parameters<RequestStore["appendIfAbsent"]>[0]);
+		return row;
+	};
+	const cases: Array<[string, (w: World) => Promise<{ row: Row; lane: LaneId }>]> = [
+		["missing", async (w) => ({ row: await forged(w, { ...(await news(w)), id: `inb-${"9".repeat(32)}` }), lane: LOOP })],
+		["not a real yes", async (w) => ({ row: await forged(w, await news(w)), lane: LOOP })],
+		[
+			"wrong id",
+			async (w) => {
+				const f = await news(w);
+				await yes(w, f);
+				return { row: await forged(w, f, { id: `ans-${"7".repeat(32)}` }), lane: LOOP };
+			},
+		],
+		[
+			"wrong lane",
+			async (w) => {
+				const f = await news(w);
+				await yes(w, f);
+				return { row: await forged(w, f, {}, CONV), lane: CONV };
+			},
+		],
+		[
+			"another project's check lane",
+			async (w) => {
+				const f = await news(w, { lane: CHECK, cwd: path.join(w.dir, "other"), job_id: undefined });
+				await w.answers.say(f.id, "yes", PERSON);
+				return { row: w.requests.list(CHECK)[0], lane: CHECK };
+			},
+		],
+		[
+			"unreadable answer",
+			async (w) => {
+				const f = await news(w);
+				await yes(w, f);
+				const text = fs.readFileSync(w.inbox.file, "utf8").replace('"state":"pending"', '"state":"later"');
+				fs.writeFileSync(w.inbox.file, text);
+				return { row: w.requests.list(LOOP)[0], lane: LOOP };
+			},
+		],
+		[
+			"a claim that is not the answer's",
+			async (w) => {
+				const f = await news(w);
+				await started(w, f);
+				w.requests.remove(LOOP, [answerRowId(f.id)]);
+				return { row: await forged(w, find(w, f.id)!, { run: { id: "run-forged", pid: 1000, started_at: stamp(NOW) } } as Partial<Row>), lane: LOOP };
+			},
+		],
+	];
+	for (const [name, make] of cases) {
+		const w = await world();
+		const { row, lane } = await make(w);
+		w.log = [];
+		const met = await w.answers.meet(parseLane(lane)!, row.id, w.proc, NOW);
+		assert.deepEqual(met, { met: "E1", exit: "stale" }, name);
+		assert.deepEqual(w.log, want(PROTOCOL.E1), name);
+		assert.ok(!w.requests.list(lane).some((r) => r.id === row.id), `${name}: the row left`);
+		assert.equal(audits(w).at(-1)?.state, "stale", name);
+	}
+	let f!: Finding;
+	await crashTable({
+		setup: async () => {
+			const w = await world();
+			f = await news(w);
+			await forged(w, f);
+			return w;
+		},
+		act: (w) => meetRow(w, f),
+		writes: PROTOCOL.E1,
+		final: (w) => {
+			assert.equal(answerRows(w).length, 0);
+			assert.equal(find(w, f.id)?.status, "new");
+		},
+	});
+});
+
+test("[E2] a queued yes of a removed loop is not_run with its news; the row put back by H1 meets E2", async () => {
+	let f!: Finding;
+	const setup = async (): Promise<World> => {
+		const w = await world();
+		f = await ask(w, "loop");
+		await yes(w, f);
+		await w.jobs.remove(JOB);
+		return w;
+	};
+	const final = (w: World): void => {
+		const a = find(w, f.id)?.answer;
+		assert.equal(a?.state === "not_run" && a.why, WHY.loopRemoved);
+		assert.equal(w.starts.size, 0);
+	};
+	await crashTable({ setup, act: (w) => meetRow(w, f), writes: PROTOCOL.E2, final });
+	const w = await setup();
+	fs.rmSync(path.join(w.dir, "requests"), { recursive: true, force: true });
+	assert.deepEqual(await w.answers.repair(() => true, NOW), [answerRowId(f.id)]);
+	assert.deepEqual(await meetRow(w, f), { met: "E2", exit: "job-removed" });
+	final(w);
+	assert.equal(audits(w).at(-1)?.state, "job-removed");
+});
+
+test("[E3] a question whose blocked call is not proved is refused: one case per check, nothing runs", async () => {
+	const checks = ["file-gone", "outside", "no-call", "another-tool", "another-input", "no-error-result"] as const;
+	for (const check of checks) {
+		let f!: Finding;
+		await crashTable({
+			setup: async () => {
+				const w = await world();
+				f = await ask(w, "loop", check === "outside" ? { outside: true } : check === "file-gone" ? {} : { spoil: check });
+				if (check === "file-gone") fs.rmSync(f.transcript!);
+				await yes(w, f);
+				return w;
+			},
+			act: (w) => meetRow(w, f),
+			writes: PROTOCOL.E3,
+			final: (w) => {
+				const a = find(w, f.id)?.answer;
+				assert.equal(a?.state, "not_run", check);
+				assert.equal(w.starts.size, 0, check);
+				assert.equal(w.jobs.listRuns().length, 0, check);
+			},
+		});
+	}
+});
+
+test("[E4] the claim, then started; the living process runs it once; a stop after the claim retries, after started it ends unfinished", async () => {
+	let f!: Finding;
+	await crashTable({
+		setup: async () => {
+			const w = await world();
+			f = await ask(w, "loop");
+			await yes(w, f);
+			return w;
+		},
+		act: (w) => meetRow(w, f),
+		writes: PROTOCOL.E4,
+		after: async (w, met) => {
+			assert.equal(met.met, "E4");
+			const start = (met as Extract<MeetOutcome, { met: "E4" }>).start;
+			assert.equal(start.grant?.call.tool_call_id, CALL.tool_call_id);
+			assert.deepEqual(start.resume, { file: f.transcript!, sessionId: SID });
+			assert.equal(start.jobId, JOB);
+			assert.equal(start.finding.answer?.state, "started");
+			assert.deepEqual(await meetRow(w, f), { met: "W1" }, "a second meet starts nothing");
+			await run(w, start);
+		},
+		final: (w, stop) => {
+			const a = find(w, f.id)?.answer;
+			if (stop === 2) {
+				// The yes is spent at E4b: the process that died ran nothing, and the transcript proves it.
+				assert.equal(a?.state, "unfinished");
+				assert.equal(a?.state === "unfinished" && a.ending, "The command was not run.");
+				assert.equal(w.starts.size, 0);
+			} else {
+				assert.equal(a?.state, "done");
+				assert.equal(w.starts.get(f.id), 1);
+			}
+		},
+	});
+});
+
+test("[E4] a yes to a loop that is off waits, and goes on once the loop is enabled; a held transcript holds E4", async () => {
+	const w = await world();
+	const f = await ask(w, "loop");
+	await w.jobs.disable(JOB, { code: "person", why: "disabled by a person", at: stamp(NOW) });
+	await yes(w, f);
+	w.log = [];
+	assert.deepEqual(await meetRow(w, f), { met: "hold", why: "its job is disabled" });
+	await settle(w);
+	assert.equal(find(w, f.id)?.answer?.state, "pending");
+	assert.equal(w.requests.list(LOOP)[0].waiting, "its job is disabled");
+	assert.ok(!w.log.some((l) => l.write === "row.run" || l.write === "finding"), "E4 does not happen");
+	await w.jobs.enable(JOB);
+	await settle(w);
+	assert.equal(find(w, f.id)?.answer?.state, "done");
+	assert.equal(w.starts.get(f.id), 1);
+
+	const v = await world();
+	const g = await ask(v, "loop");
+	await yes(v, g);
+	v.block = "another pi holds the transcript";
+	assert.deepEqual(await meetRow(v, g), { met: "hold", why: "another pi holds the transcript" });
+	assert.equal(find(v, g.id)?.answer?.state, "pending");
+});
+
+test("[W1] a live claim beside pending, started or a final answer writes nothing", async () => {
+	// pending: another live process claimed it and has not written started yet.
+	const w = await world();
+	const f = await news(w);
+	await yes(w, f);
+	w.alive.add(4242);
+	w.requests.claim(LOOP, answerRowId(f.id), { id: "run-x", pid: 4242, started_at: stamp(NOW) } as Listed);
+	w.log = [];
+	assert.deepEqual(await meetRow(w, f), { met: "W1" });
+	assert.deepEqual(w.log, want(PROTOCOL.W1));
+
+	// started: this process runs it.
+	const v = await world();
+	const g = await news(v);
+	await started(v, g);
+	v.log = [];
+	assert.deepEqual(await meetRow(v, g), { met: "W1" });
+	assert.deepEqual(v.log, []);
+
+	// final: the run closed C1 to C3 and has not removed its row yet.
+	const u = await world();
+	const h = await news(u);
+	const start = await started(u, h);
+	u.log = [];
+	u.stopAfter = 3;
+	await run(u, start).catch((err: unknown) => {
+		if (!(err instanceof Crash)) throw err;
+	});
+	u.dead = false;
+	u.stopAfter = Infinity;
+	u.proc.runs.add(start.row.run.id);
+	assert.equal(find(u, h.id)?.answer?.state, "done");
+	u.log = [];
+	assert.deepEqual(await meetRow(u, h), { met: "W1" });
+	assert.deepEqual(u.log, []);
+});
+
+test("[F1] a dead claim beside pending is cleared with one attempt; a throw at E4b in a living process counts F1; the third ends not_run", async () => {
+	let f!: Finding;
+	const claimedThenStopped = async (): Promise<World> => {
+		const w = await world();
+		f = await ask(w, "loop");
+		await yes(w, f);
+		w.stopAfter = w.log.length + 1;
+		await meetRow(w, f).catch((err: unknown) => {
+			if (!(err instanceof Crash)) throw err;
+		});
+		restart(w);
+		return w;
+	};
+	await crashTable({
+		setup: claimedThenStopped,
+		act: (w) => meetRow(w, f),
+		writes: PROTOCOL.F1,
+		after: async (_w, met) => assert.deepEqual(met, { met: "F1", attempts: 1 }),
+		final: (w) => {
+			assert.equal(find(w, f.id)?.answer?.state, "done");
+			assert.equal(w.starts.get(f.id), 1);
+		},
+	});
+
+	// E4b throws in a living process: the run leaves the list, the claim stays, the next meet counts F1.
+	const w = await world();
+	const g = await ask(w, "loop");
+	await yes(w, g);
+	w.failNext = "finding";
+	await assert.rejects(meetRow(w, g), /the finding write failed/);
+	assert.equal(w.proc.runs.size, 0);
+	assert.ok(w.requests.list(LOOP)[0].run, "the claim stays on the row");
+	assert.deepEqual(await meetRow(w, g), { met: "F1", attempts: 1 });
+	assert.equal(w.requests.list(LOOP)[0].attempts, 1);
+	assert.equal(w.requests.list(LOOP)[0].run, undefined);
+
+	// Three stops between E4a and E4b: the third F1 is F1-dead.
+	const deadTable = async (): Promise<World> => {
+		const v = await claimedThenStopped();
+		for (let i = 1; i < 3; i++) {
+			assert.deepEqual(await meetRow(v, f), { met: "F1", attempts: i });
+			v.stopAfter = v.log.length + 1;
+			// The tick after F1's backoff claims the row again, and the process stops again.
+			const until = Date.parse(v.requests.list(LOOP)[0].not_before!);
+			await v.answers.meet(parseLane(LOOP)!, answerRowId(f.id), v.proc, until).catch((err: unknown) => {
+				if (!(err instanceof Crash)) throw err;
+			});
+			restart(v);
+		}
+		return v;
+	};
+	await crashTable({
+		setup: deadTable,
+		act: (v) => meetRow(v, f),
+		writes: PROTOCOL["F1-dead"],
+		final: (v) => {
+			const a = find(v, f.id)?.answer;
+			assert.equal(a?.state === "not_run" && a.why, WHY.notStarted);
+			assert.equal(v.runEnds.length, 0, "no run_end: no run_start was emitted");
+			assert.equal(v.starts.size, 0);
+		},
+	});
+});
+
+/** A started answer whose process stopped after E4b: the row has a dead claim. */
+async function startedThenStopped(make: (w: World) => Promise<Finding>): Promise<{ w: World; f: Finding }> {
+	const w = await world();
+	const f = await make(w);
+	await yes(w, f);
+	w.stopAfter = w.log.length + 2;
+	await meetRow(w, f).catch((err: unknown) => {
+		if (!(err instanceof Crash)) throw err;
+	});
+	restart(w);
+	return { w, f };
+}
+
+test("[F2] a dead claim beside started closes C1 to C4 with an interrupted record", async () => {
+	let f!: Finding;
+	await crashTable({
+		setup: async () => {
+			const s = await startedThenStopped((w) => ask(w, "loop"));
+			f = s.f;
+			return s.w;
+		},
+		act: (w) => meetRow(w, f),
+		writes: PROTOCOL.F2,
+		after: async (_w, met) => assert.deepEqual(met, { met: "F2", state: "unfinished" }),
+		final: (w) => {
+			const a = find(w, f.id)?.answer;
+			assert.equal(a?.state, "unfinished");
+			assert.equal(a?.state === "unfinished" && a.why, WHY.died);
+			const records = w.jobs.listRuns(undefined, Number.MAX_SAFE_INTEGER);
+			assert.equal(records.length, 1);
+			assert.equal(records[0].interrupted, true);
+			assert.equal((records[0] as RunRecord).cause, "answer");
+			assert.ok(w.runEnds.length >= 1, "run_end at least once; it can repeat after a stop");
+		},
+	});
+});
+
+test("[F3] a dead claim beside a final answer: run_end only for an answer with a claim, then the row leaves", async () => {
+	// done: the run closed C1 to C3 and its process stopped before C4.
+	let f!: Finding;
+	await crashTable({
+		setup: async () => {
+			const w = await world();
+			f = await ask(w, "loop");
+			const start = await started(w, f);
+			w.stopAfter = w.log.length + 3;
+			await run(w, start).catch((err: unknown) => {
+				if (!(err instanceof Crash)) throw err;
+			});
+			restart(w);
+			w.runEnds = [];
+			return w;
+		},
+		act: (w) => meetRow(w, f),
+		writes: PROTOCOL.F3,
+		after: async (_w, met) => assert.deepEqual(met, { met: "F3", state: "done" }),
+		final: (w) => {
+			assert.equal(find(w, f.id)?.answer?.state, "done");
+			assert.ok(w.runEnds.every((r) => r.runId.startsWith("run-1000-")), "run_end with the record of the run");
+		},
+	});
+
+	// not_run by F1-dead, whose process stopped before the row left: no claim on the answer, no run_end.
+	const w = await world();
+	const g = await news(w);
+	await yes(w, g);
+	// Each claim after the first is made by the tick after F1's backoff.
+	let t = NOW;
+	const meetAt = (): Promise<MeetOutcome> => w.answers.meet(parseLane(LOOP)!, answerRowId(g.id), w.proc, t);
+	for (let i = 0; i < 3; i++) {
+		w.stopAfter = w.log.length + 1;
+		await meetAt().catch((err: unknown) => {
+			if (!(err instanceof Crash)) throw err;
+		});
+		restart(w);
+		if (i < 2) {
+			await meetAt();
+			t = Date.parse(w.requests.list(LOOP)[0].not_before!);
+		}
+	}
+	w.stopAfter = w.log.length + 1;
+	await meetAt().catch((err: unknown) => {
+		if (!(err instanceof Crash)) throw err;
+	});
+	restart(w);
+	assert.equal(find(w, g.id)?.answer?.state, "not_run");
+	w.log = [];
+	assert.deepEqual(await meetRow(w, g), { met: "F3", state: "not_run" });
+	assert.deepEqual(w.log, want(PROTOCOL.F3.filter((p) => !("when" in p))));
+	assert.equal(w.runEnds.length, 0);
+});
+
+/** The closing table, C1 to C4, from the living process that ran the answer. */
+async function closingTable(check: (w: World, f: Finding, stop: number | undefined) => void, how: Parameters<typeof run>[2] = {}): Promise<void> {
+	let f!: Finding;
+	let start!: AnswerStart;
+	await crashTable({
+		setup: async () => {
+			const w = await world();
+			f = await ask(w, "loop");
+			start = await started(w, f);
+			return w;
+		},
+		act: (w) => run(w, start, how),
+		writes: PROTOCOL.C,
+		final: (w, stop) => check(w, f, stop),
+	});
+}
+
+test("[C1] one record per run id, with cause, resumed and grant_used", async () => {
+	await closingTable((w, f) => {
+		const records = w.jobs.listRuns(undefined, Number.MAX_SAFE_INTEGER) as RunRecord[];
+		assert.equal(records.length, 1);
+		assert.equal(records[0].cause, "answer");
+		assert.equal(records[0].resumed, f.transcript!);
+		assert.equal(records[0].grant_used, true);
+		assert.equal(records[0].ok, true, "the record the run wrote is the one a later F2 reads");
+		assert.equal(find(w, f.id)?.answer?.state, "done");
+	});
+});
+
+test("[C2] run_end comes before C3 and C4, again after a stop, from the record after a restart", async () => {
+	await closingTable((w, _f, stop) => {
+		assert.ok(w.runEnds.length >= 1);
+		assert.ok(w.runEnds.every((r) => r.ok && r.cause === "answer"), "made from the record the run wrote");
+		if (stop === 1) assert.equal(w.runEnds.length, 1, "a stop after C1: the next process sends it once");
+		if (stop === 2 || stop === 3) assert.equal(w.runEnds.length, 2, "a stop after C2 or C3: it repeats once");
+	});
+});
+
+test("[C3] done needs grant_used; an unused grant is unfinished with the ending the transcript proves; a final state is not written again", async () => {
+	await closingTable((w, f) => {
+		const a = find(w, f.id)?.answer;
+		assert.equal(a?.state, "unfinished");
+		assert.equal(a?.state === "unfinished" && a.why, WHY.unused);
+		assert.equal(a?.state === "unfinished" && a.ending, "The command was not run.");
+		assert.ok(find(w, besideId(f.id, "outcome"))?.text.endsWith("The command was not run."));
+	}, { grantUsed: false });
+
+	// The transcript holds the prompt: the command may have run.
+	const w = await world();
+	const f = await ask(w, "loop");
+	const start = await started(w, f);
+	fs.appendFileSync(f.transcript!, `${JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: `[Trigger ${start.row.id}] run it` }] } })}\n`);
+	await run(w, start, { ok: false });
+	const a = find(w, f.id)?.answer;
+	assert.equal(a?.state === "unfinished" && a.ending, "The command may or may not have run.");
+
+	// A second closing writes no finding.
+	w.log = [];
+	const again = await w.answers.close(start.row, NOW);
+	assert.equal(again.state, "unfinished");
+	assert.ok(!w.log.some((l) => l.write === "finding"));
+});
+
+test("[C4] the row leaves last", async () => {
+	await closingTable((w, f, stop) => {
+		assert.equal(answerRows(w).length, 0);
+		assert.equal(find(w, f.id)?.answer?.state, "done");
+		if (stop === undefined) assert.equal(audits(w).length, 0, "a closing writes no audit line");
+	});
+});
+
+test("[V1] a cancel reopens the finding in one rewrite, under its own id; refused when started or final", async () => {
+	const w = await world();
+	const f = await ask(w, "loop");
+	await yes(w, f);
+	w.log = [];
+	const out = await w.answers.cancel(answerRowId(f.id));
+	assert.ok("cancelled" in out && !("again" in out));
+	assert.equal(w.log.filter((l) => l.write === "finding").length, 1, "one rewrite");
+	const open = find(w, f.id)!;
+	assert.deepEqual([open.status, open.answer, open.answered_by, open.claimed_by, open.ask?.id, open.lane], ["new", undefined, undefined, undefined, f.ask!.id, LOOP]);
+	assert.equal(w.inbox.list().length, 1, "nothing is filed beside it");
+
+	const v = await world();
+	const g = await news(v);
+	const start = await started(v, g);
+	assert.deepEqual(await v.answers.cancel(g.id), { refusal: { refused: "state", state: "started" } });
+	await run(v, start);
+	assert.deepEqual(await v.answers.cancel(g.id), { refusal: { refused: "state", state: "done" } });
+});
+
+test("[V2] a cancel and E4 at once: one wins", async () => {
+	for (let i = 0; i < 4; i++) {
+		const w = await world();
+		const g = await news(w);
+		await yes(w, g);
+		const [cancel, met] = await Promise.all([w.answers.cancel(g.id), meetRow(w, g)]);
+		if (met.met === "E4") {
+			assert.ok("refusal" in cancel, "E4 first: the cancel is refused");
+			await run(w, met.start);
+			assert.equal(find(w, g.id)?.answer?.state, "done");
+		} else {
+			assert.ok("cancelled" in cancel, "the cancel first: E4 does not happen");
+			await settle(w);
+			assert.equal(find(w, g.id)?.status, "new");
+			assert.equal(w.starts.size, 0);
+		}
+		invariants(w);
+	}
+});
+
+test("[V1] [V2] a cancel reopens its finding; a stop after each write leaves no open finding beside a row, and no cancel without a way to answer again", async () => {
+	let f!: Finding;
+	await crashTable({
+		setup: async () => {
+			const w = await world();
+			f = await ask(w, "loop");
+			await yes(w, f);
+			// Two starts that did not get to E4b: the row keeps a dead claim and two attempts.
+			w.requests.claim(LOOP, answerRowId(f.id), { id: "run-dead", pid: 999_999, started_at: stamp(NOW) } as Listed);
+			w.requests.update(LOOP, answerRowId(f.id), { attempts: 2 });
+			return w;
+		},
+		act: (w) => w.answers.cancel(f.id),
+		writes: PROTOCOL.V,
+		stopped: (w, stop) => {
+			const now = find(w, f.id)!;
+			if (now.status === "new") assert.equal(answerRows(w).length, 0, `stop ${stop}: a finding open again has no row of the answer it had`);
+			else assert.equal(now.answer?.state, "pending", `stop ${stop}: or the cancel did not happen, and the yes still waits`);
+		},
+		final: (w, stop) => {
+			const now = find(w, f.id)!;
+			assert.equal(w.inbox.list().length, 1, "one finding, and no successor");
+			if (now.status === "new") {
+				assert.deepEqual([now.answer, now.answered_by, now.claimed_by], [undefined, undefined, undefined], "nothing of the yes is left on it");
+				assert.equal(w.starts.size, 0);
+				assert.ok(!("refused" in answerStep("Y1", now, { to: "pending", by: "page", claimed_by: CONV, lane: LOOP }, { at: stamp(NOW), lane: LOOP })), "a person can say yes to it again");
+				return;
+			}
+			assert.ok(stop !== undefined, "a cancel that was not stopped reopens the finding");
+			assert.equal(now.answer?.state, "done", "a cancel the stop cut short leaves the yes, which runs");
+			assert.equal(w.starts.get(f.id), 1);
+		},
+	});
+});
+
+test("[V1] [Y1] a yes, a cancel, then a second yes on the same finding: one finding throughout, and the second answer runs once on its own row", async () => {
+	const w = await world();
+	const f = await ask(w, "loop");
+	const other = "01a1dce4-8ad1-77c0-89b0-475ccfeaf999";
+	assert.equal((await w.answers.say(f.id, "yes", { by: "page", session: other })).said, "Y1");
+	assert.ok("cancelled" in (await w.answers.cancel(f.id)));
+	assert.equal(w.inbox.list().length, 1, "no successor");
+	const open = find(w, f.id)!;
+	assert.deepEqual([open.status, open.answer, open.answered_by, open.claimed_by], ["new", undefined, undefined, undefined]);
+	assert.equal(answerRows(w).length, 0);
+	// The first yes's row, appended late: its Y1b came after the cancel.
+	w.requests.appendIfAbsent(answerRow({ ...open, status: "claimed", answered_by: "page", claimed_by: other }, LOOP, stamp(NOW), w.wrapped.self()));
+	assert.equal((await w.answers.say(f.id, "yes", PERSON)).said, "Y1");
+	assert.deepEqual(await meetRow(w, f), { met: "E1", exit: "stale" }, "the first yes's row is not the second's");
+	assert.deepEqual(await w.answers.repair(() => true, NOW), [answerRowId(f.id)]);
+	const met = await meetRow(w, f);
+	assert.equal(met.met, "E4");
+	const start = (met as Extract<MeetOutcome, { met: "E4" }>).start;
+	assert.deepEqual([start.row.attempts, start.row.payload?.requested_by], [0, CONV], "the second answer's row names the second sayer");
+	await run(w, start);
+	await settle(w);
+	assert.equal(find(w, f.id)?.answer?.state, "done");
+	assert.equal(w.starts.get(f.id), 1);
+	assert.equal(w.inbox.list().length, 1, "one finding throughout, and no news");
+	assert.deepEqual(w.jobs.listRuns(undefined, Number.MAX_SAFE_INTEGER).map((r) => r.row), [answerRowId(f.id)], "one record");
+	assert.deepEqual(audits(w).map((a) => a.state), ["cancelled", "stale"]);
+	invariants(w);
+});
+
+test("[H1] a lost row comes back for pending and started, also after the job is removed; nothing is read when nothing is open", async () => {
+	let f!: Finding;
+	await crashTable({
+		setup: async () => {
+			const w = await world();
+			f = await ask(w, "loop");
+			await yes(w, f);
+			fs.rmSync(path.join(w.dir, "requests"), { recursive: true, force: true });
+			return w;
+		},
+		act: (w) => w.answers.repair(() => true, NOW),
+		writes: PROTOCOL.H1,
+		final: (w) => assert.equal(find(w, f.id)?.answer?.state, "done"),
+	});
+
+	// started: the row comes back with the claim its finding records, and F2 closes it.
+	const { w, f: g } = await startedThenStopped((x) => ask(x, "loop"));
+	fs.rmSync(path.join(w.dir, "requests"), { recursive: true, force: true });
+	const claim = find(w, g.id)?.answer;
+	assert.deepEqual(await w.answers.repair(() => true, NOW), [answerRowId(g.id)]);
+	assert.deepEqual(w.requests.list(LOOP)[0].run, claim?.state === "started" ? claim.run : undefined);
+	await settle(w);
+	assert.equal(find(w, g.id)?.answer?.state, "unfinished");
+	invariants(w);
+
+	// A process that does not execute the lane appends nothing.
+	const u = await world();
+	const h = await news(u);
+	await yes(u, h);
+	u.requests.remove(LOOP, [answerRowId(h.id)]);
+	assert.deepEqual(await u.answers.repair((lane) => lane.kind !== "loop", NOW), []);
+
+	// Nothing open, the inbox unchanged: the second tick reads nothing.
+	const q = await world();
+	await news(q);
+	await q.answers.repair(() => true, NOW);
+	const before = q.sections;
+	assert.deepEqual(await q.answers.repair(() => true, NOW), []);
+	assert.equal(q.sections, before, "no section when nothing is open and the file did not move");
+});
+
+test("[deleted-conversation] a queued yes in a conversation that was deleted is not_run with its news", async () => {
+	let f!: Finding;
+	await crashTable({
+		setup: async () => {
+			const w = await world();
+			f = await ask(w, "conversation");
+			await yes(w, f);
+			fs.rmSync(w.conversations.get(CONV)!);
+			return w;
+		},
+		act: (w) => meetRow(w, f, CONV),
+		writes: PROTOCOL.GONE,
+		final: (w) => {
+			const a = find(w, f.id)?.answer;
+			assert.equal(a?.state === "not_run" && a.why, WHY.conversationDeleted);
+			assert.equal(w.requests.list(CONV).length, 0);
+		},
+	});
+});
+
+test("[deleted-conversation-blocked-lane] the deleted conversation applies in a blocked lane", async () => {
+	const w = await world();
+	const f = await ask(w, "conversation");
+	await yes(w, f);
+	fs.rmSync(w.conversations.get(CONV)!);
+	w.block = "a window holds the conversation";
+	w.log = [];
+	assert.deepEqual(await meetRow(w, f, CONV), { met: "GONE", exit: "stale" });
+	assert.deepEqual(w.log, want(PROTOCOL.GONE));
+	assert.equal(find(w, f.id)?.answer?.state, "not_run");
+});
+
+test("[removed-job] one write; the queued answer meets E2; the running one in the loop's lane is stopped and closes unfinished", async () => {
+	let queued!: Finding;
+	let running!: Finding;
+	let start!: AnswerStart;
+	await crashTable({
+		setup: async () => {
+			const w = await world();
+			running = await news(w, { text: "The release notes are stale" });
+			start = await started(w, running);
+			queued = await ask(w, "loop");
+			await yes(w, queued);
+			return w;
+		},
+		act: async (w) => {
+			await w.jobs.remove(JOB);
+			durable(w, "jobs", "jobs", () => undefined, () => true);
+		},
+		writes: PROTOCOL["removed-job"],
+		// The living process stops the run of the removed loop (the rider of M5a.7), which closes it.
+		after: (w) => run(w, start, { aborted: true }),
+		final: (w) => {
+			const q = find(w, queued.id)?.answer;
+			assert.equal(q?.state === "not_run" && q.why, WHY.loopRemoved);
+			assert.equal(find(w, running.id)?.answer?.state, "unfinished");
+			assert.equal(w.starts.has(queued.id), false);
+		},
+	});
+});
+
+/** Rewrites the line of finding `id` in `inbox.jsonl` by hand, as a person or another writer can. */
+function handEdit(w: World, id: string, edit: (line: Record<string, unknown>) => void): void {
+	const lines = fs.readFileSync(w.inbox.file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+	for (const line of lines) if (line.id === id) edit(line);
+	fs.writeFileSync(w.inbox.file, `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
+}
+
+test("[lane-transcript] a question whose session is only a FIFO, a symlink, a directory or a file with another header in the lane's directory, or a path a hand-edited finding names, is refused by E3: nothing is resumed and nothing blocks", { timeout: 30_000 }, async () => {
+	const cases = ["symlink", "fifo", "directory", "another-header", "named-fifo"] as const;
+	for (const kind of cases) {
+		const w = await world();
+		// The proving transcript is outside the lane's directory: only the entry below could lead to it.
+		const f = await ask(w, "loop", { outside: true });
+		const lane = w.jobs.sessionDirFor(JOB);
+		const entry = path.join(lane, `${SID}.jsonl`);
+		if (kind === "symlink") fs.symlinkSync(f.transcript!, entry);
+		if (kind === "fifo" || kind === "named-fifo") execFileSync("mkfifo", [entry]);
+		if (kind === "directory") fs.mkdirSync(entry);
+		if (kind === "another-header") writeTranscript(entry, CALL, undefined, "0199ffff-0000-7000-8000-0000000000f1");
+		// A finding written by hand: an older version's question that names the FIFO as its session file.
+		if (kind === "named-fifo") handEdit(w, f.id, (line) => {
+			const ask = line.ask as Record<string, unknown>;
+			delete ask.session_id;
+			ask.session_file = entry;
+			line.transcript = entry;
+		});
+		await yes(w, f);
+		assert.deepEqual(await meetRow(w, f), { met: "E3", exit: "refused" }, kind);
+		const a = find(w, f.id)?.answer;
+		assert.equal(a?.state, "not_run", kind);
+		assert.equal(a?.state === "not_run" && a.why, kind === "named-fifo" ? "the blocked call is not in the run's transcript" : "the run that asked is gone", kind);
+		assert.deepEqual([w.starts.size, w.jobs.listRuns().length], [0, 0], `${kind}: nothing runs`);
+	}
+});
+
+test("[lane-transcript] two transcripts in the lane's directory whose headers name the question's session: no transcript, and the answer is refused", async () => {
+	const w = await world();
+	const f = await ask(w, "loop");
+	writeTranscript(path.join(w.jobs.sessionDirFor(JOB), `copy_${SID}.jsonl`), CALL);
+	await yes(w, f);
+	assert.deepEqual(await meetRow(w, f), { met: "E3", exit: "refused" });
+	assert.equal(find(w, f.id)?.answer?.state, "not_run");
+	assert.equal(w.starts.size, 0);
+});
+
+test("[lane-transcript] a yes to a run's finding resumes the transcript its transcript_id names in the lane's directory, and never a path the finding names", { timeout: 30_000 }, async () => {
+	const w = await world();
+	const lane = w.jobs.sessionDirFor(JOB);
+	const own = path.join(lane, "run_0199eeee-0000-7000-8000-0000000000e1.jsonl");
+	writeTranscript(own, CALL, undefined, "0199eeee-0000-7000-8000-0000000000e1");
+	const g = await news(w, { transcript: "/hand/edited.jsonl", transcript_id: "0199eeee-0000-7000-8000-0000000000e1" });
+	assert.deepEqual((await started(w, g)).resume, { file: own, sessionId: "0199eeee-0000-7000-8000-0000000000e1" }, "the lane's file whose header names the id");
+
+	const v = await world();
+	const fifo = path.join(v.jobs.sessionDirFor(JOB), "fifo.jsonl");
+	execFileSync("mkfifo", [fifo]);
+	const elsewhere = path.join(v.dir, "elsewhere", "conv.jsonl");
+	writeTranscript(elsewhere, CALL, undefined, CONV);
+	fs.symlinkSync(elsewhere, path.join(v.jobs.sessionDirFor(JOB), `link_${CONV}.jsonl`));
+	const named = await news(v, { transcript: fifo });
+	const linked = await news(v, { text: "another", transcript: elsewhere, transcript_id: CONV });
+	assert.equal((await started(v, named)).resume, undefined, "a path with no id: a new session, and the FIFO is never opened");
+	assert.equal((await started(v, linked)).resume, undefined, "an id only a symlink in the lane's directory leads to: a new session");
+});
+
+test("[own-transcript] a yes to a conversation's finding resumes that conversation's own file, never another conversation's in the same directory that its transcript_id names", async () => {
+	const OTHER = "0199bbbb-0000-7000-8000-0000000000b2";
+	const w = await world();
+	const own = path.join(w.dir, "conversations", `${CONV}.jsonl`);
+	const other = path.join(w.dir, "conversations", `${OTHER}.jsonl`);
+	writeTranscript(own, CALL, undefined, CONV);
+	writeTranscript(other, CALL, undefined, OTHER);
+	w.conversations.set(CONV, own);
+	const elsewhere = await news(w, { lane: CONV, job_id: undefined, transcript_id: OTHER });
+	const inHere = await news(w, { lane: CONV, job_id: undefined, text: "another", transcript_id: CONV });
+	await yes(w, elsewhere);
+	await yes(w, inHere);
+	const startOf = async (f: Finding): Promise<AnswerStart> => {
+		const met = await meetRow(w, f, CONV);
+		assert.equal(met.met, "E4");
+		return (met as Extract<MeetOutcome, { met: "E4" }>).start;
+	};
+	assert.equal((await startOf(elsewhere)).resume, undefined, "another conversation's id resumes nothing");
+	assert.deepEqual((await startOf(inHere)).resume, { file: own, sessionId: CONV }, "the conversation's own id resumes its own file");
+	// The lease names the other conversation's file: a finding that names that conversation still resumes nothing in this lane.
+	w.conversations.set(CONV, other);
+	const named = await news(w, { lane: CONV, job_id: undefined, text: "a third", transcript_id: OTHER });
+	await yes(w, named);
+	assert.equal((await startOf(named)).resume, undefined, "only the lane's own session id is looked for");
+});
+
+test("[own-transcript-name] a conversation whose file has a name of its own (`pi --session ./notes.jsonl`) is resumed by its lease's file and its header: a question in it is proved, and a finding of it resumes it", async () => {
+	const w = await world();
+	const file = path.join(w.dir, "work", "notes.jsonl");
+	writeTranscript(file, CALL, undefined, CONV);
+	w.conversations.set(CONV, file);
+	const origin = { source: CONV, run_id: "r0", cwd: w.cwd, who: "the conversation" };
+	const { id, entry } = questionFinding(CALL, { lane: CONV, sessionId: CONV, sessionFile: file, cap: resolveCap({ cwd: w.cwd }, 900_000) }, origin, stamp(NOW));
+	const question = await w.inbox.fileOnce(entry, id);
+	const finding = await news(w, { lane: CONV, job_id: undefined, transcript_id: CONV });
+	await yes(w, question);
+	await yes(w, finding);
+	for (const f of [question, finding]) {
+		const met = await meetRow(w, f, CONV);
+		assert.equal(met.met, "E4", f.id);
+		assert.deepEqual((met as Extract<MeetOutcome, { met: "E4" }>).start.resume, { file, sessionId: CONV }, f.id);
+	}
+});
+
+test("[copied-ask] a copy of a question under another id is E1: a yes to it starts nothing, and the question's own finding still runs once", async () => {
+	const w = await world();
+	const f = await ask(w, "loop");
+	const { id: _id, created_at: _at, status: _status, ...copy } = f;
+	const forged = await w.inbox.append({ ...copy, text: f.text });
+	assert.notEqual(forged.id, f.id);
+	assert.equal(forged.ask?.id, f.ask!.id, "the same ask");
+	await yes(w, forged);
+	assert.deepEqual(await meetRow(w, forged), { met: "E1", exit: "stale" });
+	assert.equal(w.starts.size, 0, "the copy starts nothing");
+	await yes(w, f);
+	await settle(w);
+	assert.equal(w.starts.get(f.id), 1, "the question's own finding runs once");
+	assert.equal(find(w, f.id)?.answer?.state, "done");
+});

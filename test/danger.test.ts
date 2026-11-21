@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dangerousCommandReason } from "../src/danger.ts";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { dangerousCommandReason, pathToolReason } from "../src/danger.ts";
+import { openFileDir } from "../src/open-file.ts";
+import { tmp } from "./tmp.ts";
 
 const HOME = "/home/u";
 
@@ -429,4 +434,289 @@ test("the pi-loops refusal is linear: 200 KB of open parentheses, quotes, commen
 		const ms = (used.user + used.system) / 1000;
 		assert.ok(ms < 500, `${JSON.stringify(unit)} × ${command.length / unit.length}: ${ms.toFixed(0)} ms`);
 	}
+});
+
+const OWN = "reads or writes pi-loops' own files";
+const ANSWERS = "answers for a person";
+
+/** A loops directory under a temporary home, and a symlink to it beside it. */
+function loopsWorld() {
+	const home = tmp("pi-loops-danger-");
+	const loops = path.join(home, "loops");
+	fs.mkdirSync(path.join(loops, "requests"), { recursive: true });
+	const link = path.join(home, "link");
+	fs.symlinkSync(loops, link);
+	return { home, loops, link };
+}
+
+test("[M5a.8d] a command that names the loops directory reads or writes pi-loops' own files: any spelling, a read too", () => {
+	const { home, loops, link } = loopsWorld();
+	const refused = [
+		"echo '{}' >> ~/.pi/agent/loops/inbox.jsonl",
+		"echo x >> $HOME/.pi/agent/loops/inbox.jsonl",
+		'echo x >> "${HOME}"/.pi/agent/loops/jobs.json',
+		`echo x >> ${home}/.pi/agent/loops/clock.json`,
+		"cat $PI_LOOPS_DIR/inbox.jsonl",
+		'cat "${PI_LOOPS_DIR}/inbox.jsonl"',
+		`cp x ${loops}/requests/@cron-a.jsonl`,
+		`cp x '${loops}/requests/@cron-a.jsonl'`,
+		`cd /tmp && sed -i s/a/b/ ${loops}/jobs.json`,
+		`ls ${loops}`,
+		`tar cf - . | (cd ${loops}/ && tar xf -)`,
+		"echo x > ~/loops/hooks.toml",
+	];
+	for (const c of refused) assert.equal(dangerousCommandReason(c, home, [], loops), OWN, c);
+	// The realpath itself: on macOS the temporary directory is under /var, a link to /private/var, so `loops` is not one.
+	assert.equal(dangerousCommandReason(`cat ${fs.realpathSync.native(loops)}/inbox.jsonl`, home, [], link), OWN, "the directory's realpath, when it is reached through a link");
+	assert.equal(dangerousCommandReason(`cat ${link}/inbox.jsonl`, home, [], link), OWN, "and the path it was given");
+	const allowed = ["grep loops README.md", `cat ${loops}-old/x`, `ls ${home}`, "echo ~/.pi/agent/loopsy", "ls src/loops", "npm test"];
+	for (const c of allowed) assert.equal(dangerousCommandReason(c, home, [], loops), undefined, c);
+	assert.equal(dangerousCommandReason("cat $PI_LOOPS_DIR/inbox.jsonl", home), undefined, "with no loops directory given the rule is off");
+});
+
+test("[M5a.8d] pi-loops answering for a person, installing jobs or coming up is refused; reading is not", () => {
+	const refused = [
+		"pi-loops inbox claim inb-0123abcd",
+		"cd /tmp && pi-loops inbox dismiss x",
+		"pi-loops inbox dismiss inb-1 --reason 'not now'",
+		"pi-loops inbox cancel inb-1",
+		"pi-loops inbox clear",
+		"pi-loops inbox --json claim x",
+		"pi-loops inbox {list,claim} x",
+		"pi-loops${IFS}inbox${IFS}claim x",
+		"pi-loops inbox $V x",
+		"npx pi-loops inbox claim x",
+		"node ./src/cli-entry.mjs inbox claim x",
+		"bash -c 'pi-loops inbox claim x'",
+		"pi-loops import run.pisession",
+		"pi-loops recipe add tracker",
+		"pi-loops start",
+		"pi-loops host start",
+	];
+	for (const c of refused) assert.equal(dangerousCommandReason(c, HOME), ANSWERS, c);
+	for (const c of ["pi-loops stop", "pi-loops restart", "pi-loops abort run-1"]) assert.match(dangerousCommandReason(c, HOME) ?? "", /pi-loops abort \/ stop \/ restart/, `${c} keeps its reason`);
+	const allowed = ["pi-loops inbox list", "pi-loops inbox list --json", "pi-loops inbox", "pi-loops status", "pi-loops recipe list", "pi-loops recipe show tracker", "pi-loops export --output x.pisession", "grep loops README.md", 'git commit -m "pi-loops: inbox claim fixed"'];
+	for (const c of allowed) assert.equal(dangerousCommandReason(c, HOME), undefined, c);
+});
+
+test("[M5a.8d] an allow entry in config.toml permits a command of the new rules, as for any other rule", () => {
+	const { home, loops } = loopsWorld();
+	assert.equal(dangerousCommandReason("pi-loops inbox claim inb-1", home, ["pi-loops inbox claim inb-1"], loops), undefined);
+	assert.equal(dangerousCommandReason(`cat ${loops}/runs.jsonl`, home, [`cat ${loops}/runs.jsonl`], loops), undefined);
+	assert.equal(dangerousCommandReason(`cat ${loops}/runs.jsonl; pi-loops inbox claim x`, home, [`cat ${loops}/runs.jsonl`], loops), ANSWERS, "nothing chained onto it");
+});
+
+test("[M5a.8d] the new rules are linear: 200 KB of pi-loops inbox, flags or spellings is answered in under 500 ms of processor time", () => {
+	const { home, loops } = loopsWorld();
+	const size = 200 * 1024;
+	for (const unit of ["pi-loops inbox ", "pi-loops inbox -", "inbox -x ", "recipe ", "$PI_LOOPS_DI", "~/.pi/agent/loop", `${loops}x `, "$IFS", "~/.pi/agent/x", "~/.pi/agent/", "a/./", "/../", "'~", "x/pi-loops ", "\"$HOME/"]) {
+		const command = unit.repeat(Math.ceil(size / unit.length));
+		const started = process.cpuUsage();
+		dangerousCommandReason(command, home, [], loops);
+		const used = process.cpuUsage(started);
+		const ms = (used.user + used.system) / 1000;
+		assert.ok(ms < 500, `${JSON.stringify(unit)}: ${ms.toFixed(0)} ms`);
+	}
+});
+
+test("[M5a.8d] a path tool's path is judged in linear time: 200 KB of path levels is answered in under 500 ms, and a long path that resolves short is still judged", () => {
+	const { loops } = loopsWorld();
+	const size = 200 * 1024;
+	for (const [tool, unit] of [["read", "/a"], ["write", "a/"], ["grep", "/x/.."], ["edit", "/./"]] as const) {
+		const started = process.cpuUsage();
+		pathToolReason({ toolName: tool, input: { path: unit.repeat(Math.ceil(size / unit.length)) } }, "/tmp", loops);
+		const used = process.cpuUsage(started);
+		const ms = (used.user + used.system) / 1000;
+		assert.ok(ms < 500, `${tool} ${JSON.stringify(unit)}: ${ms.toFixed(0)} ms`);
+	}
+	const climbs = "/x/..".repeat(20_000) + path.join(loops, "inbox.jsonl");
+	assert.equal(pathToolReason({ toolName: "read", input: { path: climbs } }, "/tmp", loops), "reads or writes pi-loops' own files", "a long path that resolves into the loops directory is refused");
+});
+
+test("[M5a.8d] a glob, a brace or .. after the directory that holds the loops directory reaches it, and so do .. and // in a literal path and $PI_CODING_AGENT_DIR/loops", () => {
+	const { home, loops } = loopsWorld();
+	const refused = [
+		"cat ~/.pi/agent/loo*/inbox.jsonl",
+		"cat ~/.pi/agent/loop?/web-token",
+		"cat ~/.pi/agent/loop[s]/web-token",
+		"cat ~/.pi/agent/{loops,x}/inbox.jsonl",
+		"cat ~/.pi/agent/*/web-token",
+		"cat ~/.pi/agent/../agent/loops/web-token",
+		`cat ${home}/x/../loops/web-token`,
+		`cat ${home}//loops/web-token`,
+		`cat ${home}/./loops/web-token`,
+		`ls ${home}/lo*`,
+		"cat $PI_CODING_AGENT_DIR/loops/inbox.jsonl",
+		"cat ${PI_CODING_AGENT_DIR}/loops/inbox.jsonl",
+		"ls $PI_CODING_AGENT_DIR/*",
+	];
+	for (const c of refused) assert.equal(dangerousCommandReason(c, home, [], loops), OWN, c);
+	for (const c of ["ls ~/.pi/agent/sessions", "cat ~/.pi/agent/settings.json", "ls src/*.ts", "cat ./README.md", "cat $PI_CODING_AGENT_DIR/settings.json"]) assert.equal(dangerousCommandReason(c, home, [], loops), undefined, c);
+});
+
+test("[M5a.8d] letter case is ignored on darwin and win32, whose file systems ignore it, and not on linux", () => {
+	const { home, loops } = loopsWorld();
+	for (const c of ["cat ~/.PI/Agent/LOOPS/web-token", `cat ${loops.toUpperCase()}/web-token`, "cat $pi_loops_dir/inbox.jsonl"]) {
+		for (const platform of ["darwin", "win32"] as const) assert.equal(dangerousCommandReason(c, home, [], loops, platform), OWN, `${platform}: ${c}`);
+		assert.equal(dangerousCommandReason(c, home, [], loops, "linux"), undefined, `linux: ${c}`);
+	}
+	const read = { toolName: "read", input: { path: path.join(home.toUpperCase(), "LOOPS", "web-token") } };
+	for (const platform of ["darwin", "win32"] as const) assert.equal(pathToolReason(read, home, loops, platform), OWN, platform);
+	// A path is resolved on the file system this runs on: where it ignores case (APFS), the realpath is the loops
+	// directory's own, whatever `platform` says, and the path is refused because it is that directory.
+	const foldsHere = fs.existsSync(home.toUpperCase());
+	assert.equal(pathToolReason(read, home, loops, "linux"), foldsHere ? OWN : undefined, foldsHere ? "a file system that ignores case reaches the directory" : "a file system that keeps case does not");
+});
+
+test("[M5a.8d] a quoted ~ or a single-quoted $ given to a program that takes text names no directory; pi-loops' program is a command, not a directory that has its name", () => {
+	const { home, loops } = loopsWorld();
+	const allowed = [
+		"grep -rn '~/.pi/agent/loops' docs",
+		'grep -rn "~/.pi/agent/loops" docs',
+		"grep -rn '$PI_LOOPS_DIR' src",
+		"git commit -m 'docs: move ~/.pi/agent/loops notes'",
+		"npm --prefix ~/code/pi-loops start",
+		"find ~/code/pi-loops -name import",
+		"ls ~/code/pi-loops/docs && npm --prefix ~/code/pi-loops run pair",
+	];
+	for (const c of allowed) assert.equal(dangerousCommandReason(c, home, [], loops), undefined, c);
+	const own = ["bash -c 'cat ~/.pi/agent/loops/web-token'", 'cat "$HOME/.pi/agent/loops/web-token"', `cat '${loops}/web-token'`, "grep -rn x ~/'.pi/agent/loops'", "sh -c \"grep -rn '~/.pi/agent/loops' x\""];
+	for (const c of own) assert.equal(dangerousCommandReason(c, home, [], loops), OWN, c);
+	const answers = ["~/tools/pi-loops inbox claim x", "timeout 5 /usr/local/bin/pi-loops inbox claim x", "./node_modules/.bin/pi-loops import x.pisession", "npx -y @alphacoder-v0/pi-loops@0.24.0 inbox claim x", "FOO=1 ~/tools/pi-loops start", "pi-loops pair"];
+	for (const c of answers) assert.equal(dangerousCommandReason(c, home, [], loops), ANSWERS, c);
+});
+
+/** A loops directory with pi-loops' files, a project beside it, and a directory above both. */
+function pathWorld() {
+	const root = tmp("pi-loops-path-tools-");
+	const loops = path.join(root, "agent", "loops");
+	const proj = path.join(root, "proj");
+	fs.mkdirSync(loops, { recursive: true });
+	fs.mkdirSync(proj, { recursive: true });
+	fs.writeFileSync(path.join(loops, "web-token"), "secret");
+	return { root, loops, proj, agent: path.dirname(loops) };
+}
+
+test("[M5a.8d] every path tool into the loops directory reads or writes pi-loops' own files, and grep of a directory that holds it too", () => {
+	const { loops, proj, agent } = pathWorld();
+	const reach = [
+		{ toolName: "read", input: { path: path.join(loops, "web-token") } },
+		{ toolName: "write", input: { path: path.join(loops, "inbox.jsonl"), content: "{}" } },
+		{ toolName: "edit", input: { path: path.join(loops, "config.toml") } },
+		{ toolName: "grep", input: { pattern: "x", path: loops } },
+		{ toolName: "grep", input: { pattern: "x", path: agent } },
+		{ toolName: "find", input: { pattern: "*", path: loops } },
+		{ toolName: "ls", input: { path: path.join(loops, ".") } },
+		{ toolName: "read", input: { path: "../agent/loops/web-token" } },
+	];
+	for (const call of reach) assert.equal(pathToolReason(call, proj, loops), OWN, JSON.stringify(call));
+	assert.equal(pathToolReason({ toolName: "grep", input: { pattern: "x" } }, agent, loops), OWN, "grep with no path searches the cwd, which holds it");
+	const pass = [
+		{ toolName: "read", input: { path: "README.md" } },
+		{ toolName: "grep", input: { pattern: "x" } },
+		{ toolName: "find", input: { pattern: "*", path: agent } },
+		{ toolName: "ls", input: { path: agent } },
+		{ toolName: "bash", input: { command: "ls" } },
+	];
+	for (const call of pass) assert.equal(pathToolReason(call, proj, loops), undefined, JSON.stringify(call));
+});
+
+test("[M5a.8d] a path tool's path is read as pi reads it: its Unicode spaces are plain spaces", () => {
+	const root = tmp("pi-loops-path-spaces-");
+	const loops = path.join(root, "my loops");
+	fs.mkdirSync(loops, { recursive: true });
+	for (const space of ["\u00a0", "\u2009", "\u202f", "\u3000"]) {
+		assert.equal(pathToolReason({ toolName: "read", input: { path: path.join(root, `my${space}loops`, "web-token") } }, root, loops), OWN, JSON.stringify(space));
+	}
+});
+
+test("[M5a.8d] the stop rule reads pi-loops anywhere in a sub-command, as before: a wrapped path and a directory that has the name are refused", () => {
+	for (const c of ["timeout 5 ~/tools/pi-loops stop", "env A=1 ~/tools/pi-loops restart", "flock /tmp/l ~/tools/pi-loops stop", "npm --prefix ~/code/pi-loops stop"]) {
+		assert.match(dangerousCommandReason(c, HOME) ?? "", /pi-loops abort \/ stop \/ restart/, c);
+	}
+});
+
+test("[M5a.8d] pi-loops behind a wrapper and by any path is the program that answers for a person; a directory that has its name, given to another program, is not", () => {
+	const answers = [
+		"timeout 5 ~/tools/pi-loops inbox claim x",
+		"timeout --signal=KILL -k 2 5s ~/tools/pi-loops start",
+		"env A=1 pi-loops inbox dismiss x",
+		"env -u HOME A=1 /opt/pi/pi-loops inbox claim x",
+		"npx pi-loops inbox claim x",
+		"npx -y -p @alphacoder-v0/pi-loops ~/x/pi-loops import a.pisession",
+		"pnpm exec pi-loops pair",
+		"npm exec ~/x/pi-loops start",
+		"bunx pi-loops start",
+		"node ~/code/piz/src/cli-entry.mjs inbox claim x",
+		"node --no-warnings ./src/cli-entry.mjs start",
+		"nice -n 5 /opt/pi/pi-loops start",
+		"nohup /opt/pi/pi-loops start",
+		"exec /opt/pi/pi-loops start",
+		"command /opt/pi/pi-loops start",
+		"xargs -I {} /opt/pi/pi-loops inbox claim {}",
+		"env A=1 timeout 5 nice /opt/pi/pi-loops start",
+		"cd /tmp && ~/tools/pi-loops inbox claim x",
+	];
+	for (const c of answers) assert.equal(dangerousCommandReason(c, HOME), ANSWERS, c);
+	assert.equal(dangerousCommandReason("sudo -u me /opt/pi/pi-loops inbox claim x", HOME), "sudo invocation", "sudo and doas are refused before this rule");
+	for (const c of ["npm --prefix ~/code/pi-loops start", "find ~/code/pi-loops -name import", "ls ~/code/pi-loops/docs start", "git -C ~/code/pi-loops log --grep import", "timeout 5 make start"]) assert.equal(dangerousCommandReason(c, HOME), undefined, c);
+});
+
+test("[PR271] each known channel to the page's token, a one-use open key, a pairing code or a pi of the person's answers for a person", () => {
+	const answers = [
+		"pi-loops status --url",
+		"pi-loops host status --url",
+		"pi-loops status --json --url",
+		"pi-loops status --url=1",
+		`T=$(pi-loops status --url | sed 's/.*token=//'); curl -s -X POST -H "x-pi-web-token: $T" http://127.0.0.1:4173/inbox/claim`,
+		"node -e \"require('child_process').execSync('pi-loops status --url')\"",
+		"pi-loops pair",
+		"pi-loops open",
+		"pi-loops open --cwd ~/proj",
+		"pi-loops web --no-open",
+		"pi-loops tui",
+		"pi-loops",
+		"pi-loops --no-open",
+		"pi-loops --web --port 4180",
+		"cd /tmp && pi-loops",
+		'pi -p "/inbox claim 3"',
+		"pi --print '/inbox dismiss 1 no'",
+		'pi "/inbox claim inb-1"',
+		"echo '/inbox claim 1' | pi -p",
+		"pi -p < answers.txt",
+		"pi --mode rpc",
+		'pi -p "/pi-loops web"',
+		"pi -p 'summarize the diff'",
+		"timeout 60 pi -p hi",
+		"/usr/local/bin/pi --mode json -p hi",
+		"npx @earendil-works/pi-coding-agent -p hi",
+	];
+	for (const c of answers) assert.equal(dangerousCommandReason(c, HOME), ANSWERS, c);
+	const allowed = ["pi-loops status", "pi-loops status --json", "pi-loops --version", "pi-loops --help", "which pi-loops", "command -v pi-loops", "echo pi-loops", "pi --version", "pi --help", "echo pi", "grep -rn pi src", "ls pi", "pip install x", "npm --prefix ~/code/pi-loops start"];
+	for (const c of allowed) assert.equal(dangerousCommandReason(c, HOME), undefined, c);
+	assert.match(dangerousCommandReason('pi -p "/pi-loops stop"', HOME) ?? "", /pi-loops abort \/ stop \/ restart/, "a stop keeps its reason");
+	for (const unit of ["pi ", "env pi ", "pi-loops status ", "--url "]) {
+		const command = unit.repeat(Math.ceil((200 * 1024) / unit.length));
+		const started = process.cpuUsage();
+		dangerousCommandReason(command, HOME);
+		const used = process.cpuUsage(started);
+		assert.ok((used.user + used.system) / 1000 < 500, `${JSON.stringify(unit)} is answered in linear time`);
+	}
+});
+
+test("[PR271] the control socket's fallback directory, outside the loops directory, is reached as pi-loops' own files", () => {
+	const { home, loops } = loopsWorld();
+	const fallback = path.join(os.tmpdir(), `pi-loops-${process.getuid?.() ?? "u"}`);
+	const own = [`printf '{"op":"pair"}' | nc -U ${fallback}/host-service-0123456789abcdef.sock`, `ls ${fallback}`, `socat - UNIX-CONNECT:$TMPDIR/pi-loops-${process.getuid?.() ?? "u"}/host-service-x.sock`, `ls \${TMPDIR}/pi-loops-${process.getuid?.() ?? "u"}`];
+	for (const c of own) assert.equal(dangerousCommandReason(c, home, [], loops), OWN, c);
+	for (const c of [`ls ${os.tmpdir()}`, `ls ${fallback}x`, `cat ${os.tmpdir()}/pi-loops-merge-1/x`]) assert.equal(dangerousCommandReason(c, home, [], loops), undefined, c);
+});
+
+test("[PR271] the 0600 file the browser opens on, which holds a one-use key, is in the loops directory: a path tool and a shell command into it are refused", () => {
+	const { home, loops } = loopsWorld();
+	const file = path.join(openFileDir(loops), `${"a".repeat(32)}.html`);
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(file, "<meta http-equiv=refresh content='0;url=http://127.0.0.1:4173/?open=k'>", { mode: 0o600 });
+	for (const toolName of ["read", "grep", "find", "ls"]) assert.equal(pathToolReason({ toolName, input: { path: toolName === "read" ? file : path.dirname(file) } }, home, loops), OWN, toolName);
+	for (const c of [`cat ${file}`, `cat ${loops}/pages/open/*.html`, "grep -r open= ~/loops/pages", `ls ${path.dirname(file)}`]) assert.equal(dangerousCommandReason(c, home, [], loops), OWN, c);
 });

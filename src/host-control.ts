@@ -438,8 +438,8 @@ export function recordSpawn(dir: string, event: { kind: "attempt"; by: number } 
 }
 
 export interface EnsureInput {
-	/** `closedSessionJobs`: enabled plain jobs of conversations no window holds, which the host fires. */
-	automation: { loops: number; rules: number; pushServers: number; closedSessionJobs?: number; closedMailboxes?: number };
+	/** `closedSessionJobs`: enabled plain jobs of conversations no window holds, which the host fires. `openAnswers`: a person's yes that waits to run or runs, which only the host runs. */
+	automation: { loops: number; rules: number; pushServers: number; closedSessionJobs?: number; closedMailboxes?: number; openAnswers?: number };
 	auto: boolean;
 	stopped: boolean;
 	envOff: boolean;
@@ -466,7 +466,7 @@ export function decideEnsure(input: EnsureInput): EnsureAction {
 		return { kind: "none", reason: "running" };
 	}
 	const work = input.automation;
-	if (!input.asked && !input.page && !work.loops && !work.rules && !work.pushServers && !work.closedSessionJobs && !work.closedMailboxes) return { kind: "none", reason: "nothing to run" };
+	if (!input.asked && !input.page && !work.loops && !work.rules && !work.pushServers && !work.closedSessionJobs && !work.closedMailboxes && !work.openAnswers) return { kind: "none", reason: "nothing to run" };
 	// The newer client that asked the old host to make way starts its own; an older one starting the
 	// old code in the gap is how two versions traded the host back and forth, aborting runs each time.
 	if (input.upgrader?.alive && compareVersions(input.myVersion, input.upgrader.version) < 0) return { kind: "none", reason: `a newer pi-loops (pid ${input.upgrader.pid}) is already running` };

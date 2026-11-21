@@ -5,15 +5,18 @@
  *
  * A checkpoint is `<the decision> · waits: <what waits on it> · if not: <what happens if nobody
  * acts>` (docs/recipes.md); a card shows the three parts apart, under the page's words "Waiting on"
- * and "If you don't". News is one finding with a headline. What a claim says to the agent and what a
- * dismiss tells the loop are decided here too, so every surface says the same thing.
+ * and "If you don't". News is one finding with a headline. What a yes, a no and a cancel say, and
+ * what an answer's state reads as, are decided here too, so every surface says the same thing.
  */
 import * as path from "node:path";
 import { deadLetterParts } from "./engine.ts";
 import { loopLabel } from "./job-lines.ts";
+import { type StepRefusal, answerStatus } from "./ask.ts";
 import type { InboxEntry, InboxStatus } from "./inbox.ts";
+import { type LaneId, parseLane } from "./lane.ts";
 import { INBOX_TEXT_MAX_CHARS, capChars } from "./protocol.ts";
-import { redact } from "./redact.ts";
+import { cardText, redact, screenText } from "./redact.ts";
+import type { Row } from "./requests.ts";
 
 export interface InboxCard {
 	/** `inb-…`: the only thing a button sends. */
@@ -29,6 +32,12 @@ export interface InboxCard {
 	waits?: string;
 	/** A decision: after `· if not:`; undefined when the loop left the clause out. */
 	ifNot?: string;
+	/**
+	 * A question (a finding with an `ask`): its call, from the ask's fields. Its card is drawn from
+	 * these and `ask.title`, never cut from the text, which holds the command and could hold a
+	 * `· waits:` of the command's own.
+	 */
+	question?: { tool: string; command?: string; reason: string };
 	/** The checker kept it (✓). */
 	verified: boolean;
 	verifiedReason?: string;
@@ -48,8 +57,6 @@ export interface InboxCard {
 	hasTranscript: boolean;
 	/** `sessionId` is the conversation the card is shown in. */
 	fromThisConversation: boolean;
-	/** A claim from the page is queued for it and has not marked it claimed yet: Yes is not offered again. */
-	claiming: boolean;
 }
 
 export interface CardContext {
@@ -57,34 +64,12 @@ export interface CardContext {
 	here?: string;
 	/** A loop's name from jobs.json, or undefined when the loop is gone or has none. */
 	loopName(jobId: string): string | undefined;
-	/** Whether a page claim row for this finding is queued. */
-	claiming?(id: string): boolean;
 	/** A rule's condition from triggers.json, or undefined when the rule is gone. */
 	ruleCondition?(ruleId: string): string | undefined;
 }
 
 /** A rule's condition on a card's origin line, clipped so the line stays one line. */
 const RULE_CONDITION_CHARS = 80;
-
-/**
- * A finding's text as a screen may show it: a terminal's escape sequences (colour, clear, title),
- * other control characters, the bidi marks and overrides that reorder a line, and the characters no
- * surface draws are taken out: the zero-width space and invisible operators (U+200B, U+2060-2064,
- * U+FEFF), the soft hyphen, U+034F, the Hangul and Mongolian fillers, the tags U+E0000-E007F and the
- * variation selectors U+FE00-FE0D, which can carry bytes no one sees. What ordinary text needs stays:
- * the joiners U+200C and U+200D (emoji sequences, Persian, Devanagari), U+FE0E and U+FE0F (how an
- * emoji is drawn) and the ideographic variation selectors U+E0100-E01EF. So `/inbox` cannot repaint the terminal it prints in, and every
- * surface, and the claim's prompt, carries the same words.
- */
-export function screenText(text: string): string {
-	return text
-		// Only a terminated string: an introducer with no BEL or ST would otherwise take the rest of
-		// the finding with it, and the card would hide what a claim then sends.
-		.replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
-		.replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, "")
-		.replace(/\u001b[@-_]?/g, "")
-		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufe00-\ufe0d\ufeff\uffa0\u{e0000}-\u{e007f}]/gu, "");
-}
 
 /** The mark `findingKind` reads a checkpoint by (CONTRACT.md 2.6), and the clause after it. */
 const WAITS = /(^|\s)·\s*waits:/i;
@@ -131,13 +116,35 @@ export function ruleResultText(text: string): string {
 }
 
 /**
+ * A question's card parts, from its `ask`: the headline is who asks (`ask.title`), the call's
+ * command and reason are fields of their own, and the clauses are the words `questionFinding` of
+ * src/ask.ts writes, with who asks as `answerWho` names it. Screened, redacted and on one line, as
+ * any card text is.
+ */
+/** A question's headline, from its `ask`: what a card, the activity strip and a notification show. Never cut from the finding's text. */
+export function questionHeadline(ask: NonNullable<InboxEntry["ask"]>): string {
+	return cardText(ask.title) || "a run asks";
+}
+
+function questionParts(entry: InboxEntry, ask: NonNullable<InboxEntry["ask"]>, ctx: CardContext): Pick<InboxCard, "headline" | "waits" | "ifNot" | "question"> {
+	const { tool, command, reason } = ask.call;
+	return {
+		headline: questionHeadline(ask),
+		question: { tool: cardText(tool), ...(command !== undefined ? { command: cardText(command) } : {}), reason: cardText(reason) },
+		waits: `${answerWho(entry, ask.lane, ctx.loopName)} went on without it`,
+		ifNot: "it stays undone",
+	};
+}
+
+/**
  * One finding as a card, or undefined for a line with no id or no text: `readFinding` turns a
  * line `{}` into an entry with both empty, and a button that sends an empty id names nothing.
- * The text is redacted and capped again, since a line another tool wrote is not bounded.
+ * The text is redacted and capped again, since a line another tool wrote is not bounded. A question
+ * is drawn from its `ask` (`questionParts`); `splitFinding` never reads its text.
  */
 export function inboxCard(entry: InboxEntry, ctx: CardContext): InboxCard | undefined {
 	if (!entry.id || !entry.text) return undefined;
-	const text = capChars(redact(screenText(entry.text)).replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS);
+	const text = capChars(cardText(entry.text), INBOX_TEXT_MAX_CHARS);
 	const origin = entry.source.startsWith("trigger:") ? "rule" : deadLetterParts(entry) ? "undelivered" : "loop";
 	const loopId = origin === "loop" ? entry.job_id : undefined;
 	const loopName = loopId ? ctx.loopName(loopId) : undefined;
@@ -147,9 +154,9 @@ export function inboxCard(entry: InboxEntry, ctx: CardContext): InboxCard | unde
 	const condition = ruleId ? ctx.ruleCondition?.(ruleId) : undefined;
 	return {
 		id: entry.id,
-		kind: entry.kind === "checkpoint" ? "decision" : "news",
+		kind: entry.ask || entry.kind === "checkpoint" ? "decision" : "news",
 		status: entry.status,
-		...splitFinding(origin === "rule" ? ruleResultText(text) : text, entry.kind),
+		...(entry.ask ? questionParts(entry, entry.ask, ctx) : splitFinding(origin === "rule" ? ruleResultText(text) : text, entry.kind)),
 		verified: entry.verified === true,
 		...(entry.verified_reason ? { verifiedReason: redact(screenText(entry.verified_reason)) } : {}),
 		origin,
@@ -162,7 +169,6 @@ export function inboxCard(entry: InboxEntry, ctx: CardContext): InboxCard | unde
 		...(entry.session_id ? { sessionId: entry.session_id } : {}),
 		hasTranscript: origin !== "rule" && !!entry.transcript,
 		fromThisConversation: !!entry.session_id && entry.session_id === ctx.here,
-		claiming: entry.status === "new" && (ctx.claiming?.(entry.id) ?? false),
 	};
 }
 
@@ -182,13 +188,16 @@ export function cardOrigin(card: Pick<InboxCard, "loop" | "source">): string {
 
 /**
  * A card as terminal lines: `head`, the marks, the headline (news: its whole text) and `meta` on
- * the first line; a decision's clauses on indented lines under it, under the page's words. A clause
- * the loop left out prints nothing: two packaged playbooks leave `if not` out on purpose.
+ * the first line; a question's command and reason, then a decision's clauses, on indented lines
+ * under it, under the page's words. A clause the loop left out prints nothing: two packaged
+ * playbooks leave `if not` out on purpose.
  */
 export function cardLines(card: InboxCard, head: string, meta: string): string[] {
 	const mark = `${card.kind === "decision" ? "⚑ " : ""}${card.verified ? "✓ " : ""}`;
 	const title = card.body === undefined ? card.headline : `${card.headline}${/[。！？]$/.test(card.headline) ? "" : " "}${card.body}`;
 	const lines = [`${head}${mark}${title}${meta}`];
+	if (card.question?.command !== undefined) lines.push(`${CLAUSE_INDENT}command: ${card.question.command}`);
+	if (card.question) lines.push(`${CLAUSE_INDENT}reason: ${card.question.reason}`);
 	if (card.waits !== undefined) lines.push(`${CLAUSE_INDENT}waiting on: ${card.waits}`);
 	if (card.ifNot !== undefined) lines.push(`${CLAUSE_INDENT}if you don't: ${card.ifNot}`);
 	return lines;
@@ -236,33 +245,6 @@ export function dismissLine(outcome: DismissOutcome): string {
 }
 
 /**
- * The turn a claim runs: the finding, where it came from, and what a claim of a checkpoint means.
- * The finding is the first line, because a conversation the claim starts is titled by its first
- * message. `loopName` is the name of the loop that filed it, when that loop has one.
- */
-export function claimPrompt(e: InboxEntry, loopName?: string): string {
-	// The words the card showed, redacted and capped as it does, so the turn is asked about what the
-	// person read and said yes to, and a secret masked on the card is not sent to the model; the
-	// source, the loop's name and the cwd are screened too, since the turn's message is drawn in a
-	// terminal when one holds the conversation.
-	const one = (s: string) => screenText(s).replace(/\s+/g, " ").trim();
-	const text = capChars(redact(screenText(e.text)).replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS);
-	const source = one(e.source);
-	const cwd = one(e.cwd);
-	const verified = e.verified ? `\n(An independent checker reviewed and kept this finding${e.verified_reason ? `: ${redact(screenText(e.verified_reason))}` : ""}.)` : "";
-	// A checkpoint is a decision the loop prepared and left to a person; the claim is that
-	// person's yes, so the turn carries the decision out rather than re-investigating it.
-	const checkpoint = e.kind === "checkpoint" ? "\nThis finding is a checkpoint: claiming it is the person's approval of the decision it recommends — carry that decision out, and stop where the finding says a person acts." : "";
-	// A prompt that never reached the chat: claiming it is asking for it now, not investigating why it was late.
-	const late = deadLetterParts(e, text);
-	if (late) return `This prompt (${source}, for ${cwd}) could not be delivered earlier (${late.why}). Do what it asks now:\n${late.prompt}`;
-	// Named as the card names it (cardOrigin): a loop by its label, a rule by its source.
-	const from = e.job_id && !e.source.startsWith("trigger:") ? `loop ${loopLabel({ id: one(e.job_id), name: loopName && one(loopName) })}` : source;
-	const project = cwd ? ` in ${path.basename(cwd) || cwd}` : "";
-	return `${text}\n\n(from ${from}${project}; investigate and address it)${verified}${checkpoint}`;
-}
-
-/**
  * Where a claim from the page runs, as the page server finds the conversation that created the
  * loop: open in the page (rung, so it runs as the person's turn), a terminal that answers what is
  * queued, a terminal that does not (`pi -p`, a window behind the file), pi-loops in the middle of a
@@ -284,4 +266,105 @@ export function claimLine(delivery: ClaimDelivery, title?: string): string {
 	if (delivery === "no-pi-loops") return "Queued; the pi of that conversation has no pi-loops, so nothing runs it here. Open it in a terminal with pi-loops.";
 	if (delivery === "stopped") return "Queued; pi stopped too often in that conversation to be started again on its own.";
 	return "Queued; its conversation is gone.";
+}
+
+/**
+ * Who picks up a yes to a finding, as a person reads it: the loop the lane names, by its name; the
+ * check of the finding's project; for a conversation's finding, the job that filed it, else the
+ * conversation. `loopName` reads jobs.json; a name is screened, since it is drawn in a terminal.
+ */
+export function answerWho(finding: Pick<InboxEntry, "cwd" | "job_id">, lane: LaneId | undefined, loopName: (jobId: string) => string | undefined): string {
+	const parsed = lane === undefined ? undefined : parseLane(lane);
+	const jobId = parsed?.kind === "loop" ? parsed.id.slice(1) : parsed?.kind === "check" ? undefined : finding.job_id;
+	if (parsed?.kind === "check") return `the check of ${screenText(path.basename(finding.cwd) || finding.cwd)}`;
+	if (jobId) return screenText(loopName(jobId) ?? jobId);
+	return "its conversation";
+}
+
+/** The sentence a question's unfinished answer ends with when it names none: the cautious one (C3). */
+const MAY_HAVE_RUN = "The command may or may not have run.";
+
+/**
+ * What a card, `/inbox all` and the CLI say of a finding's answer (design 6.1), or undefined when
+ * there is nothing to say: a finding that is not claimed, or an answer this version cannot read.
+ * `row` is the answer's `ans-` row, for why a pending one waits; `summary` is the run's summary
+ * while the run log has its record. What came from a run is redacted and screened.
+ */
+export function answerLine(finding: InboxEntry, row?: Row, summary?: string): string | undefined {
+	if (finding.status === "claimed" && finding.answer === undefined && finding.answered_by === undefined) return "Claimed before the upgrade.";
+	const status = answerStatus(finding, row);
+	if (!status) return undefined;
+	const why = cardText(status.why ?? "");
+	switch (status.status) {
+		case "pending":
+			return why ? `Waiting to run: ${why}` : "Waiting to run";
+		case "started":
+			return "Running";
+		case "done": {
+			const first = cardText(summary?.split("\n").find((line) => line.trim()) ?? "").trim();
+			return first ? `Done · ${first}` : "Done";
+		}
+		case "unfinished":
+			return `Started and did not finish (${why}).${finding.ask ? ` ${status.ending ?? MAY_HAVE_RUN}` : ""}`;
+		case "not_run":
+			return `Not run (${why})`;
+		case "cli":
+			return "Claimed from the command line. Nothing ran";
+	}
+}
+
+/** What a successful cancel says (V1): the finding is `new` again, under its own id. */
+export const CANCELLED_LINE = "Cancelled. The question is open again";
+
+/** Why a cancel was refused, in a person's words (design 6.2). `missing` is the caller's to say: a page answers 404. */
+export function cancelRefusal(refusal: StepRefusal): string {
+	if (refusal.refused === "missing") return "there is no such finding";
+	if (refusal.refused === "state" && refusal.state === "started") return "it has already started: stop it instead";
+	if (refusal.refused === "state" && (refusal.state === "done" || refusal.state === "unfinished" || refusal.state === "not_run")) return "it has already ended";
+	return "it has no queued answer to cancel";
+}
+
+/** What a Y1 adds when pi-loops is not running in the background: only that process runs a yes. */
+export const YES_WAITS_FOR_BACKGROUND = "It runs when pi-loops runs in the background.";
+
+/**
+ * What a terminal prints after a yes (design 6.1, 6.2). Y1 on a question: the run that asked
+ * resumes with the one call allowed. Y1 on any other finding: the run that reported it picks it up.
+ * Y2: why nothing runs. `background`: pi-loops runs in the background now; when it does not, a Y1
+ * says that the yes runs once it does.
+ */
+export function yesTerminalLine(said: { said: "Y1"; finding: InboxEntry } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, background: boolean): string {
+	if (said.said === "Y2") return `${said.why}; nothing runs`;
+	const waits = background ? "" : ` ${YES_WAITS_FOR_BACKGROUND}`;
+	if (said.finding.ask) return `approved: ${who} resumes the run that asked, with this one command allowed.${waits} A card comes here when it ends.`;
+	return `claimed: ${who} picks this up in the run that reported it, in the background.${waits} A card comes here when it ends.`;
+}
+
+/** What `/inbox clear` adds when it left questions: a clear is no answer to a question, so each waits for its own yes or no. */
+export function clearLeftTail(questions: number): string {
+	if (!questions) return "";
+	return `; left ${questions} question${questions === 1 ? "" : "s"} for you to answer: /inbox claim <n> or /inbox dismiss <n>`;
+}
+
+/**
+ * What a card says after a yes from the page (design 6.1, 6.2). A question shows its state at once;
+ * any other finding says that it runs in the background, and from what when its transcript is gone.
+ * `queued` is false when the yes was written and its row was not: nothing runs until the next tick
+ * puts the row back (H1), and the card says that.
+ */
+export function yesPageLine(said: { said: "Y1"; finding: InboxEntry; queued?: boolean } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, transcriptKept: boolean): string {
+	if (said.said === "Y2") return `Not run (${said.why})`;
+	if (said.finding.ask) return answerLine(said.finding) ?? "Waiting to run";
+	if (said.queued === false) return "Your yes is saved, but its run could not be queued. pi-loops queues it again on its next tick.";
+	return transcriptKept ? "Running in the background, in the run that reported it." : `Running in the background. The run's transcript is gone, so ${who} starts from the finding's text.`;
+}
+
+/** What a no to a question says (design 6.1): the run that asked is told, and the call is refused for 14 days. */
+export function noQuestionLine(surface: "terminal" | "page", who: string): string {
+	return surface === "terminal" ? `said no: ${who} is told why on its next run; the same command is refused for 14 days` : `You said no. ${who} is told on its next run, and the same command is refused for 14 days.`;
+}
+
+/** Why the CLI refuses a claim of a question (design 6.1): a claim from a shell allows no command, so the question stays open for a person to answer where a yes can run it. */
+export function shellClaimOfQuestion(id: string, who: string): string {
+	return `inbox entry ${id} is a question from ${who}, and a claim from a shell allows no command: answer it on the page or in pi with /inbox`;
 }

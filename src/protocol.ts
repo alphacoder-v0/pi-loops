@@ -25,6 +25,9 @@ export const OUTPUT_PROTOCOL_HEADING = "Output protocol (mandatory):";
 /** The block between the notes and the job text that carries what a person said when dismissing (`/inbox dismiss <n> <reason>`). */
 export const DISMISSED_OPEN = "[dismissed]";
 export const DISMISSED_CLOSE = "[/dismissed]";
+/** The block after `[dismissed]` that lists the loop's questions that wait for a person (`askedLines`). */
+export const ASKED_OPEN = "[asked]";
+export const ASKED_CLOSE = "[/asked]";
 /** How many dismissed-with-reason findings one run is shown; the newest survive. */
 export const DISMISSED_PER_RUN = 8;
 
@@ -58,11 +61,11 @@ export function capChars(text: string, max: number): string {
  * are, a `[/dismissed]` in either would end the block early and put the rest of the line where the
  * run reads its task; spaced, it reads the same to a person and closes nothing.
  */
-function unclosing(text: string): string {
-	return text.replace(/\[\/(\s*)dismissed\]/gi, "[/ dismissed]");
+function unclosing(text: string, tag = "dismissed"): string {
+	return text.replace(new RegExp(String.raw`\[\/(\s*)${tag}\]`, "gi"), `[/ ${tag}]`);
 }
 
-export function composeLoopPrompt(action: string, previousState: string | undefined, meta?: { name?: string; runAt?: string; dismissed?: DismissedFeedback[]; timeoutMs?: number }): string {
+export function composeLoopPrompt(action: string, previousState: string | undefined, meta?: { name?: string; runAt?: string; dismissed?: DismissedFeedback[]; asked?: readonly string[]; timeoutMs?: number }): string {
 	const state = previousState && previousState.trim() ? capChars(previousState, LOOP_STATE_MAX_CHARS) : FIRST_RUN_MARKER;
 	/**
 	 * Feedback, not permission. A reason is shown to the one run after it was given and then only
@@ -79,6 +82,8 @@ export function composeLoopPrompt(action: string, previousState: string | undefi
 				"",
 			]
 		: [];
+	// A command is the model's words: one that holds `[/asked]` must not end the block early.
+	const asked = meta?.asked?.length ? [`${ASKED_OPEN} (questions of yours that wait for a person; do not ask them again)`, ...meta.asked.map((line) => unclosing(line, "asked")), ASKED_CLOSE, ""] : [];
 	const header = meta?.name ? `You are running the recurring loop "${meta.name}"` : "You are running a recurring loop";
 	/**
 	 * The run time, and how to write one.
@@ -101,6 +106,7 @@ export function composeLoopPrompt(action: string, previousState: string | undefi
 		LOOP_STATE_CLOSE,
 		"",
 		...feedback,
+		...asked,
 		action.trim(),
 		"",
 		OUTPUT_PROTOCOL_HEADING,
@@ -166,7 +172,8 @@ export function jobTextOf(prompt: string): string {
 	const afterState = prompt.split(LOOP_STATE_CLOSE).pop()?.split(OUTPUT_PROTOCOL_HEADING)[0] ?? prompt;
 	// The dismissed block sits between the notes and the job text; it is the person's words, not the job's.
 	const afterFeedback = afterState.trimStart().startsWith(DISMISSED_OPEN) ? afterState.split(DISMISSED_CLOSE).slice(1).join(DISMISSED_CLOSE) : afterState;
-	return afterFeedback;
+	// So does the asked block after it: the loop's own questions, not the job's text.
+	return afterFeedback.trimStart().startsWith(ASKED_OPEN) ? afterFeedback.split(ASKED_CLOSE).slice(1).join(ASKED_CLOSE) : afterFeedback;
 }
 
 /* ---------------------------------------------------------- maker/checker */

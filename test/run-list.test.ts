@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { plainJobRow } from "../src/engine.ts";
 import { parseLane } from "../src/lane.ts";
 import { RequestStore } from "../src/requests.ts";
@@ -155,4 +157,23 @@ test("all returns insertion order in a copy and remove reports whether it found 
 
 test("the stop reason of a person's stop is the words its record carries.", () => {
 	assert.equal(STOPPED_BY_PERSON, "stopped by a person");
+});
+
+test("RunList.claim passes its lock options to the store, and a lock it cannot take leaves no run.", () => {
+	const seen: unknown[] = [];
+	const list = new RunList();
+	const quick = { timeoutMs: 50 };
+	const first = row("lock-a");
+	list.claim({ claim: (_lane, _id, _run, lock) => (seen.push(lock), true) }, first, by, run(), now, quick);
+	assert.deepEqual(seen, [quick]);
+
+	const dir = tmp();
+	const store = new RequestStore(dir);
+	const second = row("lock-b");
+	store.append(second);
+	const lock = path.join(dir, "requests", `${second.lane}.lock`);
+	fs.mkdirSync(lock);
+	fs.writeFileSync(path.join(lock, "owner"), `${process.pid}.-.deadbeef0000`);
+	assert.throws(() => list.claim(store, second, by, run(), now, quick), /timed out waiting for lock/);
+	assert.equal(list.get(second.id), undefined, "the run is taken out");
 });

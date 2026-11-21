@@ -159,6 +159,12 @@ export interface RunRecord {
 	row?: string;
 	/** Other loop runs stopped by the same process death. */
 	stop?: ProcessStop;
+	/** What started the run. M5a writes `answer` only. */
+	cause?: "slot" | "run" | "wake" | "answer" | "check" | "push";
+	/** The session file this run resumed. Present on a run that opened a transcript in place of a new one. */
+	resumed?: string;
+	/** The run of an answer to a question: whether the granted call was made. Only the guard of the live run knows. */
+	grant_used?: boolean;
 }
 
 export interface CheckerRecord {

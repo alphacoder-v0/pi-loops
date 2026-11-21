@@ -5,6 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { budgetStopReason, collect, createInFlightCosts, createInProcessRunner, disposeSubSession, isInsideDir, resolveRunModel, sharedSubSessionResources, subSessionResources, subSessionTools, keepBuiltins, unwrapModelRuntime, usageSince, heldSubSessionResources, releaseHeldResources, releaseSharedResources, HELD_IDLE_MS } from "../src/sdk-runner.ts";
+import { GuardSeats } from "../src/guard.ts";
 import { GUARD_PATH, subagentGuardExtension } from "../src/subagent-guard.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
@@ -59,7 +60,7 @@ test("a sub-session never loads a second copy of pi-loops (own dir filtered, sym
 
 test("the sub-session gate blocks dangerous commands and lets ordinary ones through", async () => {
 	const blocked: string[] = [];
-	const guard = subagentGuardExtension((m) => blocked.push(m));
+	const guard = subagentGuardExtension(new GuardSeats(), { inbox: { list: () => [], fileOnce: () => Promise.reject(new Error("no seat files nothing")) }, allowCommands: () => [], now: Date.now, log: (m) => blocked.push(m) });
 	const handler = guard.handlers.get("tool_call")![0];
 	const call = (toolName: string, input: unknown) => handler({ type: "tool_call", toolCallId: "t1", toolName, input }, {} as any) as Promise<any>;
 
@@ -262,7 +263,7 @@ test("a held turn in a conversation that already cost $7 is not counted as $7 in
 		// $1 of $5 spent: only the conversation's history would push this over the cap.
 		budget: () => ({ spent: 1, cap: 5 }),
 	});
-	const result = await runner({ cwd, prompt: "tick", timeoutMs: 5000, hop: 1, kind: "held", sessionFile: file, stillHolds: () => true });
+	const result = await runner({ cwd, prompt: "tick", timeoutMs: 5000, hop: 1, kind: "held", sessionFile: file, sessionId: sm.getSessionId(), stillHolds: () => true });
 	assert.doesNotMatch(result.errorMessage ?? "", /daily budget/, "the history is not this turn's spend");
 	assert.equal(result.usage.cost, 0, "and none of it is reported as this turn's cost");
 });
@@ -327,10 +328,19 @@ test("a held turn stops soon after a window takes its conversation back, even wh
 	let held = true;
 	setTimeout(() => (held = false), 50).unref();
 	const t0 = Date.now();
-	const result = await runner({ cwd, prompt: "tick", timeoutMs: 600_000, hop: 1, kind: "held", sessionFile: path.join(cwd, "s.jsonl"), stillHolds: () => held });
+	const result = await runner({ cwd, prompt: "tick", timeoutMs: 600_000, hop: 1, kind: "held", sessionFile: path.join(cwd, "s.jsonl"), sessionId: "s", stillHolds: () => held });
 	assert.deepEqual(started, ["tick"]);
 	assert.deepEqual([result.ok, result.timedOut], [false, false]);
 	assert.ok(Date.now() - t0 < 5_000, `stopped after ${Date.now() - t0} ms, not at its deadline`);
+});
+
+test("a resume whose transcript is gone fails before the run sets anything up", { timeout: 15_000 }, async () => {
+	const cwd = tmp("pi-loops-proj-");
+	const { runner, started } = stalledRunner();
+	const result = await runner({ cwd, prompt: "tick", timeoutMs: 5_000, hop: 1, kind: "loop", resume: { file: path.join(cwd, "gone.jsonl"), sessionId: "s" } });
+	assert.equal(result.ok, false);
+	assert.match(result.errorMessage!, /the transcript to resume is gone/);
+	assert.deepEqual(started, [], "no tools, no resources, no session: a grant never reaches a session that does not hold the question");
 });
 
 test("a run in flight is stopped when today's spend plus its own cost reaches the cap", { timeout: 15_000 }, async () => {

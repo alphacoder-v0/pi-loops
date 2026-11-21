@@ -193,7 +193,8 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 	};
 	throwIfAborted(signal);
 	const portFile = path.join(root, "model.port");
-	const model = spawn(node, [path.join(repo, "test/downstream/fake-model.mjs"), portFile], { cwd: dirs.project, env: { ...env, FAKE_MODEL_REPLY: reply, FAKE_MODEL_LOG: path.join(dirs.logs, "model.jsonl"), ...(seeded?.modelEnv ?? {}) }, stdio: "ignore" });
+	const modelLog = path.join(dirs.logs, "model.jsonl");
+	const model = seeded?.answer ? scriptedModel(seeded.answer, reply, modelLog, portFile) : spawn(node, [path.join(repo, "test/downstream/fake-model.mjs"), portFile], { cwd: dirs.project, env: { ...env, FAKE_MODEL_REPLY: reply, FAKE_MODEL_LOG: modelLog, ...(seeded?.modelEnv ?? {}) }, stdio: "ignore" });
 	let modelError;
 	model.on("error", (error) => { modelError = error; });
 	const bootMs = Date.now();
@@ -210,10 +211,15 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 		else term?.stop();
 		if (pageProcess) await waitChildExit(pageProcess, 5000);
 		spawnSync(shim, ["stop"], { cwd: dirs.project, env, stdio: "ignore", timeout: 10000 });
-		if (model.exitCode === null) {
-			try { model.kill("SIGTERM"); } catch { /* stand-in exited before its stop signal */ }
+		if (model instanceof http.Server) {
+			model.closeAllConnections();
+			await new Promise((resolve) => model.close(() => resolve()));
+		} else {
+			if (model.exitCode === null) {
+				try { model.kill("SIGTERM"); } catch { /* stand-in exited before its stop signal */ }
+			}
+			await waitChildExit(model, 5000);
 		}
-		await waitChildExit(model, 5000);
 		const report = await sweep(root, runId, browserSession);
 		printSurvivors(report.survivors, root);
 		fs.writeFileSync(recordFile, JSON.stringify({ ...record, stopped: true }));
@@ -255,6 +261,36 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 		await stop();
 		throw error;
 	}
+}
+
+/**
+ * The stand-in model in this process, for a journey whose seed returns `answer(messages)`: what it
+ * returns, `{ tool, args }`, is answered as that one tool call, and undefined as `reply`. It speaks
+ * and logs as test/downstream/fake-model.mjs does, so a journey can script calls that one cannot,
+ * such as the same call twice after one prompt.
+ */
+function scriptedModel(answer, reply, logFile, portFile) {
+	let calls = 0;
+	const server = http.createServer((req, res) => {
+		let body = "";
+		req.on("data", (c) => (body += c));
+		req.on("end", () => {
+			fs.appendFileSync(logFile, `${body}\n`);
+			let messages = [];
+			try { messages = JSON.parse(body).messages ?? []; } catch { /* not JSON: answered as an empty conversation */ }
+			let call;
+			try { call = answer(messages); } catch (error) { res.writeHead(500); res.end(String(error?.message ?? error)); return; }
+			const send = (delta, finish) => res.write(`data: ${JSON.stringify({ id: "chatcmpl-journey", object: "chat.completion.chunk", created: 0, model: "fake-model", choices: [{ index: 0, delta, finish_reason: finish }], ...(finish ? { usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } } : {}) })}\n\n`);
+			res.writeHead(200, { "content-type": "text/event-stream" });
+			// Each call has an id of its own: a transcript with the same call twice must tell them apart.
+			if (call) send({ role: "assistant", tool_calls: [{ index: 0, id: `call_${++calls}`, type: "function", function: { name: call.tool, arguments: JSON.stringify(call.args ?? {}) } }] }, null);
+			else send({ role: "assistant", content: reply }, null);
+			send({}, call ? "tool_calls" : "stop");
+			res.end("data: [DONE]\n\n");
+		});
+	});
+	server.listen(0, "127.0.0.1", () => fs.writeFileSync(portFile, `${server.address().port}\n`));
+	return server;
 }
 
 function sessionIdFor(dirs) {

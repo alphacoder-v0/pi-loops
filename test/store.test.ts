@@ -6,6 +6,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { FINDING_FIELDS, Inbox, inProject, resolveInboxRef } from "../src/inbox.ts";
 import { withFileLock } from "../src/lock.ts";
+import { personAnswers } from "../src/answers.ts";
+import { RequestStore } from "../src/requests.ts";
+import { TriggerStore } from "../src/triggers.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { withinProject } from "../src/paths.ts";
 import { budgetState } from "../src/job-status.ts";
@@ -150,6 +153,12 @@ test("run log appends take the rotation lock, so a rotation elsewhere cannot dro
 	assert.deepEqual(store.listRuns().map((r) => r.runId), ["r-waited"]);
 });
 
+/** A person's word over `inbox`'s directory: the writer every surface claims and dismisses through (src/answers.ts). */
+function answersOver(inbox: Inbox) {
+	const dir = path.dirname(inbox.file);
+	return personAnswers({ inbox, requests: new RequestStore(dir), jobs: new JobStore(dir), audit: new TriggerStore(dir), sessionFile: () => undefined, self: () => ({ pid: process.pid, instance: "test", version: "0" }), now: Date.now, log: () => undefined });
+}
+
 test("inbox append/list/claim/dismiss, corrupt lines skipped", async () => {
 	const inbox = new Inbox(tmp("pi-loops-test-"));
 	assert.equal(inbox.newCount(), 0);
@@ -164,11 +173,11 @@ test("inbox append/list/claim/dismiss, corrupt lines skipped", async () => {
 	assert.equal(resolveInboxRef(inbox.listNew(), "1"), undefined, "a number needs a caller that printed the list");
 	assert.equal(resolveInboxRef(inbox.listNew(), "1", { ordinals: true })?.id, a.id);
 	assert.equal(resolveInboxRef(inbox.listNew(), c.id.slice(0, 8))?.id, c.id);
-	const claimed = await inbox.decide(a.id, "claimed", { by: "sess" });
-	assert.equal("ok" in claimed && claimed.ok.status, "claimed");
+	const claimed = await answersOver(inbox).say(a.id, "yes", { by: "cli" });
+	assert.equal(claimed.said === "YC" && claimed.finding.status, "claimed");
 	assert.equal(inbox.newCount(), 2);
-	assert.deepEqual(await inbox.decide("inb-missing", "claimed"), { missing: true });
-	assert.equal(await inbox.dismissAllNew(), 2);
+	assert.deepEqual(await answersOver(inbox).say("inb-missing", "yes", { by: "cli" }), { said: "nothing", refusal: { refused: "missing" } });
+	assert.equal((await answersOver(inbox).clear(undefined, { by: "terminal", session: "s" })).length, 2);
 	assert.equal(inbox.newCount(), 0);
 	assert.equal(inbox.list().length, 3);
 });
@@ -193,9 +202,10 @@ test("findings are scoped to a project: what /inbox lists, what a number resolve
 	assert.equal(resolveInboxRef(listed, "1", { ordinals: true })?.id, mine.id);
 	assert.equal(resolveInboxRef(inbox.listNew(), elsewhere.id.slice(0, 8))?.id, elsewhere.id, "an id still resolves machine-wide");
 
-	assert.equal(await inbox.dismissAllNew((e) => listed.some((l) => l.id === e.id)), 2, "clear dismisses what was listed");
+	const clear = (match?: (e: { id: string }) => boolean) => answersOver(inbox).clear(match, { by: "terminal", session: "s" }).then((d) => d.length);
+	assert.equal(await clear((e) => listed.some((l) => l.id === e.id)), 2, "clear dismisses what was listed");
 	assert.deepEqual(inbox.listNew().map((e) => e.id), [elsewhere.id], "and leaves the other project's findings alone");
-	assert.equal(await inbox.dismissAllNew(), 1, "with no filter it still dismisses everything");
+	assert.equal(await clear(), 1, "with no filter it still dismisses everything");
 });
 
 test("file lock serializes and breaks stale locks", async () => {
@@ -236,15 +246,15 @@ test("a line of inbox.jsonl is the finding of the contract, and the two older sh
 	assert.equal(raw.verified_reason, "checked");
 	// A line from pi-loops ≤ 0.1.2 (camelCase), and one in the shape written until 0.21.0 (`trace_id`,
 	// optional keys left out) — both read, with the defaults the missing keys stand for.
-	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-old", createdAt: "2026-09-08T00:00:00.000Z", source: "loop:y", text: "legacy", runId: "r0", jobId: "j0", cwd: "/q", status: "new", claimedBy: "s0" })}\n`);
-	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-021", created_at: "2026-09-15T00:00:00.000Z", source: "loop:z", text: "from 0.21.0", trace_id: "r1", session_id: null, status: "new", job_id: "j1", cwd: "/r" })}\n`);
+	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-00000000000000000000000000000001", createdAt: "2026-09-08T00:00:00.000Z", source: "loop:y", text: "legacy", runId: "r0", jobId: "j0", cwd: "/q", status: "new", claimedBy: "s0" })}\n`);
+	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-00000000000000000000000000000021", created_at: "2026-09-15T00:00:00.000Z", source: "loop:z", text: "from 0.21.0", trace_id: "r1", session_id: null, status: "new", job_id: "j1", cwd: "/r" })}\n`);
 	const all = inbox.list();
 	assert.deepEqual(
 		all.map((e) => [e.id, e.run_id, e.kind, e.verified, e.dismiss_reason, e.claimed_by]),
 		[
 			[a.id, "run-1", "news", true, null, undefined],
-			["inb-old", "r0", "news", null, null, "s0"],
-			["inb-021", "r1", "news", null, null, undefined],
+			["inb-00000000000000000000000000000001", "r0", "news", null, null, "s0"],
+			["inb-00000000000000000000000000000021", "r1", "news", null, null, undefined],
 		],
 	);
 	assert.equal(all[0].session_id, "s1");
@@ -462,10 +472,10 @@ test("a dismiss with a reason is kept on the entry and handed to that loop's nex
 	const c = await inbox.append({ source: "cron:y", text: "finding c", run_id: "r2", job_id: "job-y", cwd: "/" });
 	const d = await inbox.append({ source: "cron:x", text: "finding d", run_id: "r1", job_id: "job-x", cwd: "/" });
 	const before = new Date(Date.now() - 60_000).toISOString();
-	await inbox.decide(a.id, "dismissed", { reason: "  that file is\n generated  " });
-	await inbox.decide(b.id, "dismissed");
-	await inbox.decide(c.id, "dismissed", { reason: "other loop's business" });
-	await inbox.decide(d.id, "claimed", { by: "sess", reason: "a claim carries no reason" });
+	await answersOver(inbox).say(a.id, "no", { by: "cli" }, { reason: "  that file is\n generated  " });
+	await answersOver(inbox).say(b.id, "no", { by: "cli" });
+	await answersOver(inbox).say(c.id, "no", { by: "cli" }, { reason: "other loop's business" });
+	await answersOver(inbox).say(d.id, "yes", { by: "cli" }, { reason: "a claim carries no reason" });
 	const raw = fs.readFileSync(inbox.file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 	assert.equal(raw[0].dismiss_reason, "that file is generated", "collapsed to one line, on disk under its documented name");
 	assert.ok(raw[0].dismissed_at);
@@ -475,11 +485,11 @@ test("a dismiss with a reason is kept on the entry and handed to that loop's nex
 	assert.deepEqual(inbox.feedbackFor("job-x").map((e) => e.id), [a.id], "reasoned dismissals of this job only");
 	assert.deepEqual(inbox.feedbackFor("job-x", before).map((e) => e.id), [a.id], "since a time before the dismiss: shown");
 	assert.deepEqual(inbox.feedbackFor("job-x", new Date(Date.now() + 60_000).toISOString()), [], "since a time after it: already shown to that run");
-	await inbox.dismissAllNew();
+	await answersOver(inbox).clear(undefined, { by: "terminal", session: "s" });
 	assert.deepEqual(inbox.feedbackFor("job-x").map((e) => e.id), [a.id], "clear stamps the time but has no reason to pass on");
 	assert.equal(inbox.list().find((e) => e.id === a.id)?.dismiss_reason, "that file is generated");
 	// A line dismissed before pi-loops stamped dismissed_at has no time to compare and is left out.
-	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-old", created_at: before, source: "cron:x", text: "old", trace_id: "r0", job_id: "job-x", cwd: "/", status: "dismissed", dismiss_reason: "typed by hand" })}\n`);
+	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-00000000000000000000000000000001", created_at: before, source: "cron:x", text: "old", trace_id: "r0", job_id: "job-x", cwd: "/", status: "dismissed", dismiss_reason: "typed by hand" })}\n`);
 	assert.deepEqual(inbox.feedbackFor("job-x").map((e) => e.id), [a.id]);
 });
 

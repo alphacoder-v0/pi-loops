@@ -14,9 +14,13 @@ import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { redact } from "./redact.ts";
 import { keepNotice, parseRingNote, type Notice } from "./host-control-channel.ts";
 import type { SubagentRequest, SubagentRunner } from "./runner.ts";
-import { type LeaseHolder, LeaseStore, closedConversation, procStart, sameHolder } from "./lease.ts";
-import { type EngineSinks, claimAlive, promotionTarget, promotionView, ruleResultRow, proofOf, sessionFileEntries } from "./engine.ts";
-import type { Row } from "./requests.ts";
+import { type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart, sameHolder } from "./lease.ts";
+import { type EngineSinks, laneClaimLive, promotionTarget, promotionView, ruleResultRow, proofOf, sessionFileEntries } from "./engine.ts";
+import type { ClaimedRow, Row } from "./requests.ts";
+import { type AnswerLanes, createAnswerLanes } from "./answer-lanes.ts";
+import { type Answers, conversationFile, createAnswers } from "./answers.ts";
+import { ConversationIndex } from "./conversation-rows.ts";
+import { type LaneId, parseLane } from "./lane.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { type BackgroundExecutor, createBackgroundExecutor } from "./background-executor.ts";
 import { RunList } from "./run-list.ts";
@@ -25,7 +29,7 @@ import { DEFAULT_RUN_TIMEOUT_MS } from "./loop-run.ts";
 import { stamp } from "./schedule.ts";
 import { budgetState, jobCounts } from "./job-status.ts";
 import { SubagentSlots } from "./slots.ts";
-import { type LoopJob, newId } from "./store.ts";
+import { type LoopJob, type RunRecord, newId } from "./store.ts";
 import { RUNTIME_RIDERS, type Riders, type TickFacts } from "./ticker.ts";
 import { openStores, type Stores } from "./stores.ts";
 import { createLoopLanes, abortRemovedJobs, type LoopLanes } from "./background-executor.ts";
@@ -33,7 +37,7 @@ import { runClockTick, type TickScope } from "./clock.ts";
 import { FAILING_AFTER, failurePause } from "./backoff.ts";
 import { computeDue } from "./schedule.ts";
 import { type ToolHost, automationTools, createLoopJob } from "./tools.ts";
-import { TriggerRuntime, promotionToInbox } from "./trigger-runtime.ts";
+import { TriggerRuntime, checkLane, checkSessionDir, promotionToInbox } from "./trigger-runtime.ts";
 import { auditCronFinish, auditCronStart, controlPlanePreflight } from "./triggers.ts";
 import { shortSessionId } from "./session-head.ts";
 import { DEAD_SESSION_MARKER } from "./convert-v2.ts";
@@ -57,6 +61,8 @@ export interface HostRuntimeDeps {
 	log: (message: string) => void;
 	/** Does pi still have this session? Plain jobs of deleted sessions are parked by the host's sweep. */
 	sessionExists?: (sessionId: string) => boolean;
+	/** pi's sessions directory, where a conversation's file is looked for when no lease names it (`conversationFile`). Absent: only the directories of the files leases name. */
+	sessionsRoot?: string;
 	/** Is this conversation open in the browser page? Then its pi writes the file, and this process never holds it. */
 	pageHolds?: (sessionId: string) => boolean;
 }
@@ -65,9 +71,12 @@ export interface HostRuntime {
 	stores: ReturnType<typeof openStores>;
 	runs: RunList;
 	loops: LoopLanes;
+	/** The answer protocol: a person's yes or no, and what this process runs of it. */
+	answers: Answers;
+	answerLanes: AnswerLanes;
 	budget(): ReturnType<typeof budgetState>;
 	slotCount(): { inUse: number; limit: number };
-	/** Wait up to `ms` for the plain jobs and loops this process started to close. */
+	/** Wait up to `ms` for the plain jobs, loops and answers this process started to close. */
 	drain(ms: number): Promise<void>;
 	riders: Riders<(typeof RUNTIME_RIDERS)[number]>;
 	tick(): Promise<void>;
@@ -136,11 +145,12 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	 */
 	const runHooks = new Map<string, HookRunner>();
 
-	function hookRunnerFor(job: LoopJob, runId: string): HookRunner | undefined {
+	function hookRunnerFor(job: LoopJob, runId: string, opts: { projectHooks: boolean } = { projectHooks: true }): HookRunner | undefined {
 		// A model can pick a job's cwd (`cron_create` takes one) and nobody is here to answer a trust
 		// prompt, so a project's own hooks.toml needs pi's saved trust for that exact directory —
-		// the same bar the host puts in front of a project's MCP servers.
-		const trusted = !!deps.isProjectTrusted?.(job.cwd);
+		// the same bar the host puts in front of a project's MCP servers. A job that is gone has no
+		// project to trust: only the user's own hooks.
+		const trusted = opts.projectHooks && !!deps.isProjectTrusted?.(job.cwd);
 		const runner = new HookRunner({
 			loopsDir: dir,
 			projectCwd: job.cwd,
@@ -159,7 +169,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		if (!trusted) {
 			const kept = runner.hooks.filter((h) => h.source === "user");
 			if (kept.length !== runner.hooks.length) {
-				log(`hooks: ignoring ${runner.hooks.length - kept.length} project hook rule(s) in ${job.cwd}: pi has not trusted that directory`);
+				log(`hooks: ignoring ${runner.hooks.length - kept.length} project hook rule(s) in ${job.cwd}: ${opts.projectHooks ? "pi has not trusted that directory" : "the job is gone"}`);
 				runner.hooks.length = 0;
 				runner.hooks.push(...kept);
 			}
@@ -211,8 +221,51 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			log(redact(message));
 			notice(message, job.cwd);
 		},
+		// A closed conversation's answers: met where its queue is delivered, before a conversation that is gone is buried.
+		answers: (sessionId) => answerLanes.drain(parseLane(sessionId)!, Date.now()),
 		log,
 	});
+	/** `run_start` of a loop's run, a scheduled one or an answer's: its audit line, its log line, its hooks. */
+	const loopStarted = (job: LoopJob, row: ClaimedRow): void => {
+		// The latest slot the row owes, as main named the slot it fired: a slot counted onto a waiting row is the one that runs.
+		auditCronStart(triggers.store, job, row.run.id, row.collapsed_slot ?? row.payload?.slot);
+		log(`loop ${job.name ?? job.id}: run ${row.run.id.slice(0, 12)} started`);
+		const hooks = hookRunnerFor(job, row.run.id);
+		if (hooks) void hooks.fire(runStartEvent(job, row.run.id)).catch((err: any) => log(`hooks: ${redact(err?.message ?? String(err))}`));
+	};
+	/** `run_end` of a loop's run, a scheduled one or an answer's (C2). */
+	const loopFinished = (record: RunRecord): void => {
+		auditCronFinish(triggers.store, { id: record.jobId, cwd: record.cwd }, record, !!record.aborted);
+		log(`loop ${record.jobName ?? record.jobId}: ${record.ok ? "ok" : record.stoppedBy === "person" ? `stopped by you (from ${record.stoppedFrom === "page" ? "the page" : "a terminal"})` : `FAILED (${redact(record.error ?? "")})`} · ${record.findings} finding(s)${record.usage?.cost ? ` · $${record.usage.cost.toFixed(3)}` : ""}`);
+		const hooks = runHooks.get(record.runId);
+		if (hooks) void hooks.fire(runEndEvent({ id: record.jobId, name: record.jobName, cwd: record.cwd } as LoopJob, record)).then(() => runHooks.delete(record.runId), () => runHooks.delete(record.runId));
+		if (!record.ok) {
+			const job = stores.book().jobs.find((candidate) => candidate.id === record.jobId);
+			if (job && !job.stateful && (stores.history().get(job.id)?.streak ?? 0) >= FAILING_AFTER) notice(`${job.name ?? job.id} has failed ${stores.history().get(job.id)?.streak} times in a row; backing off (last: ${record.error ?? "unknown"})`, job.cwd);
+		}
+	};
+	/**
+	 * C2 of an answer's closing in a loop lane: `run_end`. A run closed by the process that ran it has
+	 * the hook runner its `run_start` made; one closed after a restart (F2) has none, so it is made here
+	 * for the loop the lane names, from hooks.toml as the loop's other runs read it. A record whose
+	 * `jobId` is not that loop's fires nothing: the run log is read, and a record in it names any job.
+	 */
+	const answerRunEnd = (record: RunRecord, lane: LaneId): void => {
+		const parsed = parseLane(lane);
+		const jobId = parsed?.kind === "loop" ? parsed.id.slice(1) : undefined;
+		if (jobId === undefined || record.jobId !== jobId) {
+			log(`answer ${record.runId.slice(0, 12)}: run_end not fired, the record names ${record.jobId} and the lane is ${lane}`);
+			return;
+		}
+		if (runHooks.has(record.runId)) return loopFinished(record);
+		// A record written for a process that died names no job's name: the loop's own, as its hooks know it.
+		const job = stores.book().jobs.find((candidate) => candidate.id === jobId);
+		const named = record.jobName === undefined && job?.name !== undefined ? { ...record, jobName: job.name } : record;
+		// A removed job's record names a cwd nobody vouches for now: its run_end loads no project hooks.
+		hookRunnerFor(job ?? ({ id: jobId, name: record.jobName, cwd: record.cwd } as LoopJob), record.runId, { projectHooks: job !== undefined });
+		loopFinished(named);
+	};
+	const loopLog = (message: string, level?: "info" | "warning", job?: Pick<LoopJob, "cwd">): void => { log(redact(message)); if (level !== "info") notice(message, job?.cwd); };
 	const loops: LoopLanes = createLoopLanes({
 		stores,
 		runs,
@@ -225,29 +278,62 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		budgetCap: () => deps.config().dailyBudgetUsd,
 		cwdExists: fs.existsSync,
 		sinks: {
-			started: (job, row) => {
-				// The latest slot the row owes, as main named the slot it fired: a slot counted onto a waiting row is the one that runs.
-				auditCronStart(triggers.store, job, row.run.id, row.collapsed_slot ?? row.payload?.slot);
-				log(`loop ${job.name ?? job.id}: run ${row.run.id.slice(0, 12)} started`);
-				const hooks = hookRunnerFor(job as LoopJob, row.run.id);
-				if (hooks) void hooks.fire(runStartEvent(job as LoopJob, row.run.id)).catch((err: any) => log(`hooks: ${redact(err?.message ?? String(err))}`));
-			},
-			finished: (record) => {
-				auditCronFinish(triggers.store, { id: record.jobId, cwd: record.cwd }, record, !!record.aborted);
-				log(`loop ${record.jobName ?? record.jobId}: ${record.ok ? "ok" : record.stoppedBy === "person" ? `stopped by you (from ${record.stoppedFrom === "page" ? "the page" : "a terminal"})` : `FAILED (${redact(record.error ?? "")})`} · ${record.findings} finding(s)${record.usage?.cost ? ` · $${record.usage.cost.toFixed(3)}` : ""}`);
-				const hooks = runHooks.get(record.runId);
-				if (hooks) void hooks.fire(runEndEvent({ id: record.jobId, name: record.jobName, cwd: record.cwd } as LoopJob, record)).then(() => runHooks.delete(record.runId), () => runHooks.delete(record.runId));
-				if (!record.ok) {
-					const job = stores.book().jobs.find((candidate) => candidate.id === record.jobId);
-					if (job && !job.stateful && (stores.history().get(job.id)?.streak ?? 0) >= FAILING_AFTER) notice(`${job.name ?? job.id} has failed ${stores.history().get(job.id)?.streak} times in a row; backing off (last: ${record.error ?? "unknown"})`, job.cwd);
-				}
-			},
+			started: loopStarted,
+			finished: loopFinished,
 			filed: () => undefined,
 			retired: (job, reason) => {
 				triggers.store.appendAudit({ cwd: job.cwd, type: "cron_control_plane", traceId: newId("audit"), state: "remove", sourceLabel: "clock", eventLabel: job.id, summary: `${job.name ?? job.id}: ${reason}` });
 			},
-			log: (message, level, job) => { log(redact(message)); if (level !== "info") notice(message, job?.cwd); },
+			log: loopLog,
 		},
+	});
+	/** A check lane's transcripts: where its checks keep them (`checkSessionDir`, the one source). */
+	const checkDir = (cwd: string): string => checkSessionDir(stores.jobs, cwd);
+	/** The answer protocol over this directory's stores (src/answers.ts). */
+	const answers: Answers = createAnswers({
+		inbox: stores.inbox,
+		requests,
+		jobs: stores.jobs,
+		audit: stores.rules,
+		sessionFile: conversationFile(leases, new ConversationIndex(deps.sessionsRoot, undefined, () => leases.list().flatMap((l) => (l.sessionFile ? [l.sessionFile] : [])))),
+		entries: (file) => (fs.existsSync(file) ? sessionFileEntries(file) : undefined),
+		checkSessionDir: checkDir,
+		checkLaneOf: checkLane,
+		runEnd: answerRunEnd,
+		self: createdBy,
+		now: Date.now,
+		log,
+	});
+	/**
+	 * A transcript a live pi other than this process has open: a window or the page holds the
+	 * conversation of its session id. The lease this process took for an answer's turn there is not
+	 * such a pi. No file is read.
+	 */
+	const transcriptHeld = (id: string): boolean => {
+		if (parseLane(id)?.kind !== "conversation") return false;
+		if (deps.pageHolds?.(id)) return true;
+		const holder = liveHolderPid(leases, id) === undefined ? undefined : leases.read(id)?.holder;
+		return !!holder && !sameHolder(holder, me());
+	};
+	const answerLanes: AnswerLanes = createAnswerLanes({
+		answers,
+		stores,
+		runs,
+		runner: deps.runner,
+		slots,
+		session: deps.session,
+		hop: 0,
+		holder: () => ({ pid: process.pid, procStart: ownStart }),
+		budgetCap: () => deps.config().dailyBudgetUsd,
+		cwdExists: fs.existsSync,
+		transcriptHeld,
+		checkRunning: (lane) => triggers.checkRunningIn(lane),
+		checkSessionDir: checkDir,
+		// The cap of a check's answer is the check's own, from the same function (`checkCap`).
+		checkCap: (cwd) => triggers.checkCapOf(cwd),
+		conversations: background.conversations,
+		started: loopStarted,
+		log: loopLog,
 	});
 	/**
 	 * A rule's result is a request addressed to a conversation (src/engine.ts promotionTarget): the one
@@ -485,12 +571,15 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				},
 				cwdExists: fs.existsSync,
 				heldEpoch: (sessionId: string) => leases.holds(sessionId, me()) ? leases.read(sessionId)?.epoch : undefined,
-				claimLive: claimAlive,
+				// One liveness with the loop lanes and the answer lanes: an `ans-` claim of this process holds nothing once its run left the list.
+				claimLive: (row: ClaimedRow) => laneClaimLive(row, { pid: process.pid, procStart: ownStart }, (runId) => runs.get(runId) !== undefined),
 			};
 			const scope: TickScope = { kind: "background", self: createdBy(), startedAt: facts.startedAt, tickMs: facts.tickMs, catchUp: deps.config().cronCatchUp, budgetOver: budgetState(stores.jobs, deps.config().dailyBudgetUsd, now).over, mine: (job) => job.stateful ? { kind: "loop" } : undefined };
 			await runClockTick(scope, sources, { jobs: { remove: (id) => stores.jobs.remove(id), disable: (id, disabled) => stores.jobs.disable(id, disabled) }, caughtUp: (job) => log(`loop ${job.name ?? job.id}: catching up a missed tick`), log: (message, level, job) => { log(redact(message)); if (level !== "info") notice(message, job?.cwd); } }, now);
 			firePlain(now);
 		},
+		// Before the loop lanes: an answer E4 starts here holds its lane, so a slot due beside it is skipped as an overlap in this tick.
+		answers: (now) => answerLanes.tick(now),
 		"loop-lanes": (now) => loops.drainAll(now),
 		notices: (now, facts) => {
 			const budget = budgetState(stores.jobs, deps.config().dailyBudgetUsd, now);
@@ -515,12 +604,15 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		stores,
 		runs,
 		loops,
+		answers,
+		answerLanes,
 		budget: () => budgetState(stores.jobs, deps.config().dailyBudgetUsd, Date.now()),
 		slotCount: () => ({ inUse: slots.inUseCount, limit: slots.limit }),
 		drain: async (ms) => {
 			const deadline = Date.now() + ms;
 			while (plainRuns.size && Date.now() < deadline) await Promise.race([Promise.allSettled([...plainRuns]), new Promise((resolve) => setTimeout(resolve, 25))]);
 			await loops.settle(Math.max(0, deadline - Date.now()));
+			await answerLanes.settle(Math.max(0, deadline - Date.now()));
 		},
 		riders,
 		tick: async () => {
@@ -552,6 +644,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		stop: async () => {
 			for (const w of watchers.splice(0)) w.close();
 			await triggers.stop();
+			await answerLanes.stop(5_000);
 			await loops.stop(5_000);
 			for (const run of runs.all()) run.ctrl.abort();
 			await Promise.race([Promise.allSettled([...plainRuns]), new Promise((resolve) => setTimeout(resolve, 5_000).unref())]);

@@ -5,7 +5,8 @@
  * of the seed alone, and a step can be taken out of it without changing what the others mean. That
  * is what lets a failing schedule be cut down to the steps that matter.
  */
-import { type DrainResult, cancelRow, conversationHas, enqueue, goalRow, handOver, inboxClaimRow, personRow, plainJobRow, plainRunId, requestFingerprint, ringProduced, ruleResultRow, stopRow } from "../../src/engine.ts";
+import { personAnswers } from "../../src/answers.ts";
+import { type DrainResult, cancelRow, conversationHas, enqueue, goalRow, personRow, plainJobRow, plainRunId, requestFingerprint, ringProduced, ruleResultRow, stopRow } from "../../src/engine.ts";
 import type { Row } from "../../src/requests.ts";
 import { stamp } from "../../src/schedule.ts";
 import { type Violation, createChecker, type Coverage } from "./invariants.ts";
@@ -57,6 +58,9 @@ export function plan(seed: number, steps: number): Plan {
 }
 
 const signedBy = (proc: Process | undefined): Row["created_by"] => (proc ? { pid: proc.pid, instance: proc.name, version: "sim" } : CLI);
+
+/** A person's word over the world's inbox, from `proc` or a shell. The world has no loop, so a yes has no lane and runs nothing. */
+const answersOf = (world: World, proc: Process | undefined) => personAnswers({ inbox: world.inbox, requests: world.store, jobs: { load: () => [] }, audit: world.audit, sessionFile: () => undefined, self: () => signedBy(proc), now: () => world.clock, log: () => undefined });
 const seconds = (ms: number): string => (ms < 1_000 ? `${ms} ms` : ms < 60_000 ? `${ms / 1_000} s` : `${ms / 60_000} min`);
 const names = (world: World, ids: readonly string[]): string => ids.map((id) => label(world, id)).join(", ");
 
@@ -174,9 +178,10 @@ function produce(world: World, conversation: Conversation, b: number, c: number)
 }
 
 /**
- * A loop's run files a finding, or two people decide one finding at once. A claim is the engine's
- * own (`handOver`): made in a window, it queues the hand-off under the inbox lock once the finding
- * is found new, and that window drains. A dismiss goes to the inbox alone.
+ * A loop's run files a finding, or two people decide one finding at once. A claim is a person's yes
+ * (src/answers.ts): made in a window, it marks the finding under the inbox lock once the finding is
+ * found new, and queues nothing in the conversation, since an answer runs in its lane in the
+ * background. A dismiss is a no from a shell.
  */
 async function inbox(world: World, b: number, c: number): Promise<string> {
 	const n = ++world.made;
@@ -193,17 +198,10 @@ async function inbox(world: World, b: number, c: number): Promise<string> {
 		const proc = (b >>> (3 + i)) % 2 === 0 || !windows.length ? undefined : pick(windows, c >>> (4 + 8 * i));
 		if (!proc) {
 			says.push("a dismiss");
-			return async () => "ok" in (await world.inbox.decide(entry.id, "dismissed"));
+			return async () => (await answersOf(world, undefined).say(entry.id, "no", { by: "cli" })).said !== "nothing";
 		}
-		const window = proc.window!;
-		const made = inboxClaimRow(`address finding ${index + 1} (claim ${n}.${i}).`, entry.id, { sessionId: proc.conversation.id, cwd: CWD, createdBy: signedBy(proc) }, world.clock);
-		// A readable id for the schedule's lines, in the prefix too, as `inboxClaimRow` writes its own.
-		const row = { ...made, id: `claim-${n}.${i}`, payload: { ...made.payload!, text: made.payload!.text.replace(`[Trigger ${made.id}] `, `[Trigger claim-${n}.${i}] `) } };
-		world.labels.set(row.id, `claim#${n}.${i}`);
 		says.push(`a claim in ${who(proc)}`);
-		const deps = { store: world.store, delivered: (id: string) => window.delivered(id), produced: (queued: Row) => window.produced(queued), drain: () => drainAs(world, proc, false) };
-		// A claim that won has drained, so it has a result; one that lost queued nothing and has none.
-		return async () => (await handOver(deps, row, { inbox: world.inbox, entryId: entry.id })).result !== undefined;
+		return async () => (await answersOf(world, proc).say(entry.id, "yes", { by: "terminal", session: proc.conversation.id })).said !== "nothing";
 	});
 	const ok = (await atOnce(world, acts)).filter(Boolean).length;
 	world.facts.decided.push({ was: entry.status, ok });

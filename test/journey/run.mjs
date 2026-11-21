@@ -20,7 +20,7 @@ for (let i = 0; i < process.argv.length - 2; i++) {
 	else if (arg.startsWith("--")) usage();
 	else options.ids.push(arg);
 }
-if (!options.ids.length || (options.ids.includes("all") && options.ids.length !== 1) || options.ids.some((id) => id !== "all" && !/^J(?:[1-9]|1[0-2])$/.test(id))) usage();
+if (!options.ids.length || (options.ids.includes("all") && options.ids.length !== 1) || options.ids.some((id) => id !== "all" && !/^J(?:[1-9]|1[0-3])$/.test(id))) usage();
 if (options.receipt && options.criterion !== "journeys") usage();
 if (!options.receipt && (options.criterion || options.producedBy)) usage();
 const all = options.ids[0] === "all";
@@ -212,7 +212,7 @@ function valueAt(index) {
 	return value;
 }
 function usage() {
-	console.error("usage: npm run journey -- <J1..J12|all> [--against <ref>] [--reply <text>] [--receipt <file> --criterion journeys --produced-by <name>]");
+	console.error("usage: npm run journey -- <J1..J13|all> [--against <ref>] [--reply <text>] [--receipt <file> --criterion journeys --produced-by <name>]");
 	process.exit(2);
 }
 function installLine(tool) {

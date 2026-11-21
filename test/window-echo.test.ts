@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WindowExecutor } from "../src/window-executor.ts";
-import { drain, inboxClaimRow, personRow, plainJobRow, requestFingerprint } from "../src/engine.ts";
+import { drain, personRow, plainJobRow, recipeRow, requestFingerprint } from "../src/engine.ts";
 import { RequestStore, type Row } from "../src/requests.ts";
 import { Inbox } from "../src/inbox.ts";
 import { TriggerStore } from "../src/triggers.ts";
@@ -46,7 +46,7 @@ function win(emit: "inside" | "never", mode: "rpc" | "tui" = "rpc") {
 test("a turn row pi-loops wrote goes to pi as a custom message that asks for a turn, its row and its cap in the details, and no user message", () => {
 	const w = win("never");
 	const cron = plainJobRow({ ...job, tools: ["read"] }, "run-1", "cron:job-1", "", by, T0);
-	const claim = inboxClaimRow("look into the cache", "inb-1", { sessionId: "s", cwd: "/p", createdBy: by }, T0);
+	const claim = recipeRow("look into the cache", "inb-1", "tracker", { sessionId: "s", cwd: "/p", createdBy: by }, T0);
 	w.queued.set(cron.id, cron).set(claim.id, claim);
 	w.ex.produced(claim);
 	assert.equal(w.ex.turn(cron, T0), "sent");

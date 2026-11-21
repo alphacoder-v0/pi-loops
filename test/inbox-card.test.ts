@@ -1,7 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { questionFinding } from "../src/ask.ts";
 import { type InboxEntry } from "../src/inbox.ts";
-import { DISMISS_CHIPS, cardLine, cardLines, cardOrigin, screenText, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, dismissTail, inboxCard, splitFinding } from "../src/inbox-card.ts";
+import { CANCELLED_LINE, DISMISS_CHIPS, answerLine, answerWho, cancelRefusal, clearLeftTail, cardLine, cardLines, cardOrigin, cardsOf, claimLine, dismissLine, dismissOutcome, dismissTail, inboxCard, noQuestionLine, shellClaimOfQuestion, splitFinding, yesPageLine, yesTerminalLine } from "../src/inbox-card.ts";
+import type { Row } from "../src/requests.ts";
+import { screenText } from "../src/redact.ts";
 
 const entry = (over: Partial<InboxEntry>): InboxEntry => ({
 	id: "inb-3f2a9c1d00000000000000000000000a",
@@ -42,7 +45,7 @@ test("a card carries the finding's marks, origin, loop and owner, redacted and c
 	assert.equal(decision.kind, "decision");
 	assert.deepEqual([decision.headline, decision.waits, decision.ifNot], ["ship it", "you", "it waits"]);
 	assert.deepEqual([decision.verified, decision.verifiedReason, decision.origin, decision.loop], [true, "reproduced", "loop", { id: "cron-0123", name: "issue-triage", label: "issue-triage" }]);
-	assert.deepEqual([decision.fromThisConversation, decision.hasTranscript, decision.claiming], [true, true, false]);
+	assert.deepEqual([decision.fromThisConversation, decision.hasTranscript], [true, true]);
 	assert.equal(inboxCard(entry({ session_id: "session-b" }), ctx)!.fromThisConversation, false);
 	assert.deepEqual(inboxCard(entry({ job_id: "cron-gone" }), ctx)!.loop, { id: "cron-gone", label: "cron-gone" }, "a loop that is gone keeps its id and has no name");
 	assert.equal(inboxCard(entry({ job_id: "cron-15c11c9f364f92b42c49f6d15ea2bff6" }), ctx)!.loop?.label, "cron-15c11c9f", "a loop with no name is labelled as every surface labels it");
@@ -50,8 +53,6 @@ test("a card carries the finding's marks, origin, loop and owner, redacted and c
 	assert.deepEqual([rule.origin, rule.loop, rule.hasTranscript], ["rule", undefined, false], "a rule's result has no loop and no transcript");
 	assert.equal(inboxCard(entry({ text: "could not be delivered (the conversation is gone): run the tests", undelivered: true }), ctx)!.origin, "undelivered");
 	assert.equal(inboxCard(entry({ text: "could not be delivered (the conversation is gone): run the tests" }), ctx)!.origin, "loop", "a loop that writes the words is still a loop");
-	assert.equal(inboxCard(entry({}), { ...ctx, claiming: () => true })!.claiming, true);
-	assert.equal(inboxCard(entry({ status: "claimed" }), { ...ctx, claiming: () => true })!.claiming, false, "only a new finding is being claimed");
 	const key = "sk-ant-api03-" + "a".repeat(40);
 	assert.ok(!inboxCard(entry({ text: `leaked ${key} in the log` }), ctx)!.headline.includes(key), "a key in the text is redacted");
 	const capped = inboxCard(entry({ kind: "checkpoint", text: `${"d".repeat(570)} · waits: you · if not: it waits` }), ctx)!;
@@ -106,16 +107,6 @@ test("a dismiss tells the loop's next run, nobody, or says nothing", () => {
 	assert.deepEqual([...DISMISS_CHIPS], ["Not a bug", "Already fixed", "Duplicate", "Too noisy", "Not now"]);
 });
 
-test("a claim's prompt is the finding first, then where it came from, and what a checkpoint's claim means", () => {
-	// The first line titles the conversation a claim starts, so it is the finding, not a wrapper.
-	assert.equal(claimPrompt(entry({}), "issue-triage"), "CI green on main again. Run 412 took 3m.\n\n(from loop issue-triage in acme-api; investigate and address it)");
-	assert.equal(claimPrompt(entry({ source: "cron:cron-5f1c0a2b9d3e4f60718293a4b5c6d7e8", job_id: "cron-5f1c0a2b9d3e4f60718293a4b5c6d7e8" })), "CI green on main again. Run 412 took 3m.\n\n(from loop cron-5f1c0a2b in acme-api; investigate and address it)", "an unnamed loop: its label, never cron:<whole id>");
-	assert.equal(claimPrompt(entry({ source: "trigger:local:dynamic", job_id: "dyn-1" })), "CI green on main again. Run 412 took 3m.\n\n(from trigger:local:dynamic in acme-api; investigate and address it)", "a rule's finding: its source");
-	assert.match(claimPrompt(entry({ kind: "checkpoint", verified: true, verified_reason: "reproduced" }), "issue-triage"), /investigate and address it\)\n\(An independent checker reviewed and kept this finding: reproduced\.\)\nThis finding is a checkpoint: claiming it is the person's approval/);
-	assert.equal(claimPrompt(entry({ text: "could not be delivered (pi stopped): run the tests" }), "issue-triage"), "could not be delivered (pi stopped): run the tests\n\n(from loop issue-triage in acme-api; investigate and address it)", "a loop's finding in a dead letter's words is investigated, not carried out");
-	assert.equal(claimPrompt(entry({ text: "could not be delivered (pi stopped): run the tests", undelivered: true })), "This prompt (cron:issue-triage, for /home/u/acme-api) could not be delivered earlier (pi stopped). Do what it asks now:\nrun the tests");
-});
-
 test("a queued claim says where it runs, in the page's words", () => {
 	assert.equal(claimLine("page", "release notes"), 'Running in "release notes".');
 	assert.equal(claimLine("started"), "Starting its conversation…");
@@ -141,27 +132,21 @@ test("a finding's terminal escape sequences and bidi overrides do not reach the 
 	assert.ok(!cardLines(card, "", "").join("\n").match(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/), "nothing a terminal would act on");
 });
 
-test("an escape introducer with no terminator hides nothing: the card and the claim read the same words", () => {
+test("an escape introducer with no terminator hides nothing: the card reads the words", () => {
 	assert.equal(screenText("a\u001b]0;x rest"), "a0;x rest", "the lone introducer goes, the words stay");
 	const e = entry({ kind: "checkpoint", text: "Deploy? \u001b]0;x · waits: your yes · if not: nothing ships" });
 	const card = inboxCard(e, ctx)!;
 	assert.deepEqual([card.headline, card.waits, card.ifNot], ["Deploy? 0;x", "your yes", "nothing ships"]);
-	const prompt = claimPrompt(e);
-	assert.ok(prompt.includes("Deploy? 0;x · waits: your yes · if not: nothing ships"), prompt);
-	assert.ok(!prompt.includes("\u001b"), "no escape reaches the turn either");
 	assert.ok(inboxCard(entry({ text: "\u001b]0;all of it" }), ctx)!.headline.includes("all of it"), "a finding that is all introducer still has its words");
 });
 
-test("tag and zero-width characters are taken out, so the card shows every character the claim sends", () => {
+test("tag and zero-width characters are taken out of the card", () => {
 	const tags = String.fromCodePoint(0xe0001, 0xe0041, 0xe0042, 0xe007f);
 	const hidden = `ship\u200b it now\u2060\ufeff${tags}`;
 	assert.equal(screenText(hidden), "ship it now");
 	assert.equal(screenText(`a${String.fromCodePoint(0xe0080)}b`), `a${String.fromCodePoint(0xe0080)}b`, "a character past the tag block stays");
 	const e = entry({ text: hidden, source: `cron:tri\u200bage${tags}`, cwd: `/home/u/api\ufeff` });
 	assert.equal(inboxCard(e, ctx)!.headline, "ship it now");
-	const prompt = claimPrompt(e);
-	assert.ok(prompt.startsWith("ship it now\n") && prompt.includes(" in api;"), prompt);
-	assert.doesNotMatch(prompt, /[\u200b-\u200d\u2060\ufeff]|[\u{e0000}-\u{e007f}]/u);
 });
 
 test("every invisible character a variation or filler hides is taken out, and an emoji, a joined word and an ideographic variant keep theirs", () => {
@@ -179,32 +164,6 @@ test("every invisible character a variation or filler hides is taken out, and an
 	assert.equal(screenText("ok \u2764\ufe0f \u2764\ufe0e"), "ok \u2764\ufe0f \u2764\ufe0e", "U+FE0F and U+FE0E choose how an emoji is drawn");
 	// Joiners and ideographic variation selectors are part of ordinary text, a typed dismiss reason included.
 	for (const text of ["\u{1f468}\u200d\u{1f469}\u200d\u{1f467} family", "\u{1f3f3}\ufe0f\u200d\u{1f308} flag", "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645", "\u0915\u094d\u200c\u0937", "\u845b\u{e0100}\u98fe"]) assert.equal(screenText(text), text, JSON.stringify(text));
-});
-
-test("a secret the card masks is masked in the claim's prompt too", () => {
-	const key = "sk-ant-api03-" + "a".repeat(40);
-	const e = entry({ text: `leaked ${key} in the log`, verified: true, verified_reason: `saw ${key}` });
-	const card = inboxCard(e, ctx)!;
-	const prompt = claimPrompt(e);
-	assert.ok(!prompt.includes(key), prompt);
-	assert.ok(prompt.includes(card.headline), `the card's words: ${card.headline}`);
-	assert.ok(prompt.includes(`kept this finding: ${card.verifiedReason}`), prompt);
-});
-
-test("a claim's prompt carries no escape codes from the source, the loop's name or the cwd, and no more text than the card shows", () => {
-	const source = "cron:\u001b]0;PWNSRC\u0007tri\u001b[41mage\u001b[0m\n x";
-	const cwd = "/home/u/\u001b[2Japi\tdir";
-	const controls = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/;
-	const late = claimPrompt(entry({ source, cwd, text: "could not be delivered (pi stopped): run the tests", undelivered: true }));
-	assert.ok(!controls.test(late), JSON.stringify(late));
-	assert.ok(late.includes("(cron:triage x, ") && late.includes("/home/u/api dir)"), late);
-	const loop = claimPrompt(entry({ source, cwd, text: "a finding" }), "tri\u001b[41mage\u001b[0m\n x");
-	assert.ok(!controls.test(loop), JSON.stringify(loop));
-	assert.ok(loop.endsWith("(from loop triage x in api dir; investigate and address it)"), loop);
-	const rule = claimPrompt(entry({ source: source.replace("cron:", "trigger:"), cwd, text: "a finding" }));
-	assert.ok(rule.endsWith("(from trigger:triage x in api dir; investigate and address it)"), rule);
-	const long = claimPrompt(entry({ text: "y".repeat(600) }));
-	assert.ok(long.includes(`${"y".repeat(500)}…`) && !long.includes("y".repeat(501)), "capped as the card is");
 });
 
 test("a rule result's card names the rule's condition, redacted and clipped, and nothing when the rule is gone", () => {
@@ -231,4 +190,108 @@ test("a rule result's headline is what the check said after its `matched <rule-i
 	assert.equal(inboxCard(entry({ source: "trigger:local:dynamic", job_id: a, text: `matched \`${a}\`, ${b}: Contents of $HOME/helloworld: hello, world` }), ctx)!.headline, "Contents of $HOME/helloworld: hello, world", "two ids, quoted, then a colon");
 	assert.equal(inboxCard(entry({ source: "trigger:local:dynamic", job_id: a, text: `matched ${a}.` }), ctx)!.headline, `matched ${a}.`, "nothing after the token: the token is the headline");
 	assert.equal(inboxCard(entry({ source: "cron:x", job_id: "cron-0123", text: `matched ${a}. a loop said it` }), ctx)!.headline, `matched ${a}.`, "a loop's finding is not a rule result");
+});
+
+const QUESTION = { kind: "call" as const, id: `ask-${"b".repeat(32)}`, lane: "@cron-0123" as const, session_id: "sid-1", title: "nightly asks to run a command", call: { tool: "bash", tool_call_id: "c1", command: "git push --force origin fix/login", input_sha256: "a".repeat(64), reason: "git push --force on main/master" }, created_at: "2026-11-20T00:00:00.000+00:00" };
+const RUN = { id: "ans-1", pid: 1, started_at: "2026-11-20T00:00:00.000+00:00" };
+const AT = "2026-11-20T00:00:00.000+00:00";
+
+test("an answer's state reads as design 6.1's table says, from the finding alone", () => {
+	const claimed = (over: Partial<InboxEntry>) => entry({ status: "claimed", answered_by: "page", claimed_by: "s1", ...over });
+	assert.equal(answerLine(claimed({ answer: { state: "pending", at: AT } })), "Waiting to run");
+	const waiting = { waiting: "today's automation has cost $5.02 of the $5.00 budget" } as Row;
+	assert.equal(answerLine(claimed({ answer: { state: "pending", at: AT } }), waiting), "Waiting to run: today's automation has cost $5.02 of the $5.00 budget", "why the lane is blocked, from the row");
+	assert.equal(answerLine(claimed({ answer: { state: "started", run: RUN, at: AT } })), "Running");
+	assert.equal(answerLine(claimed({ answer: { state: "done", run: RUN, at: AT } }), undefined, "\nClosed #412.\nmore"), "Done · Closed #412.", "the run's summary while the run log has the record");
+	assert.equal(answerLine(claimed({ answer: { state: "done", run: RUN, at: AT } })), "Done", "then Done");
+	assert.equal(answerLine(claimed({ ask: QUESTION, answer: { state: "unfinished", run: RUN, why: "stopped", ending: "The command was not run.", at: AT } })), "Started and did not finish (stopped). The command was not run.");
+	assert.equal(answerLine(claimed({ ask: QUESTION, answer: { state: "unfinished", run: RUN, why: "the process died", at: AT } })), "Started and did not finish (the process died). The command may or may not have run.");
+	assert.equal(answerLine(claimed({ answer: { state: "unfinished", run: RUN, why: "stopped", at: AT } })), "Started and did not finish (stopped).", "a finding that is not a question has no ending");
+	assert.equal(answerLine(claimed({ answer: { state: "not_run", why: "the loop was removed", at: AT } })), "Not run (the loop was removed)");
+	assert.equal(answerLine(entry({ status: "claimed", answered_by: "cli" })), "Claimed from the command line. Nothing ran");
+	assert.equal(answerLine(entry({ status: "claimed", claimed_by: "s1" })), "Claimed before the upgrade.", "no answer and no answered_by: a claim 0.24.2 made");
+	assert.equal(answerLine(entry({})), undefined, "a new finding has nothing to say");
+	assert.equal(answerLine(entry({ status: "dismissed", answered_by: "page" })), undefined);
+	assert.equal(answerLine(claimed({ answer: { state: "unreadable", raw: { state: "later" } } })), undefined, "an answer a newer version wrote says nothing");
+	const key = "sk-ant-api03-" + "a".repeat(40);
+	const said = answerLine(claimed({ answer: { state: "unfinished", run: RUN, why: `failed \u001b[31m${key}`, at: AT } }))!;
+	assert.ok(!said.includes(key) && !said.includes("\u001b"), said);
+});
+
+test("a yes from the page whose row was not queued does not say it runs", () => {
+	const news = entry({ status: "claimed" });
+	for (const kept of [true, false]) {
+		const line = yesPageLine({ said: "Y1", finding: news, queued: false }, "nightly", kept);
+		assert.doesNotMatch(line, /running/i, `transcript kept: ${kept}`);
+		assert.equal(line, "Your yes is saved, but its run could not be queued. pi-loops queues it again on its next tick.");
+	}
+	assert.equal(yesPageLine({ said: "Y1", finding: news, queued: true }, "nightly", true), "Running in the background, in the run that reported it.");
+});
+
+test("a cancel that comes too late is refused in design 6.2's words", () => {
+	assert.equal(CANCELLED_LINE, "Cancelled. The question is open again");
+	assert.equal(cancelRefusal({ refused: "state", state: "started" }), "it has already started: stop it instead");
+	for (const state of ["done", "unfinished", "not_run"] as const) assert.equal(cancelRefusal({ refused: "state", state }), "it has already ended", state);
+	assert.equal(cancelRefusal({ refused: "not-a-real-yes" }), "it has no queued answer to cancel");
+	assert.equal(cancelRefusal({ refused: "state", state: "none" }), "it has no queued answer to cancel");
+});
+
+test("a yes and a no say what design 6.1 and 6.2 say, on each surface", () => {
+	const news = entry({ status: "claimed" });
+	const asked = entry({ status: "claimed", ask: QUESTION });
+	assert.equal(yesTerminalLine({ said: "Y1", finding: news }, "nightly", true), "claimed: nightly picks this up in the run that reported it, in the background. A card comes here when it ends.");
+	assert.equal(yesTerminalLine({ said: "Y1", finding: asked }, "nightly", true), "approved: nightly resumes the run that asked, with this one command allowed. A card comes here when it ends.");
+	assert.equal(yesTerminalLine({ said: "Y2", finding: news, why: "the loop was removed" }, "nightly", true), "the loop was removed; nothing runs");
+	assert.equal(yesTerminalLine({ said: "Y2", finding: news, why: "the conversation was deleted" }, "nightly", false), "the conversation was deleted; nothing runs", "a yes that runs nothing waits for nothing");
+	assert.equal(yesPageLine({ said: "Y1", finding: news }, "nightly", true), "Running in the background, in the run that reported it.");
+	assert.equal(yesPageLine({ said: "Y1", finding: news }, "nightly", false), "Running in the background. The run's transcript is gone, so nightly starts from the finding's text.");
+	assert.equal(yesPageLine({ said: "Y1", finding: { ...asked, answered_by: "page", answer: { state: "pending", at: AT } } }, "nightly", true), "Waiting to run", "a question shows its state at once");
+	assert.equal(yesPageLine({ said: "Y2", finding: news, why: "the loop was removed" }, "nightly", true), "Not run (the loop was removed)");
+	assert.equal(noQuestionLine("terminal", "nightly"), "said no: nightly is told why on its next run; the same command is refused for 14 days");
+	assert.equal(noQuestionLine("page", "nightly"), "You said no. nightly is told on its next run, and the same command is refused for 14 days.");
+	assert.equal(shellClaimOfQuestion("inb-3f2a9c1d", "nightly"), "inbox entry inb-3f2a9c1d is a question from nightly, and a claim from a shell allows no command: answer it on the page or in pi with /inbox");
+});
+
+test("[yes-waits] a yes said while pi-loops is not running in the background says it runs when pi-loops does", () => {
+	const news = entry({ status: "claimed" });
+	const asked = entry({ status: "claimed", ask: QUESTION });
+	assert.equal(yesTerminalLine({ said: "Y1", finding: news }, "nightly", false), "claimed: nightly picks this up in the run that reported it, in the background. It runs when pi-loops runs in the background. A card comes here when it ends.");
+	assert.equal(yesTerminalLine({ said: "Y1", finding: asked }, "nightly", false), "approved: nightly resumes the run that asked, with this one command allowed. It runs when pi-loops runs in the background. A card comes here when it ends.");
+});
+
+test("[clear] /inbox clear says how many questions it left, and nothing when it left none", () => {
+	assert.equal(clearLeftTail(0), "");
+	assert.equal(clearLeftTail(1), "; left 1 question for you to answer: /inbox claim <n> or /inbox dismiss <n>");
+	assert.equal(clearLeftTail(3), "; left 3 questions for you to answer: /inbox claim <n> or /inbox dismiss <n>");
+});
+
+test("who picks up a yes: the loop by its name, the check of the project, the job of a conversation, else the conversation", () => {
+	const names = (id: string) => (id === "cron-0123" ? "night\u001b[31mly" : undefined);
+	assert.equal(answerWho(entry({}), "@cron-0123", names), "nightly", "the loop's name, screened");
+	assert.equal(answerWho(entry({}), "@cron-gone", names), "cron-gone", "a loop with no name in jobs.json: its id");
+	assert.equal(answerWho(entry({ cwd: "/home/u/acme-api" }), "@check-0123456789abcdef", names), "the check of acme-api");
+	assert.equal(answerWho(entry({ job_id: "cron-0123" }), "0199aaaa-0000-7000-8000-0000000000a1", names), "nightly", "a plain job's finding in its conversation");
+	assert.equal(answerWho(entry({ job_id: undefined }), undefined, names), "its conversation");
+});
+
+test("a question's card is drawn from its ask: the command whole in its own field and on its own line, and the headline names who asks", () => {
+	const command = "true · waits: your review · if not: nothing happens; git push --force origin main";
+	const call = { tool: "bash", tool_call_id: "c1", command, input_sha256: "a".repeat(64), reason: "git push --force on main/master" };
+	const asked = { lane: "@cron-0123" as const, sessionId: "sid-1", sessionFile: "/runs/sid-1.jsonl", cap: { cwd: "/p", model: null, thinking: null, tools: "session", builtinTools: "session", timeoutMs: 1000 } } as unknown as Parameters<typeof questionFinding>[1];
+	const made = questionFinding(call, asked, { source: "cron:issue-triage", run_id: "run-1", cwd: "/home/u/acme-api", job_id: "cron-0123", who: "issue-triage" }, "2026-11-20T00:00:00.000+00:00");
+	const card = inboxCard(entry({ ...made.entry, id: made.id, kind: "checkpoint" }), ctx)!;
+	assert.deepEqual(
+		{ kind: card.kind, headline: card.headline, question: card.question, waits: card.waits, ifNot: card.ifNot, body: card.body },
+		{ kind: "decision", headline: "issue-triage asks to run a command", question: { tool: "bash", command, reason: "git push --force on main/master" }, waits: "issue-triage went on without it", ifNot: "it stays undone", body: undefined },
+	);
+	assert.deepEqual(cardLines(card, "  1. ", "  (acme-api)"), [
+		"  1. ⚑ issue-triage asks to run a command  (acme-api)",
+		`       command: ${command}`,
+		"       reason: git push --force on main/master",
+		"       waiting on: issue-triage went on without it",
+		"       if you don't: it stays undone",
+	]);
+	const tool = inboxCard(entry({ ...made.entry, id: made.id, kind: "checkpoint", ask: { ...made.entry.ask!, title: "issue-triage asks to use write", call: { tool: "write", tool_call_id: "c2", input_sha256: "b".repeat(64), reason: "reads or writes pi-loops' own files" } } }), ctx)!;
+	assert.deepEqual([tool.headline, tool.question], ["issue-triage asks to use write", { tool: "write", reason: "reads or writes pi-loops' own files" }], "a call with no command names its tool and no command");
+	assert.deepEqual(inboxCard(entry({ kind: "checkpoint", text: "Close #412? · waits: the release · if not: it ships open" }), ctx)!.question, undefined, "a finding with no ask keeps today's card");
 });

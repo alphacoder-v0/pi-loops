@@ -10,7 +10,7 @@ import { jobCounts, runHistory } from "../src/job-status.ts";
 import { clockStore } from "../src/stores.ts";
 import { addV2, viewV2 } from "./v2-jobs.ts";
 import { plainJobRow, plainRunId } from "../src/engine.ts";
-import { abortRemovedJobs, createBackgroundExecutor } from "../src/background-executor.ts";
+import { abortRemovedJobs, createBackgroundExecutor, spentOwnClaim } from "../src/background-executor.ts";
 import { createHostRuntime } from "../src/host-runtime.ts";
 import { RunList } from "../src/run-list.ts";
 import { LeaseBinding, LeaseStore, procStart } from "../src/lease.ts";
@@ -131,6 +131,23 @@ test("[clock-row] pi-loops in the background writes a due slot's row under its d
 		// The slot is spent: the next tick asks nothing.
 		await s.tick();
 		assert.deepEqual([s.calls.length, s.prompts()], [1, 1]);
+	} finally {
+		await s.host.stop();
+	}
+});
+
+test("[held-guard] a plain job's held turn has a guard seat in its conversation's lane: a dangerous call there files a question for that conversation, under the job's cap and no model of its own", async () => {
+	const s = scene(ok);
+	try {
+		await addV2(s.host.stores, job(s, { name: "remind", tools: ["bash", "read"], model: "fake/pinned", timeoutMs: 120_000 }) as any);
+		await s.tick();
+		assert.equal(s.calls.length, 1);
+		const req = s.calls[0];
+		assert.deepEqual(req.guard, {
+			lane: s.sessionId,
+			origin: { source: "cron:remind", run_id: req.runId, cwd: s.dir, job_id: "cron-held", session_id: s.sessionId, who: "remind" },
+			cap: { cwd: s.dir, model: null, thinking: null, tools: ["bash", "read"], builtinTools: "session", timeoutMs: 120_000 },
+		});
 	} finally {
 		await s.host.stop();
 	}
@@ -767,6 +784,61 @@ test("[job-removed-aborts] removed jobs abort every matching run once, including
 	]);
 });
 
+test("[job-removed-aborts] an answer's run in a removed loop's lane is stopped; one in a check lane or a conversation is left", () => {
+	const runs = new RunList();
+	const loopRun = new AbortController();
+	const checkRun = new AbortController();
+	const heldRun = new AbortController();
+	const at = new Date().toISOString();
+	runs.add({ runId: "ans-loop", jobId: "gone-loop", label: "loop", startedAt: at, promptPreview: "", ctrl: loopRun, answer: { lane: "@cron-gone-loop", finding: "inb-1" } });
+	runs.add({ runId: "ans-check", jobId: "@check-proj-0123abcd", label: "check", startedAt: at, promptPreview: "", ctrl: checkRun, answer: { lane: "@check-proj-0123abcd", finding: "inb-2" } });
+	runs.add({ runId: "ans-held", jobId: "gone-plain", label: "plain", startedAt: at, promptPreview: "", ctrl: heldRun, answer: { lane: "0f0e0d0c-0b0a-4908-8706-050403020100", finding: "inb-3" } });
+	const lines: string[] = [];
+	assert.equal(abortRemovedJobs(runs, () => false, (line) => lines.push(line)), 1);
+	assert.deepEqual([loopRun.signal.aborted, checkRun.signal.aborted, heldRun.signal.aborted], [true, false, false]);
+	assert.deepEqual(lines, ["cron loop: removed while it ran; stopped run ans-loop"]);
+});
+
+test("spentOwnClaim: a claim of this process whose run left the list, never an ans- row", () => {
+	const self = { pid: 7, procStart: "p7" };
+	const claim = { pid: 7, started_at: "2026-06-01T12:00:00Z", procStart: "p7" };
+	const slot = { ...plainJobRow({ id: "cron-a", sessionId: "@cron-a", prompt: "p", cwd: "/p" } as any, "run-a", "cron:cron-a", "", { pid: 7, instance: "x", version: "0" }), lane: "@cron-a", run: { id: "run-a", ...claim } } as any;
+	const ans = { ...slot, id: `ans-${"a".repeat(32)}`, source: "answer", payload: { text: "x", cwd: "/p", finding: `inb-${"a".repeat(32)}` }, run: { id: `ans-${"a".repeat(32)}`, ...claim } };
+	assert.equal(spentOwnClaim(slot, self, () => false), true);
+	assert.equal(spentOwnClaim(slot, self, () => true), false, "its run is going");
+	assert.equal(spentOwnClaim(slot, { pid: 7, procStart: "other" }, () => false), false, "another process's claim");
+	assert.equal(spentOwnClaim(ans, self, () => false), false, "an answer's claim is the answer protocol's to count (F1)");
+});
+
+test("[overlap-at-drain] the pre-pass leaves a dead own claim on an ans- row; a cron: row due beside a live claimed ans- row is skipped and counted on it", async () => {
+	const s = scene(ok);
+	try {
+		const id = "cron-0123456789abcdef0123456789abcdef";
+		const lane = loopLane(id)!;
+		const job = { id, schedule: { kind: "cron" as const, expr: "*/10 * * * *" }, stateful: true, prompt: "look", cwd: s.dir, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 3_700_000).toISOString(), runCount: 0, skippedOverlap: 0 };
+		await s.host.stores.jobs.add(job as any);
+		const t0 = Date.now();
+		const self = { pid: process.pid, procStart: procStart(process.pid) };
+		const ansId = `ans-${"a".repeat(32)}`;
+		const ans = { v: 3, id: ansId, lane, kind: "input", source: "answer", mode: "unattended", wake: "turn", payload: { text: `[Trigger ${ansId}] go`, cwd: s.dir, finding: `inb-${"a".repeat(32)}` }, created_at: new Date(t0 - 90_000).toISOString(), created_by: { pid: process.pid, instance: "x", version: "0" }, attempts: 0 };
+		s.requests.append(ans as any);
+		s.requests.update(lane, ansId, { run: { id: ansId, pid: self.pid, started_at: new Date(t0 - 60_000).toISOString(), ...(self.procStart ? { procStart: self.procStart } : {}) } } as any);
+		await s.host.loops.drain(parseLane(lane) as any, t0);
+		assert.deepEqual(s.requests.list(lane).map((row) => [row.id, !!row.run]), [[ansId, true]], "a dead own claim on an ans- row stays for the answer protocol");
+
+		const slot = new Date(t0 - 30_000).toISOString();
+		const waiting = plainJobRow(job as any, plainRunId(id, slot), `cron:${id}`, "", { pid: process.pid, instance: "x", version: "0" } as any, t0 - 30_000);
+		s.requests.appendIfAbsent({ ...waiting, lane, payload: { ...waiting.payload!, slot } } as any);
+		s.host.runs.add({ runId: ansId, jobId: id, label: "look", startedAt: new Date(t0 - 60_000).toISOString(), promptPreview: "", ctrl: new AbortController(), answer: { lane, finding: `inb-${"a".repeat(32)}` } });
+		await s.host.loops.drain(parseLane(lane) as any, t0);
+		const rows = s.requests.list(lane) as any[];
+		assert.deepEqual(rows.map((row) => [row.id, row.collapsed, row.collapsed_slot, row.skipped]), [[ansId, 1, slot, 1]], "the slot is skipped and counted on the answer's row");
+		assert.equal(s.host.stores.clock.read().jobs[id]?.collapsed, 1, "one skipped overlap on the loop's cursor");
+		assert.equal(s.calls.length, 0, "nothing ran beside the answer");
+		s.host.runs.remove(ansId);
+	} finally { await s.host.stop(); }
+});
+
 test("[job-removed-aborts] the next drain of a removed loop's lane removes its row as job-removed", async () => {
 	const s = scene(ok);
 	try {
@@ -899,4 +971,35 @@ test("[kept-notices] loop failure and daily budget notices are each said once", 
 		assert.equal(notices.filter((text) => text === `${id} has failed 3 times in a row; backing off (last: boom)`).length, 1);
 		assert.equal(notices.filter((text) => text.includes("budget; dispatching is paused")).length, 1);
 	} finally { await s.host.stop(); }
+});
+
+test("[release-mtime] a hold that wrote nothing does not leave a write made by someone else during it as its own: the next take waits out the quiet guard; one that wrote, or saw no write, is taken again at once", () => {
+	const dir = tmp("pi-loops-bg-");
+	const background = createBackgroundExecutor({
+		dir,
+		requests: new RequestStore(dir),
+		leases: new LeaseStore(dir),
+		jobs: { load: () => [], allRuns: () => [], remove: () => undefined } as any,
+		runs: new RunList(),
+		runner: (() => Promise.reject(new Error("no run here"))) as any,
+		sinks: (() => ({})) as any,
+		holder: (busy) => ({ kind: "host", pid: process.pid, instance: "host", procStart: procStart(process.pid), acquiredAt: new Date().toISOString(), pushServers: [], ...(busy ? { busy } : {}) }),
+		turnTimeoutMs: 1_000,
+		appended: () => undefined,
+		deliveryFailed: () => undefined,
+		log: () => undefined,
+	});
+	const line = (who: string) => `${JSON.stringify({ type: "custom", customType: who })}\n`;
+	/** One hold of a new closed conversation: `during` runs under it, then it is given back, and the conversation is asked for again. */
+	const holdTwice = (during: (file: string) => void, wrote: boolean) => {
+		const { sessionId, file } = closedConversation(dir);
+		const first = background.conversations.hold(sessionId as any, "ans-x", Date.now());
+		assert.ok(!("refused" in first), "the first hold");
+		during(file);
+		background.conversations.release(first, wrote);
+		return background.conversations.hold(sessionId as any, "ans-y", Date.now());
+	};
+	assert.ok(!("refused" in holdTwice(() => undefined, false)), "nothing was written: taken again at once");
+	assert.ok(!("refused" in holdTwice((file) => fs.appendFileSync(file, line("ours")), true)), "this hold wrote the file: taken again at once");
+	assert.deepEqual(holdTwice((file) => fs.appendFileSync(file, line("theirs")), false), { refused: "session file changed in the last two minutes" }, "someone else's write during a hold that wrote nothing keeps the quiet guard");
 });

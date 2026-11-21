@@ -14,6 +14,7 @@
  */
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
+import { isAnswerRow } from "./ask.ts";
 import { type Inbox, findingId } from "./inbox.ts";
 import { type ConversationId, type Lane, type LaneId, parseLane } from "./lane.ts";
 import { redact } from "./redact.ts";
@@ -47,6 +48,8 @@ export function modeOf(lane: Lane["kind"], kind: Row["kind"], source: Row["sourc
 	if (source.startsWith("rule:")) return "none";
 	if (source.startsWith("push:")) return wake === "turn" ? "unattended" : "none";
 	if (source.startsWith("cron:")) return "unattended";
+	// The row of a yes runs a turn in the background; the row that tells of a no asks for no model call.
+	if (source === "answer") return wake === "turn" ? "unattended" : "none";
 	return "attended";
 }
 
@@ -162,33 +165,6 @@ export function goalRow(prompt: string, goal: { condition: string; iterations: n
 	return turnRow(id, "goal", prefixed(id, prompt), to, "goal", now);
 }
 
-/** `/inbox claim`: the finding as the turn that addresses it. A fresh id per claim; one queued hand-off per finding. */
-export function inboxClaimRow(prompt: string, entryId: string, to: RowAddress, now = Date.now()): UnclaimedRow {
-	const id = newId("claim");
-	return turnRow(id, `inbox:${entryId}`, prefixed(id, prompt), to, `inbox:${entryId}`, now);
-}
-
-/**
- * A claim from the browser page: the row `/inbox claim` writes, signed by the page server and born
- * left (`created_by.left`). The server lives on and never runs a turn, so a row it signed and stayed
- * with would wait for it for ever; left at birth, the row is the holder's to run, as a terminal's
- * claim is once its window moves on (`releaseLocalRows`), and nobody's `mine`, so a pi that only
- * views the conversation never runs it beside the holder. Its mode stays attended: a holder believes
- * that only once the page rings it for the row, and otherwise runs it capped as unattended.
- */
-export function pageClaimRow(prompt: string, entryId: string, to: RowAddress, now = Date.now()): UnclaimedRow {
-	const row = inboxClaimRow(prompt, entryId, to, now);
-	return { ...row, created_by: { ...to.createdBy, left: stamp(now) } };
-}
-
-/** Whether `row` is a claim the page queued (`pageClaimRow`) and no holder has handed over yet. */
-export function isPageClaim(row: Row): boolean {
-	return row.kind === "input" && row.source.startsWith("inbox:") && row.created_by.instance === PAGE_INSTANCE && row.created_by.left !== undefined && row.handed_at === undefined;
-}
-
-/** The `created_by.instance` the page server signs its claims with. */
-export const PAGE_INSTANCE = "page";
-
 /** What a recipe hands to the chat: the tracker description `/recipe add` needs, or a merge conflict `/recipe update` left. */
 export type RecipeHandOff = "tracker" | "merge";
 
@@ -294,9 +270,9 @@ export function heldTurnFor(leases: readonly SessionLease[], ref: string, probe?
 	return undefined;
 }
 
-/** The sources a person types into the window itself: `/inbox claim`, a recipe command, `/new-trigger`. */
+/** The sources a person types into the window itself: a recipe command, `/new-trigger`. */
 function typedInWindow(source: Row["source"]): boolean {
-	return source.startsWith("inbox:") || source.startsWith("recipe:") || source === "new-trigger";
+	return source.startsWith("recipe:") || source === "new-trigger";
 }
 
 /**
@@ -370,13 +346,6 @@ export function enqueue(store: RequestStore, row: UnclaimedRow, delivered: (row:
 	return store.appendIfAbsent(row, { collapse: true, done: (queued) => delivered(queued) }, lock);
 }
 
-/**
- * How long a claim waits for a queue's lock while it holds the inbox's (`Inbox.decide`'s `before`):
- * well inside the inbox lock's ten-second stale point, so a stuck queue lock makes the claim fail
- * instead of letting another process break the inbox lock and lose its write under this rewrite.
- */
-export const CLAIM_QUEUE_LOCK: LockOptions = { timeoutMs: 5_000 };
-
 /** Where a producer's hand-over went, for the trigger audit: not written at all, in the chat already, or waiting in the file. */
 export function handOverTarget(written: boolean, result: Pick<DrainResult, "delivered"> | undefined, id: string): "collapsed" | "chat" | "queued" {
 	if (!written) return "collapsed";
@@ -395,7 +364,6 @@ export function waitingLine(source: Row["source"], id: string, name?: string): s
 	if (source.startsWith("push:")) return queuedTriggeredTurn(id);
 	const job = jobOf(source);
 	if (job !== undefined) return `queued: cron ${name ?? job} runs after the current turn`;
-	if (source.startsWith("inbox:")) return "queued: /inbox claim runs after the current turn";
 	if (source.startsWith("recipe:")) return `queued: recipe ${source.slice("recipe:".length)} runs after the current turn`;
 	if (source === "new-trigger") return "queued: /new-trigger runs after the current turn";
 	return undefined;
@@ -413,30 +381,17 @@ export interface HandOverOutcome {
 	/** False: a row with its id or its collapse key was already queued. */
 	written: boolean;
 	result: DrainResult | undefined;
-	/** The line to show when the row was written and waits, or when the claim it carried was already decided. */
+	/** The line to show when the row was written and waits. */
 	line?: string;
 }
 
 /**
  * A prompt one of a window's sources has for the chat: queued as a row (collapsed when one with its
  * key is already there), then delivered now when pi is idle; otherwise it waits in the file for the
- * tick, the bell or `agent_settled`, and `line` says so once. For `/inbox claim`, the hand-off is
- * queued under the inbox lock once the finding is found new, and the finding marked claimed after:
- * a crash between the two leaves the finding `new` with its hand-off queued, where the reverse order
- * left it claimed with nobody told.
+ * tick, the bell or `agent_settled`, and `line` says so once.
  */
-export async function handOver(deps: HandOverDeps, row: UnclaimedRow, claim?: { inbox: Pick<Inbox, "decide">; entryId: string }): Promise<HandOverOutcome> {
-	let written = false;
-	if (claim) {
-		// Queued under the inbox lock, after the finding is found still new (`Inbox.decide`): a claim
-		// decided elsewhere between the list and here (another window, the page, `pi-loops inbox`)
-		// queues nothing, so no holder can run a hand-off for a claim that lost.
-		const decided = await claim.inbox.decide(claim.entryId, "claimed", { by: row.lane, before: () => void (written = enqueue(deps.store, row, deps.delivered, CLAIM_QUEUE_LOCK)) });
-		if (!("ok" in decided)) {
-			const ref = claim.entryId.slice(0, 12);
-			return { written: false, result: undefined, line: "missing" in decided ? `inbox: ${ref} is gone; nothing was sent` : `inbox: ${ref} was already ${decided.already}; nothing was sent` };
-		}
-	} else written = enqueue(deps.store, row, deps.delivered);
+export async function handOver(deps: HandOverDeps, row: UnclaimedRow): Promise<HandOverOutcome> {
+	const written = enqueue(deps.store, row, deps.delivered);
 	deps.produced(row);
 	const result = await deps.drain();
 	const waits = written && result !== undefined && !result.delivered.includes(row.id);
@@ -703,6 +658,22 @@ function conversationPersonEntries(entries: readonly unknown[], text: string, si
 /** Whether the process of the run that claimed `row` is still there, by the rule of a lease's holder (`holderAlive`). */
 export function claimAlive(row: ClaimedRow, probe: ProcessProbe = systemProbe): boolean {
 	return holderAlive({ pid: row.run.pid, procStart: row.run.procStart, acquiredAt: row.run.started_at }, probe);
+}
+
+/**
+ * Whether an `ans-` row's claim is live, as the answer protocol reads it (`AnswerExecutor.live`): a
+ * claim of this process only while its run is in this process's list, another process's by
+ * `claimAlive`. A run of this process that left the list (its start or its closing threw) holds
+ * nothing, so F1 to F3 count it and the lane goes on.
+ */
+export function answerClaimLive(row: ClaimedRow, self: { readonly pid: number; readonly procStart: string | undefined }, listed: (runId: string) => boolean, probe: ProcessProbe = systemProbe): boolean {
+	if (row.run.pid === self.pid && row.run.procStart === self.procStart) return listed(row.run.id);
+	return claimAlive(row, probe);
+}
+
+/** The one liveness of a claim that a loop lane's drain, its overlap pass and the clock read: `answerClaimLive` for an `ans-` row, `claimAlive` for any other. */
+export function laneClaimLive(row: ClaimedRow, self: { readonly pid: number; readonly procStart: string | undefined }, listed: (runId: string) => boolean, probe: ProcessProbe = systemProbe): boolean {
+	return isAnswerRow(row) ? answerClaimLive(row, self, listed, probe) : claimAlive(row, probe);
 }
 
 /**
@@ -1041,6 +1012,28 @@ function holdsLane(row: Row, view: ExecutorView, own: readonly Action[]): boolea
 }
 
 /**
+ * Why an `ans-` row waits in every drain: `decideDrain` never hands it to pi, counts no attempt on
+ * it and never closes it. The answer lanes run it, and its claim holds the lane while its run goes.
+ */
+export const ANSWER_ROW_WAITS = "an answer: it runs outside this drain";
+
+/**
+ * Why a row that 0.24.2 queued for a claim (source `inbox:<finding>`) waits in every drain. A claim
+ * is an answer now (src/answers.ts), and each start removes such rows (`convertClaimRows` in
+ * src/convert-v2.ts, K1 and K2). One can still be in a queue between two starts: a 0.24.2 process
+ * that still runs can write one, and a start that stopped between K2's two writes leaves the row
+ * beside a finding that is new again. Such a row is nobody's turn: no executor hands it to pi,
+ * counts an attempt on it or lets it hold the lane, so the claim never runs beside a new answer to
+ * its finding. A person can still take it out of the queue, and the next start converts it.
+ */
+export const OLD_CLAIM_WAITS = "a claim queued before the upgrade: it waits for the conversion";
+
+/** Whether `row` is a claim that 0.24.2 queued. Its source is in no `RequestSource` of this version. */
+export function isOldClaim(row: Row): boolean {
+	return row.kind === "input" && (row.source as string).startsWith("inbox:");
+}
+
+/**
  * Pure. `lane` is the kind of the lane the rows are in. Stops and cancels first, idle or busy; then
  * every input is classified with no regard to whether the lane is free; then the lane is taken, from
  * all the rows; then the rows that could start are started, in order. So where a row sorts does not
@@ -1060,7 +1053,8 @@ function holdsLane(row: Row, view: ExecutorView, own: readonly Action[]): boolea
 export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Proof, jobs: JobsView, view: ExecutorView, now: number, opts: DrainOptions = {}): Action[] {
 	const actions: Action[] = [];
 	// What a stop or a cancel can take out of the queue: an input no run has claimed.
-	const queued = new Map(rows.flatMap((row) => (row.kind === "input" && !row.run ? [[row.id, row] as const] : [])));
+	// An `ans-` row is not one: a cancel of an answer is the answer protocol's, so it finds no target here.
+	const queued = new Map(rows.flatMap((row) => (row.kind === "input" && !row.run && !isAnswerRow(row) ? [[row.id, row] as const] : [])));
 	const inputs = queueOrder(rows);
 	const cancelled = new Set<string>();
 	for (const row of rows) {
@@ -1252,7 +1246,12 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 		return { actions, holding: false, ready: row };
 	};
 
-	const sorted = inputs.filter((row) => !cancelled.has(row.id)).map((row) => (row.run ? claimed(row) : unclaimed(row)));
+	/** An `ans-` row, before every other rule: it waits, and a live claim on it holds the lane. */
+	const answer = (row: Row): Sorted => ({ actions: [{ do: "wait", row, why: ANSWER_ROW_WAITS }], holding: row.run !== undefined && view.claimLive(row) });
+
+	/** A claim that 0.24.2 queued: it waits for the conversion and holds nothing. */
+	const oldClaim = (row: Row): Sorted => ({ actions: [{ do: "wait", row, why: OLD_CLAIM_WAITS }], holding: false });
+	const sorted = inputs.filter((row) => !cancelled.has(row.id)).map((row) => (isAnswerRow(row) ? answer(row) : isOldClaim(row) ? oldClaim(row) : row.run ? claimed(row) : unclaimed(row)));
 	// The lane is taken from all the rows, before any of them is started.
 	const taken = sorted.some((s) => s.holding);
 	let busy = !view.idle;
@@ -1601,7 +1600,9 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 export async function bury(sessionId: ConversationId, store: RequestStore, sinks: EngineSinks, why: string): Promise<string[]> {
 	const ids: string[] = [];
 	for (const row of store.list(sessionId)) {
-		if (row.kind === "input" && row.source !== "person") await deadLetter(store, sinks, row, why);
+		// Left for the answer protocol's deleted-conversation case: the finding, not this row, holds the answer.
+		if (isAnswerRow(row)) continue;
+		if (row.kind === "input" && row.source !== "person" && row.source !== "answer") await deadLetter(store, sinks, row, why);
 		else {
 			sinks.audit.appendAudit({ cwd: "", type: "request", traceId: row.id, state: AUDIT_STATE.stale, sourceLabel: row.source, eventLabel: row.lane, details: { session_id: row.lane, kind: row.kind, reason: why } });
 			store.remove(sessionId, [row.id]);

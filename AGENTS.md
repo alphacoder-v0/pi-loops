@@ -48,6 +48,8 @@ src/stores.ts               stores of a loops directory, opened once, and job re
 src/trigger-runtime.ts      dynamic-rule evaluation, deliveries, promotion, audit
 src/triggers.ts             rule store, parsing, prompt, dedup window
 src/goal.ts                 /goal: the stop-condition state machine, evaluator prompts, continuation budget
+src/ask.ts                  a question from a background run and its answer, as values: the shapes, the table of steps, the pure deciders, and `PROTOCOL`, the writes of each transition in order
+src/answers.ts              the writers of every transition of an answer: the one module that holds inbox.lock and a lane's lock together
 src/tools.ts                the cron/trigger tool definitions (interactive session and sub-sessions)
 src/watch-plan.ts           a watch from one sentence, as the question cron_create and new_trigger ask before they create: the plan, its card, the dialog's title and options, and the one place an answer becomes store fields
 src/protocol.ts             <loop-state>/<inbox>/<verdict> protocol, caps
@@ -74,6 +76,7 @@ src/sdk-runner.ts           the in-process runner on pi's SDK (createAgentSessio
 src/danger.ts               the dangerous-command policy for unattended runs
 src/window-guard.ts         the cap on a scheduled turn in an open window: declared tools and the dangerous-command policy
 src/subagent-guard.ts       the synthetic extension that applies it inside every sub-session
+src/guard.ts                the guard of a background run: which call needs a person, the question it files, and the one call a yes admits once (seats)
 src/transcript.ts           a sub-agent's session file, folded into readable lines
 
 running with no pi open
@@ -91,6 +94,7 @@ src/page-children.ts        one `pi --mode rpc` per conversation open in the pag
 src/held-read.ts            how big a conversation this process parses, and whether a conversation's file is readable here
 src/host-runtime.ts         what pi-loops runs (the ticker's riders, the loop lanes, triggers, per-request tools), the one list of its runs, and the wiring of the background executor
 src/background-executor.ts  what pi-loops in the background does to the queue of a closed conversation: takes its lease, delivers a rule's result, claims a plain job's row, runs its turn and closes it
+src/answer-lanes.ts         the answer rows of loop and check lanes: a yes resumes the run that asked, runs its call once, and closes it
 src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid, or by a terminal from the page's pi (`page`) while no turn runs (`turnSince`)
 src/requests.ts             requests/<lane>.jsonl: what is addressed to a lane (a conversation's is its session id), kept until it is in it (the row, claimed or not, append, remove, claim)
 src/engine.ts               decideDrain, the pure decision for a lane's rows: classify, take the lane, start; drain, which applies it through an executor; the exits, attempts and dead letters
@@ -133,7 +137,7 @@ recipes/<name>/             a recipe: recipe.toml, the playbooks its jobs read, 
 examples/                   a dependency-free MCP push server, and an mcp.toml to point at it
 test/                       node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
 test/downstream/            the contract in docs/downstream.md checked from the outside: sh + jq driving `pi-loops`, a loop run in the background against fake-model.mjs, no import of src/; upgrade.sh starts a directory 0.24.2 left
-test/journey/               the journeys J1-J12 (`npm run journey -- J1 …`), `boot.mjs` and `terminal.mjs`, a sandboxed page with a stand-in model
+test/journey/               the journeys J1-J13 (`npm run journey -- J1 …`), `boot.mjs` and `terminal.mjs`, a sandboxed page with a stand-in model (a journey's seed may script it with `answer`)
 test/sim/                   the seeded simulation of the request engine that test/sim.test.ts runs: world.ts (the real engine and stores around a simulated pi, lease, clock and crashes, and what that leaves out), schedule.ts (the steps a seed draws), invariants.ts (what is checked after every step), prng.ts; claims.ts (a lane the background runs: rows a run claims, runs that end in every way, a process that dies at any write), which test/sim-claims.test.ts runs; held.ts (a held turn in a closed conversation: the real closing and settle table around a simulated runner, a window that takes the conversation, a process that dies at any write), which test/sim-held.test.ts runs; clock.ts (interleaved ticker decisions and T2/T3 writes, crashes, row proofs and loop settlement; checks I1: one row per job and slot), which test/sim-clock.test.ts runs
 test/tmp.ts                 every test's temporary directory: removed when the test passes, kept and named when it fails (PI_LOOPS_KEEP_TMP=1 keeps all), strays it started ended
 scripts/                    typecheck.mjs, lint.mjs, check-docs.mjs — TypeScript comes through npx, nothing is a dependency
@@ -201,6 +205,15 @@ one row per job and slot, including cursor commits, fires, collapses and spent r
 schedules by default. An interleaving that random schedules reach only rarely is not left to a larger
 count: it is a scene of its own in `test/clock-scenes.test.ts`, which drives the real code step by
 step in milliseconds.
+
+A fifth, `test/sim-asks.test.ts`, runs 120 schedules of asks (`test/sim/asks.ts`): runs of a loop, a
+check and a conversation ask a person about a call through the real guard; yeses, noes and cancels
+from a terminal, the page and the CLI; the real `Answers` and answer lanes; runs that make the
+granted call, make it again and end in every way; a process that dies at any write; hand edits of
+the inbox, a rotation and the conversion of 0.24.2's claims. It checks I5 (a call that needs a
+person runs after a yes to it, once per yes, in the lane that asked, never after a cancel), I7 (a
+finding is decided once per answer; the check is shared with `test/sim.test.ts`), that no row is
+stuck and that a run has one record. Its rare interleavings are scenes in the same file.
 
 `check:docs` is there because nothing else in CI reads a README: 0.17.0 was tagged green with an
 install line that answered 404. It holds every install command in every document to what

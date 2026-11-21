@@ -4,7 +4,7 @@
  * is a line in the panel above the editor only. A run that was stopped is not a failure and gets no
  * card.
  */
-import { screenText } from "./inbox-card.ts";
+import { screenText } from "./redact.ts";
 import { loopLabel } from "./job-lines.ts";
 import { plural } from "./plural.ts";
 import { previewRedacted } from "./redact.ts";

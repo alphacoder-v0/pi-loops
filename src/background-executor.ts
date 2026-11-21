@@ -10,7 +10,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileMark, type Proof, type QuietMark, DEAD_AFTER_ATTEMPTS, bury, changesSomething, claimAlive, closeRun, conversationHas, decideDrain, drain, jobQueued, modeOf, plainRunId, plainJobRow, proofOf, quietMark, sessionFileEntries, stillQuiet } from "./engine.ts";
+import { type ResolvedCap, isAnswerRow, resolveCap } from "./ask.ts";
+import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileMark, type Proof, type QuietMark, DEAD_AFTER_ATTEMPTS, bury, changesSomething, claimAlive, closeRun, conversationHas, decideDrain, drain, jobQueued, laneClaimLive, modeOf, plainRunId, plainJobRow, proofOf, quietMark, sessionFileEntries, stillQuiet } from "./engine.ts";
 import { type ConversationId, parseLane } from "./lane.ts";
 import { DELIVERY_JOB_ID, type LeaseHolder, type LeaseStore, closedConversation, liveHolderPid } from "./lease.ts";
 import { markDetails, markFor } from "./mark.ts";
@@ -34,6 +35,8 @@ export interface Held {
 	readonly epoch: number;
 	readonly sessionFile: string;
 	readonly cwd?: string;
+	/** The file's mtime read just before the lease was taken: a hold that wrote nothing gives back no later one. */
+	readonly mtimeMs?: number;
 }
 
 /** What the executor is made from. Every store is a parameter. */
@@ -64,6 +67,8 @@ export interface BackgroundDeps {
 	deliveryFailed: (sessionId: string) => void;
 	/** A job reached `FAILING_AFTER` failures in a row at the end of a turn here. */
 	failing?: (message: string, job: LoopJob) => void;
+	/** The `ans-` rows of a closed conversation, met before its other rows and before a conversation that is gone is buried (src/answer-lanes.ts). */
+	answers?: (sessionId: ConversationId) => Promise<unknown>;
 	log: (message: string, level?: "info" | "warning") => void;
 }
 
@@ -91,6 +96,32 @@ export interface BackgroundExecutor {
 	deliverSession(sessionId: string): Promise<void>;
 	/** Take a closed conversation for one write and deliver what is queued for it. True when `traceId` (if given) is in the conversation after it. */
 	deliverQueued(sessionId: string, traceId?: string): Promise<boolean>;
+	/** A closed conversation for an answer's turn there (src/answer-lanes.ts): its lease, taken for one run and given back. */
+	readonly conversations: HeldConversations;
+}
+
+/** What an answer's turn in a closed conversation holds it by: `take` and `release` of this executor, and what a held turn asks of it. */
+export interface HeldConversations {
+	/** No window and no page holds it. A conversation whose file is gone is closed too. */
+	closed(sessionId: ConversationId): boolean;
+	/** Its lease, for the run `runId`; `refused` says why not: a window or the page holds it, it was written a moment ago, or its file is gone. */
+	hold(sessionId: ConversationId, runId: string, now: number): Held | { refused: string };
+	/** Given back, with the epoch it took. `wrote`: this hold wrote the file, so its mtime as it is now is this process's. */
+	release(held: Held, wrote: boolean): void;
+	/** This process still holds it at that epoch: false once a window took it back. */
+	holds(held: Held): boolean;
+	/** pi's saved trust for its directory, read for each turn; no directory, no trust. */
+	trusts(held: Held): boolean;
+}
+
+/**
+ * The cap of a turn in a closed conversation, as its job is in `jobs.json` now: the conversation's
+ * directory, the job's tools and time limit, and no model or thinking level of its own: the turn runs
+ * on what the conversation is on. With no job (it was removed), the conversation's tools and the
+ * default time limit.
+ */
+export function heldCap(job: Pick<LoopJob, "tools" | "builtinTools" | "timeoutMs"> | undefined, cwd: string, defaultTimeoutMs: number): ResolvedCap {
+	return resolveCap({ cwd, tools: job?.tools, builtinTools: job?.builtinTools, timeoutMs: job?.timeoutMs }, defaultTimeoutMs);
 }
 
 /** The job a plain job's row names. */
@@ -114,23 +145,35 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 		}
 	};
 	const canHold = (sessionId: string): boolean => !deps.pageHolds?.(sessionId) && closedConversation(leases, sessionId);
+	/** No window and no page holds it, whether or not its file is there. */
+	const closed = (sessionId: ConversationId): boolean => !deps.pageHolds?.(sessionId) && liveHolderPid(leases, sessionId) === undefined;
 
 	/** Take a closed conversation for one piece of work, or undefined: the page has it open, a window holds it, or it was written a moment ago. */
 	function take(sessionId: ConversationId, busy: NonNullable<LeaseHolder["busy"]>): Held | undefined {
-		if (deps.pageHolds?.(sessionId)) return undefined;
-		const got = leases.acquireForHost(sessionId, deps.holder(busy));
-		if (!("lease" in got) || !got.lease.sessionFile) return undefined;
-		return { sessionId, epoch: got.lease.epoch, sessionFile: got.lease.sessionFile, cwd: got.lease.cwd };
+		const got = takeOrWhy(sessionId, busy);
+		return "refused" in got ? undefined : got;
 	}
 
-	/** Give it back, with the epoch it took and the file's mtime as it left it. A window that took the conversation keeps it: the epoch moved. */
-	function release(held: Held): void {
-		let fileMtimeMs: number | undefined;
-		try {
-			fileMtimeMs = fs.statSync(held.sessionFile).mtimeMs;
-		} catch {
-			fileMtimeMs = undefined; // gone: nothing for the quiet guard to remember
-		}
+	function takeOrWhy(sessionId: ConversationId, busy: NonNullable<LeaseHolder["busy"]>): Held | { refused: string } {
+		if (deps.pageHolds?.(sessionId)) return { refused: "the page has it open" };
+		// Before the lease: a write that lands between this read and the release is never taken for ours.
+		const before = leases.read(sessionId)?.sessionFile;
+		const mtimeMs = before === undefined ? undefined : fileMark(before)?.mtimeMs;
+		const got = leases.acquireForHost(sessionId, deps.holder(busy));
+		if (!("lease" in got)) return got;
+		if (!got.lease.sessionFile) return { refused: "no known session file" };
+		return { sessionId, epoch: got.lease.epoch, sessionFile: got.lease.sessionFile, cwd: got.lease.cwd, ...(got.lease.sessionFile === before && mtimeMs !== undefined ? { mtimeMs } : {}) };
+	}
+
+	/**
+	 * Give it back, with the epoch it took. The file's mtime is left for the quiet guard only when it
+	 * is this process's: this hold wrote the file, or nobody wrote it since the lease was taken. A write
+	 * by someone else during a hold that wrote nothing keeps the guard's two minutes. A window that took
+	 * the conversation keeps it: the epoch moved.
+	 */
+	function release(held: Held, wrote: boolean): void {
+		const now = fileMark(held.sessionFile)?.mtimeMs; // gone: nothing for the quiet guard to remember
+		const fileMtimeMs = wrote || (now !== undefined && now === held.mtimeMs) ? now : undefined;
 		try {
 			leases.release(held.sessionId, deps.holder(), { epoch: held.epoch, fileMtimeMs });
 		} catch (err: any) {
@@ -187,15 +230,17 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 	 * The engine's executor for one drain, under one lease. An `append` row is written into the file
 	 * at once. No attended row runs here (`CEILING.held`). `turn` claims a row and starts its run.
 	 */
-	function executorFor(held: Held, job: LoopJob | undefined): Executor & { started(): Promise<void> | undefined } {
+	function executorFor(held: Held, job: LoopJob | undefined): Executor & { started(): Promise<void> | undefined; wrote(): boolean } {
 		let sm: SessionManager | undefined;
 		let started: Promise<void> | undefined;
+		let wrote = false;
 		const proof = fileProof(held.sessionId, held.sessionFile);
 		return {
 			holds: (sessionId) => leases.holds(sessionId, deps.holder(), held.epoch),
 			proof: () => proof,
 			view: () => viewOf(held.sessionId, job),
 			append: (row) => {
+				wrote = true;
 				sm ??= SessionManager.open(held.sessionFile);
 				// The mark rides in the entry's details: the one proof of an append row, read by `landed` (src/mark.ts).
 				sm.appendCustomMessageEntry("pi-loops:trigger", row.payload?.text ?? "", true, markDetails(markFor(row)));
@@ -213,6 +258,7 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 				if (!claimed) return "sent"; // the row left meanwhile: nothing to send, and the lease is as it was
 				// From here nothing throws: a failure to start goes through the closing. The lease names
 				// this run already: `fire` took it for the row it owed, or for the slot's own row.
+				wrote = true;
 				started = runTurn(claimed, held, job);
 				return "sent";
 			},
@@ -226,6 +272,7 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 			// Never asked either: a person row is attended, above this executor's ceiling.
 			refused: () => undefined,
 			started: () => started,
+			wrote: () => wrote,
 		};
 	}
 
@@ -256,7 +303,9 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 				// could be one a model chose: no owner trust then. No model or thinking level: the turn is
 				// the conversation's own and runs on what the conversation is on, as its window turn does.
 				const cwd = held.cwd ?? job.cwd;
-				result = await deps.runner({ cwd, prompt: row.payload?.text ?? "", tools: job.tools, builtinTools: job.builtinTools, trusted: held.cwd ? !!deps.ownerTrusts?.(held.cwd) : false, timeoutMs: job.timeoutMs ?? deps.turnTimeoutMs, signal, hop: 1, kind: "held", jobId: job.id, runId, sessionFile: held.sessionFile, stillHolds, parentSessionId: held.sessionId, parentCwd: cwd });
+				// The guard's seat: a dangerous call files a question in this conversation's lane, as a loop's run does in its own.
+				const guard = { lane: held.sessionId, origin: { source: `cron:${name}`, run_id: runId, cwd, job_id: job.id, session_id: held.sessionId, who: name }, cap: heldCap(job, cwd, deps.turnTimeoutMs) };
+				result = await deps.runner({ cwd, prompt: row.payload?.text ?? "", tools: job.tools, builtinTools: job.builtinTools, trusted: held.cwd ? !!deps.ownerTrusts?.(held.cwd) : false, timeoutMs: job.timeoutMs ?? deps.turnTimeoutMs, signal, hop: 1, kind: "held", jobId: job.id, runId, sessionFile: held.sessionFile, sessionId: held.sessionId, stillHolds, parentSessionId: held.sessionId, parentCwd: cwd, guard });
 			}
 		} catch (err: any) {
 			result = failedRun(err?.message ?? String(err));
@@ -332,14 +381,15 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 			if (!owed && (due === undefined || rows.some((r) => r.kind === "input" && r.wake === "turn" && jobOf(r) === job.id && !r.run))) return;
 			const held = take(lane.id, { runId: owed?.id ?? plainRunId(job.id, due ?? ""), jobId: job.id, since: stamp(now) });
 			if (!held) return; // busy, open, or written a moment ago: the slot stays owed
+			let executor: ReturnType<typeof executorFor> | undefined;
 			try {
 				if (due !== undefined && (await clock()) === "lost") return;
-				const executor = executorFor(held, job);
+				executor = executorFor(held, job);
 				await drain(lane.id, requests, executor, now, deps.sinks());
 				// The run and its closing: the lease is this function's until then.
 				await executor.started();
 			} finally {
-				release(held);
+				release(held, executor?.wrote() ?? false);
 			}
 		} catch (err: any) {
 			log(`cron ${job.name ?? job.id}: ${err?.message ?? err}`);
@@ -351,8 +401,9 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 		if (lane?.kind !== "conversation") return false;
 		const held = take(lane.id, { runId: traceId ?? "requests", jobId: DELIVERY_JOB_ID, since: stamp() });
 		if (!held) return false;
+		const executor = executorFor(held, undefined);
 		try {
-			await drain(sessionId, requests, executorFor(held, undefined), Date.now(), deps.sinks());
+			await drain(sessionId, requests, executor, Date.now(), deps.sinks());
 			if (traceId === undefined) return true;
 			const delivered = conversationHas(sessionFileEntries(held.sessionFile), traceId);
 			if (delivered) log(`trigger ${traceId.slice(0, 8)}: appended to session ${shortSessionId(sessionId)}`);
@@ -364,7 +415,7 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 			deps.deliveryFailed(sessionId);
 			return false;
 		} finally {
-			release(held);
+			release(held, executor.wrote());
 		}
 	}
 
@@ -386,13 +437,23 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 			await drain(sessionId, requests, executorFor(own, undefined), Date.now(), deps.sinks());
 			return;
 		}
+		// The answers first, while nobody holds the conversation: one that is gone is met as gone
+		// (the finding says so) before `bury` below sees its lane.
+		if (deps.answers && closed(conversation.id) && rows.some(isAnswerRow)) {
+			try {
+				await deps.answers(conversation.id);
+			} catch (err: any) {
+				log(`answers in session ${shortSessionId(sessionId)}: ${err?.message ?? err}`);
+			}
+		}
 		const lease = leases.read(sessionId);
 		// A claim of this process with no run in the list: its closing threw. Closed here, with or
 		// without the lease, so that a window that took the conversation is not held by it for ever.
+		// An `ans-` row's claim is the answer protocol's to close (F1 to F3).
 		const self = deps.holder();
 		if (lease?.sessionFile) {
 			for (const row of rows) {
-				if (row.run && row.run.pid === self.pid && row.run.procStart === self.procStart && runs.get(row.run.id) === undefined) await closeRun(requests, deps.sinks(), row, fileProof(sessionId, lease.sessionFile), Date.now());
+				if (row.run && !isAnswerRow(row) && row.run.pid === self.pid && row.run.procStart === self.procStart && runs.get(row.run.id) === undefined) await closeRun(requests, deps.sinks(), row, fileProof(sessionId, lease.sessionFile), Date.now());
 			}
 		}
 		if (!canHold(sessionId)) {
@@ -424,6 +485,13 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 		owes: (job, now) => !job.stateful && job.sessionId !== undefined && turnOwed(requests.list(job.sessionId), job.id, now) !== undefined,
 		deliverSession,
 		deliverQueued,
+		conversations: {
+			closed,
+			hold: (sessionId, runId, now) => takeOrWhy(sessionId, { runId, since: stamp(now) }),
+			release,
+			holds: (held) => leases.holds(held.sessionId, deps.holder(), held.epoch),
+			trusts: (held) => (held.cwd ? !!deps.ownerTrusts?.(held.cwd) : false),
+		},
 	};
 }
 
@@ -446,15 +514,32 @@ export interface LoopLanes {
 	settle(ms: number): Promise<void>;
 }
 
-export function abortRemovedJobs(runs: RunList, exists: (jobId: string) => boolean, log: (line: string) => void): number {
+/**
+ * Stop each run whose job is not in `jobs.json`. A run of an answer row whose lane is not a loop lane
+ * is left: a check lane and a conversation are in no `jobs.json`, and a person's yes there is not a
+ * run of a removed job. An answer's run in a removed loop's lane is stopped.
+ */
+export function abortRemovedJobs(runs: Pick<RunList, "all">, exists: (jobId: string) => boolean, log: (line: string) => void): number {
 	let aborted = 0;
 	for (const run of runs.all()) {
+		if (run.answer && parseLane(run.answer.lane)?.kind !== "loop") continue;
 		if (exists(run.jobId) || run.ctrl.signal.aborted) continue;
 		run.ctrl.abort();
 		log(`cron ${run.label}: removed while it ran; stopped run ${run.runId}`);
 		aborted++;
 	}
 	return aborted;
+}
+
+/**
+ * The test of the drain's pre-pass: a claim of this process whose run left the list. Its run ended
+ * here and its closing threw before it wrote the row, so the slot is spent. An `ans-` row is passed
+ * over: the answer lane (src/answer-lanes.ts) finds that claim not live (`answerClaimLive`), and
+ * counts it (F1) or closes it (F2, F3). The loop lane's drain reads its liveness the same way, so the
+ * claim does not hold the lane meanwhile.
+ */
+export function spentOwnClaim(row: Row, self: { readonly pid: number; readonly procStart: string | undefined }, listed: (runId: string) => boolean): boolean {
+	return !isAnswerRow(row) && row.run !== undefined && row.run.pid === self.pid && row.run.procStart === self.procStart && !listed(row.run.id);
 }
 
 export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
@@ -479,6 +564,8 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 		const current = laneJobs().get(lane.id);
 		const jobs = stores.book().jobs;
 		const sinks = baseSinks();
+		const self = deps.holder();
+		const live = (row: ClaimedRow): boolean => laneClaimLive(row, self, (runId) => runs.get(runId) !== undefined);
 		/** Why a scheduled row of this loop waits for its gates: a missing directory, the budget, the slots. */
 		const gateOf = (row: UnclaimedRow): string | undefined => {
 			const job = jobs.find((item) => item.id === jobId);
@@ -498,7 +585,7 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 			view: () => ({
 				kind: "held", ceiling: CEILING.held, idle: !runs.all().some((run) => run.jobId === jobId),
 				running: undefined, inFlight: new Set(), connected: () => true, producerAlive: () => true,
-				mine: () => false, claimLive: claimAlive,
+				mine: () => false, claimLive: live,
 				blocked: (row) => {
 					if (row.source.startsWith("cron-run:")) return undefined;
 					const job = jobs.find((item) => item.id === jobId);
@@ -526,11 +613,10 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 		// A claim of this process whose run is no longer in the list: the run ended here, and its closing
 		// threw before it wrote the row. The run happened, so its slot is spent, as main spends it when the
 		// end of a run fails: it does not run again, here or after a restart.
-		const self = deps.holder();
 		for (const row of stores.requests.list(lane.id)) {
-			if (!row.run || row.run.pid !== self.pid || row.run.procStart !== self.procStart || runs.get(row.run.id) !== undefined) continue;
+			if (!spentOwnClaim(row, self, (runId) => runs.get(runId) !== undefined)) continue;
 			stores.requests.remove(lane.id, [row.id]);
-			deps.sinks.log(`loop ${jobId}: run ${row.run.id.slice(0, 12)} ended without its closing; its slot is spent`, "info", current);
+			deps.sinks.log(`loop ${jobId}: run ${row.run!.id.slice(0, 12)} ended without its closing; its slot is spent`, "info", current);
 		}
 		if (current) {
 			// Main's rule: the grace counts from the first look that found the checkout missing (a mount
@@ -553,7 +639,8 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 		// /cron run) is that skip: it is counted on the running row and spent.
 		try {
 			const rows = stores.requests.list(lane.id);
-			const going = rows.find((row): row is ClaimedRow => row.run !== undefined && claimAlive(row) && Date.parse(row.run.started_at) < now);
+			// An answer's run is never one this drain started, so one the answer lane started in this tick counts too.
+			const going = rows.find((row): row is ClaimedRow => row.run !== undefined && live(row as ClaimedRow) && (isAnswerRow(row) || Date.parse(row.run.started_at) < now));
 			const overlapped = going && current?.enabled ? rows.filter((row) => !row.run && row.kind === "input" && row.source === `cron:${jobId}`) : [];
 			for (const row of overlapped) {
 				const slot = row.collapsed_slot ?? row.payload?.slot ?? row.created_at;
@@ -566,9 +653,10 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 		}
 		// The lists cannot ask the gates (a window does not know the slots or the budget): the reason
 		// this drain saw is written on each row that still waits, when it changed, as main wrote lastError.
+		// An `ans-` row's reason has one writer, the answer lane (`Answers.meet`'s hold).
 		try {
 			for (const row of stores.requests.list(lane.id)) {
-				if (row.run || row.kind !== "input") continue;
+				if (row.run || row.kind !== "input" || isAnswerRow(row)) continue;
 				const why = gateOf(row);
 				if (why !== row.waiting) stores.requests.update(lane.id, row.id, { waiting: why });
 			}

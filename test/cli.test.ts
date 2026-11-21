@@ -270,6 +270,64 @@ test("pi-loops inbox: list, claim and dismiss with no pi open, as JSON a program
 	});
 });
 
+test("pi-loops inbox claim is a claim alone and runs nothing; on a question it says so; cancel takes back a yes that waits and refuses one too late", async () => {
+	const root = tmp("pi-loops-inbox-cli-");
+	const project = path.join(root, "project");
+	fs.mkdirSync(project);
+	const loops = path.join(root, "loops");
+	const inbox = new Inbox(loops);
+	await new JobStore(loops).add({ id: "cron-1", name: "nightly", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: project, enabled: true, catchUp: true, createdAt: stamp() });
+	const base = { source: "cron:nightly", run_id: "run-1", job_id: "cron-1", cwd: project, lane: "@cron-1" as const };
+	const news = await inbox.append({ ...base, text: "a TODO went stale" });
+	const call = { tool: "bash", tool_call_id: "c1", command: "git push --force origin fix/login", input_sha256: "a".repeat(64), reason: "git push --force on main/master" };
+	const asked = await inbox.append({ ...base, text: "Run `git push --force origin fix/login`? (git push --force on main/master) · waits: nightly went on without it · if not: it stays undone", kind: "checkpoint", ask: { kind: "call", id: `ask-${"b".repeat(32)}`, lane: "@cron-1", session_id: "sid-1", title: "nightly asks to run a command", call, created_at: stamp() } });
+	const waiting = await inbox.append({ ...base, text: "the cache is cold" });
+	const lines: string[] = [];
+	const out = (l: string) => lines.push(l);
+	const rows = () => new RequestStore(loops).list("@cron-1");
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: "off" }, async () => {
+		assert.equal(await runCli(["inbox", "claim", news.id], out), 0);
+		const claimed = inbox.list().find((e) => e.id === news.id)!;
+		assert.deepEqual([claimed.status, claimed.answered_by, claimed.answer], ["claimed", "cli", undefined], "YC: a claim, and no answer");
+		assert.deepEqual(rows(), [], "and no row: nothing runs from a shell");
+		let before = lines.length;
+		assert.equal(await runCli(["inbox", "claim", asked.id], out), 1, "a claim of a question is refused");
+		assert.deepEqual(lines.slice(before), [`inbox entry ${asked.id} is a question from nightly, and a claim from a shell allows no command: answer it on the page or in pi with /inbox`]);
+		const still = inbox.list().find((e) => e.id === asked.id)!;
+		assert.deepEqual([still.status, still.answered_by], ["new", undefined], "the question stays open: a yes on the page or in pi can still run it");
+		assert.deepEqual(rows(), []);
+		assert.equal(await runCli(["inbox", "claim", asked.id, "--json"], out), 1);
+		assert.match(JSON.parse(lines[lines.length - 1]).error, /is a question from nightly/);
+
+		// A yes from pi waits in the loop's lane; the shell takes it back, and the question is open again.
+		const pi = (await import("../src/answers.ts")).personAnswers({ inbox, requests: new RequestStore(loops), jobs: new JobStore(loops), audit: new TriggerStore(loops), sessionFile: () => undefined, self: () => ({ pid: process.pid, instance: "w", version: "0" }), now: Date.now, log: () => undefined });
+		assert.equal((await pi.say(waiting.id, "yes", { by: "terminal", session: "s1" })).said, "Y1");
+		assert.equal(rows().length, 1, "the row of the yes");
+		before = lines.length;
+		assert.equal(await runCli(["inbox", "cancel", waiting.id, "--json"], out), 0);
+		const json = JSON.parse(lines[lines.length - 1]);
+		assert.deepEqual(Object.keys(json), ["finding"]);
+		assert.deepEqual([json.finding.id, json.finding.status], [waiting.id, "new"]);
+		const reopened = inbox.list().find((e) => e.id === waiting.id)!;
+		assert.deepEqual([reopened.status, reopened.answer], ["new", undefined], "the finding is open again, under its own id");
+		assert.deepEqual(rows(), [], "the row left its lane");
+		assert.equal(inbox.list().length, 3, "nothing is filed beside it");
+		assert.equal(await runCli(["inbox", "cancel", waiting.id, "--json"], out), 1);
+		assert.equal(JSON.parse(lines[lines.length - 1]).error, `inbox entry ${waiting.id} cannot be cancelled: it has no queued answer to cancel`);
+		// One that started is stopped with Stop, not cancelled.
+		const again = waiting.id;
+		assert.equal((await pi.say(again, "yes", { by: "terminal", session: "s1" })).said, "Y1");
+		const { answerStep } = await import("../src/ask.ts");
+		await inbox.section((tx) => {
+			const step = answerStep("E4", tx.find(again), { to: "started", run: { id: "ans-x", pid: 1, started_at: stamp() } }, { at: stamp(), lane: "@cron-1" });
+			if ("refused" in step) throw new Error(step.refused);
+			return void tx.write(step);
+		});
+		assert.equal(await runCli(["inbox", "cancel", again], out), 1);
+		assert.equal(lines[lines.length - 1], `inbox entry ${again} cannot be cancelled: it has already started: stop it instead`);
+	});
+});
+
 test("usage and exit codes for the subcommand path", async () => {
 	const lines: string[] = [];
 	assert.equal(await runCli(["help"], (l) => lines.push(l)), 0);

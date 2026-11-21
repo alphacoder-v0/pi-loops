@@ -3386,8 +3386,8 @@ test("the ⋯ sheet ends with the conversation's whole id, to copy", { timeout: 
 
 /* ------------------------------------------------------------------ the inbox as cards */
 
-const DECISION_CARD = { id: "inb-" + "a".repeat(32), kind: "decision", status: "new", headline: "Close #412 as fixed?", waits: "the release branch", verified: true, origin: "loop", loop: { id: "cron-1", name: "issue-triage" }, source: "cron:issue-triage", cwd: "/work/api", createdAt: new Date().toISOString(), runId: "run-1", sessionId: "01a0", hasTranscript: true, fromThisConversation: true, claiming: false, owner: { holder: "terminal" } };
-const NEWS_CARD = { id: "inb-" + "b".repeat(32), kind: "news", status: "new", headline: "<img src=x onerror=alert(1)>", body: "<b>bold</b> stays text", verified: false, origin: "loop", source: "cron:ci-watch", cwd: "/work/api", createdAt: new Date().toISOString(), runId: "run-2", hasTranscript: false, fromThisConversation: false, claiming: false, owner: { holder: "none" } };
+const DECISION_CARD = { id: "inb-" + "a".repeat(32), kind: "decision", status: "new", headline: "Close #412 as fixed?", waits: "the release branch", verified: true, origin: "loop", loop: { id: "cron-1", name: "issue-triage" }, source: "cron:issue-triage", cwd: "/work/api", createdAt: new Date().toISOString(), runId: "run-1", sessionId: "01a0", hasTranscript: true, fromThisConversation: true };
+const NEWS_CARD = { id: "inb-" + "b".repeat(32), kind: "news", status: "new", headline: "<img src=x onerror=alert(1)>", body: "<b>bold</b> stays text", verified: false, origin: "loop", source: "cron:ci-watch", cwd: "/work/api", createdAt: new Date().toISOString(), runId: "run-2", hasTranscript: false, fromThisConversation: false };
 const INBOX = { cwd: "/work/api", cards: [DECISION_CARD, NEWS_CARD], more: 0, handled: [], elsewhere: 0, chips: ["Not a bug", "Already fixed", "Duplicate", "Too noisy", "Not now"] };
 
 async function inboxPage(answers: Record<string, unknown> = {}) {
@@ -3410,15 +3410,15 @@ async function inboxPage(answers: Record<string, unknown> = {}) {
 	return { dom, cards, texts, button, click, answers: all };
 }
 
-test("the inbox shows decisions before news, each row only with a value, and where a claim runs only when that is not here", { timeout: 20_000 }, async () => {
+test("the inbox shows decisions before news, each row only with a value, and the loop only when there is more than one", { timeout: 20_000 }, async () => {
 	const { dom, cards, texts, button } = await inboxPage();
 	const [decision, news] = cards();
 	assert.deepEqual([decision.dataset.inb, news.dataset.inb], [DECISION_CARD.id, NEWS_CARD.id], "decisions first; each card carries its finding's id");
 	const shown = texts(decision).join("|");
 	assert.match(shown, /Needs you|Close #412 as fixed\?/);
 	for (const label of ["Waiting on", "the release branch", "issue-triage"]) assert.ok(shown.includes(label), `${label} in ${shown}`);
-	for (const label of ["If you don't", "not said", "from this conversation", "runs in"]) assert.ok(!shown.includes(label), `no ${label}: a row only with a value, and where it runs only when that is not here: ${shown}`);
-	assert.ok(texts(news).includes("ci-watch · starts its conversation"), "another conversation's finding says which loop and where Yes runs it");
+	for (const label of ["If you don't", "not said", "from this conversation", "runs in"]) assert.ok(!shown.includes(label), `no ${label}: a row only with a value, and no conversation a yes runs in: ${shown}`);
+	assert.ok(texts(news).includes("ci-watch"), "another loop's finding says which loop");
 	for (const label of ["Yes, do it", "No\u2026", "See the run"]) assert.ok(button(decision, label), label);
 	for (const label of ["Look into it", "Dismiss\u2026"]) assert.ok(button(news, label), label);
 	assert.equal(button(news, "See the run"), undefined, "no transcript, no See the run");
@@ -3431,6 +3431,23 @@ test("the inbox shows decisions before news, each row only with a value, and whe
 	one.dom.dispose();
 });
 
+test("a question's card shows its command whole, as written, in a field of its own, and its headline names who asks", { timeout: 20_000 }, async () => {
+	const command = "true · waits: your review · if not: nothing happens; git push --force origin main";
+	const QUESTION_CARD = { ...DECISION_CARD, id: "inb-" + "d".repeat(32), headline: "nightly asks to run a command", question: { tool: "bash", command, reason: "git push --force on main/master" }, waits: "nightly went on without it", ifNot: "it stays undone", verified: false };
+	const { dom, cards, texts } = await inboxPage({ "/inbox?": { ...INBOX, cards: [QUESTION_CARD] } });
+	const [card] = cards();
+	const find = (el: any, ok: (e: any) => boolean): any => (ok(el) ? el : el.children.map((c: any) => (c && typeof c === "object" ? find(c, ok) : undefined)).find(Boolean));
+	const code = find(card, (e) => e.tag === "code");
+	assert.ok(code, "the command is in a code element");
+	assert.deepEqual([code.className, code._text], ["icmd", command], "whole, as written");
+	assert.equal(find(card, (e) => e.tag === "b")._text, "nightly asks to run a command", "the headline is who asks, not a command");
+	const shown = texts(card);
+	for (const label of ["Command", "Reason", "git push --force on main/master", "Waiting on", "nightly went on without it", "If you don't", "it stays undone"]) assert.ok(shown.includes(label), `${label} in ${shown.join("|")}`);
+	assert.ok(!shown.includes("your review"), "no clause cut from the command");
+	assert.match(PAGE, /\.icard \.icmd\{[^}]*font-family:var\(--font-mono\)/, "drawn in the page's monospace face");
+	dom.dispose();
+});
+
 test("a finding's HTML is shown as text and creates no element", { timeout: 20_000 }, async () => {
 	const { dom, cards, texts } = await inboxPage();
 	const news = cards()[1];
@@ -3441,71 +3458,16 @@ test("a finding's HTML is shown as text and creates no element", { timeout: 20_0
 	dom.dispose();
 });
 
-test("Yes posts the finding's id and this conversation, nothing else, and shows where it runs", { timeout: 20_000 }, async () => {
-	const { dom, cards, texts, click } = await inboxPage({ "/inbox/claim": { ok: true, id: DECISION_CARD.id, delivery: "terminal", conversation: "01a0", line: "Queued for your terminal." } });
+test("Yes posts the finding's id and this conversation, nothing else, and says it runs in the background", { timeout: 20_000 }, async () => {
+	const { dom, cards, texts, click } = await inboxPage({ "/inbox/claim": { ok: true, id: DECISION_CARD.id, said: "Y1", lane: "@cron-1", line: "Running in the background, in the run that reported it." } });
 	await click(cards()[0], "Yes, do it");
 	const post = dom.calls.find((c) => c.url === "/inbox/claim");
 	assert.deepEqual(post?.body, { id: DECISION_CARD.id, from: SESSION_UNDER_TEST });
 	assert.equal(post?.headers?.["x-pi-web-token"], "test-token");
-	assert.ok(cards().some((c: any) => c.dataset.inb === DECISION_CARD.id && texts(c).includes("Queued for your terminal.")), "the card says where it runs");
+	assert.ok(cards().some((c: any) => c.dataset.inb === DECISION_CARD.id && texts(c).includes("Running in the background, in the run that reported it.")), "the card says where it runs");
+	assert.ok(!dom.calls.some((c) => c.url === "/conversations/new"), "a yes starts no conversation");
 	dom.dispose();
 });
-
-test("a project-owned finding runs in the conversation it is claimed from: Yes, do it here, and no line to say so", { timeout: 20_000 }, async () => {
-	const owned = { ...DECISION_CARD, sessionId: undefined, fromThisConversation: false, owner: { holder: "project" } };
-	const { dom, cards, texts, button, click } = await inboxPage({ "/inbox?": { ...INBOX, cards: [owned] }, "/inbox/claim": { ok: true, id: owned.id, delivery: "page", conversation: SESSION_UNDER_TEST, line: "Running in its conversation." } });
-	const card = cards()[0];
-	assert.ok(!texts(card).join("|").includes("runs in"), texts(card).join("|"));
-	assert.ok(!texts(card).join("|").includes("is gone"));
-	assert.ok(button(card, "Yes, do it here"));
-	await click(card, "Yes, do it here");
-	assert.deepEqual(dom.calls.find((c) => c.url === "/inbox/claim")?.body, { id: owned.id, from: SESSION_UNDER_TEST });
-	dom.dispose();
-});
-
-test("a card whose conversation is gone runs in this one in its own project, and in a new conversation there in another project", { timeout: 20_000 }, async () => {
-	const gone = { ...DECISION_CARD, sessionId: "01-gone", fromThisConversation: false, owner: { holder: "gone" } };
-	const g = globalThis as any;
-	// The open conversation's project (/work/api): today's words, and Yes claims into this one.
-	const here = await inboxPage({ "/inbox?": { ...INBOX, cards: [gone] }, "/inbox/claim": { ok: true, id: gone.id, delivery: "page", conversation: SESSION_UNDER_TEST, line: "Running in its conversation." } });
-	await g.document.getElementById("project").onchange();
-	await settled();
-	let card = here.cards().at(-1);
-	assert.ok(here.texts(card).join("|").includes("its conversation is gone; runs here"), here.texts(card).join("|"));
-	await here.click(card, "Yes, do it here");
-	assert.deepEqual(here.dom.calls.find((c) => c.url === "/inbox/claim")?.body, { id: gone.id, from: SESSION_UNDER_TEST });
-	assert.ok(!here.dom.calls.some((c) => c.url === "/conversations/new"), "no other pi");
-	here.dom.dispose();
-	// Another project's card (/work/web, picked in the list): a new conversation there, claimed into it, and the page goes to it.
-	const there = await inboxPage({ "/inbox?": { ...INBOX, cwd: "/work/web", cards: [{ ...gone, cwd: "/work/web" }] }, "/conversations/new": { url: "/c/new-web/" }, "/inbox/claim": { ok: true, id: gone.id, delivery: "page", conversation: "new-web", line: "Running in its conversation." } });
-	const assigned: string[] = [];
-	g.location.assign = (u: string) => void assigned.push(u);
-	await g.document.getElementById("project").onchange();
-	await settled();
-	card = there.cards().at(-1);
-	const said = there.texts(card).join("|");
-	assert.ok(said.includes("its conversation is gone; runs in a new conversation in web"), said);
-	assert.ok(!said.includes("in this one"), said);
-	assert.ok(!there.button(card, "Yes, do it here"), "it is not done here");
-	await there.click(card, "Yes, do it");
-	await settled();
-	const posts = there.dom.calls.filter((c) => c.url === "/conversations/new" || c.url === "/inbox/claim").map((c) => [c.url, c.body]);
-	assert.deepEqual(posts, [["/conversations/new", { cwd: "/work/web" }], ["/inbox/claim", { id: gone.id, from: "new-web" }]], "the new conversation first, then the claim into it");
-	assert.deepEqual(assigned, ["/c/new-web/"]);
-	there.dom.dispose();
-	// The new conversation cannot start: nothing is claimed, the card says why, and Yes is live again.
-	const full = await inboxPage({ "/inbox?": { ...INBOX, cwd: "/work/web", cards: [{ ...gone, cwd: "/work/web" }] }, "/conversations/new": { __status: 503, __body: { error: "6 conversations are open in the page and none of them is idle; close one to open another" } } });
-	await g.document.getElementById("project").onchange();
-	await settled();
-	card = full.cards().at(-1);
-	await full.click(card, "Yes, do it");
-	await settled();
-	assert.ok(!full.dom.calls.some((c) => c.url === "/inbox/claim"), "nothing claimed");
-	assert.ok(full.texts(card).some((t) => /^Not sent: 6 conversations are open in the page/.test(t)), full.texts(card).join("|"));
-	assert.equal(full.button(card, "Yes, do it").disabled, false);
-	full.dom.dispose();
-});
-
 test("the Loops pane lists loops: no inbox count and no summary line, and its rail button says Inbox for the list", { timeout: 20_000 }, async () => {
 	const g = globalThis as any;
 	const dom = stubDom({ ...STATE, automation: { ...STATE.automation, inboxNew: 9, inboxDecisions: 4 } }, { messages: [] }, new Map(), { "/inbox?": { ...INBOX, more: 3 } });
@@ -3564,27 +3526,6 @@ test("the Loops pane shows Goal only while a goal is set, and has no This conver
 	assert.equal(doc().getElementById("goalBox").hidden, false);
 	assert.equal(doc().getElementById("goal")._text, "tests pass — active (2)");
 	dom.dispose();
-});
-
-test("a project-owned card listed for another project runs in a new conversation there: started, claimed into, and opened", { timeout: 20_000 }, async () => {
-	const owned = { ...DECISION_CARD, sessionId: undefined, fromThisConversation: false, owner: { holder: "project" }, cwd: "/work/web" };
-	const g = globalThis as any;
-	const there = await inboxPage({ "/inbox?": { ...INBOX, cwd: "/work/web", cards: [owned] }, "/conversations/new": { url: "/c/new-web/" }, "/inbox/claim": { ok: true, id: owned.id, delivery: "page", conversation: "new-web", line: "Running in its conversation." } });
-	const assigned: string[] = [];
-	g.location.assign = (u: string) => void assigned.push(u);
-	await g.document.getElementById("project").onchange();
-	await settled();
-	const card = there.cards().at(-1);
-	const said = there.texts(card).join("|");
-	assert.ok(said.includes("runs in a new conversation in web"), said);
-	assert.ok(!said.includes("runs in the conversation you claim it from"), said);
-	assert.ok(!there.button(card, "Yes, do it here"), "it is not done here");
-	await there.click(card, "Yes, do it");
-	await settled();
-	const posts = there.dom.calls.filter((c) => c.url === "/conversations/new" || c.url === "/inbox/claim").map((c) => [c.url, c.body]);
-	assert.deepEqual(posts, [["/conversations/new", { cwd: "/work/web" }], ["/inbox/claim", { id: owned.id, from: "new-web" }]]);
-	assert.deepEqual(assigned, ["/c/new-web/"]);
-	there.dom.dispose();
 });
 
 test("No then Not a bug posts that reason and says it goes to the loop's next run", { timeout: 20_000 }, async () => {
@@ -3649,11 +3590,11 @@ test("inbox card buttons are at least 32 px tall and the card wraps rather than 
 	assert.match(src, /\.icard \.why\[hidden\]\{display:none\}/, "the reasons stay hidden until No: a display rule would otherwise beat the hidden attribute");
 });
 
-test("a claim's card follows the server: queued while its row waits, then says it was handed over; the counts are asked for again at once", { timeout: 20_000 }, async () => {
-	const { dom, cards, texts, click, answers } = await inboxPage({ "/inbox/claim": { ok: true, id: DECISION_CARD.id, delivery: "page", conversation: "01a0", line: "Running in its conversation." } });
+test("a yes's card follows the server: the line of its answer's state, as it moves; the counts are asked for again at once", { timeout: 20_000 }, async () => {
+	const { dom, cards, texts, click, answers } = await inboxPage({ "/inbox/claim": { ok: true, id: DECISION_CARD.id, said: "Y1", line: "Running in the background, in the run that reported it." } });
 	const before = dom.calls.length;
-	// The server now lists it as handled, with the line of where it waits.
-	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [{ ...DECISION_CARD, status: "claimed", line: "Queued for your terminal." }] };
+	// The server now lists it as handled, with the line of its answer's state.
+	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [{ ...DECISION_CARD, status: "claimed", line: "Waiting to run", cancel: true }] };
 	await click(cards()[0], "Yes, do it");
 	await settled();
 	const after = dom.calls.slice(before).map((c) => c.url);
@@ -3661,15 +3602,13 @@ test("a claim's card follows the server: queued while its row waits, then says i
 	assert.ok(after.some((u) => u.endsWith("/state")), "and the panel's");
 	// The card on the screen now: the newest one drawn for it (a redraw makes new elements).
 	const card = () => cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);
-	assert.ok(texts(card()).includes("Queued for your terminal."), "the server's handled line, not the answer's");
-	// The turn ran: the row is gone, the finding is no longer handled.
-	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [] };
+	assert.ok(texts(card()).includes("Waiting to run"), "the server's line, not the answer's");
+	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [{ ...DECISION_CARD, status: "claimed", line: "Done · Closed #412." }] };
 	await (globalThis as any).document.getElementById("project").onchange();
 	await settled();
-	assert.ok(card() && texts(card()).includes("Handed to that conversation."), "not 'Running in' until a reload");
+	assert.ok(texts(card()).includes("Done · Closed #412."));
 	dom.dispose();
 });
-
 test("a disabled card button looks disabled, and a disabled button does not change on hover", () => {
 	const src = PAGE;
 	assert.match(src, /\.icard button:disabled\{[^}]*opacity:\.45[^}]*cursor:default/);
@@ -3678,44 +3617,29 @@ test("a disabled card button looks disabled, and a disabled button does not chan
 	assert.match(src, /\.icard button\.primary:disabled:hover\{background:var\(--brand\);color:var\(--brand-ink\);filter:none\}/, "and the amber one keeps its amber");
 });
 
-test("a claim whose row is taken before the page looks again says it was handed over, at once", { timeout: 20_000 }, async () => {
-	const { dom, cards, texts, click, answers } = await inboxPage({ "/inbox/claim": { ok: true, id: DECISION_CARD.id, delivery: "terminal", conversation: "01a0", line: "Queued for your terminal." } });
-	// The terminal takes the row within a second: the first refresh after the claim no longer lists it.
-	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [] };
-	await click(cards()[0], "Yes, do it");
+test("Cancel on a yes that waits posts the finding's id; the same card is open again with its buttons; one too late says why", { timeout: 20_000 }, async () => {
+	const waiting = { ...DECISION_CARD, status: "claimed", line: "Waiting to run", cancel: true };
+	const { dom, cards, texts, button, click, answers } = await inboxPage({ "/inbox?": { ...INBOX, cards: [NEWS_CARD], handled: [waiting] }, "/inbox/cancel": { ok: true, id: DECISION_CARD.id, line: "Cancelled. The question is open again" } });
+	const card = () => cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);
+	assert.ok(texts(card()).includes("Waiting to run"));
+	for (const label of ["Yes, do it", "No\u2026"]) assert.equal(button(card(), label), undefined, `a handled card has no ${label}`);
+	// The server now lists the same finding as new again.
+	answers["/inbox?"] = { ...INBOX, cards: [{ ...DECISION_CARD, status: "new" }, NEWS_CARD], handled: [] };
+	await click(card(), "Cancel");
 	await settled();
-	const card = cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);
-	assert.ok(texts(card).includes("Handed to that conversation."), texts(card).filter(Boolean).join(" | "));
+	assert.deepEqual(dom.calls.find((c) => c.url === "/inbox/cancel")?.body, { id: DECISION_CARD.id });
+	assert.ok(texts(card()).includes("Cancelled. The question is open again"), texts(card()).filter(Boolean).join(" | "));
+	const withdraw = (el: any): boolean => (el.tag === "button" && el.dataset?.act === "withdraw") || el.children.some((c: any) => c && typeof c === "object" && withdraw(c));
+	assert.equal(withdraw(card()), false, "nothing to cancel twice");
+	for (const label of ["Yes, do it", "No\u2026"]) assert.ok(button(card(), label), `the card open again has ${label}`);
 	dom.dispose();
+	const late = await inboxPage({ "/inbox?": { ...INBOX, cards: [NEWS_CARD], handled: [waiting] }, "/inbox/cancel": { __status: 409, __body: { error: "it has already started: stop it instead" } } });
+	const lateCard = () => late.cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);
+	await late.click(lateCard(), "Cancel");
+	await settled();
+	assert.ok(late.texts(lateCard()).includes("It has already started: stop it instead."), late.texts(lateCard()).filter(Boolean).join(" | "));
+	late.dom.dispose();
 });
-
-test("a claim cancelled from this page's queue says nothing was sent and the finding stays claimed, not that it was handed over", { timeout: 20_000 }, async () => {
-	const g = globalThis as any;
-	const row = { id: "claim-1111", source: "inbox:" + DECISION_CARD.id, label: "inbox", text: "Close #412 as fixed?", images: 0, created_at: "2026-06-01T12:00:00Z", mine: false, offered: false };
-	const answers: Record<string, unknown> = { "/inbox?": INBOX, "/inbox/claim": { ok: true, id: DECISION_CARD.id, delivery: "page", conversation: SESSION_UNDER_TEST, line: "Running in its conversation." }, "/queue/cancel": { success: true } };
-	const dom = stubDom({ ...STATE, requests: [row] }, { messages: [] }, new Map(), answers);
-	await new Function(pageScript())();
-	await dom.started();
-	const cards = () => dom.made.filter((m: any) => m.tag === "article" && m.dataset.inb === DECISION_CARD.id);
-	const texts = (el: any): string[] => [el._text, ...el.children.flatMap((c: any) => (c && typeof c === "object" ? texts(c) : []))];
-	const yes = (el: any): any => (el.tag === "button" && el._text === "Yes, do it" ? el : el.children.map((c: any) => (c && typeof c === "object" ? yes(c) : undefined)).find(Boolean));
-	const card = cards().at(-1);
-	card._on.click({ target: yes(card) });
-	await settled();
-	// The row leaves the queue by its ✕; the finding stays claimed, so the server lists it nowhere.
-	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [] };
-	const line = g.document.getElementById("queued").children.find((c: any) => String(c.className).startsWith("qrow"));
-	line.children.at(-1).onclick();
-	await settled();
-	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/queue/cancel")).map((c) => c.body), [{ id: "claim-1111" }]);
-	await g.document.getElementById("project").onchange();
-	await settled();
-	const said = texts(cards().at(-1));
-	assert.ok(said.includes("Cancelled; nothing was sent. The finding stays claimed."), said.filter(Boolean).join(" | "));
-	assert.ok(!said.includes("Handed to that conversation."));
-	dom.dispose();
-});
-
 test("an open reason box keeps its text, selection and focus across the list's redraw and a button's", { timeout: 20_000 }, async () => {
 	const { dom, cards, click, answers } = await inboxPage({ "/inbox/claim": { ok: true, id: NEWS_CARD.id, delivery: "page", conversation: "01a0", line: "Running in its conversation." } });
 	const g = globalThis as any;
@@ -5244,11 +5168,10 @@ test("a reply the model call failed on is one error row with the reason, live an
 
 test("while pi-loops does not answer the page says so once, keeps what it had and turns off what posts to it; it comes back without a reload", { timeout: 20_000 }, async () => {
 	const g = globalThis as any;
-	const owned = { ...DECISION_CARD, sessionId: undefined, fromThisConversation: false, owner: { holder: "project" } };
-	const { dom, cards, button } = await inboxPage({ "/inbox?": { ...INBOX, cards: [owned] }, "/conversations": listAnswer(ROWS) });
+	const { dom, cards, button } = await inboxPage({ "/inbox?": { ...INBOX, cards: [DECISION_CARD] }, "/conversations": listAnswer(ROWS) });
 	const at = (id: string) => g.document.getElementById(id);
 	await until(() => cards().length > 0 && at("auto").innerHTML.includes("nightly") && textOf(at("convs")) !== "", "the page drew its cards, its loops and its list");
-	assert.equal(button(cards().at(-1), "Yes, do it here").disabled, false);
+	assert.equal(button(cards().at(-1), "Yes, do it").disabled, false);
 	const rail = textOf(at("convs"));
 
 	// pi-loops stops: it tells the page that it stopped this pi itself, and then nothing answers.
@@ -5269,7 +5192,7 @@ test("while pi-loops does not answer the page says so once, keeps what it had an
 	assert.equal(textOf(at("sbHost")).trim(), "reconnecting…", "the status bar does not say pi-loops runs");
 	assert.equal(at("status")._text, "", "the header's chip says nothing: the line and the status bar have said it");
 	assert.equal(at("send").disabled, true, "send is off");
-	assert.equal(button(cards().at(-1), "Yes, do it here").disabled, true, "and so is a card's Yes");
+	assert.equal(button(cards().at(-1), "Yes, do it").disabled, true, "and so is a card's Yes");
 	at("input").value = "typed while it was away";
 	await at("composer").requestSubmit();
 	assert.equal(at("input").value, "typed while it was away", "Enter sends nothing and keeps the text");
@@ -5279,7 +5202,7 @@ test("while pi-loops does not answer the page says so once, keeps what it had an
 	await dom.poll();
 	await until(() => at("held").hidden === true, "the line goes");
 	assert.equal(at("send").disabled, false);
-	assert.equal(button(cards().at(-1), "Yes, do it here").disabled, false);
+	assert.equal(button(cards().at(-1), "Yes, do it").disabled, false);
 	assert.match(at("auto").innerHTML, /<button data-run="cron-a">/);
 	assert.match(textOf(at("sbHost")), /pi-loops/);
 	dom.dispose();
