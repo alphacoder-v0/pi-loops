@@ -567,6 +567,8 @@ function shellAnswers(loopsDir: string): PersonAnswers {
 function findingJson(e: InboxEntry): Record<string, unknown> {
 	const out: Record<string, unknown> = {};
 	for (const field of FINDING_FIELDS) out[field] = e[field];
+	// Added at the end, on a reply only (docs/downstream.md): the root of its thread.
+	if (e.re !== undefined) out.re = e.re;
 	return out;
 }
 

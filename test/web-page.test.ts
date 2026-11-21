@@ -3421,9 +3421,9 @@ test("the inbox shows decisions before news, each row only with a value, and the
 	for (const label of ["Waiting on", "the release branch", "issue-triage"]) assert.ok(shown.includes(label), `${label} in ${shown}`);
 	for (const label of ["If you don't", "not said", "from this conversation", "runs in"]) assert.ok(!shown.includes(label), `no ${label}: a row only with a value, and no conversation a yes runs in: ${shown}`);
 	assert.ok(texts(news).includes("ci-watch"), "another loop's finding says which loop");
-	for (const label of ["Yes, do it", "No\u2026", "See the run"]) assert.ok(button(decision, label), label);
+	for (const label of ["Yes, do it", "No\u2026", "Open the run"]) assert.ok(button(decision, label), label);
 	for (const label of ["Look into it", "Dismiss\u2026"]) assert.ok(button(news, label), label);
-	assert.equal(button(news, "See the run"), undefined, "no transcript, no See the run");
+	assert.equal(button(news, "Open the run"), undefined, "no transcript, no Open the run");
 	assert.ok(dom.calls.some((c) => c.url.startsWith("/inbox?session=")), "asked of the global route, not this conversation's");
 	dom.dispose();
 	const one = await inboxPage({ "/inbox?": { ...INBOX, cards: [DECISION_CARD, { ...DECISION_CARD, id: "inb-" + "c".repeat(32), ifNot: "it stays open" }] } });
@@ -3444,10 +3444,40 @@ test("a question's card shows its command whole, as written, in a field of its o
 	assert.deepEqual([code.className, code._text], ["icmd", command], "whole, as written");
 	assert.equal(find(card, (e) => e.tag === "b")._text, "nightly asks to run a command", "the headline is who asks, not a command");
 	const shown = texts(card);
-	for (const label of ["Command", "Reason", "git push --force on main/master", "Waiting on", "nightly went on without it", "If you don't", "it stays undone"]) assert.ok(shown.includes(label), `${label} in ${shown.join("|")}`);
+	for (const label of ["Why it asks", "git push --force on main/master", "Waiting on", "nightly went on without it", "If you don't", "it stays undone"]) assert.ok(shown.includes(label), `${label} in ${shown.join("|")}`);
 	assert.ok(!shown.includes("your review"), "no clause cut from the command");
 	assert.match(PAGE, /\.icard \.icmd\{[^}]*font-family:var\(--font-mono\)/, "drawn in the page's monospace face");
 	dom.dispose();
+});
+
+test("[6.1] a question's card reads as design 6.1: who asks, the command under it with no label, Why it asks, and Yes, run it once, No… and Open the run", { timeout: 20_000 }, async () => {
+	const QUESTION_CARD = { ...DECISION_CARD, id: "inb-" + "d".repeat(32), headline: "nightly asks to run a command", question: { tool: "bash", command: "git push --force origin fix/login", reason: "git push --force on main/master" }, waits: "nightly went on without it", ifNot: "it stays undone", verified: false };
+	const { dom, cards, texts, button } = await inboxPage({ "/inbox?": { ...INBOX, cards: [QUESTION_CARD, DECISION_CARD] } });
+	const [question, decision] = cards();
+	const kids = question.children.filter((c: any) => c && typeof c === "object");
+	assert.deepEqual([kids.slice(0, 3).map((c: any) => c.tag), kids[0].className, kids[1].className], [["div", "div", "dl"], "ih", "iq"], "the headline, then the command, then the rows");
+	assert.equal(kids[1].children[0]._text, "git push --force origin fix/login");
+	const shown = texts(question);
+	assert.ok(shown.includes("Why it asks") && !shown.includes("Reason") && !shown.includes("Command"), shown.join("|"));
+	for (const label of ["Yes, run it once", "No…", "Open the run"]) assert.ok(button(question, label), label);
+	assert.equal(button(question, "Yes, do it"), undefined, "a question's yes runs the one command");
+	assert.ok(button(decision, "Yes, do it"), "a decision that is no question keeps Yes, do it (design 6.2)");
+	dom.dispose();
+});
+
+test("[thread] a news finding with re is drawn right under its root's card, in the root's group, once; one whose root is not listed is a card of its own", { timeout: 20_000 }, async () => {
+	const QUESTION = { ...DECISION_CARD, id: "inb-" + "e".repeat(32), status: "claimed", headline: "nightly asks to run a command", question: { tool: "bash", command: "git push --force origin main", reason: "git push --force on main/master" }, line: "Not run (the loop was removed)" };
+	const REPLY = { ...NEWS_CARD, id: "inb-" + "f".repeat(32), headline: "Your yes to `git push --force origin main` could not be started (the loop was removed).", body: "The command was not run.", re: QUESTION.id };
+	const ORPHAN = { ...NEWS_CARD, id: "inb-" + "9".repeat(32), headline: "Your yes to `ls` was started and did not finish (it was stopped).", body: undefined, re: "inb-" + "8".repeat(32) };
+	const { dom } = await inboxPage({ "/inbox?": { ...INBOX, cards: [DECISION_CARD, REPLY, ORPHAN], handled: [QUESTION] } });
+	const drawn = (slot: string) => (globalThis as any).document.getElementById(slot).children.filter((c: any) => c && c.tag === "article").map((c: any) => [c.dataset.inb, c.className]);
+	assert.deepEqual(drawn("needsSlot"), [[DECISION_CARD.id, "icard decision"]]);
+	assert.deepEqual(drawn("cardsSlot"), [[ORPHAN.id, "icard news"], [QUESTION.id, "icard decision"], [REPLY.id, "icard news reply"]], "the reply follows its root under Handled, and is not in News too");
+	dom.dispose();
+	const alone = await inboxPage({ "/inbox?": { ...INBOX, cards: [REPLY], handled: [] } });
+	assert.deepEqual(drawn("cardsSlot"), [[REPLY.id, "icard news"]], "a root that is gone: drawn on its own");
+	alone.dom.dispose();
+	assert.match(PAGE, /\.icard\.reply\{[^}]*margin-left:/, "a reply is set in under its root");
 });
 
 test("a finding's HTML is shown as text and creates no element", { timeout: 20_000 }, async () => {
@@ -3567,9 +3597,9 @@ test("a finding another page already handled says so; a failed post keeps the bu
 	down.dom.dispose();
 });
 
-test("See the run opens the run's lines read-only, as text", { timeout: 20_000 }, async () => {
+test("Open the run opens the run's lines read-only, as text", { timeout: 20_000 }, async () => {
 	const { dom, cards, click } = await inboxPage({ "/inbox/run": { id: DECISION_CARD.id, runId: "run-1", lines: [{ kind: "assistant", text: "found <script>x</script> in the log" }] } });
-	await click(cards()[0], "See the run");
+	await click(cards()[0], "Open the run");
 	assert.ok(dom.calls.some((c) => c.url === `/inbox/run?id=${DECISION_CARD.id}`));
 	const detail = (globalThis as any).document.getElementById("detail");
 	assert.equal(detail.open, true);

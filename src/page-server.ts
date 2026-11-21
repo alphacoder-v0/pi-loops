@@ -2126,7 +2126,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const entry = said.finding;
 		const told = dismissOutcome(entry, entry.job_id ? jobNames().get(entry.job_id) : undefined, reason);
 		audit.appendAudit({ cwd: entry.cwd, type: "request", traceId: entry.id, state: "dismissed", sourceLabel: entry.source, eventLabel: entry.session_id, details: { finding: entry.id, from: "page", reason: reason ? redact(reason) : null, chip: (DISMISS_CHIPS as readonly string[]).includes(reason) } });
-		const line = entry.ask ? noQuestionLine("page", whoOf(entry, entry.ask.lane)) : dismissLine(told);
+		const line = entry.ask ? noQuestionLine("page", whoOf(entry, entry.ask.lane), entry.ask.lane) : dismissLine(told);
 		return { status: 200, body: { ok: true, id: entry.id, told, line } };
 	}
 

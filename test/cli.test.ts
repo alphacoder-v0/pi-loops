@@ -270,6 +270,23 @@ test("pi-loops inbox: list, claim and dismiss with no pi open, as JSON a program
 	});
 });
 
+test("[thread] pi-loops inbox --json shows re, the root of a reply's thread, after the ten fields, and only on a reply", async () => {
+	const root = tmp("pi-loops-inbox-cli-");
+	const loops = path.join(root, "loops");
+	const inbox = new Inbox(loops);
+	const question = await inbox.append({ source: "cron:watch", text: "Run `x`? (why) · waits: watch went on without it", run_id: "run-1", job_id: "cron-1", cwd: root, kind: "checkpoint" });
+	const reply = await inbox.append({ source: "cron:watch", text: "Your yes to `x` could not be started (the loop was removed). The command was not run.", run_id: "run-1", job_id: "cron-1", cwd: root, re: question.id });
+	const lines: string[] = [];
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent") }, async () => {
+		assert.equal(await runCli(["inbox", "list", "--all", "--json"], (l) => lines.push(l)), 0);
+	});
+	const findings = JSON.parse(lines[lines.length - 1]).findings;
+	const shown = findings.find((f: any) => f.id === reply.id);
+	assert.deepEqual(Object.keys(shown), ["id", "created_at", "status", "kind", "source", "run_id", "cwd", "text", "verified", "dismiss_reason", "re"]);
+	assert.equal(shown.re, question.id);
+	assert.equal("re" in findings.find((f: any) => f.id === question.id), false);
+});
+
 test("pi-loops inbox claim is a claim alone and runs nothing; on a question it says so; cancel takes back a yes that waits and refuses one too late", async () => {
 	const root = tmp("pi-loops-inbox-cli-");
 	const project = path.join(root, "project");

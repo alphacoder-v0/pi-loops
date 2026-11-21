@@ -53,7 +53,10 @@ field for field:
  "cwd": "/path/to/project", "text": "one line, at most 500 characters", "verified": null, "dismiss_reason": null}
 ```
 
-Fields may be added; none of these will be renamed, removed or change type.
+Fields may be added; none of these will be renamed, removed or change type. One is added now:
+`re` (`inb-<32 hex>`), after the ten, only on a news finding that pi-loops filed about an answer
+(a yes that could not be started, or was started and did not finish). It is the `id` of the
+finding the yes was to, the root of its thread. A finding without it is the root of its own.
 
 Not listed here means private. `test/downstream/` is the proof this list is enough: a recipe that
 uses only it, checked from the outside with `sh` and `jq`. `test/contract/` holds the checks of

@@ -78,6 +78,37 @@ All notable changes to pi-loops are documented here. The format follows
   judged when it settles. Before, you had to type `/goal resume` after you answered. A goal that
   `/goal pause`, Esc or the continuation limit paused still needs `/goal resume`. A goal that 0.24.2
   paused is not converted. See docs/goal.md.
+- **A question, its answer and the news about the answer are one thread.** When a yes could not
+  be started, or did not finish, the news finding about it carries `re`: the id of the finding the
+  yes was to. The page draws that news card right under the question's card, and `/inbox` lists it
+  under the question, set in, with the question's first line above it when the question is not new
+  any more. `pi-loops inbox list --json` shows `re` after the ten fields of a finding. A news finding
+  whose question is gone is listed on its own. A `re` that is not an `inb-` id is not read. Findings
+  that 0.24.2 wrote have no `re`: their news is listed on its own, as before.
+- **A question's card says what the design says, on every surface.** The page's card shows who
+  asks, the command under it with no label, **Why it asks** (it was **Reason**), **Waiting on** and
+  **If you don't**, and the buttons **Yes, run it once** (it was **Yes, do it**), **No…** and
+  **Open the run** (it was **See the run**, on every card). `/inbox` and `pi-loops inbox list` say
+  `why it asks:` where they said `reason:`, and `/inbox` ends a new question with `/inbox claim <n>
+  runs it once · /inbox dismiss <n> [reason] says no`. A yes on the page to a question that a
+  conversation's scheduled turn asked says "Approved. It runs in this conversation after the
+  current turn." The message a conversation reads after a no is now `The person said no to
+  \`<command>\`: <your reason>`, then `Do not run it, and do not try another way to do the same
+  thing.` on its own line.
+- **No line says that a dangerous command is refused in the background any more.** It is asked
+  about. What `cron_create` tells the model about a plain job, the session-start line about
+  `--tools` on plain jobs, and docs/loops.md, docs/configuration.md, docs/mcp.md and
+  docs/design.md say that such a call is not run, and that pi-loops asks you in the conversation and
+  in the inbox.
+- **`/cron` says what a failing loop's error is.** Under a loop, `last run failed: <error> (7 in a
+  row; next try 16:10)` replaces `last error: <error>` for the last run's failure, with the count
+  from two failures in a row and the next try while the wait after the failures holds the loop
+  back. A note of the loop's clock is `note: <the note>`, and a run that waits to start is `queued
+  since <time>: <why>`. `cron_list` gives the model the same facts as `last_error`, `note` and
+  `queued`. The panel above the editor counts a proposal as proposed: `Loops  2 · 1 proposed`, where
+  it said `1 disabled`.
+- **CONTRACT.md §2.5 names the texts that pi-loops writes itself**, so a reader can tell them from
+  what a run said. No line was added to section 2.
 - **A terminal asks about a proposal or a question of its conversation when a turn settles.** pi's
   selector shows each open question of the conversation, then each proposal, one at a time and
   once per pi process. Esc leaves it for `/inbox`, `/cron enable` or the page. See "A proposed

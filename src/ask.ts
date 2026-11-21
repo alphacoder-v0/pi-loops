@@ -473,9 +473,12 @@ function notRun(write: (set: AnswerWrite["set"], beside?: Beside, text?: string)
 	return write({ answer: { state: "not_run", why, at } }, "not-run", notRunNews(finding, why));
 }
 
-/** The news filed beside a state. It keeps the origin of the finding it is about, and no transcript, so it pins none. */
+/**
+ * The news filed beside a state. It keeps the origin of the finding it is about, and no transcript, so it pins none.
+ * `re` is the root of the thread: that finding, or its own root when it is a reply, so a thread is one level deep.
+ */
 function newsEntry(finding: Finding, text: string, lane: LaneId | undefined): NewFinding {
-	return defined({ source: finding.source, run_id: finding.run_id, cwd: finding.cwd, job_id: finding.job_id, session_id: finding.session_id, text, kind: "news" as const, lane });
+	return defined({ source: finding.source, run_id: finding.run_id, cwd: finding.cwd, job_id: finding.job_id, session_id: finding.session_id, text, kind: "news" as const, lane, re: finding.re ?? finding.id });
 }
 
 /** The state `ANSWER_STEPS` reads: `none` for a finding with no answer. `unreadable` is in no row of the table. */
@@ -556,11 +559,13 @@ export function answerRow(finding: Finding, lane: LaneId, at: string, by: Row["c
 	return { v: 3, id, lane, kind: "input", source: "answer", mode: "unattended", wake: "turn", payload, created_at: at, created_by: by, attempts: 0 };
 }
 
-/** The row that tells a conversation of a no: only for a question whose `ask.lane` is a conversation. id `noRowId`; `wake: "append"`; mode `none`. */
+/** The row that tells a conversation of a no: only for a question whose `ask.lane` is a conversation. id `noRowId`; `wake: "append"`; mode `none`. `finding` is as the no leaves it, with its reason. */
 export function noRow(finding: Finding, at: string, by: Row["created_by"]): UnclaimedRow | undefined {
 	if (!finding.ask || parseLane(finding.ask.lane)?.kind !== "conversation") return undefined;
 	const id = noRowId(finding.id);
-	const text = `[Trigger ${id}] A person said no to the call you asked about: ${cardText(callWords(finding.ask.call))}. Do not run it, and do not try another way to do the same thing.`;
+	// Design 6.4: the call, the person's reason when they gave one, then what the model does now.
+	const reason = finding.dismiss_reason ? cardText(finding.dismiss_reason) : "";
+	const text = `[Trigger ${id}] The person said no to ${cardText(callWords(finding.ask.call))}${reason ? `: ${reason}` : "."}\nDo not run it, and do not try another way to do the same thing.`;
 	const payload: Row["payload"] = { text, cwd: finding.cwd, finding: finding.id };
 	return { v: 3, id, lane: finding.ask.lane, kind: "input", source: "answer", mode: "none", wake: "append", payload, created_at: at, created_by: by, attempts: 0 };
 }
@@ -780,7 +785,7 @@ export function decideSay(finding: Finding | undefined, word: "yes" | "no", from
 	if (word === "no") {
 		const write = answerStep("N1", finding, { to: "none", by: from.by, ...(ctx.reason === undefined ? {} : { reason: ctx.reason }) }, step);
 		if (!isWrite(write)) return { step: "none", refusal: write };
-		const row = finding && noRow(finding, ctx.at, ctx.self);
+		const row = finding && noRow({ ...finding, ...write.set }, ctx.at, ctx.self);
 		return row ? { step: "N1", write, row } : { step: "N1", write };
 	}
 	if (from.by === "cli") {

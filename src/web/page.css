@@ -90,6 +90,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 /* An inbox finding as a card: the second paper on the list's, no border; amber only on the flag and
    on the one button to press. Text wraps whole, whatever is in it: nothing in a card scrolls sideways. */
 .icard{background:var(--panel2);border-radius:10px;padding:10px;display:grid;gap:6px;color:var(--fg);font-size:var(--fs-sm);min-width:0;max-width:100%;overflow-wrap:anywhere}
+.icard.reply{margin-left:16px;border-left:2px solid var(--line)}
 .icard .ih{display:flex;gap:6px;align-items:baseline;min-width:0}
 .icard .ih b{font-weight:600;flex:1;min-width:0}
 .icard .flag{color:var(--brand);flex:none}

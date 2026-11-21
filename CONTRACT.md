@@ -55,7 +55,7 @@ The events are the ledger of runs: each run has exactly one `run_start` / `run_e
 
 ### 2.5 Write conditions
 
-A finding is written only by a run, and its `text` is what the run said. `status` changes only through claim, dismiss or cancel. A rule that fails or hangs does not change the run's result. An install is complete or does not happen.
+A finding is written by a run, and its `text` is what the run said, except the texts pi-loops writes itself: in the inbox, a dead letter (a prompt that never reached its conversation), a question about a call it did not run, and the news `not-run` and `outcome` about an answer (each with `re`, the id of the finding answered); in a conversation, a proposal's receipt, the message that a person said no, the prompt of an answer's turn, a run's card, and the goal's notices and continuation prompt. `status` changes only through claim, dismiss or cancel. A rule that fails or hangs does not change the run's result. An install is complete or does not happen.
 
 ### 2.6 Deterministic rules
 

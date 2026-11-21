@@ -434,7 +434,7 @@ test("cron_create says so while nothing runs in the background, as cron_list doe
 	}
 });
 
-test("cron_create tells the model a plain job's turns are capped, ask in a window and are refused in the background", async () => {
+test("cron_create tells the model a plain job's turns are capped, and that a call outside the cap is not run: pi-loops asks the person (design 6.9)", async () => {
 	// The agent said "it will run at 9" without knowing that the run will stop and ask, or refuse,
 	// before a dangerous command or a tool outside the chat's built-ins.
 	const f = fixture();
@@ -443,10 +443,10 @@ test("cron_create tells the model a plain job's turns are capped, ask in a windo
 		// A scheduled turn creates at once; a person's own turn proposes (test/proposal.test.ts).
 		const host: ToolHost = { ...f.host, session: () => session, createJob: (input, scope) => createLoopJob(host, input, scope), scheduledTurn: () => true };
 		const plain = await automationTools({ hop: 0, actor: "tool" }, host).find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 5m", action: "ping" }, undefined, undefined, ctx);
-		assert.match(String(plain.content[0].text), /Its turns run with this chat's built-in tools \(read, bash\) under the dangerous-command guard: in an open window a dangerous command or a tool outside them asks the user first, and in the background it is refused\. In the background they also run without this window's -e extensions or flags\./);
+		assert.match(String(plain.content[0].text), /Its turns run with this chat's built-in tools \(read, bash\) under the dangerous-command guard: a dangerous command or a tool outside them is not run: pi-loops asks the person, in the conversation and in the inbox, and the turn goes on without it\. In the background they also run without this window's -e extensions or flags\./);
 		// The skill is what the model reads before it ever calls the tool: the same sentence, with no list.
 		const skill = fs.readFileSync(path.join(process.cwd(), "skills", "pi-loops", "SKILL.md"), "utf8");
-		assert.ok(skill.includes("Its turns run with the chat's built-in tools under the dangerous-command guard: in an open window a dangerous command or a tool outside them asks the user first, and in the background it is refused. In the background they also run without this window's -e extensions or flags"), "SKILL.md says the same");
+		assert.ok(skill.includes("Its turns run with the chat's built-in tools under the dangerous-command guard: a dangerous command or a tool outside them is not run: pi-loops asks the person, in the conversation and in the inbox, and the turn goes on without it. In the background they also run without this window's -e extensions or flags"), "SKILL.md says the same");
 	} finally {
 	}
 });

@@ -2999,17 +2999,17 @@ function inboxCardEl(c, done, reopened) {
   when.title = clock(c.createdAt);
   head.append(when);
   card.append(head);
+  const q = decision && c.question && typeof c.question === "object" ? c.question : undefined;
   if (decision) {
-    const dl = document.createElement("dl");
-    const q = c.question && typeof c.question === "object" ? c.question : undefined;
-    // A question's command is a field of its own, drawn whole as written: never cut from a text.
+    // A question's command is a field of its own, drawn whole as written under who asks (design 6.1): never cut from a text.
     if (q && q.command !== undefined) {
-      dl.append(textEl("dt", "", "Command"));
-      const dd = document.createElement("dd");
-      dd.append(textEl("code", "icmd", q.command));
-      dl.append(dd);
+      const cmd = document.createElement("div");
+      cmd.className = "iq";
+      cmd.append(textEl("code", "icmd", q.command));
+      card.append(cmd);
     }
-    for (const [label, value] of [["Reason", q && q.reason], ["Waiting on", c.waits], ["If you don't", c.ifNot]]) {
+    const dl = document.createElement("dl");
+    for (const [label, value] of [["Why it asks", q && q.reason], ["Waiting on", c.waits], ["If you don't", c.ifNot]]) {
       if (!value) continue;
       dl.append(textEl("dt", "", label));
       dl.append(textEl("dd", "", value));
@@ -3024,9 +3024,9 @@ function inboxCardEl(c, done, reopened) {
   if ((!done || reopened) && c.status === "new") {
     const acts = document.createElement("div");
     acts.className = "acts";
-    acts.append(inboxButton(decision ? "Yes, do it" : "Look into it", "claim", decision));
+    acts.append(inboxButton(q ? "Yes, run it once" : decision ? "Yes, do it" : "Look into it", "claim", decision));
     acts.append(inboxButton(decision ? "No…" : "Dismiss…", "no"));
-    if (c.hasTranscript) acts.append(inboxButton("See the run", "run"));
+    if (c.hasTranscript) acts.append(inboxButton("Open the run", "run"));
     card.append(acts);
     const why = document.createElement("div");
     why.className = "why";
@@ -3105,18 +3105,42 @@ function drawInbox() {
   const cards = a.cards.filter((c) => c && typeof c === "object" && typeof c.id === "string");
   const listed = new Set([...cards, ...(Array.isArray(a.handled) ? a.handled : [])].map((c) => c && c.id));
   for (const id of openForms.keys()) if (!listed.has(id)) openForms.delete(id);
-  const decisions = cards.filter((c) => c.kind === "decision");
-  const news = cards.filter((c) => c.kind !== "decision");
+  // A thread (src/inbox-card.ts threads): a card with `re` is drawn right under its root's card,
+  // wherever the root is listed; one whose root is not listed, or is itself a reply, stands alone.
+  const handledAll = (Array.isArray(a.handled) ? a.handled : []).filter((c) => c && typeof c.id === "string");
+  const byId = new Map([...handledAll, ...cards].map((c) => [c.id, c]));
+  const rootOf = (c) => {
+    const root = typeof c.re === "string" && c.re !== c.id ? byId.get(c.re) : undefined;
+    return root && root.re === undefined ? root.id : undefined;
+  };
+  const replies = new Map();
+  for (const c of [...cards, ...handledAll]) {
+    const root = rootOf(c);
+    if (root !== undefined && !(replies.get(root) || []).some((r) => r.id === c.id)) replies.set(root, [...(replies.get(root) || []), c]);
+  }
+  const decisions = cards.filter((c) => c.kind === "decision" && rootOf(c) === undefined);
+  const news = cards.filter((c) => c.kind !== "decision" && rootOf(c) === undefined);
   const shown = new Set();
   const group = (label) => {
     const g = textEl("div", "grp", label);
     slot.append(g);
     return g;
   };
+  const addReplies = (root) => {
+    for (const r of replies.get(root.id) || []) {
+      if (shown.has(r.id)) continue;
+      shown.add(r.id);
+      const d = inboxDone.get(r.id);
+      const el = inboxCardEl(r, (d && d.line) || r.line, !!(d && d.open));
+      el.className += " reply";
+      slot.append(el);
+    }
+  };
   const add = (c) => {
     shown.add(c.id);
     const d = inboxDone.get(c.id);
     slot.append(inboxCardEl(c, d && d.line, !!(d && d.open)));
+    addReplies(c);
   };
   const failing = (Array.isArray(a.failing) ? a.failing : []).filter((f) => f && typeof f === "object");
   if (decisions.length || failing.length) group("Needs you");
@@ -3140,7 +3164,7 @@ function drawInbox() {
     slot.append(more);
   }
   if (num(a.more)) slot.append(textEl("div", "lnote", "+ " + num(a.more) + " more"));
-  const handled = (Array.isArray(a.handled) ? a.handled : []).filter((c) => c && typeof c.id === "string" && !shown.has(c.id));
+  const handled = handledAll.filter((c) => !shown.has(c.id) && rootOf(c) === undefined);
   const doneHere = [...inboxDone.entries()].filter(([id]) => !shown.has(id) && !handled.some((c) => c.id === id));
   if (handled.length || doneHere.length) group("Handled");
   // A yes made here follows the server: the line of its answer's state (waiting, running, done). A
@@ -3150,6 +3174,7 @@ function drawInbox() {
     shown.add(c.id);
     const d = inboxDone.get(c.id);
     slot.append(inboxCardEl(c, d && !d.claim && !d.open ? d.line : c.line || (d && d.line)));
+    addReplies(c);
   }
   for (const [, d] of doneHere) slot.append(inboxCardEl(d.card, d.line));
   if (num(a.elsewhere)) slot.append(textEl("div", "lnote", num(a.elsewhere) + " new in other projects"));

@@ -366,7 +366,7 @@ weaker, and worth converting whenever one of them breaks.
       path says so on its row, with the next look from the process that checks rules*.
 - [x] The inbox as cards around the conversations: decisions above them under **Needs you**, each with
       **Waiting on** and **If you don't** when the loop said them, and news below them. A card names its loop
-      only when the list holds more than one loop's findings. **See the run** is there only when the finding has a run this page can read
+      only when the list holds more than one loop's findings. **Open the run** is there only when the finding has a run this page can read
       (`test/page-server.test.ts`: *See the run is offered only for a transcript the server would read*).
       Every card carries its finding's whole id; no button names a position. `test/web-page.test.ts`:
       *the inbox shows decisions before news, each row only with a value, and the loop only when
@@ -445,9 +445,9 @@ weaker, and worth converting whenever one of them breaks.
       post keeps the buttons*.
 - [x] A finding's text is shown as text: HTML in it makes no element. `test/web-page.test.ts`: *a
       finding's HTML is shown as text and creates no element*.
-- [x] **See the run** opens the run's transcript read-only, folded and redacted, and its close
+- [x] **Open the run** opens the run's transcript read-only, folded and redacted, and its close
       button closes it.
-      `test/web-page.test.ts`: *See the run opens the run's lines read-only, as text*.
+      `test/web-page.test.ts`: *Open the run opens the run's lines read-only, as text*.
       `test/page-server.test.ts`: *See the run reads a run's transcript under sessions/ and nothing
       else*.
 - [x] On a phone, inbox buttons are at least 32 px tall (40 px on a touch screen) and a card wraps
@@ -474,15 +474,29 @@ weaker, and worth converting whenever one of them breaks.
       page opens the question again; one that started or ended is refused in design 6.2's words*.
 - [x] **No…** on a question says that the run is told and the command is refused for 14 days ("You
       said no. <loop> is told on its next run, and the same command is refused for 14 days."), and a
-      question from a conversation is told by a row in it. `test/page-server.test.ts`: *a no to a
-      question from a conversation dismisses it with its reason, tells the conversation by its row,
-      and says so*.
+      question from a conversation is told by a row in it, which names the command and the reason the
+      person gave (design 6.4). `test/page-server.test.ts`: *a no to a question from a conversation
+      dismisses it with its reason, tells the conversation by its row, and says so*;
+      `test/ask-pure.test.ts`: *[6.4] the no a conversation reads names the command and the person's
+      reason, as design 6.4 writes it*.
+- [x] **Yes, run it once** on a question that a conversation's scheduled turn asked says "Approved.
+      It runs in this conversation after the current turn." (design 6.4); the card then follows the
+      server under **Handled**. `test/inbox-card.test.ts`: *[6.4] a yes from the page to a question a
+      conversation's turn asked says it runs in that conversation after the current turn*.
+- [x] A question, its answer and its news are one thread: a news finding with `re` (a `not-run` or
+      an `outcome`) is drawn right under its root's card, in the root's group, and not in **News**
+      too; one whose root is not listed is a card of its own. `test/web-page.test.ts`: *[thread] a
+      news finding with re is drawn right under its root's card, in the root's group, once; one whose
+      root is not listed is a card of its own*.
 - [x] A question's card is drawn from the question's own fields, never cut from its text: the
-      headline names who asks ("nightly asks to run a command"), **Command** shows the command whole
-      and as written in the page's monospace face, then **Reason**, **Waiting on** and **If you
-      don't**. A command that holds `· waits:` cannot make the headline another command.
-      `test/web-page.test.ts`: *a question's card shows its command whole, as written, in a field of
-      its own, and its headline names who asks*; `test/page-server.test.ts`: *GET /inbox draws a
+      headline names who asks ("nightly asks to run a command"), the command is under it, whole and
+      as written in the page's monospace face, in a field of its own with no label, then **Why it
+      asks**, **Waiting on** and **If you don't**, and the buttons **Yes, run it once**, **No…** and
+      **Open the run** (design 6.1). A command that holds `· waits:` cannot make the headline another
+      command. `test/web-page.test.ts`: *a question's card shows its command whole, as written, in a
+      field of its own, and its headline names who asks*; *[6.1] a question's card reads as design
+      6.1: who asks, the command under it with no label, Why it asks, and Yes, run it once, No… and
+      Open the run*; `test/page-server.test.ts`: *GET /inbox draws a
       question's card from its ask: the command whole in its own field, and the headline names who
       asks*; `test/inbox-card.test.ts`: *a question's card is drawn from its ask: the command whole in
       its own field and on its own line, and the headline names who asks*.
@@ -944,8 +958,8 @@ weaker, and worth converting whenever one of them breaks.
   first") and the "or describe a loop" link.** `reads only` was true of every starter; the cost is
   a chip by the name; the wizard asks for the tracker when it needs it; and `+ Watch for…` above the
   list is the one way to describe a loop.
-- **A dim `not said` under a decision, the meta line on every card, and a greyed See the run.** A row
-  shows only when the loop gave it a value, and See the run shows only when there is a run to see.
+- **A dim `not said` under a decision, the meta line on every card, and a greyed Open the run.** A row
+  shows only when the loop gave it a value, and Open the run shows only when there is a run to see.
   The yes's own answer says where it runs (*Yes posts the finding's id and this conversation,
   nothing else, and says it runs in the background*).
 - **Where a claim runs, on a card ("runs in your terminal", "starts its conversation", "its
@@ -1001,7 +1015,7 @@ weaker, and worth converting whenever one of them breaks.
   comes to it, from the page or a terminal.
 
 - **`/inbox open` (start a new conversation from the run that filed a finding).** A fork writes a
-  conversation, and the page's **See the run** covers looking at the run. The terminal keeps it.
+  conversation, and the page's **Open the run** covers looking at the run. The terminal keeps it.
 
 - **"After Stop, nothing queued starts a turn until you send again", and the "send queued (n)"
   button.** Owner decision, 2026-11-02: Esc in the terminal and Stop in the browser end the current

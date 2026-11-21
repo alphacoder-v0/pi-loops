@@ -367,13 +367,13 @@ machine. Everything here follows from that, and each one has a price.
     that says otherwise, and a window believes an attended source only on a row it wrote itself,
     so a line in the file cannot widen a turn. An unattended turn runs under
     the job's declared tools and the dangerous-command policy in a window exactly as in the
-    background; what differs is who answers. The background refuses; a window asks you, with a
-    60-second countdown, and refuses when nobody does, telling the model which of the two it was.
+    background, and neither runs a call the policy names: pi-loops asks you, in the conversation
+    and in the inbox, and the turn goes on without it. A yes runs that call once, after the turn.
     pi-loops' own tools get no question from the guard, because each carries its own: `cron_create`
     makes a job capped to the turn's tools (the window's `toolHost` reads the current turn, as the
     background scopes a run's), and the tools that confirm through `confirmTool` do so once, where
-    the background's preflight refuses. The cost is a dialog in the middle of a turn
-    you did not start, and `[engine] window_guard = false` buys the uncapped window back. The
+    the background's preflight refuses. The cost is a question about a turn you did not
+    start, answered after it, and `[engine] window_guard = false` buys the uncapped window back. The
     background process runs no attended row at all; one waits for a window, and a `/cron run` row
     left in a closed conversation does not hold the clock's slots, which run as if it were not there.
     `/cron run` is typed: its row goes before the clock's rows.

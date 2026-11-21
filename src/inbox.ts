@@ -83,6 +83,12 @@ export interface InboxEntry {
 	answered_by?: AskFields["answered_by"];
 	/** The answer to a claim from a terminal or the page. Written only through `AnswerWrite`. */
 	answer?: AskFields["answer"];
+	/**
+	 * The root of this finding's thread: the `inb-` id of the finding a news `not-run` or `outcome`
+	 * is about (src/ask.ts `newsEntry`). A surface draws this finding under its root while the root
+	 * is listed, and on its own when it is not.
+	 */
+	re?: string;
 }
 
 /** The fields a finding is, in their order — CONTRACT.md §2.2 and docs/downstream.md §3. */
@@ -298,6 +304,7 @@ export class Inbox {
 			...(entry.undelivered ? { undelivered: true as const } : {}),
 			...(entry.lane === undefined ? {} : { lane: entry.lane }),
 			...(entry.ask === undefined ? {} : { ask: entry.ask }),
+			...(entry.re === undefined ? {} : { re: entry.re }),
 		};
 	}
 
@@ -479,6 +486,8 @@ function readFinding(raw: any): InboxEntry | undefined {
 		...(raw.undelivered === true ? { undelivered: true as const } : {}),
 		...(typeof raw.lane === "string" ? { lane: raw.lane } : {}),
 		...readAskFields(raw),
+		// A root names a finding: anything else names nothing a surface could draw it under.
+		...(typeof raw.re === "string" && FINDING_ID.test(raw.re) ? { re: raw.re } : {}),
 	};
 }
 

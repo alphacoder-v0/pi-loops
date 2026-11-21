@@ -188,6 +188,19 @@ test("[C3] a run closes: done keeps the claim; unfinished keeps it, with why, th
 	assert.equal(plain.beside?.entry.text, 'Your yes to "CI is red on main" was started and did not finish (the process running it stopped).', "a finding that is no question has no ending");
 });
 
+test("[thread] the news not-run and outcome carry re: the id of the finding they are about, and of its root when that finding is itself a reply", () => {
+	const notRun = answerStep("Y2", question(), { to: "not_run", by: "terminal", claimed_by: CONV, why: WHY.loopRemoved }, ctx);
+	assert.ok(isWrite(notRun));
+	assert.equal(notRun.beside?.entry.re, ID, "not-run names its question");
+	const outcome = answerStep("C3", at("started"), { to: "unfinished", why: WHY.stopped }, ctx);
+	assert.ok(isWrite(outcome));
+	assert.equal(outcome.beside?.entry.re, ID, "outcome names its question");
+	const root = `inb-${"c".repeat(32)}`;
+	const reply = answerStep("C3", at("started", { ask: undefined, kind: "news", text: "Your yes to x could not be started", re: root }), { to: "unfinished", why: WHY.died }, ctx);
+	assert.ok(isWrite(reply));
+	assert.equal(reply.beside?.entry.re, root, "a yes to a reply stays in the root's thread: one level");
+});
+
 test("[V1] a cancel reopens the finding: new again, with what the yes wrote taken off, and nothing beside it", () => {
 	const write = holdsRow("V1", { to: "none" });
 	assert.deepEqual([write.id, write.set, write.unset, write.beside], [ID, { status: "new" }, ["answer", "answered_by", "claimed_by"], undefined]);
@@ -418,6 +431,17 @@ test("answerRow and noRow: the payload names the finding, and a no tells only a 
 	const asked = question();
 	const told = noRow(question({ ask: { ...asked.ask!, lane: CONV } }), AT, SELF);
 	assert.ok(told && told.id === noRowId(ID) && told.lane === CONV && told.mode === "none" && told.wake === "append");
+});
+
+test("[6.4] the no a conversation reads names the command and the person's reason, as design 6.4 writes it", () => {
+	const asked = question();
+	const inConversation = question({ ask: { ...asked.ask!, lane: CONV } });
+	const said = decideSay(inConversation, "no", { by: "page", session: CONV }, { there: true, lane: CONV }, { at: LATER, self: SELF, reason: "not on a weekday" });
+	assert.ok(said.step === "N1" && said.row);
+	assert.equal(said.row.payload?.text, `[Trigger ${noRowId(ID)}] The person said no to \`git push --force origin main\`: not on a weekday\nDo not run it, and do not try another way to do the same thing.`);
+	const bare = decideSay(inConversation, "no", { by: "terminal", session: CONV }, { there: true, lane: CONV }, { at: LATER, self: SELF });
+	assert.ok(bare.step === "N1" && bare.row);
+	assert.equal(bare.row.payload?.text, `[Trigger ${noRowId(ID)}] The person said no to \`git push --force origin main\`.\nDo not run it, and do not try another way to do the same thing.`, "with no reason, the sentence ends at the command");
 });
 
 test("decideSay: a yes is Y1 with its row, Y2 with no lane, YC from the cli; a no is N1", () => {

@@ -26,7 +26,9 @@ Keep these invariants:
   processes: they share the MCP clients, extensions and model of the process that runs them (pi-loops,
   for loops and checks), get the automation tools at hop 1 as `customTools`, and never load a
   second copy of this extension. A held turn is the one that opens an existing conversation
-  instead of a new transcript, and it loads its own resources rather than the shared set.
+  instead of a new transcript, and it loads its own resources rather than the shared set. A
+  resumed run is the other: a yes resumes the run that asked, which opens its own transcript and
+  loads its own resources, as a held turn does.
 
 ## Layout
 

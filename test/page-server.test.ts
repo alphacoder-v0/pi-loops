@@ -1831,7 +1831,7 @@ test("a no to a question from a conversation dismisses it with its reason, tells
 		const call = { tool: "bash", tool_call_id: "c1", command: "git push --force origin fix/login", input_sha256: "a".repeat(64), reason: "git push --force on main/master" };
 		writeInbox(page.loops, [finding({ job_id: "cron-9", lane: "conv-1", kind: "checkpoint", text: "Run it? · waits: nightly · if not: it stays undone", ask: { kind: "call", id: `ask-${"c".repeat(32)}`, lane: "conv-1", session_id: "conv-1", title: "nightly asks to run a command", call, created_at: stamp() } })]);
 		const no = await page.post("inbox/dismiss", { id: `inb-${hex(1)}`, reason: "Too risky" });
-		assert.deepEqual([no.status, no.body.line], [200, "You said no. nightly is told on its next run, and the same command is refused for 14 days."]);
+		assert.deepEqual([no.status, no.body.line], [200, "You said no. nightly is told in this conversation, and the same command is refused for 14 days."]);
 		const stored = inboxNow(page.loops)[0];
 		assert.deepEqual([stored.status, stored.answered_by, stored.dismiss_reason], ["dismissed", "page", "Too risky"]);
 		const told = rowsOf(page.loops, "conv-1");

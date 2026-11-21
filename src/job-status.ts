@@ -178,6 +178,12 @@ export interface ListedStatus {
 	readonly streak: number;
 	/** The one line a list shows after `last error:`. */
 	readonly error?: string;
+	/**
+	 * Which recorded fact `error` is, when it is one of design 6.8's lines: the last run's failure
+	 * (with when it ended, for the pause after it), the clock's note, or why the waiting row waits
+	 * (with when the row was queued). Absent: `error` is some other word, printed as `last error:`.
+	 */
+	readonly errorIs?: { readonly kind: "failed"; readonly at: string } | { readonly kind: "note" } | { readonly kind: "waiting"; readonly since: string };
 	/** The run going now. */
 	readonly run?: RunningMarker;
 }
@@ -191,8 +197,10 @@ export function listedJob(job: LoopJob, clock: JobClock | undefined, rows: reado
 	// A note older than the last run that ended is gone: main's launch, and a plain turn's success, cleared the field.
 	const note = job.enabled && clock?.note && !(history?.completed && Date.parse(clock.note.at) <= Date.parse(history.completed)) ? clock.note : undefined;
 	// Main's last writer won: the later of the last failure and the clock's note.
-	const lastWord = (failed: { readonly at: string; readonly error: string } | undefined, retrying: boolean): string | undefined =>
-		failed && !(note && Date.parse(note.at) > Date.parse(failed.at)) ? (retrying ? `${failed.error} (one-shot: retrying once)` : failed.error) : note?.text;
+	type Word = { readonly text: string; readonly is?: ListedStatus["errorIs"] };
+	const lastWord = (failed: { readonly at: string; readonly error: string } | undefined, retrying: boolean): Word | undefined =>
+		failed && !(note && Date.parse(note.at) > Date.parse(failed.at)) ? { text: retrying ? `${failed.error} (one-shot: retrying once)` : failed.error, is: { kind: "failed", at: failed.at } } : note ? { text: note.text, is: { kind: "note" } } : undefined;
+	const word = (w: Word | string | undefined): Pick<ListedStatus, "error" | "errorIs"> => (typeof w === "string" ? { error: w } : w ? { error: w.text, ...(w.is ? { errorIs: w.is } : {}) } : {});
 	// A person's disable wrote no error on main; any other disable wrote its reason.
 	const offWord = (failed: { readonly error: string } | undefined): string | undefined =>
 		job.disabled && job.disabled.why !== DISABLED_BY_PERSON ? job.disabled.why : failed?.error ?? clock?.note?.text;
@@ -200,8 +208,8 @@ export function listedJob(job: LoopJob, clock: JobClock | undefined, rows: reado
 	if (!job.stateful) {
 		// A plain job's turns kept their last error until the next success; a stop did not clear it.
 		const failed = history?.failed && afterEnable(history.failed.at) ? history.failed : undefined;
-		const error = job.enabled ? lastWord(failed, job.schedule?.kind === "once" && history?.streak === 1) : offWord(failed);
-		return { ...job, status: { ...(clock?.slot ? { due: clock.slot } : {}), ...(clock?.fired ? { fired: clock.fired } : {}), ...(history?.settled ? { completed: history.settled } : {}), ...counts, runs: clock?.runs ?? 0, ...(error ? { error } : {}) } };
+		const error = word(job.enabled ? lastWord(failed, job.schedule?.kind === "once" && history?.streak === 1) : offWord(failed));
+		return { ...job, status: { ...(clock?.slot ? { due: clock.slot } : {}), ...(clock?.fired ? { fired: clock.fired } : {}), ...(history?.settled ? { completed: history.settled } : {}), ...counts, runs: clock?.runs ?? 0, ...(error.error ? error : {}) } };
 	}
 	const mine = rows.filter((row) => row.kind === "input") as CountedRow[];
 	const claim = mine.find((row): row is ClaimedRow & CountedRow => row.run !== undefined && live(row as ClaimedRow));
@@ -216,16 +224,16 @@ export function listedJob(job: LoopJob, clock: JobClock | undefined, rows: reado
 	let due = clock?.slot;
 	if (owedAgain || (!claim && waiting)) due = undefined;
 	if (owedAgain) fired = undefined;
-	const error = ((): string | undefined => {
+	const error = word(((): Word | string | undefined => {
 		if (!job.enabled) return offWord(failed);
 		if (waiting && !claim) {
-			if (typeof waiting.waiting === "string" && waiting.waiting) return waiting.waiting;
+			if (typeof waiting.waiting === "string" && waiting.waiting) return { text: waiting.waiting, is: { kind: "waiting", since: waiting.created_at } };
 			if (waiting.attempts > 0) return "cleared stale running state (previous pi process ended mid-run); the run will be retried";
 		}
 		// Only a slot counted while this run went is a skip (`Row.skipped`): not one counted while the row waited or its process was gone.
 		if (claim) return claim.skipped ? "skipped: previous run still active" : undefined;
 		return lastWord(failed, oneShotRetry);
-	})();
+	})());
 	return {
 		...job,
 		status: {
@@ -233,7 +241,7 @@ export function listedJob(job: LoopJob, clock: JobClock | undefined, rows: reado
 			...(fired === undefined ? {} : { fired }),
 			...(history?.completed === undefined ? {} : { completed: history.completed }),
 			...counts,
-			...(error === undefined ? {} : { error }),
+			...error,
 			...(claim ? { run: { runId: claim.run.id, pid: claim.run.pid, startedAt: claim.run.started_at } } : {}),
 		},
 	};

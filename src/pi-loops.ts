@@ -33,7 +33,7 @@ import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxR
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { capRedacted, previewRedacted, redact, screenText } from "./redact.ts";
-import { CANCELLED_LINE, answerLine, answerWho, cancelRefusal, cardLines, cardOrigin, clearLeftTail, dismissOutcome, dismissTail, inboxCard, noQuestionLine, yesTerminalLine } from "./inbox-card.ts";
+import { CANCELLED_LINE, answerLine, answerWho, cancelRefusal, cardLines, cardOrigin, clearLeftTail, dismissOutcome, dismissTail, inboxCard, noQuestionLine, questionActions, threadOrder, threadedLines, threads, yesTerminalLine } from "./inbox-card.ts";
 import { type Answers, conversationFile, createAnswers } from "./answers.ts";
 import { type StepRefusal, answerOpen, answerRowId } from "./ask.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
@@ -1809,14 +1809,22 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * prefix, project, source, when it arrived. The numbers are positions in `entries`, which is what
 	 * `claim` and `dismiss` resolve a number against.
 	 */
-	function inboxLines(entries: InboxEntry[], numbered: boolean, answered = false): string[] {
+	function inboxLines(entries: InboxEntry[], numbered: boolean, answered = false, thread?: { all: InboxEntry[] }): string[] {
 		const names = new Map(stores.jobs.load().map((j) => [j.id, j.name]));
 		const ctx = { here: session.sessionId, loopName: (id: string) => names.get(id) };
-		return entries.flatMap((e, i) => {
-			const lines = entryLines(e, i);
+		// A reply under its root (src/inbox-card.ts threads); a list a number resolves against without threads keeps its own order.
+		const rows = thread ? threads(entries, thread.all) : entries.map((entry) => ({ entry, reply: false, listed: true }));
+		return threadedLines(rows, (e, n) => {
+			if (n === undefined) return contextLine(e);
+			const lines = entryLines(e, n - 1);
 			const said = answered ? answerLineOf(e) : undefined;
 			return said && lines.length ? [...lines, `       ${said}`] : lines;
 		});
+		/** A root that is not listed, heading its replies: its first line, and what became of it. */
+		function contextLine(e: InboxEntry): string[] {
+			const card = inboxCard(e, ctx);
+			return card ? cardLines(card, `  [${e.status}] `, `  (${screenText(projectOf(e.cwd))}, ${screenText(cardOrigin(card))})`).slice(0, 1) : [];
+		}
 		function entryLines(e: InboxEntry, i: number): string[] {
 			const card = inboxCard(e, ctx);
 			if (!card) return [];
@@ -1832,7 +1840,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			const why = e.dismiss_reason ? ` — dismissed: ${e.dismiss_reason}` : "";
 			const where = `${screenText(projectOf(e.cwd))}, ${screenText(cardOrigin(card))}`;
 			if (!numbered) return cardLines(card, `  [${e.status}] `, `${why}  (${where})`);
-			return cardLines(card, `  ${i + 1}. [${e.id.slice(0, 12)}] `, `  (${where}, ${when})`);
+			const lines = cardLines(card, `  ${i + 1}. [${e.id.slice(0, 12)}] `, `  (${where}, ${when})`);
+			return card.question && e.status === "new" ? [...lines, questionActions(i + 1)] : lines;
 		}
 	}
 
@@ -2111,7 +2120,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							markSeenIfShown(everywhere);
 							return;
 						}
-						const lines = inboxLines(entries, true);
+						const lines = inboxLines(entries, true, false, { all: stores.inbox.list() });
 						const elsewhere = all.length - entries.length;
 						if (elsewhere) lines.push(`+ ${plural(elsewhere, "finding")} in other projects — /inbox --all`);
 						const decisions = entries.filter((e) => e.kind === "checkpoint").length;
@@ -2121,7 +2130,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					}
 					case "all": {
 						const entries = scoped(stores.inbox.list());
-						show(ctx, `Inbox history (${where}, ${entries.length} total):`, entries.length ? inboxLines(entries, false, true) : ["(empty)"]);
+						show(ctx, `Inbox history (${where}, ${entries.length} total):`, entries.length ? inboxLines(entries, false, true, { all: entries }) : ["(empty)"]);
 						return;
 					}
 					case "help":
@@ -2153,7 +2162,8 @@ export default function piLoops(pi: ExtensionAPI) {
 						// Numbers are the numbers on screen — this project's list, as `/cron` does it; an id
 						// or a prefix still resolves machine-wide, so a finding can be claimed from anywhere.
 						const all = stores.inbox.listNew();
-						const entries = /^\d+$/.test(target) && !machineWide ? inProject(all, session.cwd, sameProject) : all;
+						// In the order `/inbox` draws them: a reply under its root (threadOrder).
+						const entries = threadOrder(/^\d+$/.test(target) && !machineWide ? inProject(all, session.cwd, sameProject) : all, stores.inbox.list());
 						const entry = resolveInboxRef(entries, target, { ordinals: true });
 						if (!entry) {
 							const n = Number(target);
@@ -2191,7 +2201,7 @@ export default function piLoops(pi: ExtensionAPI) {
 								return;
 							}
 							if (said.finding.ask) {
-								ctx.ui.notify(noQuestionLine("terminal", whoOf(said.finding, said.finding.ask.lane)), "info");
+								ctx.ui.notify(noQuestionLine("terminal", whoOf(said.finding, said.finding.ask.lane), said.finding.ask.lane), "info");
 								return;
 							}
 							const loop = stores.jobs.load().find((j) => j.id === entry.job_id);

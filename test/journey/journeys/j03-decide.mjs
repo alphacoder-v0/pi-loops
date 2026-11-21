@@ -74,7 +74,7 @@ export async function run(ctx) {
 	}, 30000);
 	if (listed[2].id !== NEWS || listed.slice(0, 2).some((c) => c.id === NEWS)) throw new Error(`the decisions do not come first: ${listed.map((c) => c.id).join(", ")}`);
 	const decision = listed.find((c) => c.id === CLAIMED);
-	for (const words of ["Waiting on", "the implement loop skips it until labeled", "If you don't", "stays needs-triage", "Yes, do it", "No…", "See the run"]) if (!decision.text.includes(words)) throw new Error(`the decision card lacks "${words}": ${decision.text}`);
+	for (const words of ["Waiting on", "the implement loop skips it until labeled", "If you don't", "stays needs-triage", "Yes, do it", "No…", "Open the run"]) if (!decision.text.includes(words)) throw new Error(`the decision card lacks "${words}": ${decision.text}`);
 	const news = listed.find((c) => c.id === NEWS);
 	if (!news.text.includes("<b>bold</b>") || news.html) throw new Error(`a finding's HTML did not stay text: ${news.text}`);
 	shot("decide.png");

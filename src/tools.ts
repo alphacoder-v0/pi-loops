@@ -8,6 +8,7 @@
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal } from "./job-signal.ts";
 import { formatWait, queuedPrompt, type QueuedPrompt, runningRun } from "./engine.ts";
 import { type ListedJob, listedJobs } from "./job-status.ts";
+import { statusField, statusWord } from "./job-lines.ts";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -295,7 +296,9 @@ function renderCronJobsForTool(jobs: readonly ListedJob[], host: Pick<ToolHost, 
 		if (run) lines.push(`  running_run_id: ${run}`);
 		const queued = queuedForTool(job, host, now);
 		if (queued) lines.push(`  queued: ${formatWait(now - Date.parse(queued.since))} (since ${queued.since})${queued.reason ? ` — ${queued.reason}` : ""}`);
-		if (job.status.error) lines.push(`  last_error: ${previewRedacted(job.status.error, 120)}`);
+		// The fact `/cron` says under the job, as a field (design 6.8): last_error, note or queued.
+		const word = statusWord(job, now, next);
+		if (word) lines.push(`  ${statusField(word, now)}`);
 		if (job.status.streak) lines.push(`  consecutive_failures: ${job.status.streak}`);
 		if (job.status.collapsed) lines.push(`  skipped_overlap_count: ${job.status.collapsed}`);
 		if (job.stateful) {
@@ -330,7 +333,7 @@ async function createCron(host: ToolHost, scope: ToolScope, input: CreateJobInpu
 	const tools = job.tools ? `the tools ${job.tools.join(", ")}` : job.builtinTools ? `this chat's built-in tools (${job.builtinTools.join(", ") || "none"})` : "pi's default tools";
 	const where = job.stateful
 		? `Findings will appear in /inbox${job.verify ? " after an independent checker reviews them" : ""}. It runs in the background with ${tools}, not this window's -e extensions or flags.`
-		: `Its result will appear in this chat. While this chat is closed it still runs, in the background, and each run is a model turn. Its turns run with ${tools} under the dangerous-command guard: in an open window a dangerous command or a tool outside them asks the user first, and in the background it is refused. In the background they also run without this window's -e extensions or flags.`;
+		: `Its result will appear in this chat. While this chat is closed it still runs, in the background, and each run is a model turn. Its turns run with ${tools} under the dangerous-command guard: a dangerous command or a tool outside them is not run: pi-loops asks the person, in the conversation and in the inbox, and the turn goes on without it. In the background they also run without this window's -e extensions or flags.`;
 	const runsAt = whereRuns(job, ownerOf(host));
 	// Three lines — what was created, when it runs, what it will do — then where its output goes.
 	return {

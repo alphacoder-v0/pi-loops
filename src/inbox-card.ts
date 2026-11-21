@@ -57,6 +57,8 @@ export interface InboxCard {
 	hasTranscript: boolean;
 	/** `sessionId` is the conversation the card is shown in. */
 	fromThisConversation: boolean;
+	/** The root of the card's thread (`InboxEntry.re`): the page draws the card under the root's card while that is listed. */
+	re?: string;
 }
 
 export interface CardContext {
@@ -171,6 +173,7 @@ export function inboxCard(entry: InboxEntry, ctx: CardContext): InboxCard | unde
 		...(entry.session_id ? { sessionId: entry.session_id } : {}),
 		hasTranscript: origin !== "rule" && !!entry.transcript,
 		fromThisConversation: !!entry.session_id && entry.session_id === ctx.here,
+		...(entry.re === undefined ? {} : { re: entry.re }),
 	};
 }
 
@@ -199,10 +202,72 @@ export function cardLines(card: InboxCard, head: string, meta: string): string[]
 	const title = card.body === undefined ? card.headline : `${card.headline}${/[。！？]$/.test(card.headline) ? "" : " "}${card.body}`;
 	const lines = [`${head}${mark}${title}${meta}`];
 	if (card.question?.command !== undefined) lines.push(`${CLAUSE_INDENT}command: ${card.question.command}`);
-	if (card.question) lines.push(`${CLAUSE_INDENT}reason: ${card.question.reason}`);
+	if (card.question) lines.push(`${CLAUSE_INDENT}why it asks: ${card.question.reason}`);
 	if (card.waits !== undefined) lines.push(`${CLAUSE_INDENT}waiting on: ${card.waits}`);
 	if (card.ifNot !== undefined) lines.push(`${CLAUSE_INDENT}if you don't: ${card.ifNot}`);
 	return lines;
+}
+
+/** The last line `/inbox` gives a new question (design 6.1): the two commands that answer it, by the number on screen. */
+export function questionActions(n: number): string {
+	return `${CLAUSE_INDENT}/inbox claim ${n} runs it once · /inbox dismiss ${n} [reason] says no`;
+}
+
+/** One row of a threaded list. `reply`: drawn under its root. `listed`: one of the list's own entries; a root that is not is shown, unnumbered, only to head its replies. */
+export interface ThreadRow<T> {
+	entry: T;
+	reply: boolean;
+	listed: boolean;
+}
+
+/**
+ * `listed` as threads: each reply (a finding with `re`) right after its root, in list order. A root
+ * that is not listed but is in `all` (a question already answered, under its news) heads its
+ * replies where the first of them is. A reply whose root is in neither, or whose root is itself a
+ * reply, is a row of its own in its place.
+ */
+export function threads<T extends { id: string; re?: string }>(listed: readonly T[], all: readonly T[] = []): ThreadRow<T>[] {
+	const ids = new Set(listed.map((e) => e.id));
+	const known = new Map([...all, ...listed].map((e) => [e.id, e]));
+	const rootOf = (e: T): string | undefined => {
+		const root = e.re === undefined || e.re === e.id ? undefined : known.get(e.re);
+		return root && root.re === undefined ? root.id : undefined;
+	};
+	const replies = new Map<string, T[]>();
+	for (const e of listed) {
+		const root = rootOf(e);
+		if (root) replies.set(root, [...(replies.get(root) ?? []), e]);
+	}
+	const rows: ThreadRow<T>[] = [];
+	const shown = new Set<string>();
+	const thread = (root: T, listedRoot: boolean): void => {
+		shown.add(root.id);
+		rows.push({ entry: root, reply: false, listed: listedRoot });
+		for (const reply of replies.get(root.id) ?? []) rows.push({ entry: reply, reply: true, listed: true });
+	};
+	for (const e of listed) {
+		const root = rootOf(e);
+		if (root === undefined) thread(e, true);
+		else if (!ids.has(root) && !shown.has(root)) thread(known.get(root)!, false);
+	}
+	return rows;
+}
+
+/** The listed entries in the order `threads` shows them: what a number on screen resolves to. */
+export function threadOrder<T extends { id: string; re?: string }>(listed: readonly T[], all: readonly T[] = []): T[] {
+	return threads(listed, all).flatMap((row) => (row.listed ? [row.entry] : []));
+}
+
+/** How far a reply's lines are set in under its root's. */
+const REPLY_INDENT = "    ";
+
+/** Terminal lines of threaded rows: `line` draws one entry, with its number when it is listed; a reply's lines are set in. */
+export function threadedLines<T>(rows: readonly ThreadRow<T>[], line: (entry: T, n: number | undefined) => string[]): string[] {
+	let n = 0;
+	return rows.flatMap((row) => {
+		const lines = line(row.entry, row.listed ? ++n : undefined);
+		return row.reply ? lines.map((l) => `${REPLY_INDENT}${l}`) : lines;
+	});
 }
 
 /**
@@ -356,13 +421,17 @@ export function clearLeftTail(questions: number): string {
  */
 export function yesPageLine(said: { said: "Y1"; finding: InboxEntry; queued?: boolean } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, transcriptKept: boolean): string {
 	if (said.said === "Y2") return `Not run (${said.why})`;
+	// A conversation's question runs there, as a turn after the current one (design 6.4).
+	if (said.finding.ask && parseLane(said.finding.ask.lane)?.kind === "conversation" && said.finding.answer?.state === "pending") return "Approved. It runs in this conversation after the current turn.";
 	if (said.finding.ask) return answerLine(said.finding) ?? "Waiting to run";
 	if (said.queued === false) return "Your yes is saved, but its run could not be queued. pi-loops queues it again on its next tick.";
 	return transcriptKept ? "Running in the background, in the run that reported it." : `Running in the background. The run's transcript is gone, so ${who} starts from the finding's text.`;
 }
 
 /** What a no to a question says (design 6.1): the run that asked is told, and the call is refused for 14 days. */
-export function noQuestionLine(surface: "terminal" | "page", who: string): string {
+export function noQuestionLine(surface: "terminal" | "page", who: string, lane?: LaneId): string {
+	// A conversation's question (design 6.4): the no is a message in that conversation, not a loop's next run.
+	if (lane !== undefined && parseLane(lane)?.kind === "conversation") return surface === "terminal" ? `said no: ${who} is told in this conversation; the same command is refused for 14 days` : `You said no. ${who} is told in this conversation, and the same command is refused for 14 days.`;
 	return surface === "terminal" ? `said no: ${who} is told why on its next run; the same command is refused for 14 days` : `You said no. ${who} is told on its next run, and the same command is refused for 14 days.`;
 }
 
