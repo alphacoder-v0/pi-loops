@@ -74,10 +74,15 @@ run: pi-loops asks you, in the conversation and in the inbox, and the turn goes 
 that is not a command is refused, since a card cannot show what it would do. A message you send
 into that turn makes the rest of it yours and nothing asks again. Your own turns, a `/goal`
 continuation, a recipe hand-off, `/new-trigger` and `/cron run` never ask.
-pi-loops' own tools are not asked about a second time: `cron_create` in such a turn makes a job
-capped to the turn's tools, as a job a background run makes is capped to that run's, and
-`new_trigger` proposes its rule (below); the trigger tools, `cron_remove` and `set_cron_job_state`
-ask through their own confirm, once, where the background would refuse.
+pi-loops' own create tools are not asked about: `cron_create` in such a turn makes a job capped to
+the turn's tools, as a job a background run makes is capped to that run's, and `new_trigger`
+proposes its rule (below). `cron_remove`, `set_cron_job_state`, `remove_trigger` and
+`set_trigger_state` are asked about at every call in such a turn: the call is not run, and the
+question names the tool, its input and what it would change (the job, or the rules). A turn
+pi-loops runs in a closed conversation asks the same way. A yes runs that one call, in a window that
+has the conversation open or in the background, only while it would change what the question
+showed; otherwise the call is asked about again. In
+your own turn these tools ask with pi's confirm, and in a loop's or a check's run they are refused.
 
 ### A proposed watch
 
@@ -134,8 +139,6 @@ enable --all` passes over proposals, and `set_cron_job_state` refuses one.
 `cron_list` gives the model `[proposed]` where it gives `[disabled]`, and `/cron run` refuses a
 proposal. The panel above the editor counts a proposal as proposed: `Loops  2 · 1 proposed`. At session start a proposal of this conversation says `[cron] 1 watch waits for your yes:
 /cron enable pr-watch asks again`.
-`[engine] window_guard = false` in `config.toml` turns the cap off in windows
-([configuration.md](configuration.md)).
 
 Schedules are local time: 5-field cron (`*/n`, ranges, lists, `mon-fri`, `jan`), the aliases
 (`hourly` / `every hour` / `once an hour` → `0 * * * *`; `daily` / `every day` → `0 9 * * *`;

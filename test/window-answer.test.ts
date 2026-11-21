@@ -26,14 +26,16 @@ import { openStores } from "../src/stores.ts";
 import { checkLane, checkSessionDir } from "../src/trigger-runtime.ts";
 import { RUNTIME_RIDERS } from "../src/ticker.ts";
 import { answerTurnEnd } from "../src/window-claim.ts";
-import { WindowExecutor, createWindowAnswers } from "../src/window-executor.ts";
-import { turnJob, windowGuard } from "../src/window-guard.ts";
+import { WindowExecutor, createWindowAnswers, turnJob, windowGuard } from "../src/window-executor.ts";
 import { tmp } from "./tmp.ts";
 
 /** The policy asks about `| eval`. */
 const CMD = "echo ran >> marker.txt | eval";
 const JOB = "cron-fedcba9876543210fedcba9876543210";
 const MAYBE = "The command may or may not have run.";
+
+/** A call of a tool other than bash, as the model makes it. */
+type ToolUse = { toolName: string; input: Record<string, unknown> };
 
 /** A pid no process has: a child that ran and exited. */
 const deadPid = (): number => spawnSync(process.execPath, ["-e", ""]).pid!;
@@ -75,7 +77,7 @@ function window(dir: string, cwd: string, sm: SessionManager, opts: { holder: { 
 	const windowAnswers = createWindowAnswers({ answers, requests: stores.requests, runs, executor, here: () => ({ sessionId: binding.here().sessionId, cwd, sessionFile: file }), jobs: () => stores.book().jobs, holder: () => opts.holder, log: (line) => void logs.push(line) });
 	const guard = windowGuard({
 		current: () => executor.currentTurn(),
-		config: () => ({ windowGuard: true, allowCommands: [], loopsDir: dir }),
+		config: () => ({ allowCommands: [], loopsDir: dir }),
 		log: (line) => void logs.push(line),
 		inbox: stores.inbox,
 		now: Date.now,
@@ -85,8 +87,8 @@ function window(dir: string, cwd: string, sm: SessionManager, opts: { holder: { 
 	/** The commands the guard let through: what ran. */
 	const ran: string[] = [];
 	let calls = 0;
-	/** pi starts `message` (a turn row's custom message) as a run, writes it, and the model makes `commands`, each through the guard. */
-	async function piRuns(message: any, commands: string[]): Promise<Array<{ block?: boolean; reason?: string } | undefined>> {
+	/** pi starts `message` (a turn row's custom message) as a run, writes it, and the model makes `commands` (a bash command, or another tool's call), each through the guard. */
+	async function piRuns(message: any, commands: Array<string | ToolUse>): Promise<Array<{ block?: boolean; reason?: string } | undefined>> {
 		state.idle = false;
 		executor.agentStarted(Date.now());
 		executor.messageStarted({ role: "custom", ...message });
@@ -97,13 +99,14 @@ function window(dir: string, cwd: string, sm: SessionManager, opts: { holder: { 
 		executor.agentEnded();
 		return verdicts;
 	}
-	/** The model makes one bash call in the run going now, through the guard, and its result is written. */
-	async function modelCalls(command: string): Promise<{ block?: boolean; reason?: string } | undefined> {
+	/** The model makes one call in the run going now, through the guard, and its result is written: a bash command, or `{ toolName, input }`. `ran` gets the command, or `<tool> <input as JSON>`. */
+	async function modelCalls(use: string | ToolUse): Promise<{ block?: boolean; reason?: string } | undefined> {
 		const id = `call-${opts.instance}-${++calls}`;
-		sm.appendMessage({ role: "assistant", content: [{ type: "toolCall", id, name: "bash", arguments: { command } }], timestamp: Date.now() } as any);
-		const verdict = await guard({ toolName: "bash", toolCallId: id, input: { command } }, { cwd, sessionManager: sm });
-		if (!verdict?.block) ran.push(command);
-		sm.appendMessage({ role: "toolResult", toolCallId: id, toolName: "bash", content: [{ type: "text", text: verdict?.reason ?? "ran" }], isError: verdict?.block === true, timestamp: Date.now() } as any);
+		const { toolName, input } = typeof use === "string" ? { toolName: "bash", input: { command: use } } : use;
+		sm.appendMessage({ role: "assistant", content: [{ type: "toolCall", id, name: toolName, arguments: input }], timestamp: Date.now() } as any);
+		const verdict = await guard({ toolName, toolCallId: id, input }, { cwd, sessionManager: sm });
+		if (!verdict?.block) ran.push(typeof use === "string" ? use : `${toolName} ${JSON.stringify(input)}`);
+		sm.appendMessage({ role: "toolResult", toolCallId: id, toolName, content: [{ type: "text", text: verdict?.reason ?? "ran" }], isError: verdict?.block === true, timestamp: Date.now() } as any);
 		return verdict;
 	}
 	/** `agent_settled`, as pi-loops handles it: the executor first, then the answers. */
@@ -180,6 +183,33 @@ test("[M5b.3b] a yes to a question a window's scheduled turn asked runs in that 
 	await w.windowAnswers.tick(Date.now());
 	await w.piSettles();
 	assert.deepEqual([w.answerMessages().length, w.answerRecords().length], [1, 1], "nothing more");
+});
+
+test("[M5b.9] a yes to a control-plane call a window's scheduled turn asked about runs that one call in the window, also when the job declares its tools", async () => {
+	const { dir, cwd, sm, sessionId } = setup();
+	const w = window(dir, cwd, sm, { holder: { pid: process.pid, procStart: procStart(process.pid) }, instance: "w1" });
+	const job = { ...plainJob(sessionId, cwd), tools: ["read"] };
+	await w.stores.jobs.add(job);
+	const remove: ToolUse = { toolName: "cron_remove", input: { ref: "old-watch" } };
+	const row = plainJobRow(job, plainRunId(JOB, stamp(Date.now() - 30_000)), `cron:${JOB}`, "", { pid: process.pid, instance: "w1", version: "0" } as any);
+	w.stores.requests.appendIfAbsent(row);
+	assert.equal(w.executor.turn(row), "sent");
+	const [asked] = await w.piRuns(w.sent.at(-1), [remove]);
+	assert.match(asked?.reason ?? "", /^asked a person: changes what pi-loops runs: cron_remove \{"ref":"old-watch"\}/);
+	w.stores.requests.remove(sessionId, [row.id]);
+	await w.piSettles();
+	const question = w.stores.inbox.list().find((f) => f.ask)!;
+	assert.deepEqual([question.ask?.call.tool, question.ask?.call.command], ["cron_remove", undefined]);
+	assert.deepEqual(w.ran, [], "the call did not run");
+
+	assert.equal((await w.answers.say(question.id, "yes", person(sessionId))).said, "Y1");
+	await w.windowAnswers.tick(Date.now());
+	const [turn] = w.answerMessages();
+	assert.ok(turn, "the yes is handed to pi as a turn, not closed refused");
+	await w.piRuns(turn, [remove]);
+	await w.piSettles();
+	assert.deepEqual(w.ran, ['cron_remove {"ref":"old-watch"}'], "the granted call ran once");
+	assert.equal(w.find(question.id)?.answer?.state, "done");
 });
 
 test("[M5b.3b] a yes that arrives while a turn runs waits for that turn to settle, then runs once", async () => {

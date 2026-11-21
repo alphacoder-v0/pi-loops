@@ -162,6 +162,8 @@ function explainAuthFailure(result: RunnerResult): RunnerResult {
 	return { ...result, errorMessage: `${result.errorMessage} (${whose}; keys saved with pi's /login always reach it)` };
 }
 
+/** The seats of this process's guard: the runner seats its runs, and a held turn's `confirmTool` reads them. */
+const guardSeats = new GuardSeats();
 const inProcessRunner = createInProcessRunner({
 	agentDir,
 	parentFlags: parentRuntimeFlags([]),
@@ -175,8 +177,8 @@ const inProcessRunner = createInProcessRunner({
 	allowCommands: () => config.allowCommands,
 	// One set of seats for this process. The inbox is read at call time: the stores open after the runner.
 	guard: {
-		seats: new GuardSeats(),
-		deps: { inbox: { list: () => stores.inbox.list(), fileOnce: (entry, id) => stores.inbox.fileOnce(entry, id) }, allowCommands: () => config.allowCommands, now: Date.now, log: (msg) => log(`sub-agent: ${msg}`) },
+		seats: guardSeats,
+		deps: { inbox: { list: () => stores.inbox.list(), fileOnce: (entry, id) => stores.inbox.fileOnce(entry, id) }, allowCommands: () => config.allowCommands, now: Date.now, log: (msg) => log(`sub-agent: ${msg}`), controlTarget: (tool, input, cwd) => host.controlTarget(tool, input, cwd) },
 	},
 	// The daily cap, read while a run is in flight and not only before it is dispatched. Lazy: the
 	// host owns the scheduler and is built with this runner, so it can only be asked at run time.
@@ -205,6 +207,7 @@ const stores = openStores(dir, log);
 const host = createHostRuntime({
 	dir,
 	stores,
+	guardSeats,
 	config: () => config,
 	session: () => session,
 	runner,

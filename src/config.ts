@@ -16,8 +16,6 @@
  *   daily_budget_usd = 5.0        # stop dispatching once today's automation has cost this much (0 = no cap)
  *   [danger]
  *   allow = ["rm -rf /var/cache/x"]  # command prefixes an unattended run may use anyway
- *   [engine]
- *   window_guard = true           # a scheduled turn in an open window asks before a dangerous command or an undeclared tool
  *   [page]
  *   port = 4173                   # the browser page's port; unset, the default loops directory gets 4173 and any other a free port
  *   host = "127.0.0.1"            # anything but loopback puts the page on the local network, unencrypted
@@ -41,8 +39,6 @@ export interface LoopsConfig {
 	dailyBudgetUsd: number;
 	/** Command prefixes an unattended run may use despite the dangerous-command gate. */
 	allowCommands: string[];
-	/** Cap a scheduled turn in an open window as the background caps one: ask, and refuse unanswered (design O1). */
-	windowGuard: boolean;
 	/** The browser page: its port, the address it binds, the extra names it answers to. */
 	pagePort: number;
 	/** Whether `[page] port` was set in the file: then every loops directory uses it (`pageBindPort`). */
@@ -80,7 +76,7 @@ export function envFlag(name: string): boolean {
 }
 
 export function loadConfig(dir: string): LoopsConfig {
-	const cfg: LoopsConfig = { allowProjectHooks: false, triggerPollIntervalSecs: DEFAULT_TRIGGER_POLL_INTERVAL_SECS, triggerRunTimeoutMs: DEFAULT_TRIGGER_RUN_TIMEOUT_SECS * 1000, cronCatchUp: true, maxConcurrentRuns: DEFAULT_MAX_CONCURRENT_RUNS, hooksMode: "sync", hostAuto: true, dailyBudgetUsd: 0, allowCommands: [], windowGuard: true, pagePort: DEFAULT_PAGE_PORT, pagePortSet: false, pageHost: "127.0.0.1", pageAllowHosts: [], errors: [] };
+	const cfg: LoopsConfig = { allowProjectHooks: false, triggerPollIntervalSecs: DEFAULT_TRIGGER_POLL_INTERVAL_SECS, triggerRunTimeoutMs: DEFAULT_TRIGGER_RUN_TIMEOUT_SECS * 1000, cronCatchUp: true, maxConcurrentRuns: DEFAULT_MAX_CONCURRENT_RUNS, hooksMode: "sync", hostAuto: true, dailyBudgetUsd: 0, allowCommands: [], pagePort: DEFAULT_PAGE_PORT, pagePortSet: false, pageHost: "127.0.0.1", pageAllowHosts: [], errors: [] };
 	const file = path.join(dir, "config.toml");
 	const positiveInt = (section: string, key: string, v: unknown, apply: (n: number) => void) => {
 		if (v === undefined) return;
@@ -118,10 +114,10 @@ export function loadConfig(dir: string): LoopsConfig {
 			if (typeof ho.auto === "boolean") cfg.hostAuto = ho.auto;
 			else cfg.errors.push(`[host] auto: ignoring an invalid value in ${file}: must be true or false`);
 		}
+		// [engine] held one key, retired in 0.24.3: the table is read and each key in it ignored, with a line.
 		const en = doc.engine as any;
-		if (en && en.window_guard !== undefined) {
-			if (typeof en.window_guard === "boolean") cfg.windowGuard = en.window_guard;
-			else cfg.errors.push(`[engine] window_guard: ignoring an invalid value in ${file}: must be true or false`);
+		if (en && typeof en === "object") {
+			for (const key of Object.keys(en)) cfg.errors.push(`[engine] ${key}: no longer a setting in 0.24.3; a scheduled turn that wants a dangerous command asks you in /inbox. Remove the line from ${file}`);
 		}
 		const pg = doc.page as any;
 		if (pg && pg.port !== undefined) {

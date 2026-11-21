@@ -36,7 +36,8 @@ import { createLoopLanes, abortRemovedJobs, type LoopLanes } from "./background-
 import { runClockTick, type TickScope } from "./clock.ts";
 import { FAILING_AFTER, failurePause } from "./backoff.ts";
 import { computeDue } from "./schedule.ts";
-import { type ToolHost, automationTools, createLoopJob } from "./tools.ts";
+import { type ToolHost, automationTools, controlTarget, createLoopJob } from "./tools.ts";
+import type { GuardSeats } from "./guard.ts";
 import { TriggerRuntime, checkLane, checkSessionDir, promotionToInbox } from "./trigger-runtime.ts";
 import { auditCronFinish, auditCronStart, controlPlanePreflight } from "./triggers.ts";
 import { shortSessionId } from "./session-head.ts";
@@ -65,6 +66,12 @@ export interface HostRuntimeDeps {
 	sessionsRoot?: string;
 	/** Is this conversation open in the browser page? Then its pi writes the file, and this process never holds it. */
 	pageHolds?: (sessionId: string) => boolean;
+	/**
+	 * The seats the runner's guard seats its runs in (src/sdk-runner.ts). A held turn's control-plane
+	 * call passes `confirmTool` only from a seat in a conversation's lane, where the guard judged it.
+	 * Absent: no held turn has a seat, and every such call is refused.
+	 */
+	guardSeats?: Pick<GuardSeats, "of">;
 }
 
 export interface HostRuntime {
@@ -83,6 +90,8 @@ export interface HostRuntime {
 	triggers: TriggerRuntime;
 	/** The tools a sub-session started by this host gets (its cwd and model, not the host's). */
 	customTools: (req: SubagentRequest) => Promise<ToolDefinition<any, any>[]>;
+	/** What a control-plane call would change, for the runner's guard (`GuardDeps.controlTarget`, src/tools.ts `controlTarget`). */
+	controlTarget(tool: string, input: unknown, cwd: string | undefined): string | undefined;
 	/** Say a warning to the windows of `cwd`'s project (or every window, without one); see `notices`. */
 	notice(text: string, cwd?: string): void;
 	/** The latest warnings, for the snapshot a window fetches on each tick. */
@@ -485,6 +494,12 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		},
 	});
 
+	/** Whether `session` has a seat of the runner's guard in a conversation's lane. */
+	const conversationSeat = (session: object | undefined): boolean => {
+		const seat = deps.guardSeats?.of(session);
+		return seat !== undefined && parseLane(seat.lane)?.kind === "conversation";
+	};
+
 	/** The tools' host for one sub-session: that run's cwd and model, not the process defaults. */
 	const toolHostFor = (req: Pick<SubagentRequest, "cwd" | "model" | "thinking" | "builtinTools" | "tools" | "kind" | "parentSessionId">): ToolHost => {
 		const held = req.kind === "held";
@@ -505,9 +520,12 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				log(`cron control plane: ${op} by ${actor} ${job?.id ?? ""}`);
 				return id;
 			},
-			// Nobody can approve here: Prompt-class operations are denied fail-closed. A held turn is the
-			// conversation's own, so its refusal says where the person was not, not "sub-agent".
-			confirmTool: async (_ctx, request, atHop) => controlPlanePreflight({ hop: held ? 0 : Math.max(1, atHop), hasUI: false, held }, request.label),
+			// A held turn at hop 0 is the conversation's own unattended turn: from a seat in the
+			// conversation's lane, the guard asked a person in /inbox before the call could run (design 4,
+			// item 26), so a call that reaches here carries their yes. With no such seat nobody was asked.
+			// Every other prompt-class operation is denied fail-closed, a held turn's in words that say
+			// where the person was not, not "sub-agent".
+			confirmTool: async (ctx, request, atHop) => (held && atHop === 0 && conversationSeat(ctx?.sessionManager) ? undefined : controlPlanePreflight({ hop: held ? 0 : Math.max(1, atHop), hasUI: false, held }, request.label)),
 			refreshBadge: () => undefined,
 			// A held turn is one pi-loops started, with nobody to see a card: `cron_create` creates at once and `new_trigger` proposes (design 2.5).
 			scheduledTurn: () => held,
@@ -633,6 +651,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			const turn = runs.turnIn(sessionId);
 			return turn && { runId: turn.runId, label: turn.label };
 		},
+		controlTarget: (tool, input, cwd) => controlTarget({ stores, triggers }, tool, input, cwd ?? ""),
 		customTools: async (req) => {
 			const shared = deps.mcpTools();
 			// A held turn is the conversation's own turn, as in a window (hop 0, actor "tool"): the

@@ -4,8 +4,9 @@ import { tmp, track } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { budgetStopReason, collect, createInFlightCosts, createInProcessRunner, disposeSubSession, isInsideDir, resolveRunModel, sharedSubSessionResources, subSessionResources, subSessionTools, keepBuiltins, unwrapModelRuntime, usageSince, heldSubSessionResources, releaseHeldResources, releaseSharedResources, HELD_IDLE_MS } from "../src/sdk-runner.ts";
+import { budgetStopReason, capTools, collect, createInFlightCosts, createInProcessRunner, disposeSubSession, isInsideDir, resolveRunModel, sharedSubSessionResources, subSessionResources, subSessionTools, keepBuiltins, unwrapModelRuntime, usageSince, heldSubSessionResources, releaseHeldResources, releaseSharedResources, HELD_IDLE_MS } from "../src/sdk-runner.ts";
 import { GUARD_PATH, GuardSeats, subagentGuardExtension } from "../src/guard.ts";
+import { resolveCap } from "../src/ask.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 const flags = { extensionPaths: [], skillPaths: [], promptTemplatePaths: [], appendSystemPrompt: [], noSkills: false, noExtensions: false, noContextFiles: false, noPromptTemplates: false };
@@ -396,4 +397,16 @@ test("a run keeps only the built-in tools the job was made with, and every other
 	const active = ["read", "bash", "edit", "write", "mcp_hub_search", "cron_create", "my_extension_tool"];
 	assert.deepEqual(keepBuiltins(active, ["read", "ls"]).sort(), ["cron_create", "ls", "mcp_hub_search", "my_extension_tool", "read"]);
 	assert.deepEqual(keepBuiltins(active, []).sort(), ["cron_create", "mcp_hub_search", "my_extension_tool"], "none at all is a choice too");
+});
+
+test("[M5b.9] a run that carries a grant for one of pi-loops' own tools is offered that one tool beside its declared list, and nothing else is added", () => {
+	const cap = resolveCap({ cwd: "/p", tools: ["read"] }, 60_000);
+	const grant = (tool: string) => ({ finding: "inb-1", ask: "ask-1", call: { tool, tool_call_id: "c", input_sha256: "h", reason: "r" } }) as any;
+	const seed = (over: object = {}) => ({ lane: "s", origin: { source: "cron:x", run_id: "r", cwd: "/p", who: "x" }, cap, ...over }) as any;
+	assert.deepEqual(capTools({ guard: seed({ grant: grant("cron_remove") }) }).tools, ["read", "cron_remove"], "the granted pi-loops tool is offered");
+	assert.deepEqual(capTools({ guard: seed() }).tools, ["read"], "with no grant, the declared list alone");
+	assert.deepEqual(capTools({ guard: seed({ grant: grant("bash") }) }).tools, ["read"], "a grant for another tool adds nothing: the cap decides it");
+	assert.deepEqual(capTools({ guard: seed({ grant: grant("read") }) }).tools, ["read"], "a declared tool is not named twice");
+	const within = { ...cap, tools: { within: ["read"] } } as any;
+	assert.deepEqual(capTools({ guard: seed({ cap: within, grant: grant("set_trigger_state") }) }).keep(["read", "set_trigger_state", "cron_list"]), ["read", "set_trigger_state"], "a cut keeps the granted tool too, and no other");
 });

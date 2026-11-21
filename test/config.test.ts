@@ -55,18 +55,17 @@ test("[danger] allow is read as a list of prefixes and validated", () => {
 	assert.match(bad.errors.join("\n"), /\[danger\] allow/);
 });
 
-test("[engine] window_guard is read, on by default, and an invalid value is reported and ignored", () => {
+test("[engine] window_guard, retired in 0.24.3, loads without error, has no effect, and is reported in one line", () => {
 	const dir = tmp("pi-loops-guard-");
-	assert.equal(loadConfig(dir).windowGuard, true, "a scheduled turn in an open window is capped unless asked otherwise");
-	fs.writeFileSync(path.join(dir, "config.toml"), "[engine]\nwindow_guard = false\n");
-	assert.equal(loadConfig(dir).windowGuard, false);
-	fs.writeFileSync(path.join(dir, "config.toml"), "[engine]\nwindow_guard = true\n");
-	assert.equal(loadConfig(dir).windowGuard, true);
-	fs.writeFileSync(path.join(dir, "config.toml"), '[engine]\nwindow_guard = "off"\n');
-	const bad = loadConfig(dir);
-	assert.equal(bad.windowGuard, true, "an unreadable value leaves the guard on");
-	assert.equal(bad.errors.length, 1, JSON.stringify(bad.errors));
-	assert.match(bad.errors[0], /\[engine\] window_guard.*must be true or false/);
+	const file = path.join(dir, "config.toml");
+	fs.writeFileSync(file, '[danger]\nallow = ["rm -rf /var/cache/x"]\n');
+	const without = loadConfig(dir);
+	for (const value of ["false", "true", '"off"']) {
+		fs.writeFileSync(file, `[engine]\nwindow_guard = ${value}\n[danger]\nallow = ["rm -rf /var/cache/x"]\n`);
+		const cfg = loadConfig(dir);
+		assert.deepEqual(cfg.errors, [`[engine] window_guard: no longer a setting in 0.24.3; a scheduled turn that wants a dangerous command asks you in /inbox. Remove the line from ${file}`], value);
+		assert.deepEqual({ ...cfg, errors: [] }, without, `${value}: the rest of the file is read, and the key changes nothing`);
+	}
 });
 
 test("[page] port, host and allow_host are read, default to loopback on 4173, and an invalid value is reported and ignored", () => {

@@ -10,6 +10,7 @@ import { formatWait, queuedPrompt, type QueuedPrompt, runningRun } from "./engin
 import { type ListedJob, listedJobs } from "./job-status.ts";
 import { statusField, statusWord } from "./job-lines.ts";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createHash } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Type, type TSchema } from "typebox";
@@ -28,7 +29,7 @@ import { inProject } from "./inbox.ts";
 import { plural } from "./plural.ts";
 import type { TriggerRuntime } from "./trigger-runtime.ts";
 import { sameProject, withinProject } from "./paths.ts";
-import { type TriggerStore, auditRule, cleanCondition, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
+import { type TriggerStore, auditRule, cleanCondition, controlPlanePreflight, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { WATCH_ASK_HEAD } from "./watch-plan.ts";
 
@@ -64,6 +65,68 @@ export interface ToolHost {
 	 * `new_trigger` proposes (design 2.5). Absent where no such turn runs.
 	 */
 	scheduledTurn?(): boolean;
+}
+
+/**
+ * Whose turn a window's control-plane call is in. A scheduled turn is `seated` when the window's
+ * guard has a seat for it (src/window-executor.ts `windowGuard`): the guard judged the call there.
+ */
+export type ConfirmTurn = { kind: "person" } | { kind: "scheduled"; seated: boolean };
+
+/**
+ * The window's `confirmTool`: the person's yes to a control-plane call at hop 0 (design 4, item 26).
+ * In a scheduled turn with a guard seat, the guard asked a person in /inbox before the call could
+ * run (src/guard.ts `CONTROL_PLANE_TOOLS`), so a call that reaches here carries their yes and nothing
+ * more is asked. With no seat nobody was asked, and the call is refused in the words of a scheduled
+ * turn nobody answered. In the person's own turn it is pi's confirm: the person is at the keyboard.
+ * Before all of these, `controlPlanePreflight` refuses at hop 1 and, in the person's turn, with no
+ * UI. undefined: approved; else what the tool tells the model.
+ */
+export async function confirmControlPlane(ctx: Pick<ExtensionContext, "hasUI" | "ui">, req: ControlPlaneRequest, atHop: number, turn: ConfirmTurn): Promise<string | undefined> {
+	const denied = controlPlanePreflight({ hop: atHop, hasUI: ctx.hasUI || turn.kind === "scheduled" }, req.label);
+	if (denied) return denied;
+	if (turn.kind === "scheduled") return turn.seated ? undefined : `nobody answered in time: ${req.label}`;
+	// The approval card: Action / Tool / Reason / Args hash / Preview, then a feed line per decision.
+	const argsHash = createHash("sha256").update(JSON.stringify(req.args ?? null)).digest("hex").slice(0, 12);
+	ctx.ui.notify(`approval required: ${req.label}`, "info");
+	const card = [`Action: ${req.label}`, `Tool: ${req.tool}`, `Reason: ${req.reason}`, `Args hash: ${argsHash}`, `Preview: ${previewRedacted(req.preview, 200)}`].join("\n");
+	const yes = await ctx.ui.confirm("Control-plane approval required", card);
+	ctx.ui.notify(yes ? `approved control-plane action: ${req.label}` : `denied control-plane action: ${req.label} (denied by user)`, "info");
+	return yes ? undefined : `user declined: ${req.label}`;
+}
+
+/** How many rule ids a `remove_trigger` target names before it names the rest by their digest. */
+const TARGET_IDS_SHOWN = 5;
+
+/**
+ * Pure over the stores. What a control-plane call would change now, resolved as the tool resolves
+ * it in the project of `cwd`, as one line: a job's id, name and schedule; a rule's id; for
+ * `remove_trigger` with `all`, the count and the sorted ids (past `TARGET_IDS_SHOWN`, a digest of
+ * them all). The guard folds it into the call's identity (src/guard.ts `ToolCallFacts.target`), so
+ * a yes runs only on the target the person saw. undefined for any other tool.
+ */
+export function controlTarget(host: Pick<ToolHost, "stores" | "triggers">, tool: string, input: unknown, cwd: string): string | undefined {
+	const params = (input ?? {}) as { ref?: unknown; id?: unknown; all?: unknown };
+	if (tool === "cron_remove" || tool === "set_cron_job_state") {
+		const job = typeof params.ref === "string" ? resolveJobRefScoped(jobsOf(host).load(), params.ref, cwd) : undefined;
+		if (!job) return "no job matches";
+		// The target is part of what a yes binds to, and the window and pi-loops in the background may
+		// run in different time zones. The job's id says which job it is; a one-shot's time, which reads
+		// differently in each zone, is left out.
+		const when = job.schedule.kind === "once" ? "once" : formatSchedule(job.schedule);
+		return `job ${job.id} "${job.name ?? job.id}" ${when}`;
+	}
+	if (tool === "remove_trigger" && params.all === true) {
+		const ids = host.triggers.store.load().filter((r) => sameProject(r.cwd, cwd)).map((r) => r.id).sort();
+		if (ids.length <= TARGET_IDS_SHOWN) return `${plural(ids.length, "rule")}${ids.length ? `: ${ids.join(", ")}` : ""}`;
+		const digest = createHash("sha256").update(ids.join("\n")).digest("hex").slice(0, 12);
+		return `${plural(ids.length, "rule")}: ${ids.slice(0, TARGET_IDS_SHOWN).join(", ")}, … (all ids sha256 ${digest})`;
+	}
+	if (tool === "remove_trigger" || tool === "set_trigger_state") {
+		const rule = typeof params.id === "string" ? resolveRuleRefScoped(host.triggers.store.load(), params.id, cwd) : undefined;
+		return rule ? `rule ${rule.id}` : "no rule matches";
+	}
+	return undefined;
 }
 
 type ToolStoresHost = Pick<ToolHost, "stores">;

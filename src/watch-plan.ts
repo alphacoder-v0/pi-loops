@@ -109,8 +109,6 @@ export function planCard(plan: WatchPlan, ctx: { now: number; pollSecs: number; 
 
 /** The dialog's first line: how the page tells a watch question from any other select. */
 export const WATCH_ASK_HEAD = "Set up this watch?";
-/** How long the question waits for the person before pi cancels it and the tool says so. */
-export const WATCH_ASK_MS = 30 * 60_000;
 export const WATCH_CANCEL = "Cancel";
 
 /** "every 10 minutes": how often the background looks, as the card says it. */

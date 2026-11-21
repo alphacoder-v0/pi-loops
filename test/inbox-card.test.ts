@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { questionFinding } from "../src/ask.ts";
 import { type InboxEntry } from "../src/inbox.ts";
-import { CANCELLED_LINE, DISMISS_CHIPS, answerLine, answerWho, cancelRefusal, clearLeftTail, cardLine, cardLines, cardOrigin, cardsOf, claimLine, dismissLine, dismissOutcome, dismissTail, inboxCard, noQuestionLine, questionActions, shellClaimOfQuestion, splitFinding, threadOrder, threadedLines, threads, yesPageLine, yesTerminalLine } from "../src/inbox-card.ts";
+import { CANCELLED_LINE, DISMISS_CHIPS, answerLine, answerWho, cancelRefusal, clearLeftTail, cardLine, cardLines, cardOrigin, cardsOf, dismissLine, dismissOutcome, dismissTail, inboxCard, noQuestionLine, questionActions, shellClaimOfQuestion, splitFinding, threadOrder, threadedLines, threads, yesPageLine, yesTerminalLine } from "../src/inbox-card.ts";
 import type { LaneId } from "../src/lane.ts";
 import type { Row } from "../src/requests.ts";
 import { screenText } from "../src/redact.ts";
@@ -106,18 +106,6 @@ test("a dismiss tells the loop's next run, nobody, or says nothing", () => {
 	assert.equal(dismissTail({ told: "nobody", why: "rule" }), " — a trigger reported it, and a trigger keeps no notes, so nobody is told");
 	assert.equal(dismissTail({ told: "silent" }), "");
 	assert.deepEqual([...DISMISS_CHIPS], ["Not a bug", "Already fixed", "Duplicate", "Too noisy", "Not now"]);
-});
-
-test("a queued claim says where it runs, in the page's words", () => {
-	assert.equal(claimLine("page", "release notes"), 'Running in "release notes".');
-	assert.equal(claimLine("started"), "Starting its conversation…");
-	assert.equal(claimLine("terminal"), "Queued for your terminal.");
-	assert.equal(claimLine("terminal-quiet"), "Queued; the terminal that has this conversation is not taking messages (/resume there).");
-	assert.equal(claimLine("background"), "Queued; runs after pi-loops finishes its scheduled run there.");
-	assert.equal(claimLine("full"), "Queued; it opens when another conversation in the page closes.");
-	assert.equal(claimLine("stopped"), "Queued; pi stopped too often in that conversation to be started again on its own.");
-	assert.equal(claimLine("no-pi-loops"), "Queued; the pi of that conversation has no pi-loops, so nothing runs it here. Open it in a terminal with pi-loops.");
-	assert.equal(claimLine("gone"), "Queued; its conversation is gone.");
 });
 
 test("one line per finding, for a shell: the clauses on the finding's line, in the page's words", () => {

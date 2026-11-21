@@ -719,7 +719,8 @@ weaker, and worth converting whenever one of them breaks.
 - [x] A confirmation shows what is about to happen apart from the reasoning about it, so it cannot
       be read as prose and waved through. `test/web-page.test.ts`: *a confirmation shows what is
       about to run*.
-- [x] A question with a countdown (the scheduled-turn guard, a control-plane confirm) closes when
+- [x] A question with a countdown (a dialog that pi or another extension asks with a timeout; pi-loops
+      asks none since 0.24.3: its questions are in the inbox) closes when
       its time is up and says `timed out with no answer: refused`, since pi refuses it then and tells
       the page nothing; an approve after that is neither sent nor reported as approved, and the next
       question gets the dialog. A browser that attaches later is not offered it, and one offered again

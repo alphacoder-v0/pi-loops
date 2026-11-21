@@ -21,15 +21,16 @@
  * The answers of the conversation the window holds (`createWindowAnswers`): a yes to a question its
  * turn asked runs here, as one turn row of `TURN_TYPE`, once pi is idle (design 6.4).
  */
-import type { ExtensionAPI, ExtensionContext, InputEvent, formatDimensionNote, resizeImage } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, InputEvent, ToolCallEventResult, formatDimensionNote, resizeImage } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
 import { conversationOrigin, plainOf } from "./answer-lanes.ts";
 import type { AnswerExecutor, AnswerStart, Answers, MeetOutcome } from "./answers.ts";
 import { answerPrompt, canonicalJson, isAnswerRow, limitNames, narrowCap, type ResolvedCap } from "./ask.ts";
 import { heldCap } from "./background-executor.ts";
-import { CEILING, type Executor, type ExecutorView, type Producer, type TurnSent, proofOf, landed, modeOf, queuedTriggeredTurn, requestFingerprint, sameProducer, type Proof, claimAlive , type Gone, answerClaimLive } from "./engine.ts";
-import type { GuardSeat, GuardSeed } from "./guard.ts";
-import type { AnswerSeatOffer } from "./window-guard.ts";
+import { CEILING, type Executor, type ExecutorView, type Producer, type TurnSent, proofOf, landed, modeOf, queuedTriggeredTurn, requestFingerprint, sameProducer, type Proof, claimAlive , type Gone, answerClaimLive, plainRunId } from "./engine.ts";
+import type { JobClock } from "./clock.ts";
+import { AUTOMATION_TOOLS, type GuardDeps, type GuardPolicy, type GuardSeat, type GuardSeed, GuardSeats, guardCall } from "./guard.ts";
+import type { Inbox } from "./inbox.ts";
 import { type Lane, parseLane } from "./lane.ts";
 import { type LeaseBinding, type ProcessProbe, systemProbe } from "./lease.ts";
 import { DEFAULT_RUN_TIMEOUT_MS } from "./loop-run.ts";
@@ -38,7 +39,7 @@ import { type RowMark, TURN_TYPE, type TurnDetails, markDetails, markFor, markOn
 import { previewRedacted } from "./redact.ts";
 import type { ClaimedRow, ImageContent, RequestMode, RequestStore, Row, UnclaimedRow } from "./requests.ts";
 import { type RunList, STOPPED_BY_PERSON } from "./run-list.ts";
-import type { LoopJob, RunRecord } from "./store.ts";
+import { type LoopJob, type RunRecord, defaultLoopsDir } from "./store.ts";
 import { stamp } from "./schedule.ts";
 import { shortSessionId } from "./session-head.ts";
 import { type PersonSlot, type Slot, type TurnSlot, answerTurnEnd, claimOf, personInput, settleSlots } from "./window-claim.ts";
@@ -57,7 +58,7 @@ export type CurrentTurn = { kind: "row"; id: string; mode: RequestMode; tools?: 
 /** The cap of a row's turn. */
 export type RowCap = CurrentTurn & { kind: "row" };
 
-/** Whether a call made now is a scheduled turn's, which the window caps (`src/window-guard.ts`). */
+/** Whether a call made now is a scheduled turn's, which the window caps (`windowGuard`). */
 export function unattendedTurn(current: CurrentTurn | undefined): current is RowCap {
 	return current?.kind === "row" && current.mode === "unattended";
 }
@@ -820,10 +821,14 @@ interface AnswerTurn {
 	closing: boolean;
 }
 
-/** Whether a run under `cap` is offered `tool`: its tool list, and for one of pi's built-ins its built-in list, name it (or set no limit). */
+/**
+ * Whether a run under `cap` is offered `tool`: its tool list, and for one of pi's built-ins its
+ * built-in list, name it (or set no limit). pi-loops' own tools are offered under any list, as the
+ * guard's declared check lets them through (src/guard.ts `AUTOMATION_TOOLS`).
+ */
 function capOffers(cap: ResolvedCap, tool: string): boolean {
 	const tools = limitNames(cap.tools);
-	if (tools && !tools.includes(tool)) return false;
+	if (tools && !tools.includes(tool) && !AUTOMATION_TOOLS.includes(tool)) return false;
 	const builtins = limitNames(cap.builtinTools);
 	return !(builtins && PI_BUILTIN_TOOL_NAMES.includes(tool) && !builtins.includes(tool));
 }
@@ -917,7 +922,8 @@ export function createWindowAnswers(deps: WindowAnswerDeps): WindowAnswers {
 		if (start.resume !== undefined && (here.sessionFile === undefined || path.resolve(start.resume.file) !== path.resolve(here.sessionFile))) return close(turn, { ok: false, error: `refused: the question's transcript ${start.resume.file} is not the conversation's file ${here.sessionFile ?? "(none)"}` }, now);
 		const cap: ResolvedCap = capped;
 		// The cap of the turn is the job as jobs.json has it now: a granted call whose tool it no longer
-		// declares is not run, as the background would not offer it (src/sdk-runner.ts `capTools`).
+		// declares is not run. pi-loops' own tools count as declared, as the background offers the one a
+		// grant admits beside a declared list (src/sdk-runner.ts `capTools`).
 		if (start.grant && !capOffers(cap, start.grant.call.tool)) return close(turn, { ok: false, error: `refused: ${start.grant.call.tool} is not among the tools the job declares now` }, now);
 		turn.seed = { lane: lane.id, origin: conversationOrigin(start, lane.id, cap.cwd, job), cap, ...(start.grant ? { grant: start.grant } : {}) };
 		const tools = limitNames(cap.tools);
@@ -1015,5 +1021,157 @@ export function createWindowAnswers(deps: WindowAnswerDeps): WindowAnswers {
 			if (!turn || !seed || turn.closing || turn.rowCap !== cap || deps.executor.foreignSinceStart(turn.start.row)) return undefined;
 			return { seed, seated: (seat) => void (turn.seat = seat), open: () => turns.get(cap.id) === turn && !turn.closing && !deps.executor.foreignSinceStart(turn.start.row) };
 		},
+	};
+}
+
+/* ------------------------------------------------------------------ the guard of a scheduled turn */
+
+/*
+ * The cap on a scheduled turn in an open window (design 6.3 and 6.4). A plain job's prompt runs under
+ * the job's declared tools and the dangerous-command policy wherever it runs, as `guardCall` of
+ * src/guard.ts decides and applies it. A call that needs a person files the question a background run
+ * files (Q1): a finding whose lane is the conversation, answered in `/inbox` or on the page. The call
+ * is blocked and the turn goes on. `windowGuard` is the `tool_call` handler, built here so a test can
+ * drive it without the extension.
+ */
+
+/**
+ * What the model is told when the window refuses a call itself: the sub-agent guard's wording, with
+ * why. `nobody`: the guard could not decide; `blind`: a call nobody was asked about, since a person
+ * could not see it on a card.
+ */
+export function refusal(reason: string, by: "nobody" | "blind" = "nobody"): string {
+	const who = by === "blind" ? "Nobody was asked, since a person could not see what this call would read or write" : "This scheduled turn ran with nobody answering";
+	return `refused by pi-loops: ${reason}. ${who}; commands that can destroy data or the machine, and tools the job did not declare, are not allowed; do the safe part and report what you would need a human for.`;
+}
+
+/** The plain job a scheduled turn runs, as its question names it. */
+export type TurnJob = Pick<LoopJob, "id" | "name" | "cwd" | "timeoutMs">;
+
+/**
+ * Pure. The plain job whose row `rowId` is: by the row's source while the row is in the file; once a
+ * drain took the delivered row out, by its id, which is `plainRunId` of the job and the slot the clock
+ * last spent or fired for it (src/clock.ts).
+ */
+export function turnJob(rowId: string, jobs: readonly LoopJob[], rows: readonly Pick<Row, "id" | "source">[], clock: Readonly<Record<string, JobClock>>): LoopJob | undefined {
+	const source = rows.find((row) => row.id === rowId)?.source;
+	const named = source?.match(/^cron(?:-run)?:(.+)$/)?.[1];
+	if (source !== undefined) return named === undefined ? undefined : jobs.find((job) => job.id === named);
+	return jobs.find((job) => !job.stateful && [clock[job.id]?.slot, clock[job.id]?.fired].some((at) => at !== undefined && plainRunId(job.id, at) === rowId));
+}
+
+/**
+ * Pure. The seed of a scheduled turn's seat: its lane is the conversation, its origin the job as a
+ * turn in a closed conversation names it (src/background-executor.ts `runTurn`), and its cap the
+ * row's declared tools under the job's time limit (`heldCap`, which an answer is narrowed to). With
+ * no job found the question names none.
+ */
+export function windowSeed(cap: RowCap, sessionId: string, cwd: string, job: TurnJob | undefined): GuardSeed {
+	const name = job ? (job.name ?? job.id) : undefined;
+	const tools = { tools: cap.tools ? [...cap.tools] : undefined, builtinTools: cap.builtinTools ? [...cap.builtinTools] : undefined, timeoutMs: job?.timeoutMs };
+	return {
+		lane: sessionId,
+		origin: { source: `cron:${name ?? cap.id}`, run_id: cap.id, cwd, ...(job ? { job_id: job.id } : {}), session_id: sessionId, who: name ?? "a scheduled prompt" },
+		cap: heldCap(tools, cwd, DEFAULT_RUN_TIMEOUT_MS),
+	};
+}
+
+/** What the handler reads of pi's context: the conversation's session and the turn's directory. */
+export type WindowContext = { cwd?: string; sessionManager?: { getSessionId(): string; getSessionFile(): string | undefined } };
+
+/** An answer's turn, as the guard seats it: its seed with the grant, the seat it is told of, and whether the answer is still open. */
+export interface AnswerSeatOffer {
+	readonly seed: GuardSeed;
+	seated(seat: GuardSeat): void;
+	open(): boolean;
+}
+
+export interface WindowGuardDeps {
+	current(): CurrentTurn | undefined;
+	config(): GuardPolicy;
+	log(line: string): void;
+	/** Where a question is filed and read back, as a background run's guard has it. */
+	inbox: Pick<Inbox, "list" | "fileOnce">;
+	now(): number;
+	/** The plain job whose row `rowId` is, in conversation `sessionId` (`turnJob`). */
+	jobOf(rowId: string, sessionId: string): TurnJob | undefined;
+	/**
+	 * The seed of an answer's turn this window runs, for the cap in force (src/window-executor.ts
+	 * `createWindowAnswers`): its grant and the cap of the question it answers, only for the very cap
+	 * the window handed that turn with. `seated` is told the seat, so the closing reads whether the
+	 * grant was used; `open` is false from the moment the answer closes, and its seat leaves then.
+	 * undefined: the turn is no answer of this window's.
+	 */
+	answerTurn?(cap: RowCap): AnswerSeatOffer | undefined;
+	/** The seats the handler seats a scheduled turn in; its own when absent. Given, `confirmTool` reads whether the turn has one. */
+	seats?: GuardSeats;
+	/** What a control-plane call would change, for the guard (`GuardDeps.controlTarget`). */
+	controlTarget?: GuardDeps["controlTarget"];
+}
+
+/**
+ * The `tool_call` handler: a scheduled turn's call is judged and applied by `guardCall`, as a
+ * background run's is, in a seat of this window's own `GuardSeats`: keyed by the window's
+ * `ctx.sessionManager`, so a question's ask id and session are the conversation's. A turn takes its
+ * seat at its first judged call and leaves it when another turn's first call comes. The turn of an
+ * answer this window runs takes the seed `answerTurn` gives, so its one granted call passes once.
+ * With no session file there is no transcript an answer could resume, so there is no seat, and a
+ * call that needs a person is refused. A call no card could show is refused in the window's own words (`blind`).
+ *
+ * This is a boundary that fails closed: anything in here that throws refuses a scheduled turn's
+ * call. The person's own turn goes on as if the guard were not there, and so does a turn with no row
+ * in force (nothing of ours is running: between settle cycles), the one unknown that is allowed.
+ * Whose turn it is comes first, and a failure to learn even that refuses.
+ */
+export function windowGuard(deps: WindowGuardDeps): (event: { toolName: string; toolCallId?: string; input?: unknown }, ctx: WindowContext | undefined) => Promise<ToolCallEventResult | undefined> {
+	const seats = deps.seats ?? new GuardSeats();
+	/** The seat in force: for one session and one cap object, the one the turn in force runs under. */
+	let held: { session: object; cap: RowCap; seat?: GuardSeat; leave?: () => void; answer?: AnswerSeatOffer } | undefined;
+	const seatOf = (cap: RowCap, ctx: WindowContext | undefined): GuardSeat | undefined => {
+		const session = ctx?.sessionManager;
+		// The very cap of the turn in force, not its row's id: a later message that names the row runs
+		// under a cap of its own. A seat with a grant leaves once its answer closes.
+		if (held && held.session === session && held.cap === cap && (!held.answer || held.answer.open())) return held.seat;
+		held?.leave?.();
+		held = undefined;
+		if (!session) return undefined;
+		const sessionId = session.getSessionId();
+		const file = session.getSessionFile();
+		if (file === undefined || parseLane(sessionId)?.kind !== "conversation") {
+			held = { session, cap };
+			return undefined;
+		}
+		// An answer's turn is seated with its grant; a scheduled turn with the seed of its job.
+		const answer = deps.answerTurn?.(cap);
+		const job = answer ? undefined : deps.jobOf(cap.id, sessionId);
+		const entered = seats.enter(session, file, answer?.seed ?? windowSeed(cap, sessionId, ctx?.cwd ?? job?.cwd ?? process.cwd(), job));
+		held = { session, cap, seat: entered.seat, leave: () => void entered.leave(), ...(answer ? { answer } : {}) };
+		answer?.seated(entered.seat);
+		return entered.seat;
+	};
+	return async (event, ctx) => {
+		let current: CurrentTurn | undefined;
+		try {
+			current = deps.current();
+		} catch (err: any) {
+			deps.log(`window guard failed on ${event.toolName}: ${err?.message ?? err}`);
+			return { block: true, reason: refusal("the guard could not decide") };
+		}
+		try {
+			const cfg = deps.config();
+			if (!unattendedTurn(current)) return undefined;
+			const trace = current.id.slice(0, 8);
+			const call = { toolName: event.toolName, toolCallId: event.toolCallId ?? "", input: event.input, ...(ctx?.cwd ? { cwd: ctx.cwd } : {}) };
+			const guard: GuardDeps = { inbox: deps.inbox, allowCommands: () => cfg.allowCommands, loopsDir: cfg.loopsDir ?? defaultLoopsDir(), now: deps.now, log: (line) => deps.log(`${line} in scheduled turn ${trace}`), ...(deps.controlTarget ? { controlTarget: deps.controlTarget } : {}) };
+			const declared = { ...(current.tools ? { tools: current.tools } : {}), ...(current.builtinTools ? { builtinTools: current.builtinTools } : {}) };
+			const notShown = (reason: string) => {
+				deps.log(`refused ${event.toolName} in scheduled turn ${trace}: ${reason} (nobody asked: it cannot be shown)`);
+				return { block: true as const, reason: refusal(reason, "blind") };
+			};
+			return await guardCall(call, seatOf(current, ctx), guard, { declared, notShown });
+		} catch (err: any) {
+			deps.log(`window guard failed on ${event.toolName}: ${err?.message ?? err}`);
+			return unattendedTurn(current) ? { block: true, reason: refusal("the guard could not decide") } : undefined;
+		}
 	};
 }

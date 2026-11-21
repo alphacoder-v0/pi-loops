@@ -14,7 +14,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import { envFlag } from "./config.ts";
 import { realpathish } from "./paths.ts";
 import { previewRedacted } from "./redact.ts";
-import { type GuardDeps, type GuardReport, GuardSeats, subagentGuardExtension } from "./guard.ts";
+import { AUTOMATION_TOOLS, type GuardDeps, type GuardReport, GuardSeats, subagentGuardExtension } from "./guard.ts";
 import { type ParentRuntimeFlags, type RunnerResult, type SubagentRequest, type SubagentRunner, failedRun, opensExisting } from "./runner.ts";
 import type { ToolLimit } from "./ask.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
@@ -469,17 +469,23 @@ export interface RunTools {
  * The tools of a run. A request with a guard seat has the tools of its cap and nothing of its own:
  * a list is the allowlist or the built-ins the session is made with (when both are lists, a built-in
  * the built-ins leave out is taken out of the allowlist); `within` cuts what the session gives, after
- * it is made. A request with no seat keeps its own `tools` and `builtinTools`.
+ * it is made. A request with no seat keeps its own `tools` and `builtinTools`. One tool is added to a
+ * cap's list: the pi-loops tool a grant admits (src/guard.ts `AUTOMATION_TOOLS`), which a declared
+ * list never names and the guard's declared check lets through, so a yes to it can run. Nothing else
+ * is added.
  */
 export function capTools(req: Pick<SubagentRequest, "tools" | "builtinTools" | "guard">): RunTools {
 	const cap = req.guard?.cap;
 	if (!cap) return { tools: req.tools, builtinTools: req.builtinTools, keep: (active) => [...active] };
 	const list = (limit: ToolLimit): string[] | undefined => (Array.isArray(limit) ? [...limit] : undefined);
 	const within = (limit: ToolLimit): readonly string[] | undefined => (limit !== "session" && !Array.isArray(limit) ? (limit as { within: readonly string[] }).within : undefined);
+	const grantedTool = req.guard?.grant?.call.tool;
+	const granted = grantedTool !== undefined && AUTOMATION_TOOLS.includes(grantedTool) ? grantedTool : undefined;
+	const withGranted = (names: readonly string[] | undefined): string[] | undefined => (names && granted !== undefined && !names.includes(granted) ? [...names, granted] : names ? [...names] : undefined);
 	const builtins = list(cap.builtinTools);
-	const allow = list(cap.tools);
+	const allow = withGranted(list(cap.tools));
 	const tools = allow && builtins ? allow.filter((t) => !PI_BUILTIN_TOOL_NAMES.includes(t) || builtins.includes(t)) : allow;
-	const cutAll = within(cap.tools);
+	const cutAll = withGranted(within(cap.tools));
 	const cutBuiltins = within(cap.builtinTools);
 	return {
 		...(tools ? { tools } : {}),

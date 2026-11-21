@@ -76,7 +76,6 @@ running a sub-agent
 src/runner.ts               SubagentRunner interface, result shape, the parent's inheritable flags
 src/sdk-runner.ts           the in-process runner on pi's SDK (createAgentSession per run)
 src/danger.ts               the dangerous-command policy for unattended runs
-src/window-guard.ts         the cap on a scheduled turn in an open window: the turn it gives `judgeCall`, and the dialog that asks the person
 src/guard.ts                the guard of every unattended turn: `judgeCall`, the one decision (declared tools, the dangerous-command policy, which call needs a person) for a background run and a window's scheduled turn; the question a background run files, the one call a yes admits once (seats), and the synthetic extension that applies it inside every sub-session
 src/transcript.ts           a sub-agent's session file, folded into readable lines
 
@@ -99,7 +98,7 @@ src/answer-lanes.ts         the answer rows of loop and check lanes: a yes resum
 src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid, or by a terminal from the page's pi (`page`) while no turn runs (`turnSince`)
 src/requests.ts             requests/<lane>.jsonl: what is addressed to a lane (a conversation's is its session id), kept until it is in it (the row, claimed or not, append, remove, claim)
 src/engine.ts               decideDrain, the pure decision for a lane's rows: classify, take the lane, start; drain, which applies it through an executor; the exits, attempts and dead letters
-src/window-executor.ts      the engine's executor in a window: a turn row as a `pi-loops:turn` custom message with its mark and cap, the person's page message as a user message, the list of what it gave pi, and the cap of each turn
+src/window-executor.ts      the engine's executor in a window: a turn row as a `pi-loops:turn` custom message with its mark and cap, the person's page message as a user message, the list of what it gave pi, and the cap of each turn; `windowGuard`, the `tool_call` handler that judges a scheduled turn's calls through `guardCall`
 src/window-claim.ts         the window's three decisions over that list: whose a message is, what a settle leaves, the editor without our prompts
 src/mark.ts                 the mark { lane, id } on the entry pi writes for a row: one writer, one reader; `TURN_TYPE` and the row a turn's message names
 src/turn-render.ts          how a terminal draws a `pi-loops:turn` message: as a message the person typed

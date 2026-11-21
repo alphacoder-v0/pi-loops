@@ -42,7 +42,6 @@ import { type ShareMessage, renderShare, shareSummary, shareableMessages } from 
 import { UsageError, addLauncher, installLauncherWithConfirm, installedByPi, launcherAction, launcherSource, launcherState, launcherTarget, openPage, pageLaunchHost, refreshLauncher, slashDir, stopAndWait, stopService, uninstallLauncher, webPageRequest } from "./cli.ts";
 import { copyText, isRemoteTty } from "./browser-open.ts";
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
@@ -54,9 +53,8 @@ import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pick
 import { type Proposal, askProposal } from "./watch-plan.ts";
 import { type SettleState, offerAtSettle, oneRunAtATime, settleOffers, settleReady } from "./settle-offer.ts";
 import type { Row, UnclaimedRow } from "./requests.ts";
-import { WindowExecutor, createWindowAnswers, unattendedTurn } from "./window-executor.ts";
+import { WindowExecutor, createWindowAnswers, turnJob, unattendedTurn, windowGuard } from "./window-executor.ts";
 import { RunList } from "./run-list.ts";
-import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, turnJob, windowGuard } from "./window-guard.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { budgetState, jobCounts, type ListedJob, listedJobs, switchTargets } from "./job-status.ts";
 import { runClockTick, decideRunNow } from "./clock.ts";
@@ -75,8 +73,8 @@ import { HOST_LOG, crashPaused, crashPauseText, decideEviction, ensureHost, evic
 import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome, promotionToInbox, checkLane, checkSessionDir } from "./trigger-runtime.ts";
 import { scheduleAudit } from "./job-tune.ts";
-import { auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
-import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
+import { auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTrigger, resolveRuleRef } from "./triggers.ts";
+import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ConfirmTurn, type ToolHost, automationTools, checkJobName, confirmControlPlane, controlTarget, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
 import { claimPageChild } from "./page-children.ts";
 import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
 import { ALL_PROJECTS, awayIn, awayLine, markProjectSeen } from "./seen.ts";
@@ -3294,38 +3292,33 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 	/**
 	 * Trigger creation/removal and trigger/cron enable need a person's yes: pi has no permission
-	 * popups, so the tool asks itself, through `ctx.ui.confirm` in the person's own turn and through
-	 * the window guard's refuse-first `ctx.ui.select` in a scheduled one. A sub-agent has no UI, so
-	 * `controlPlanePreflight` denies fail-closed (`ToolCallEventResult`).
+	 * popups, so the tool asks itself (src/tools.ts `confirmControlPlane`). In a scheduled turn the
+	 * window guard already asked in /inbox; a sub-agent has no UI, so `controlPlanePreflight` denies
+	 * fail-closed.
 	 */
-	async function confirmTool(ctx: ExtensionContext, req: ControlPlaneRequest, atHop: number): Promise<string | undefined> {
-		const denied = controlPlanePreflight({ hop: atHop, hasUI: ctx.hasUI }, req.label);
-		if (denied) return denied;
-		// The approval card: Action / Tool / Reason / Args hash / Preview, then a feed line per decision.
-		const argsHash = createHash("sha256").update(JSON.stringify(req.args ?? null)).digest("hex").slice(0, 12);
-		ctx.ui.notify(`approval required: ${req.label}`, "info");
-		const card = [`Action: ${req.label}`, `Tool: ${req.tool}`, `Reason: ${req.reason}`, `Args hash: ${argsHash}`, `Preview: ${previewRedacted(req.preview, 200)}`].join("\n");
-		// In a scheduled turn the question is the window guard's (design §6.3): its minute and no more,
-		// since nobody may be there, and the refusing answer focused, so a reflexive Enter refuses.
-		const scheduled = unattendedTurn(executor.currentTurn());
-		const answer: GuardAnswer = scheduled ? await askRefusingFirst(ctx, "Control-plane approval required", card, WINDOW_GUARD_CONFIRM_MS) : (await ctx.ui.confirm("Control-plane approval required", card)) ? "yes" : "no";
-		ctx.ui.notify(answer === "yes" ? `approved control-plane action: ${req.label}` : `denied control-plane action: ${req.label} (${answer === "no" ? "denied by user" : "not answered in time"})`, "info");
-		return answer === "yes" ? undefined : answer === "no" ? `user declined: ${req.label}` : `nobody answered in time: ${req.label}`;
+	function confirmTool(ctx: ExtensionContext, req: ControlPlaneRequest, atHop: number): Promise<string | undefined> {
+		const turn: ConfirmTurn = unattendedTurn(executor.currentTurn()) ? { kind: "scheduled", seated: windowSeats.of(ctx.sessionManager) !== undefined } : { kind: "person" };
+		return confirmControlPlane(ctx, req, atHop, turn);
 	}
+	/** The seats of this window's guard: `confirmTool` passes a scheduled turn's call only where the guard judged it in one. */
+	const windowSeats = new GuardSeats();
 	for (const def of automationTools({ hop, actor: "tool" }, toolHost)) pi.registerTool(def);
-	// The cap on a scheduled turn's calls while this window runs it (src/window-guard.ts): the
-	// decision is there, this only hands it what pi is in, what config.toml says, the inbox a question
-	// is filed in, and where the turn's job is read.
+	// The cap on a scheduled turn's calls while this window runs it (src/window-executor.ts
+	// `windowGuard`): the decision is there, this only hands it what pi is in, what config.toml says,
+	// the inbox a question is filed in, and where the turn's job is read.
 	pi.on(
 		"tool_call",
 		windowGuard({
 			current: () => executor.currentTurn(),
-			config: () => ({ windowGuard: config.windowGuard, allowCommands: config.allowCommands }),
+			config: () => ({ allowCommands: config.allowCommands }),
 			log: (line) => log.info(line),
 			inbox: stores.inbox,
 			now: () => Date.now(),
 			jobOf: (rowId, sessionId) => turnJob(rowId, stores.jobs.load(), requests.list(sessionId), stores.clock.read().jobs),
 			answerTurn: (cap) => windowAnswers.seat(cap),
+			seats: windowSeats,
+			// Resolved in the project the tools resolve it in: this window's session, not the call's cwd.
+			controlTarget: (tool, input) => controlTarget(toolHost, tool, input, toolHost.session().cwd),
 		}),
 	);
 

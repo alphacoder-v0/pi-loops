@@ -34,6 +34,14 @@ All notable changes to pi-loops are documented here. The format follows
   not read what this version queued: it leaves those requests in the queue, `pi-loops status`
   does not count them, and it removes the images of a queued message from the page after one
   minute.
+- **`[engine] window_guard` is retired.** Nothing turns the cap on a scheduled turn off in a
+  window any more. A `config.toml` that still sets the key is read, the key is ignored, and
+  pi-loops reports one line at startup: `[engine] window_guard: no longer a setting in 0.24.3; a
+  scheduled turn that wants a dangerous command asks you in /inbox. Remove the line from <file>`.
+  Before, `window_guard = false` turned the guard off in windows: a scheduled turn's dangerous
+  commands and the tools its job did not declare ran with no question. `cron_remove`,
+  `set_cron_job_state`, `remove_trigger` and `set_trigger_state` still asked there, with the
+  60-second confirm that refused when nobody answered.
 - **Close every pi-loops 0.22 window before you upgrade.** This version no longer holds such a
   window back, and a window no longer warns you that an older one has the same conversation open.
   Windows of 0.23 and later are not affected. While a 0.22 window stays open:
@@ -95,6 +103,18 @@ All notable changes to pi-loops are documented here. The format follows
   current turn." The message a conversation reads after a no is now `The person said no to
   \`<command>\`: <your reason>`, then `Do not run it, and do not try another way to do the same
   thing.` on its own line.
+- **A control-plane call in a scheduled turn is a question in the inbox, with no countdown.** In a
+  scheduled turn in an open window, `cron_remove`, `set_cron_job_state`, `remove_trigger` and
+  `set_trigger_state` do not open a dialog that refuses after 60 seconds any more. The call does not
+  run, and the inbox gets a question that names the tool, its input and what it would change: the
+  job by its id, name and schedule, or the rules by their ids. A plain job's turn that pi-loops
+  runs in a closed conversation asks the same way, where before the call was refused. A yes runs
+  that one call, in a window that has the conversation open or in the background, also for a job
+  that declares its tools, and only while the call would change what you saw: when the job or the
+  rules changed since, the call is a new question that shows the new target. This is
+  so at every call of these tools in such a turn, also where the tool asked nothing before (such as
+  `set_cron_job_state` disabling a job of this project). In your own turn the tool still asks with
+  pi's confirm, and in a loop's or a check's run it is refused as before.
 - **No line says that a dangerous command is refused in the background any more.** It is asked
   about. What `cron_create` tells the model about a plain job, the session-start line about
   `--tools` on plain jobs, and docs/loops.md, docs/configuration.md, docs/mcp.md and
