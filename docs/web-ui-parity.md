@@ -589,19 +589,18 @@ weaker, and worth converting whenever one of them breaks.
       Result (this conversation or the inbox; a rule's inbox chip reads *Put it in my inbox*, since
       a matched rule's result reaches the inbox and the loop activity strip), for a rule Repeats
       (once or every time), and for a schedule in the inbox Checks (none or each finding). The chips start on the first option, which is the model's own choice. A select that
-      is not a watch question stays a dialog. Nothing is written until the person answers.
+      is not a watch question stays a dialog. Nothing runs until the person answers.
       `test/web-page.test.ts`: *a watch question draws the card from its title and options, in the
       box while it is open, else in the transcript, and no dialog*, *a select that is not a watch question stays a
-      dialog*; `test/scoping.test.ts`: *with a person in their own turn, new_trigger asks through
-      pi's select and Set it up creates the rule in the same call*.
+      dialog*; `test/proposal.test.ts`: *[already-answered] the terminal's selector asks the card's
+      question*.
 - [x] `Set it up` answers the select with the one option the chips name, and `Cancel` with
-      *Cancel*, through `/ui-response` like any dialog; one answer per question. Cancel writes
-      nothing to `jobs.json` or `triggers.json`. Cancel comes first so Enter hits it.
+      *Cancel*, through `/ui-response` like any dialog; one answer per question. Cancel removes the
+      proposal from `jobs.json` or `triggers.json`, and nothing ran. Cancel comes first so Enter hits it.
       `test/web-page.test.ts`: *the card's chips name the option Set it up sends, and Cancel sends
       Cancel*; `test/page-server.test.ts`: *a watch question is a select like any dialog:
       /ui-response carries the chosen option to pi, and the /watch route is gone*;
-      `test/scoping.test.ts`: *Cancel, Esc, a timeout and an abort all return cancelled in the same
-      call and leave jobs.json and triggers.json as they were*.
+      `test/proposal.test.ts`: *[P3] Cancel removes the record only while proposed is set*.
 - [x] The tool's result in the same turn turns every card of the question into a receipt (*Set up
       ~/build.done appears · shows here · once*, *Not set up*, or *Not set up:* and why the create
       failed), and the transcript has the receipt once the question settles. The receipt names a
@@ -650,14 +649,14 @@ weaker, and worth converting whenever one of them breaks.
 - [x] A conversation a terminal holds is answered there (owner decision O2): both tools ask in that
       terminal before they set anything up, and the box says so.
       `test/web-page.test.ts`: *a terminal that holds the conversation answers the sentence there*.
-- [x] **The terminal asks the same question.** In a terminal, in the person's own turn, both tools
-      show pi's selector with the card's rows as its title and the same options, the model's choice
-      first; it replaces `new_trigger`'s confirm, so there is one question, never two. A scheduled
-      turn, a sub-agent and pi-loops in the background ask nobody. `test/scoping.test.ts`: *the answer
-      is promote_to_chat and fire_once for a rule, and stateful and verify for a schedule*, *a
-      sub-agent has no new_trigger; a scheduled turn and a pi with no dialog keep today's gate:
-      new_trigger asks the host's confirm once and cron_create creates*; J8 in `test/journey/journeys/j08-watch.mjs`
-      drives the selector through the journey terminal driver.
+- [x] **The terminal asks the same question.** In a terminal, `/cron enable <name>` and
+      `/triggers enable <id>` on a proposed watch show pi's selector with the card's rows as its
+      title and the same options, the model's choice first; `new_trigger` asks no confirm, so there
+      is one question, never two. Esc leaves the watch proposed. A sub-agent has no `new_trigger`,
+      and a scheduled turn's `cron_create` creates at once. `test/proposal.test.ts`: *[already-answered]
+      the terminal's selector asks the card's question*; `test/scoping.test.ts`: *a proposal's first
+      option is the model's*, *a sub-agent has no new_trigger; in a scheduled turn new_trigger
+      proposes and cron_create creates*.
 - [x] At 390 px the box and the card fit: nothing scrolls sideways, the chips and buttons wrap, and
       every button is at least 32 px tall (J8 in `test/journey/journeys/j08-watch.mjs`).
 

@@ -48,6 +48,8 @@ export interface DynamicTriggerRule {
 	 * a rule without it is model-checked as before.
 	 */
 	precheck?: PathWatch;
+	/** A watch nobody has said yes to yet (design 2.5): `enabled` is false, and only its answer sets it up. */
+	proposed?: { at: string; session: string };
 }
 
 export type SourceKind = "local" | "mcp";
@@ -314,7 +316,7 @@ export class TriggerStore {
 		});
 	}
 
-	async add(input: { condition: string; action: string; fireOnce?: boolean; promoteToChat?: boolean; cwd: string; sessionId?: string; model?: string; thinking?: string }): Promise<DynamicTriggerRule> {
+	async add(input: { condition: string; action: string; fireOnce?: boolean; promoteToChat?: boolean; cwd: string; sessionId?: string; model?: string; thinking?: string; proposed?: { at: string; session: string } }): Promise<DynamicTriggerRule> {
 		const condition = input.condition.trim();
 		const action = input.action.trim();
 		if (!condition || !action) throw new Error("trigger rule needs both a condition and an action");
@@ -322,7 +324,7 @@ export class TriggerStore {
 			id: newRuleId(),
 			condition,
 			action,
-			enabled: true,
+			enabled: !input.proposed,
 			fireOnce: input.fireOnce ?? true,
 			promoteToChat: input.promoteToChat ?? false,
 			createdAt: stamp(),
@@ -330,6 +332,7 @@ export class TriggerStore {
 			model: input.model,
 			thinking: input.thinking,
 			createdBy: { sessionId: input.sessionId },
+			...(input.proposed ? { proposed: input.proposed } : {}),
 		};
 		// Here, in the process that creates the rule: `~` is the creator's home, which the background
 		// process started by a service manager may not share.
@@ -367,10 +370,12 @@ export class TriggerStore {
 		});
 	}
 
+	/** A proposal is left as it is: only its answer sets it up (src/watch-plan.ts `answerProposal`). */
 	async setEnabled(id: string, enabled: boolean): Promise<DynamicTriggerRule | undefined> {
 		return this.mutate((rules) => {
 			const rule = rules.find((r) => r.id === id.trim());
 			if (!rule) return undefined;
+			if (rule.proposed) return rule;
 			rule.enabled = enabled;
 			if (enabled) rule.firedAt = undefined;
 			return rule;
@@ -450,6 +455,11 @@ export class TriggerStore {
 		}
 		return out.slice(-limit).reverse();
 	}
+}
+
+/** The audit line of a rule made, set up or removed as a watch (design 2.5): `/triggers audit` shows it. */
+export function auditRule(store: Pick<TriggerStore, "appendAudit">, op: "add" | "enable" | "remove", actor: string, rule: DynamicTriggerRule): void {
+	store.appendAudit({ cwd: rule.cwd, type: "trigger", traceId: newTraceId(), state: op, sourceLabel: actor, eventLabel: rule.id, summary: `when ${rule.condition} -> ${rule.action}`, details: { proposed: rule.proposed ? true : undefined, enabled: rule.enabled } });
 }
 
 /**

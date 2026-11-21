@@ -509,6 +509,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			// conversation's own, so its refusal says where the person was not, not "sub-agent".
 			confirmTool: async (_ctx, request, atHop) => controlPlanePreflight({ hop: held ? 0 : Math.max(1, atHop), hasUI: false, held }, request.label),
 			refreshBadge: () => undefined,
+			// A held turn is one pi-loops started, with nobody to see a card: `cron_create` creates at once and `new_trigger` proposes (design 2.5).
+			scheduledTurn: () => held,
 		};
 		return host;
 	};

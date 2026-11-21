@@ -51,6 +51,20 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Changed
 
+- **A watch the agent sets up in your own turn waits for your yes.** `cron_create` and
+  `new_trigger` in your own turn, and `new_trigger` in a scheduled turn, now write a proposal: the
+  job or the rule, with `enabled: false` and `proposed: { at, session }`. Nothing runs it until you
+  say "Set it up". The agent is told not to wait and not to do the action now. `/cron enable
+  <name>` and `/triggers enable <id>` on a proposal ask the question in pi's selector; Esc leaves it
+  proposed. Set it up and Cancel each apply once, and each writes a receipt into the conversation,
+  so the agent learns what you chose at its next turn. A second answer from another surface says
+  `already answered: set up` or `already answered: cancelled`. `/cron` and `/triggers rules` mark a
+  proposal `proposed: waits for your yes`, and a session start names the ones of its conversation.
+  `/cron enable --all` passes over proposals. Before, the tools asked in the same call and created
+  at once. A sub-agent's `cron_create`, `cron_create` in a scheduled turn, `/cron add` and a recipe
+  still create enabled jobs; there, a `gate` argument is refused with `a gate needs a person`. A
+  `jobs.json` and a `triggers.json` that 0.24.2 wrote have no proposals: there is nothing to
+  convert. See "A proposed watch" in docs/loops.md and docs/triggers.md.
 - **A dangerous call of a loop or a rule check in the background asks you in the inbox.** Before,
   it was only refused. Now the call does not run, and the inbox gets a question with Yes and No.
   The run does not wait for your answer: it is told that a person was asked, and it finishes the

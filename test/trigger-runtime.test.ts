@@ -1062,3 +1062,19 @@ test("[check-cap] checkCap: the longest timeout the rules name, else run_timeout
 	assert.deepEqual(checkCap("/p", [], 60_000), resolveCap({ cwd: "/p" }, 60_000));
 	assert.deepEqual(checkCap("/p", [{ timeoutMs: 30_000 }, { timeoutMs: 120_000, model: "a/b", thinking: "high" }, { model: "c/d" }], 60_000), resolveCap({ cwd: "/p", model: "a/b", thinking: "high", timeoutMs: 120_000 }, 60_000));
 });
+
+test("a proposed rule is never checked: a periodic check and a push pass over it", async () => {
+	const dir = tmp("pi-loops-trt-");
+	const runner = fakeRunner();
+	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner, pollIntervalSecs: 1, hooks: { onPromote: () => "chat", onInjectAndRun: () => "chat" } });
+	await rt.store.add({ condition: "c", action: "a", cwd: dir, sessionId: "s", proposed: { at: new Date().toISOString(), session: "s" } });
+	try {
+		await rt.tick(Date.now(), true);
+		await rt.handle(pushTrigger(dir), "sub_agent");
+		await new Promise((r) => setTimeout(r, 50));
+		assert.equal(runner.calls.length, 0, "no sub-agent was asked");
+		assert.equal(rt.store.load()[0].enabled, false);
+	} finally {
+		await rt.stop();
+	}
+});

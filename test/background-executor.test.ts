@@ -893,6 +893,19 @@ test("[cron-run-loop-now] a loop run starts immediately despite the budget and s
 	}
 });
 
+test("[proposed] a proposed loop is not run by a run request either, whoever sends it (the control socket's run op)", async () => {
+	const s = scene(() => ({ ok: true, exitCode: 0, timedOut: false, text: "done", usage: USAGE }));
+	try {
+		const id = "cron-loop-proposed";
+		await s.host.stores.jobs.add({ ...job(s, { id, stateful: true, enabled: false }), sessionId: undefined, proposed: { at: new Date().toISOString(), session: "0199aaaa-0000-7000-8000-000000000001" } } as any);
+		assert.equal(await s.host.loops.runNow(id), `is proposed and waits for your yes: /cron enable ${id} asks again`);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		assert.equal(s.calls.length, 0, "nothing ran");
+	} finally {
+		await s.host.stop();
+	}
+});
+
 test("[cron-run-refused-running] a loop run is refused with main's words while its run is active", async () => {
 	let finish!: (value: any) => void;
 	const s = scene(() => new Promise((resolve) => { finish = resolve; }));

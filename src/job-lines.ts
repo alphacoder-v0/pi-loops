@@ -140,6 +140,18 @@ export function heldJobsNotice(jobs: readonly LoopJob[]): string | undefined {
 }
 
 /**
+ * The line a session start says while a watch proposed in this conversation waits for its answer
+ * (design 6.3), with the command that asks again. Undefined when none waits.
+ */
+export function proposalsNotice(jobs: readonly LoopJob[], rules: readonly DynamicTriggerRule[], sessionId: string | undefined): string | undefined {
+	if (!sessionId) return undefined;
+	const asks = [...jobs.filter((j) => j.proposed?.session === sessionId).map((j) => `/cron enable ${j.name ?? j.id}`), ...rules.filter((r) => r.proposed?.session === sessionId).map((r) => `/triggers enable ${r.id}`)];
+	if (!asks.length) return undefined;
+	const one = asks.length === 1;
+	return `[cron] ${plural(asks.length, "watch", "watches")} ${one ? "waits" : "wait"} for your yes: ${asks.join(" · ")} ${one ? "asks" : "ask"} again`;
+}
+
+/**
  * What a window says when it leaves a conversation (`/new`, `/resume`) that has plain jobs: in 0.22.8
  * that stopped them; now they run in the background, or, with `[host] auto = false`, stop with the
  * last window. Undefined when the conversation has none.
@@ -199,12 +211,14 @@ export function jobLines(stored: LoopJob[], opts: JobLinesInput): string[] {
 			const marks = [job.stateful ? "[stateful]" : undefined, job.verify ? "[verify]" : undefined, dormant, orphan, quiet, queued, run ? `running ${run}` : undefined, catchUpMark(job)]
 				.filter(Boolean)
 				.join("  ");
-			const head = `${String(i + 1).padStart(2)}. ${job.id}${job.name ? ` "${job.name}"` : ""}${job.enabled ? "" : "  disabled"}  ${formatSchedule(job.schedule)}${marks ? `  ${marks}` : ""}`;
+			const head = `${String(i + 1).padStart(2)}. ${job.id}${job.name ? ` "${job.name}"` : ""}${job.proposed ? "  proposed: waits for your yes" : job.enabled ? "" : "  disabled"}  ${formatSchedule(job.schedule)}${marks ? `  ${marks}` : ""}`;
 			const action = `    action: ${previewRedacted(job.prompt, 120)}`;
 			const worth = signal ? signalSummary(signal) : undefined;
 			const meta = `    next ${next ? formatLocal(next) : "—"} · runs ${job.status.runs}${job.status.collapsed ? ` · skipped overlaps ${job.status.collapsed}` : ""}${worth ? ` · 30d: ${worth}` : ""}${showCwd ? ` · ${projectLabel(job.cwd, home)}` : ""}`;
 			const err = job.status.error ? `    last error: ${previewRedacted(job.status.error, 100)}` : job.status.fired ? `    last fired: ${formatLocal(Date.parse(job.status.fired))}` : undefined;
-			return [head, action, meta, err].filter((l): l is string => !!l);
+			const ref = job.name ?? job.id;
+			const answer = job.proposed ? `    /cron enable ${ref} asks again · /cron remove ${ref} cancels it` : undefined;
+			return [head, action, meta, answer, err].filter((l): l is string => !!l);
 		})
 		.flat();
 }
@@ -218,7 +232,7 @@ export type PanelTone = "head" | "ok" | "dim" | "warn";
 
 /** What the widget shows for one project. The run line and a rule's failure mark come in made, as the run card and `/triggers` make them. */
 export interface PanelInput {
-	rules: (Pick<DynamicTriggerRule, "condition" | "action" | "enabled" | "fireOnce"> & { failureMark?: string })[];
+	rules: (Pick<DynamicTriggerRule, "condition" | "action" | "enabled" | "fireOnce" | "proposed"> & { failureMark?: string })[];
 	/** The last rule check here; only an outcome other than `no match` or `matched N` is shown. */
 	poll?: { at: string; outcome: string };
 	jobs: ListedJob[];
@@ -241,7 +255,7 @@ export function panelLines(i: PanelInput): { text: string; tone: PanelTone }[] {
 	if (i.rules.length) {
 		lines.push({ text: "Rules", tone: "head" });
 		for (const r of i.rules.slice(0, PANEL_ROW_LIMIT)) {
-			const marks = [r.enabled ? "" : "[disabled]", r.fireOnce ? "" : "[every time]", r.failureMark ?? ""].filter(Boolean);
+			const marks = [r.proposed ? "[proposed]" : r.enabled ? "" : "[disabled]", r.fireOnce ? "" : "[every time]", r.failureMark ?? ""].filter(Boolean);
 			lines.push({ text: `${clip(r.condition, 40)} → ${clip(r.action, 40)}${marks.map((m) => `  ${m}`).join("")}`, tone: r.failureMark ? "warn" : r.enabled ? "ok" : "dim" });
 		}
 		more(i.rules.length);
@@ -251,7 +265,7 @@ export function panelLines(i: PanelInput): { text: string; tone: PanelTone }[] {
 		const disabled = i.jobs.filter((j) => !j.enabled).length;
 		lines.push({ text: `Loops  ${i.jobs.length}${disabled ? ` · ${disabled} disabled` : ""}`, tone: "head" });
 		for (const j of i.jobs.slice(0, PANEL_ROW_LIMIT))
-			lines.push({ text: `${loopLabel(j)}  ${formatSchedule(j.schedule)}  ${clip(j.prompt, 48)}${j.enabled ? "" : "  [disabled]"}${j.status.collapsed ? `  skipped overlaps ${j.status.collapsed}` : ""}`, tone: j.status.collapsed ? "warn" : j.enabled ? "ok" : "dim" });
+			lines.push({ text: `${loopLabel(j)}  ${formatSchedule(j.schedule)}  ${clip(j.prompt, 48)}${j.proposed ? "  [proposed]" : j.enabled ? "" : "  [disabled]"}${j.status.collapsed ? `  skipped overlaps ${j.status.collapsed}` : ""}`, tone: j.status.collapsed ? "warn" : j.enabled ? "ok" : "dim" });
 		more(i.jobs.length);
 	}
 	if (i.runs.length) {

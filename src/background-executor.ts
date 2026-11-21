@@ -684,6 +684,8 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 			const job = stores.book().jobs.find((item) => item.id === jobId);
 			if (!job) return "is no longer in the store";
 			if (!job.stateful) return "cannot run: its id is not a loop id";
+			// A proposal runs only after the person sets it up, whoever asks for a run (design 2.5).
+			if (job.proposed) return `is proposed and waits for your yes: /cron enable ${job.name ?? job.id} asks again`;
 			const lane = loopLane(job.id);
 			if (runs.all().some((run) => run.jobId === jobId) || (lane !== undefined && stores.requests.list(lane).some((row) => !!row.run))) return "is already running";
 			if (stopped) return "cannot run: pi-loops is stopping";

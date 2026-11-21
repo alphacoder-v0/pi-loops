@@ -44,7 +44,7 @@ export type RequestSource =
 	| `rule:${string}`
 	| `push:${string}`
 	| "goal"
-	/** The row of a yes (`ans-`), and the row that tells a conversation of a no (`no-`): src/ask.ts. */
+	/** The row of a yes (`ans-`), and the row that tells a conversation of a no (`no-`): src/ask.ts. The receipt of a proposal's answer (`rcp-`): src/watch-plan.ts. */
 	| "answer"
 	| `recipe:${string}`
 	| "new-trigger"

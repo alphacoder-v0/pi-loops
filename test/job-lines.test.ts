@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { personRow, plainJobRow, queuedPrompt, recipeRow } from "../src/engine.ts";
 import type { InboxEntry } from "../src/inbox.ts";
-import { heldJobsNotice, jobLines, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice, loopLabel } from "../src/job-lines.ts";
+import { heldJobsNotice, jobLines, leftConversationLine, panelLines, pickQueued, proposalsNotice, queueLines, toolsCapNotice, loopLabel } from "../src/job-lines.ts";
 import { formatLocal } from "../src/schedule.ts";
 import { parseSchedule, stamp } from "../src/schedule.ts";
 import type { RunRecord } from "../src/store.ts";
@@ -279,4 +279,18 @@ test("[listed-cron] /cron shows a loop's run from the claim on its row and its l
 	const failed: RunRecord = { runId: "run-failed", jobId: id, stateful: true, cwd: "/", pid: 1, startedAt: started, finishedAt: started, ok: false, error: "provider 500", findings: 0, droppedFindings: 0, stateUpdated: false };
 	const after = linesFor([job({ id })], { runs: [failed] });
 	assert.ok(after.some((line) => line === "    last error: provider 500"), after.join("\n"));
+});
+
+test("/cron lists a proposal where it lists a disabled job, with the two commands that answer it, and a session start names it (design 6.3)", () => {
+	const proposed = { ...fromV2(job()).job, enabled: false, proposed: { at: new Date(NOW).toISOString(), session: SESSION } };
+	const lines = jobLines([proposed], { clock: {}, runs: [], inbox: [], requests: () => [], view: { sessionId: SESSION, holdsOwn: true, holderOf: () => undefined }, now: NOW, home: HOME, cwdExists: () => true, showCwd: false });
+	assert.equal(lines[0], ` 1. cron-b91def87 "pr-watch"  proposed: waits for your yes  */15 * * * *  [stateful]`);
+	assert.equal(lines[1], "    action: check the repo issues");
+	assert.match(lines[2], /^    next — · runs 0/, "the meta line a disabled job has");
+	assert.equal(lines[3], "    /cron enable pr-watch asks again · /cron remove pr-watch cancels it");
+	assert.equal(proposalsNotice([proposed], [], SESSION), "[cron] 1 watch waits for your yes: /cron enable pr-watch asks again");
+	assert.equal(proposalsNotice([proposed], [], "another"), undefined, "only this conversation's");
+	const rule = { id: "dyn-1", condition: "c", action: "a", enabled: false, fireOnce: true, promoteToChat: true, createdAt: "", cwd: "/", proposed: { at: "", session: SESSION } };
+	assert.equal(proposalsNotice([proposed], [rule], SESSION), "[cron] 2 watches wait for your yes: /cron enable pr-watch · /triggers enable dyn-1 ask again");
+	assert.equal(panelLines({ rules: [rule], jobs: [], runs: [], runText: () => "", sources: [], hookEvents: [] })[1].text, "c → a  [proposed]");
 });

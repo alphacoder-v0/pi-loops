@@ -251,3 +251,11 @@ export function listedJobs(stores: { book(): { readonly jobs: readonly LoopJob[]
 		return listedJob(job, clock.jobs[job.id], rows, histories.get(job.id), live);
 	});
 }
+
+/**
+ * What `/cron enable|disable --all` and `/triggers enable|disable --all` change: the records in scope
+ * whose state is not the one asked for. A proposal is never one: it waits for its own answer (design 2.5).
+ */
+export function switchTargets<T extends { readonly enabled: boolean; readonly proposed?: unknown }>(records: readonly T[], enable: boolean, inScope: (record: T) => boolean): T[] {
+	return records.filter((r) => inScope(r) && r.enabled !== enable && !r.proposed);
+}

@@ -50,13 +50,14 @@ import { plural } from "./plural.ts";
 import { type OwnerView, type PlainJobLeases, type SessionSnapshot, openWhere, ownerViewOf, runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, closedConversation, openWindowPids, procStart } from "./lease.ts";
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, newTriggerRow, promotionTarget, promotionView, proofOf, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, sessionFileEntries, stopRow, waitingLine } from "./engine.ts";
-import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
+import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, proposalsNotice, queueLines, toolsCapNotice } from "./job-lines.ts";
+import { type Proposal, askProposal } from "./watch-plan.ts";
 import type { Row, UnclaimedRow } from "./requests.ts";
 import { WindowExecutor, createWindowAnswers, unattendedTurn } from "./window-executor.ts";
 import { RunList } from "./run-list.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, turnJob, windowGuard } from "./window-guard.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
-import { budgetState, jobCounts, type ListedJob, listedJobs } from "./job-status.ts";
+import { budgetState, jobCounts, type ListedJob, listedJobs, switchTargets } from "./job-status.ts";
 import { runClockTick, decideRunNow } from "./clock.ts";
 import { DISABLED_BY_PERSON } from "./store.ts";
 import { openStores, removeJob } from "./stores.ts";
@@ -1240,6 +1241,20 @@ export default function piLoops(pi: ExtensionAPI) {
 		return auditEntryId;
 	}
 
+	/**
+	 * `/cron enable` and `/triggers enable` on a proposal (design 2.5): the question again, through
+	 * pi's selector, and P2 or P3 for the answer. Esc leaves it proposed. The receipt lands in this
+	 * conversation now when it is the one the watch was proposed in.
+	 */
+	async function answerInTerminal(ctx: ExtensionCommandContext, p: Proposal): Promise<void> {
+		const select = (title: string, options: string[]) => (ctx.hasUI ? ctx.ui.select(title, options) : Promise.resolve(undefined));
+		const answered = await askProposal(p, select, { jobs: stores.jobs, rules: triggers.store, requests: stores.requests }, { now: Date.now, by: createdBy(), actor: "slash", auditJob: (op, before, after) => cronControlAudit(op, "slash", before, after), pollSecs: triggers.pollIntervalSecs, home: process.env.HOME });
+		ctx.ui.notify(answered.line, "info");
+		refreshBadge();
+		if (answered.outcome === "set") toolHost.ensureHost?.();
+		if (answered.outcome === "set" || answered.outcome === "cancelled") await drainRequests();
+	}
+
 	/* --------------------------------------------------------- commands */
 
 	const CRON_HELP = [
@@ -1407,6 +1422,10 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "run": {
 						const job = pick(rest);
 						if (!job) return;
+						if (job.proposed) {
+							ctx.ui.notify(`${job.name ?? job.id} is proposed and waits for your yes: /cron enable ${job.name ?? job.id} asks again`, "warning");
+							return;
+						}
 						// A loop runs in the host; a plain job only in the window holding its conversation.
 						let ran: true | string;
 						if (job.stateful) {
@@ -1445,7 +1464,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const scope = rest.trim();
 						if (scope === "--all" || scope === "--all-projects") {
 							const everywhere = scope === "--all-projects";
-							const targets = stores.jobs.load().filter((j) => (everywhere || sameProject(j.cwd, session.cwd)) && j.enabled !== enable);
+							const targets = switchTargets(stores.jobs.load(), enable, (j) => everywhere || sameProject(j.cwd, session.cwd));
 							for (const j of targets) {
 								const at = stamp();
 								const after = enable ? await stores.jobs.enable(j.id) : await stores.jobs.disable(j.id, { code: "person", why: DISABLED_BY_PERSON, at });
@@ -1458,6 +1477,10 @@ export default function piLoops(pi: ExtensionAPI) {
 						}
 						const job = pick(rest);
 						if (!job) return;
+						if (enable && job.proposed) {
+							await answerInTerminal(ctx, { kind: "schedule", job });
+							return;
+						}
 						const at = stamp();
 						const after = enable ? await stores.jobs.enable(job.id) : await stores.jobs.disable(job.id, { code: "person", why: DISABLED_BY_PERSON, at });
 						if (enable) stores.clock.clear(job.id, at);
@@ -2337,7 +2360,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const scope = rest.trim();
 						if (scope === "--all" || scope === "--all-projects") {
 							const everywhere = scope === "--all-projects";
-							const targets = store.load().filter((r) => (everywhere || sameProject(r.cwd, session.cwd)) && r.enabled !== enable);
+							const targets = switchTargets(store.load(), enable, (r) => everywhere || sameProject(r.cwd, session.cwd));
 							for (const r of targets) await store.setEnabled(r.id, enable);
 							refreshBadge();
 							ctx.ui.notify(`${enable ? "enabled" : "disabled"} ${plural(targets.length, "rule")}${everywhere ? " on this machine" : " in this project"}`, "info");
@@ -2345,6 +2368,10 @@ export default function piLoops(pi: ExtensionAPI) {
 						}
 						const rule = pickRule(rest);
 						if (!rule) return;
+						if (enable && rule.proposed) {
+							await answerInTerminal(ctx, { kind: "rule", rule });
+							return;
+						}
 						const updated = (await store.setEnabled(rule.id, enable)) ?? rule;
 						show(ctx, `${enable ? "enabled" : "disabled"} trigger ${updated.id}`, [
 							`  condition: ${previewRedacted(updated.condition, 120)}`,
@@ -3467,6 +3494,11 @@ export default function piLoops(pi: ExtensionAPI) {
 					sayInfo(line);
 					startShown.push(() => writeUiPref(dir, "toolsCapNotice", "shown"));
 				}
+			}
+			if (ctx.hasUI) {
+				// A watch proposed here waits for its answer on every start, and says which command asks again (design 6.3).
+				const line = proposalsNotice(loadOrNone(() => stores.jobs.load()), loadOrNone(() => triggers.store.load()), session.sessionId);
+				if (line) sayInfo(line);
 			}
 			if (leftLine) {
 				sayInfo(leftLine);

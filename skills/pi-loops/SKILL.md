@@ -63,7 +63,11 @@ would need a person for.
 
 ## Confirmations
 
-With the user present, `cron_create` and `new_trigger` ask them first, in the same call, and
-return `created ...` or `cancelled: ...`. Removing a trigger, and re-enabling a job or trigger, asks
-the user to confirm. If the user cancels or declines, stop: do not retry with different arguments,
+In the user's own turn, `cron_create` and `new_trigger` do not set anything up: they return
+`proposed ...`, and the user sees a card ("Set up this watch?"). Nothing runs until they say yes.
+Do not wait for the answer, do not do the action now, and do not call the tool again for it: a
+message in the conversation tells you later what they chose (`[Trigger rcp-…] The person
+answered …`). `new_trigger` proposes in a scheduled turn too. `cron_list` and `list_triggers` mark
+a proposal `[proposed]`, and `set_cron_job_state` and `set_trigger_state` refuse one.
+Removing a trigger, and re-enabling a job or trigger, asks the user to confirm. If the user cancels or declines, stop: do not retry with different arguments,
 do not set it up another way, and do not do the action now.

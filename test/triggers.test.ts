@@ -132,3 +132,13 @@ test("clearing this project's rules uses the same project predicate the preview 
 	assert.deepEqual(store.load().map((r) => r.cwd), [other], "another project is untouched");
 });
 
+
+test("a proposed rule is written with enabled false and its conversation, and setEnabled leaves it for its answer", async () => {
+	const store = new TriggerStore(tmp("pi-loops-triggers-proposal-"));
+	const proposed = { at: new Date().toISOString(), session: "s" };
+	const rule = await store.add({ condition: "c", action: "a", cwd: "/", sessionId: "s", proposed });
+	assert.deepEqual([rule.enabled, rule.proposed], [false, proposed]);
+	assert.deepEqual(store.load()[0].proposed, proposed, "triggers.json keeps it");
+	assert.deepEqual([(await store.setEnabled(rule.id, true))?.enabled, store.load()[0].enabled], [false, false]);
+	assert.equal((await store.add({ condition: "d", action: "b", cwd: "/" })).enabled, true, "a rule made without one is enabled as before");
+});

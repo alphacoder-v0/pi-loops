@@ -79,15 +79,53 @@ message you send into that turn makes the rest of it yours and nothing asks agai
 `/goal` continuation, a recipe hand-off, `/new-trigger` and `/cron run` never ask.
 pi-loops' own tools are not asked about a second time: `cron_create` in such a turn makes a job
 capped to the turn's tools, as a job a background run makes is capped to that run's, and
-`new_trigger`, the trigger tools, `cron_remove` and `set_cron_job_state` ask through their own
-confirm, once, where the background would refuse.
-With you present, in your own turn, `cron_create` asks you before it creates anything: pi's selector
-in a terminal, the same question drawn as a card in the browser page. The first answer is the
-model's own choice: *Put it in my inbox* (a loop, with its notes between runs, with or without a
-checker) or *Show it in this conversation* (a plain job of this conversation). The tool returns
-`created cron job …` or `cancelled: …` in the same call; Cancel, Esc and thirty minutes with no
-answer write nothing. The question shows no directory, so a `cwd` outside this project is refused
-before it is asked ([design.md](design.md), decision 24).
+`new_trigger` proposes its rule (below); the trigger tools, `cron_remove` and `set_cron_job_state`
+ask through their own confirm, once, where the background would refuse.
+
+### A proposed watch
+
+In your own turn, `cron_create` does not create a running job. It writes a **proposal**: the job,
+with every check a create makes, `enabled: false` and `proposed: { at, session }` in `jobs.json`.
+`new_trigger` does the same for a rule, in your own turn and in a scheduled or held turn. Nothing
+runs a proposal: the clock, the loop lanes and the rule checks pass over it, and it does not
+expire. The model reads `proposed cron job cron-… "pr-watch": the person sees a card …` and is told
+not to wait, not to do the action now and not to call the tool again. A sub-agent's `cron_create`
+(hop 1), `cron_create` in a scheduled or held turn, `/cron add` and a recipe still create an
+enabled job. A `gate` passed to `cron_create` where it creates at once is refused whole: `a gate
+needs a person: set it with /cron set <name> --gate`. A proposal needs a saved conversation: with
+`--no-session` the tools refuse it.
+
+The question is drawn from the record, so it is the same after a reload and a restart: the card's
+rows, `Set up this watch?` and the options of the watch card. The first option is the model's own
+choice: *inbox* (a loop, with its notes between runs, with or without a checker) or *this
+conversation* (a plain job of the conversation the watch was proposed in). The question shows no
+directory, so a `cwd` outside this project is refused when the tool is called ([design.md](design.md),
+decision 24). `/cron enable <name>` on a proposal asks it again in pi's selector and prints the
+result: `set up: pr-watch · every 10m · inbox`, `cancelled: pr-watch is removed and nothing ran`, or
+after Esc `pr-watch is still proposed`. Esc is not Cancel. A proposal is answered once: when another
+surface answered first, the second prints `already answered: set up` or `already answered:
+cancelled` and changes nothing.
+
+Set it up is one write under the store's lock, applied only while `proposed` is still set: the
+fields of the choice, `enabled: true`, `proposed` deleted, and the job's schedule counted from the
+answer. Then the audit line `enable`, then a receipt in the conversation the watch was proposed in:
+an `append` row (`source: "answer"`, `mode: "none"`, id `rcp-…`) that says what the person chose,
+which the model reads at its next turn. Cancel removes the job the same way, with the audit line
+`remove` and a receipt. `/cron remove` removes a proposal like any job, with no receipt. `/cron
+enable --all` passes over proposals, and `set_cron_job_state` refuses one.
+
+`/cron` lists a proposal where it lists a disabled job:
+
+```
+ 3. cron-5d1c…  "pr-watch"  proposed: waits for your yes  every 10m  [stateful]
+    action: report new or updated pull requests
+    next — · runs 0
+    /cron enable pr-watch asks again · /cron remove pr-watch cancels it
+```
+
+`cron_list` gives the model `[proposed]` where it gives `[disabled]`, and `/cron run` refuses a
+proposal. At session start a proposal of this conversation says `[cron] 1 watch waits for your yes:
+/cron enable pr-watch asks again`.
 `[engine] window_guard = false` in `config.toml` turns the cap off in windows
 ([configuration.md](configuration.md)).
 

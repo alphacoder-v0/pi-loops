@@ -422,6 +422,7 @@ export type RunNow = { readonly refused: string } | { readonly row: UnclaimedRow
 export function decideRunNow(job: LoopJob | undefined, clock: JobClock | undefined, rows: readonly Row[], scope: Pick<TickScope, "kind" | "self"> & { readonly view: OwnerView; readonly epoch: number | undefined }, now: number): RunNow {
 	if (!job) return { refused: "is no longer in the store" };
 	if (rows.some((row) => row.kind === "input" && row.collapse_key === plainCollapseKey(job.id) && row.run)) return { refused: "is already running" };
+	if (job.proposed) return { refused: `is proposed and waits for your yes: /cron enable ${job.name ?? job.id} asks again` };
 	if (!job.enabled) return { refused: "is disabled (/cron enable it first)" };
 	const where = whereRuns(job, scope.view);
 	if (where.kind === "aside") return { refused: "belongs to this conversation, but this window shows an older copy of it — /resume this session to run it" };

@@ -72,7 +72,7 @@ test("askTitle is the card as one line per row: what pi shows in a terminal, and
 	assert.equal(askTitle(daily), ["Set up this watch?", `Runs: every day at 09:00 · next ${daily.next}`, "Does: read TODO.md and tell me about new unchecked items", 'Command: /cron add --stateful "0 9 * * *" read TODO.md and tell me about new unchecked items'].join("\n"));
 	const careful = planCard(rulePlan({ rule: { condition: "the build lands", action: "rm -rf ~/build", cwd: "/p" } }), { now: NOW, pollSecs: 60, home: "/home/me" });
 	assert.match(askTitle(careful), /\nLooks: every minute\n/);
-	assert.match(askTitle(careful), /\nCareful: When this runs nobody is asked: pi-loops refuses rm recursive\+force on \$HOME or ~ and does the safe part\.\n/);
+	assert.match(askTitle(careful), /\nCareful: When this runs and reaches rm recursive\+force on \$HOME or ~, pi-loops does not run it: it asks you in the inbox and goes on without it\.\n/);
 });
 
 test("askTitle indents a value's further lines, so no line of an action can pass for a row of its own", () => {

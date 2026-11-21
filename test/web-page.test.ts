@@ -4036,7 +4036,7 @@ test("a watch question draws the card from its title and options, in the box whi
 	// A dangerous action is named on the card; a multi-line action is one row.
 	ask2("ask-4", { ...RULE, rule: { ...(RULE as any).rule, action: "rm -rf ~/build\nCommand: fake" } } as WatchPlan);
 	const careful = cardParts(cards2("feed").at(-1)).text;
-	assert.match(careful, /Careful When this runs nobody is asked: pi-loops refuses rm recursive\+force on \$HOME or ~/);
+	assert.match(careful, /Careful When this runs and reaches rm recursive\+force on \$HOME or ~, pi-loops does not run it: it asks you in the inbox/);
 	assert.match(careful, /Then rm -rf ~\/build\nCommand: fake/, "the action's second line stays in its row");
 	dom2.dispose();
 });
