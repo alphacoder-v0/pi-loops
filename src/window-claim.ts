@@ -1,4 +1,5 @@
-/** Pure decisions about the window's slots: whose a user message is, what a settled run leaves, and what became of an answer's turn. */
+/** Pure decisions about the window's slots: whose a user message is, whose an input is, what a settled run leaves, and what became of an answer's turn. */
+import type { InputSource } from "@earendil-works/pi-coding-agent";
 import { type Gone, stripImageNotes } from "./engine.ts";
 import type { RowMark } from "./mark.ts";
 import type { RowCap } from "./window-executor.ts";
@@ -51,6 +52,8 @@ export interface TurnSlot {
 	 * the one that started from this slot. A copied mark in the conversation is not its message.
 	 */
 	answer?: true;
+	/** A person row: the page's message for a conversation a terminal holds. Its message is a person's input (`personInput`). */
+	person?: true;
 	/** A stop named the row while pi held it: its run is aborted as its message starts, and when it goes unwritten it is `stopped`. */
 	stop?: true;
 	/** Its row left the queue file. No exit is owed for it, so it never goes into `gone`: the same row may be queued again. */
@@ -136,6 +139,18 @@ export function claimOf(text: string, slots: readonly Slot[]): Claim {
 		if (!longest || slot.text.length > longest.text.length || (slot.text.length === longest.text.length && slot.whose === "other" && longest.whose !== "other")) longest = slot;
 	}
 	return longest ? claim(longest) : { by: "nobody" };
+}
+
+/**
+ * Whether what pi takes in is a person's input: typed in a terminal (`interactive`) or sent over rpc
+ * (`rpc`), or, from the extension, a person row the window handed (`handed`, the slot the window
+ * took it for): the echo of its send in the page's pi, or its turn message in a terminal. Any other
+ * input of an extension is not a person's, and neither is any other turn row's message: a scheduled
+ * turn, an answer's turn or a goal's continuation.
+ */
+export function personInput(source: InputSource, handed: Slot | undefined): boolean {
+	if (source !== "extension") return true;
+	return handed?.whose === "person" || (handed?.whose === "turn" && handed.person === true);
 }
 
 /**

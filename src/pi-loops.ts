@@ -22,7 +22,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "./args.ts";
 import { envFlag, loadConfig } from "./config.ts";
-import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluationApplies, evaluatorPrompt, goalPursued, judgeCaughtUp, latestGoal, newGoal, parseDecision, pauseFor, resumeGoal, settledTurn, transcriptFromMessages } from "./goal.ts";
+import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, answeredGoal, applyDecision, branchMovedSince, clearGoal, continuationPrompt, evaluationApplies, evaluatorPrompt, goalPursued, heldOutcome, judgeCaughtUp, latestGoal, newGoal, parseDecision, pauseFor, pauseGoal, resumeGoal, goalWaitingLine, settledTurn, transcriptFromMessages } from "./goal.ts";
 import { sameProject } from "./paths.ts";
 import { isExactlyTrusted, projectNeedsTrust, sessionTrustCovers, windowTrusted } from "./trust.ts";
 import { HookRunner, type HookEventData, messageKind, messageSummary, resultSummary, truncateSummary } from "./hooks.ts";
@@ -1954,12 +1954,12 @@ export default function piLoops(pi: ExtensionAPI) {
 					outcome = pauseFor(pursued, err?.message ?? String(err));
 				}
 			}
-			// A continuation belongs to the point the evaluation started from. If the session has moved
-			// on since — an unrelated prompt, a rewind — it is held rather than delivered on top of
-			// somebody else's turn; the turn now running settles into another evaluation, which judges
-			// the session as it then is. A continuation that was never sent does not cost budget either.
-			const held = outcome.action.kind === "continue" && branchMovedSince(ctx.sessionManager.getBranch(), evaluatedAt);
-			persistGoal(ctx, held ? { ...outcome.state, iterations: pursued.iterations } : outcome.state);
+			// A continuation or a wait belongs to the point the evaluation started from. If the session has
+			// moved on since — an unrelated prompt, a rewind, the person's answer — it is held rather than
+			// delivered on top of somebody else's turn; the turn now running settles into another
+			// evaluation, which judges the session as it then is (heldOutcome).
+			const { state: written, held } = heldOutcome(pursued, outcome, branchMovedSince(ctx.sessionManager.getBranch(), evaluatedAt));
+			persistGoal(ctx, written);
 			// The evaluator is a model call like any other: it belongs in the run log, or `/cron cost`
 			// would under-report every session that has a goal set.
 			stores.jobs.appendRun({
@@ -1987,8 +1987,11 @@ export default function piLoops(pi: ExtensionAPI) {
 			} else if (outcome.action.kind === "pause") {
 				notifyOrLog(ctx, `[goal] paused: ${previewRedacted(outcome.action.reason, 200)} — /goal resume to continue`, "warning");
 			} else if (held) {
-				log.info(`goal: continuation held, the session moved on while the evaluator ran (${previewRedacted(outcome.state.lastReason ?? "", 160)})`);
-				notifyOrLog(ctx, "[goal] not satisfied, but you sent something meanwhile — the continuation is held and re-evaluated when this turn settles", "info");
+				log.info(`goal: ${outcome.action.kind === "wait" ? "wait" : "continuation"} held, the session moved on while the evaluator ran (${previewRedacted(outcome.state.lastReason ?? "", 160)})`);
+				if (outcome.action.kind === "continue") notifyOrLog(ctx, "[goal] not satisfied, but you sent something meanwhile — the continuation is held and re-evaluated when this turn settles", "info");
+			} else if (outcome.action.kind === "wait") {
+				// A warning, so it stays after a redraw: the person is the one who moves the goal on now.
+				notifyOrLog(ctx, goalWaitingLine(outcome.action.reason), "warning");
 			} else {
 				notifyOrLog(ctx, `[goal] not satisfied (${outcome.state.iterations}/${MAX_CONTINUATIONS}): ${previewRedacted(outcome.state.lastReason ?? "", 160)}`, "info");
 				// The reason is model output derived from a transcript that can contain hostile file,
@@ -2062,12 +2065,12 @@ export default function piLoops(pi: ExtensionAPI) {
 				goalSkippedTurn = false;
 				if (sub === "clear") {
 					dropQueuedContinuations();
-					persistGoal(ctx, { ...goal, status: "cleared", updatedAt: stamp() });
+					persistGoal(ctx, clearGoal(goal));
 					return ctx.ui.notify("goal cleared", "info");
 				}
 				if (sub === "resume" && goal.status === "achieved") return ctx.ui.notify("this goal was achieved; set a new one with /goal <condition>", "warning");
 				// Resuming with the allowance spent starts it again (resumeGoal).
-				const next: GoalState = sub === "pause" ? { ...goal, status: "paused", updatedAt: stamp() } : resumeGoal(goal);
+				const next: GoalState = sub === "pause" ? pauseGoal(goal) : resumeGoal(goal);
 				persistGoal(ctx, next);
 				return ctx.ui.notify(`goal ${sub === "pause" ? "paused" : "resumed"}`, "info");
 			}
@@ -3546,14 +3549,23 @@ export default function piLoops(pi: ExtensionAPI) {
 	});
 	// Observed only: whose the next user messages are (the window tells the echo of a person row's
 	// send from the rest), and that pi is about to run something, so a person row handed over is not
-	// judged refused for a while yet. A turn row's custom message makes no input.
-	pi.on("input", async (e) => {
-		executor.inputSeen({ source: e.source, text: e.text, streamingBehavior: e.streamingBehavior }, Date.now());
+	// judged refused for a while yet. A turn row's custom message makes no input. A person's input
+	// answers a waiting goal.
+	pi.on("input", async (e, ctx) => {
+		if (executor.inputSeen({ source: e.source, text: e.text, streamingBehavior: e.streamingBehavior }, Date.now())) answerGoal(ctx);
 	});
+	/** A person's input is the answer a waiting goal waits for (answeredGoal): pursued again, and the turn it starts is judged when it settles. */
+	function answerGoal(ctx: ExtensionContext): void {
+		const resumed = goal && answeredGoal(goal);
+		if (!resumed) return;
+		persistGoal(ctx, resumed);
+		notifyOrLog(ctx, "[goal] your answer resumed the goal", "info");
+	}
 	pi.on("turn_start", async (_e, ctx) => fireHook({ event: "turn_start" }, ctx));
 	pi.on("turn_end", async (e, ctx) => fireHook({ event: "turn_end", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx));
 	pi.on("message_start", async (e, ctx) => {
-		executor.messageStarted(e.message, Date.now());
+		// The page's message for a conversation this terminal holds is a turn message, which makes no `input`.
+		if (executor.messageStarted(e.message, Date.now())) answerGoal(ctx);
 		await fireHook({ event: "message_start", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx);
 	});
 	pi.on("message_update", async (e, ctx) => fireHook({ event: "message_update", message_kind: messageKind(e.message), message_summary: messageSummary(e.message), assistant_event: (e.assistantMessageEvent as any)?.type }, ctx));

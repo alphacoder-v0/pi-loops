@@ -41,7 +41,7 @@ import { type RunList, STOPPED_BY_PERSON } from "./run-list.ts";
 import type { LoopJob, RunRecord } from "./store.ts";
 import { stamp } from "./schedule.ts";
 import { shortSessionId } from "./session-head.ts";
-import { type PersonSlot, type Slot, type TurnSlot, answerTurnEnd, claimOf, settleSlots } from "./window-claim.ts";
+import { type PersonSlot, type Slot, type TurnSlot, answerTurnEnd, claimOf, personInput, settleSlots } from "./window-claim.ts";
 
 /**
  * Whose turn the agent is in, and under what cap (design §4.4, §6.3): a pi-loops row, with the mode
@@ -523,7 +523,7 @@ export class WindowExecutor implements Executor {
 		if (!this.binding.hold(stamp(now))) return "lease-lost";
 		const mark = markFor(row);
 		const details: TurnDetails = { ...markDetails(mark), cap };
-		const slot: TurnSlot = { whose: "turn", mark, at: (this.ctx()?.isIdle() ?? true) ? "unstarted" : "held", cap, handed: canonicalJson(content), ...(answer ? { answer: true as const } : {}) };
+		const slot: TurnSlot = { whose: "turn", mark, at: (this.ctx()?.isIdle() ?? true) ? "unstarted" : "held", cap, handed: canonicalJson(content), ...(answer ? { answer: true as const } : {}), ...(!answer && row.source === "person" ? { person: true as const } : {}) };
 		this.slots.push(slot);
 		try {
 			this.pi.sendMessage({ customType: TURN_TYPE, content, display: true, details }, { triggerTurn: true, deliverAs: "followUp" });
@@ -624,23 +624,27 @@ export class WindowExecutor implements Executor {
 	 * message that starts from now on does not lift a row's cap (`messageStarted`). And every input
 	 * that is not our echo waits as someone else's message until its user message starts (`claimOf`),
 	 * so that a person row's mark is not written into it.
+	 *
+	 * Returns whether the input is a person's (`personInput`): the person's own, or our person row's
+	 * echo. An input pi refuses during a run never becomes a message, so it is no one's.
 	 */
-	inputSeen(input: Pick<InputEvent, "source" | "text" | "streamingBehavior">, now: number): void {
+	inputSeen(input: Pick<InputEvent, "source" | "text" | "streamingBehavior">, now: number): boolean {
 		this.slots = this.slots.map((slot) => (slot.whose === "person" && slot.phase.is === "pending" ? { ...slot, phase: { is: "pending", since: now } } : slot));
 		if (input.source === "extension") {
 			const ours = (slot: Slot): slot is PersonSlot => slot.whose === "person" && !slot.echoed && slot.phase.is !== "refused";
 			const echo = this.sending ? this.slots.filter(ours).at(-1) : this.slots.find((slot) => ours(slot) && slot.text !== "" && input.text.startsWith(slot.text));
 			if (echo) {
 				this.slots = this.slots.map((slot) => (slot === echo ? { ...echo, echoed: true } : slot));
-				return;
+				return personInput(input.source, echo);
 			}
 			this.foreign = true;
 		}
 		const behind = input.streamingBehavior;
 		// During a run, pi refuses a send with no delivery ("Agent is already processing") after its
 		// `input` (probe G11): it never becomes a message.
-		if (this.running && !behind) return;
+		if (this.running && !behind) return false;
 		this.slots.push({ whose: "other", from: input.source === "extension" ? "extension" : "person", text: input.text, ...(behind ? { behind } : {}) });
+		return personInput(input.source, undefined);
 	}
 
 	/**
@@ -657,8 +661,11 @@ export class WindowExecutor implements Executor {
 	 *   send (`inputSeen`). Whose the message is (`claimOf`) decides a person row's mark and a stop for
 	 *   it, and so whether a waiting input still keeps the cap.
 	 * - Any other message changes nothing.
+	 *
+	 * Returns whether the message is a person's input that made no `input` (`personInput`): the turn
+	 * message of a person row this window handed, the page's message for a conversation a terminal holds.
 	 */
-	messageStarted(message: unknown, now = Date.now()): void {
+	messageStarted(message: unknown, now = Date.now()): boolean {
 		const turn = turnOn(message);
 		const place = ++this.messagesThisRun;
 		const foreign = (): void => void (this.lastForeign = place);
@@ -683,7 +690,7 @@ export class WindowExecutor implements Executor {
 			else foreign();
 			this.abortedAtStart = slot?.stop ? generation(rowOf(slot.mark)) : undefined;
 			if (slot?.stop) this.ctx()?.abort();
-			return;
+			return !slot?.stop && personInput("extension", slot);
 		}
 		const role = (message as { role?: unknown } | undefined)?.role;
 		if (role === "custom") {
@@ -691,14 +698,14 @@ export class WindowExecutor implements Executor {
 			const mark = markOn({ type: "custom_message", details: (message as { details?: unknown }).details });
 			const ours = (message as { customType?: unknown }).customType === "pi-loops:trigger" && mark !== undefined && this.slots.some((slot) => slot.whose === "append" && slot.mark.id === mark.id && slot.mark.at === mark.at);
 			if (!ours) foreign();
-			return;
+			return false;
 		}
-		if (role !== "user") return;
+		if (role !== "user") return false;
 		const theirs = this.foreign || this.slots.some((slot) => slot.whose === "other" && slot.from === "extension");
 		if (!(this.current?.kind === "row" && theirs)) this.current = { kind: "person" };
 		this.slots = this.slots.map((slot) => (slot.whose === "person" && slot.phase.is === "pending" ? { ...slot, phase: { is: "pending", since: now } } : slot));
 		const text = userTextOf(message);
-		if (text === undefined) return;
+		if (text === undefined) return false;
 		const claim = claimOf(text, this.slots);
 		// A user message is the window's own only as the page message of a person row it handed.
 		if (claim.by !== "person") foreign();
@@ -707,9 +714,10 @@ export class WindowExecutor implements Executor {
 			if (claim.by === "other" && slot === claim.slot) return [];
 			return slot.whose === "person" && slot.phase.is === "opening" ? [{ ...slot, phase: { is: "queued" } }] : [slot];
 		});
-		if (claim.by !== "person") return;
+		if (claim.by !== "person") return false;
 		if (this.running) this.running = { ...this.running, requestId: claim.slot.mark.id };
 		if (claim.slot.stop) this.ctx()?.abort();
+		return false;
 	}
 
 	/**

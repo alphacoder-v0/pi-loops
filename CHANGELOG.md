@@ -70,6 +70,14 @@ All notable changes to pi-loops are documented here. The format follows
   still create enabled jobs; there, a `gate` argument is refused with `a gate needs a person`. A
   `jobs.json` and a `triggers.json` that 0.24.2 wrote have no proposals: there is nothing to
   convert. See "A proposed watch" in docs/loops.md and docs/triggers.md.
+- **A goal that waits on you resumes with your answer.** When the evaluator says only a person can
+  unblock the goal (`needs_person`), the goal is `waiting` instead of `paused`, and the wait costs no
+  continuation. The terminal says `[goal] waiting on you: <the question>. Answer here and the goal
+  goes on.` and the status line `goal: waiting`. Your next message in the conversation, from the
+  terminal or the page, resumes the goal (`[goal] your answer resumed the goal`), and its turn is
+  judged when it settles. Before, you had to type `/goal resume` after you answered. A goal that
+  `/goal pause`, Esc or the continuation limit paused still needs `/goal resume`. A goal that 0.24.2
+  paused is not converted. See docs/goal.md.
 - **A terminal asks about a proposal or a question of its conversation when a turn settles.** pi's
   selector shows each open question of the conversation, then each proposal, one at a time and
   once per pi process. Esc leaves it for `/inbox`, `/cron enable` or the page. See "A proposed
