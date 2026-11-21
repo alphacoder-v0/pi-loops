@@ -174,7 +174,8 @@ test("[M5b.3b] a yes to a question a window's scheduled turn asked runs in that 
 	assert.equal(w.find(besideId(question.id, "outcome")), undefined, "done files no news");
 	assert.deepEqual(w.stores.requests.list(sessionId), [], "the row is gone");
 	assert.equal(w.runs.all().length, 0);
-	assert.equal(w.stores.inbox.list().filter((f) => f.ask).length, 1, "no second question");
+	const asks = w.stores.inbox.list().filter((f) => f.ask);
+	assert.deepEqual(asks.map((f) => f.status), ["claimed", "new"], "the same call again is a second question (docs/design.md), open for the person");
 
 	await w.windowAnswers.tick(Date.now());
 	await w.piSettles();

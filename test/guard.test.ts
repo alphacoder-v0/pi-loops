@@ -174,6 +174,25 @@ test("[Q1] [asked-open] a question whose yes waits to run or runs is open: a lat
 	}
 });
 
+test("[Q1] [asked-open] the run a yes started is not told its own question is open: after its grant is used, the same call again files a new question (J13 step 4)", async () => {
+	const w = world();
+	const first = new GuardSeats().enter(sm("s1"), "/runs/s1.jsonl", { lane: LANE, origin: ORIGIN, cap: capOf({ cwd: "/proj" }) });
+	await guardCall(bash(PUSH), first.seat, w.deps);
+	const [question] = w.inbox.list();
+	const running = { ...question, status: "claimed", answered_by: "terminal", claimed_by: "s0", answer: { state: "started", run: { id: "ans-1", pid: 1, started_at: "2026-11-20T01:30:00.000Z" }, at: "2026-11-20T01:30:00.000Z" } } as Finding;
+	const grant = { finding: running.id, ask: running.ask!.id, call: running.ask!.call } as unknown as Grant;
+	const filed: string[] = [];
+	const deps: GuardDeps = { ...w.deps, inbox: { list: () => [running], fileOnce: (_entry, id) => (filed.push(id), Promise.resolve(running)) } };
+	const answer = new GuardSeats().enter(sm("s1"), "/runs/s1.jsonl", { lane: LANE, origin: ORIGIN, cap: capOf({ cwd: "/proj" }), grant });
+	assert.equal(await guardCall(bash(PUSH, { toolCallId: "call-2" }), answer.seat, deps), undefined, "the granted call runs");
+	const again = await guardCall(bash(PUSH, { toolCallId: "call-3" }), answer.seat, deps);
+	assert.match(again!.reason, /^asked a person:/, "the same call again is blocked and asked about");
+	assert.equal(filed.length, 1, "it files a new question: the person is asked about the second call");
+	assert.deepEqual([...guardTurn(answer.seat, [running], NOW).open.keys()], [], "its own question is not open to the run that answers it");
+	const other = new GuardSeats().enter(sm("s2"), "/runs/s2.jsonl", { lane: LANE, origin: ORIGIN, cap: capOf({ cwd: "/proj" }) });
+	assert.deepEqual([...guardTurn(other.seat, [running], NOW).open.values()], [running.ask!.id], "another run of the lane still finds it open");
+});
+
 test("[Q1] guardCall: a nested call is refused with the words of the guard before questions, and files nothing", async () => {
 	const w = world();
 	const { seat } = new GuardSeats().enter(sm("s1"), "/runs/s1.jsonl", { lane: LANE, origin: ORIGIN, cap: capOf({ cwd: "/proj" }) });

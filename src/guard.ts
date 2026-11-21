@@ -290,6 +290,9 @@ export function guardTurn(seat: GuardSeat | undefined, findings: readonly Findin
 	for (const f of seat ? findings : []) {
 		if (!f.ask || f.ask.lane !== seat!.lane) continue;
 		const key = callKey(f.ask.call.tool, f.ask.call.input_sha256);
+		// The run a yes started answers that question: once its grant is used, the same call again is a
+		// new question for the person, not one they are already asked.
+		if (f.id === seat!.seed.grant?.finding) continue;
 		if (questionOpen(f)) open.set(key, f.ask.id);
 		else if (f.status === "dismissed" && f.dismissed_at !== undefined && now - Date.parse(f.dismissed_at) < NO_HOLDS_MS) refused.set(key, f.dismissed_at.slice(0, 10));
 	}
