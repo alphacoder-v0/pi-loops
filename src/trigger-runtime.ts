@@ -308,6 +308,11 @@ export class TriggerRuntime {
 		return [...this.running.values()];
 	}
 
+	/** Whether a check of the project whose check lane is `lane` runs now: an answer of that lane does not resume a transcript beside it. */
+	checkRunningIn(lane: LaneId): boolean {
+		return [...this.running.values()].some((r) => checkLane(r.cwd) === lane);
+	}
+
 	/** Pushes waiting for a free slot: work that is late, not work that was lost. */
 	get pendingPushCount(): number {
 		return this.pending.size;

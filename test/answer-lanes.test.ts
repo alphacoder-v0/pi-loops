@@ -28,6 +28,8 @@ import type { LoopJob, RunRecord } from "../src/store.ts";
 import { openStores } from "../src/stores.ts";
 import { RUNTIME_RIDERS } from "../src/ticker.ts";
 import { checkLane, checkSessionDir, triggerSessionKey } from "../src/trigger-runtime.ts";
+import { buildPeriodicCheckTrigger } from "../src/triggers.ts";
+import { withFileLock } from "../src/lock.ts";
 import { tmp } from "./tmp.ts";
 
 const FAKE_MODEL = path.join(path.dirname(new URL(import.meta.url).pathname), "downstream", "fake-model.mjs");
@@ -40,14 +42,14 @@ const USAGE = { input: 1, output: 1, cost: 0.01, turns: 1 };
 const lines = (file: string): any[] => fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
 
 /** pi-loops in the background over a fresh loops directory, with `runner`. `tick` runs every rider of one tick, in order, at `now`. */
-function world(makeRunner: (inbox: ReturnType<typeof openStores>["inbox"]) => SubagentRunner, opts: { config?: string; isProjectTrusted?: (cwd: string) => boolean } = {}) {
+function world(makeRunner: (inbox: ReturnType<typeof openStores>["inbox"]) => SubagentRunner, opts: { config?: string; isProjectTrusted?: (cwd: string) => boolean; sessionsRoot?: (dir: string) => string } = {}) {
 	const dir = tmp("pi-loops-answer-lanes-");
 	const cwd = path.join(dir, "proj");
 	fs.mkdirSync(cwd, { recursive: true });
 	if (opts.config) fs.writeFileSync(path.join(dir, "config.toml"), opts.config);
 	const stores = openStores(dir);
 	const logs: string[] = [];
-	const host = createHostRuntime({ dir, stores, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: makeRunner(stores.inbox), mcpTools: () => [], log: (line) => void logs.push(line), ...(opts.isProjectTrusted ? { isProjectTrusted: opts.isProjectTrusted } : {}) });
+	const host = createHostRuntime({ dir, stores, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: makeRunner(stores.inbox), mcpTools: () => [], log: (line) => void logs.push(line), ...(opts.isProjectTrusted ? { isProjectTrusted: opts.isProjectTrusted } : {}), ...(opts.sessionsRoot ? { sessionsRoot: opts.sessionsRoot(dir) } : {}) });
 	const tick = async (now = Date.now()): Promise<void> => {
 		for (const name of RUNTIME_RIDERS) await host.riders[name](now, { startedAt: 0, tickMs: 30_000 });
 	};
@@ -88,7 +90,7 @@ async function standIn(dir: string, inbox: Parameters<Parameters<typeof world>[0
 		customTools: () => [],
 		isTrusted: () => false,
 		ownDir: tmp("pi-loops-own-"),
-		guard: { seats: new GuardSeats(), deps: { inbox, allowCommands: () => [], hop: 1, now: Date.now } },
+		guard: { seats: new GuardSeats(), deps: { inbox, allowCommands: () => [], now: Date.now } },
 	});
 	return { real, fake, modelLog };
 }
@@ -314,6 +316,115 @@ test("[answer-orphan] a claim of this process whose run left the list holds no l
 		assert.equal(s.answerCalls().length, 1, "it runs after its backoff");
 		assert.equal(w.find(finding.id)!.answer?.state, "done");
 	} finally {
+		await w.host.stop();
+	}
+});
+
+test("[answer-backoff] F1's backoff holds the yes: a tick before not_before starts nothing and says why it waits, a tick after it runs the yes once", async () => {
+	const s = scripted();
+	const w = world(() => s.runner);
+	try {
+		await w.stores.jobs.add(loopJob(w.cwd));
+		const finding = await yesTo(w, "the build is red");
+		const rowId = answerRowId(finding.id);
+		const t0 = Date.now();
+		// E4a was written and E4b threw: the claim is this process's, and its run is in no list.
+		w.stores.requests.update(LANE, rowId, { run: { id: rowId, pid: process.pid, started_at: stamp(t0 - 60_000), ...(procStart(process.pid) ? { procStart: procStart(process.pid) } : {}) } } as any);
+		await w.tick(t0);
+		const row = w.stores.requests.list(LANE).find((r) => r.id === rowId)!;
+		assert.deepEqual([row.run, row.attempts], [undefined, 1], "F1 counted the attempt");
+		const until = Date.parse(row.not_before!);
+		assert.ok(until > t0, "and wrote its backoff");
+
+		await w.tick(until - 1_000);
+		assert.equal(s.answerCalls().length, 0, "a tick before the backoff ends starts nothing");
+		const waiting = w.stores.requests.list(LANE).find((r) => r.id === rowId)!;
+		assert.deepEqual([waiting.run, waiting.waiting], [undefined, `backing off until ${row.not_before}`]);
+		assert.equal(w.find(finding.id)!.answer?.state, "pending");
+
+		await w.tick(until + 1_000);
+		s.release();
+		await w.host.drain(5_000);
+		assert.equal(s.answerCalls().length, 1, "it runs once the backoff ends");
+		assert.equal(w.find(finding.id)!.answer?.state, "done");
+	} finally {
+		await w.host.stop();
+	}
+});
+
+test("[answer-claim-recheck] a run of the loop that starts between the read before the locks and the claim holds the yes: E4 claims nothing beside it", async () => {
+	const s = scripted();
+	let loopStarted!: () => void;
+	const started = new Promise<void>((resolve) => (loopStarted = resolve));
+	let endLoop!: () => void;
+	const loopEnds = new Promise<void>((resolve) => (endLoop = resolve));
+	const runner: SubagentRunner = async (req) => {
+		if (req.prompt.includes("[Trigger ans-")) return s.runner(req);
+		loopStarted();
+		await loopEnds;
+		return { ok: true, exitCode: 0, timedOut: false, text: "", usage: USAGE };
+	};
+	const w = world(() => runner);
+	try {
+		await w.stores.jobs.add(loopJob(w.cwd));
+		const finding = await yesTo(w, "the build is red");
+		const rowId = answerRowId(finding.id);
+		// inbox.lock is held: the drain reads the lane, finds nothing that holds it, and waits for the lock.
+		let drained: Promise<unknown> | undefined;
+		await withFileLock(path.join(w.dir, "inbox.lock"), async () => {
+			drained = w.host.answerLanes.drain(parseLane(LANE)!, Date.now());
+			assert.equal(await w.host.loops.runNow(JOB), true);
+			await started;
+		});
+		await drained;
+		assert.equal(s.answerCalls().length, 0, "no answer runs beside the loop's run");
+		const row = w.stores.requests.list(LANE).find((r) => r.id === rowId)!;
+		assert.deepEqual([row.run, row.waiting], [undefined, "another run of the loop is going"], "the claim asked the lane again, and the row says why it waits");
+		assert.equal(w.find(finding.id)!.answer?.state, "pending");
+		endLoop();
+		await w.host.drain(5_000);
+		await w.tick();
+		s.release();
+		await w.host.drain(5_000);
+		assert.equal(s.answerCalls().length, 1, "it runs after the loop's run");
+	} finally {
+		endLoop();
+		await w.host.stop();
+	}
+});
+
+test("[answer-check-running] a yes to a check's finding waits while a check of its project runs, and runs once it ends", async () => {
+	const s = scripted();
+	let checkStarted!: () => void;
+	const started = new Promise<void>((resolve) => (checkStarted = resolve));
+	let endCheck!: () => void;
+	const checkEnds = new Promise<void>((resolve) => (endCheck = resolve));
+	const runner: SubagentRunner = async (req) => {
+		if (req.prompt.includes("[Trigger ans-")) return s.runner(req);
+		checkStarted();
+		await checkEnds;
+		return { ok: true, exitCode: 0, timedOut: false, text: "no match", usage: USAGE };
+	};
+	const w = world(() => runner);
+	try {
+		const lane = checkLane(w.cwd)!;
+		const rule = await w.stores.rules.add({ condition: "the deploy is stuck", action: "say so", cwd: w.cwd, fireOnce: false });
+		const finding = await w.stores.inbox.append({ source: "trigger:deploy-rule", text: "the deploy is stuck", run_id: "trace-1", cwd: w.cwd, kind: "news", lane });
+		assert.equal((await w.host.answers.say(finding.id, "yes", PERSON)).said, "Y1");
+		const check = w.host.triggers.handle(buildPeriodicCheckTrigger(w.cwd, 1), "sub_agent", [rule]);
+		await started;
+		await w.host.answerLanes.tick(Date.now());
+		assert.equal(s.answerCalls().length, 0, "the check's transcript is not resumed while a check of the project runs");
+		assert.equal(w.stores.requests.list(lane).find((r) => r.id === answerRowId(finding.id))?.waiting, "a check of this project is running");
+		endCheck();
+		await check;
+		await w.host.answerLanes.tick(Date.now());
+		s.release();
+		await w.host.drain(5_000);
+		assert.equal(s.answerCalls().length, 1, "it runs once the check ended");
+		assert.equal(w.find(finding.id)!.answer?.state, "done");
+	} finally {
+		endCheck();
 		await w.host.stop();
 	}
 });
@@ -661,6 +772,29 @@ test("[answer-conversation-gone] a deleted conversation's answer row is met as g
 		assert.ok(w.logs.some((line) => line.includes("1 queued request(s) for session") && line.includes("its conversation is gone")), "the rule's row is buried as before, and the answer row is not among them");
 		const audit = w.host.triggers.store.listAudit(20, (r) => r.type === "request").map((r) => [r.traceId, r.state]);
 		assert.ok(audit.some(([id, state]) => id === answerRowId(finding.id) && state === "stale"), "the answer row's exit is audited");
+	} finally {
+		await w.host.stop();
+	}
+});
+
+test("[answer-conversation-no-lease] a yes in a conversation whose lease was swept finds its file in pi's sessions directory: Y1, not a deleted conversation, and the background never meets it as gone", async () => {
+	const s = scripted();
+	const w = world(() => s.runner, { sessionsRoot: (dir) => path.join(dir, "pi-sessions") });
+	try {
+		const sm = SessionManager.create(w.cwd, path.join(w.dir, "pi-sessions", "--proj--"));
+		sm.appendModelChange("fake", "fake-model");
+		sm.appendMessage({ role: "user", content: "earlier", timestamp: Date.now() } as any);
+		const sessionId = sm.getSessionId();
+		aged(sm.getSessionFile()!);
+		assert.equal(new LeaseStore(w.dir).read(sessionId), undefined, "no lease names the conversation");
+		const finding = await w.stores.inbox.append({ source: "cron:remind", text: "the release notes are stale", run_id: "run-1", cwd: w.cwd, kind: "news", lane: sessionId });
+		const said = await w.host.answers.say(finding.id, "yes", PERSON);
+		assert.deepEqual([said.said, said.said === "Y1" && said.lane], ["Y1", sessionId], "the conversation is there: its file is in pi's sessions directory");
+		await w.tick();
+		await w.tick();
+		const answered = w.find(finding.id)!;
+		assert.equal(answered.answer?.state, "pending", "not met as a deleted conversation");
+		assert.deepEqual(w.stores.requests.list(sessionId).map((r) => r.id), [answerRowId(finding.id)], "its row waits");
 	} finally {
 		await w.host.stop();
 	}

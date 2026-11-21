@@ -33,9 +33,9 @@ import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxR
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { capRedacted, previewRedacted, redact, screenText } from "./redact.ts";
-import { CANCELLED_LINE, answerLine, answerWho, cancelRefusal, cardLines, cardOrigin, dismissOutcome, dismissTail, inboxCard, noQuestionLine, yesTerminalLine } from "./inbox-card.ts";
-import { type PersonAnswers, personAnswers } from "./answers.ts";
-import { type StepRefusal, answerRowId } from "./ask.ts";
+import { CANCELLED_LINE, answerLine, answerWho, cancelRefusal, cardLines, cardOrigin, clearLeftTail, dismissOutcome, dismissTail, inboxCard, noQuestionLine, yesTerminalLine } from "./inbox-card.ts";
+import { type PersonAnswers, conversationFile, personAnswers } from "./answers.ts";
+import { type StepRefusal, answerOpen, answerRowId } from "./ask.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { FRESH_RUNS_READ, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardLines, runCardsHere, runLine } from "./run-card.ts";
 import { type ShareMessage, renderShare, shareSummary, shareableMessages } from "./share.ts";
@@ -89,7 +89,7 @@ import { PI_LOOPS_VERSION } from "./version.ts";
 import { pidAlive } from "./lock.ts";
 import { shortSessionId } from "./session-head.ts";
 import { ruleLines as listRules, triggerStatusLines } from "./rule-lines.ts";
-import { projectLabel } from "./conversation-rows.ts";
+import { ConversationIndex, projectLabel } from "./conversation-rows.ts";
 
 interface ViewData {
 	title: string;
@@ -235,7 +235,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		// One set of seats for this process: a loop's or a check's dangerous call files a question in this inbox.
 		guard: {
 			seats: new GuardSeats(),
-			deps: { inbox: stores.inbox, allowCommands: () => config.allowCommands, hop: 1, now: Date.now, log: subagentLog },
+			deps: { inbox: stores.inbox, allowCommands: () => config.allowCommands, now: Date.now, log: subagentLog },
 		},
 		// The daily cap, read while a run is in flight and not only before it is dispatched. Lazy: the
 		// scheduler is built with this runner, and asking it anything before then would be a cycle.
@@ -652,7 +652,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	/** A person's yes, no, clear and cancel typed here (src/answers.ts). The rows it appends are signed by this window. */
-	const answers: PersonAnswers = personAnswers({ inbox: stores.inbox, requests, jobs: stores.jobs, audit: stores.rules, sessionFile: (id) => new LeaseStore(dir).read(id)?.sessionFile, self: createdBy, now: Date.now, log: (line) => log.info(line) });
+	const answerLeases = new LeaseStore(dir);
+	const answers: PersonAnswers = personAnswers({ inbox: stores.inbox, requests, jobs: stores.jobs, audit: stores.rules, sessionFile: conversationFile(answerLeases, new ConversationIndex(path.join(getAgentDir(), "sessions"))), self: createdBy, now: Date.now, log: (line) => log.info(line) });
 
 	function noteBinding(outcome: AcquireOutcome): void {
 		if (outcome.outcome === "acquired" && outcome.tookFromPid) log.info(`took session ${shortSessionId(outcome.lease.sessionId)} from dead pid ${outcome.tookFromPid}`);
@@ -808,7 +809,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** Whether anything waits on the host: a pause with nothing to run is not news. */
 	const hostHasWork = (): boolean => {
 		const work = automationCounts();
-		return !!(work.loops || work.rules || work.pushServers || work.closedSessionJobs || work.closedMailboxes);
+		return !!(work.loops || work.rules || work.pushServers || work.closedSessionJobs || work.closedMailboxes || work.openAnswers);
 	};
 	let hostChannelBroken: string | undefined;
 	/** The pause reason last said to the person, so a pause is announced once. */
@@ -893,7 +894,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	let shownHostPid: number | undefined;
 
 	/** What there is for the host to run, as `ensureHost` counts it. */
-	function automationCounts(): { loops: number; rules: number; pushServers: number; closedSessionJobs: number; closedMailboxes: number } {
+	function automationCounts(): { loops: number; rules: number; pushServers: number; closedSessionJobs: number; closedMailboxes: number; openAnswers: number } {
 		// Each store on its own: a damaged rules file stopped the loops too, because nothing then started
 		// the background process.
 		const rules = loadOrNone(() => triggers.store.load()).filter((r) => r.enabled).length;
@@ -904,6 +905,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			pushServers: hostPushWork(loadMcpConfigFiles({ dir, projectTrusted: false }).servers, rules),
 			closedSessionJobs: jobs.filter((j) => !j.stateful && closedHere(j.sessionId)).length,
 			closedMailboxes: requests.sessions().filter((id) => closedHere(id)).length,
+			// A yes that waits to run, or runs: only pi-loops in the background runs it.
+			openAnswers: loadOrNone(() => stores.inbox.list()).filter(answerOpen).length,
 		};
 	}
 
@@ -2151,7 +2154,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							ctx.ui.notify(said.said === "nothing" ? refusedLine(target, said.refusal) : `inbox entry ${target}: a yes came to ${said.said}`, "warning");
 							return;
 						}
-						ctx.ui.notify(yesTerminalLine(said, whoOf(said.finding, said.said === "Y1" ? said.lane : said.finding.lane)), said.said === "Y1" ? "info" : "warning");
+						ctx.ui.notify(yesTerminalLine(said, whoOf(said.finding, said.said === "Y1" ? said.lane : said.finding.lane), !!liveHostRecord()), said.said === "Y1" ? "info" : "warning");
 						return;
 					}
 					case "cancel": {
@@ -2179,9 +2182,11 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "clear": {
 						// What was listed is what is dismissed: with loops in several checkouts, a clear that
 						// also wiped four other projects' unread findings would be unrecoverable.
-						const n = (await answers.clear(everywhere ? undefined : (e) => belongsToProject(e, session.cwd, sameProject), { by: "terminal", session: rowAddress().sessionId })).length;
+						const listed = (e: InboxEntry): boolean => everywhere || belongsToProject(e, session.cwd, sameProject);
+						const n = (await answers.clear(listed, { by: "terminal", session: rowAddress().sessionId })).length;
 						refreshBadge();
-						ctx.ui.notify(`dismissed ${n} inbox entr${n === 1 ? "y" : "ies"} in ${where}`, "info");
+						const left = stores.inbox.listNew().filter((e) => e.ask && listed(e)).length;
+						ctx.ui.notify(`dismissed ${n} inbox entr${n === 1 ? "y" : "ies"} in ${where}${clearLeftTail(left)}`, "info");
 						return;
 					}
 					default:

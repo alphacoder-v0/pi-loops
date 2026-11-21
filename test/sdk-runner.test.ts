@@ -60,7 +60,7 @@ test("a sub-session never loads a second copy of pi-loops (own dir filtered, sym
 
 test("the sub-session gate blocks dangerous commands and lets ordinary ones through", async () => {
 	const blocked: string[] = [];
-	const guard = subagentGuardExtension(new GuardSeats(), { inbox: { list: () => [], fileOnce: () => Promise.reject(new Error("no seat files nothing")) }, allowCommands: () => [], hop: 1, now: Date.now, log: (m) => blocked.push(m) });
+	const guard = subagentGuardExtension(new GuardSeats(), { inbox: { list: () => [], fileOnce: () => Promise.reject(new Error("no seat files nothing")) }, allowCommands: () => [], now: Date.now, log: (m) => blocked.push(m) });
 	const handler = guard.handlers.get("tool_call")![0];
 	const call = (toolName: string, input: unknown) => handler({ type: "tool_call", toolCallId: "t1", toolName, input }, {} as any) as Promise<any>;
 

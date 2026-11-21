@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { questionFinding } from "../src/ask.ts";
 import { type InboxEntry } from "../src/inbox.ts";
-import { CANCELLED_LINE, DISMISS_CHIPS, answerLine, answerWho, cancelRefusal, cardLine, cardLines, cardOrigin, cardsOf, claimLine, dismissLine, dismissOutcome, dismissTail, inboxCard, noQuestionLine, shellClaimOfQuestion, splitFinding, yesPageLine, yesTerminalLine } from "../src/inbox-card.ts";
+import { CANCELLED_LINE, DISMISS_CHIPS, answerLine, answerWho, cancelRefusal, clearLeftTail, cardLine, cardLines, cardOrigin, cardsOf, claimLine, dismissLine, dismissOutcome, dismissTail, inboxCard, noQuestionLine, shellClaimOfQuestion, splitFinding, yesPageLine, yesTerminalLine } from "../src/inbox-card.ts";
 import type { Row } from "../src/requests.ts";
 import { screenText } from "../src/redact.ts";
 
@@ -239,17 +239,30 @@ test("a cancel that comes too late is refused in design 6.2's words", () => {
 test("a yes and a no say what design 6.1 and 6.2 say, on each surface", () => {
 	const news = entry({ status: "claimed" });
 	const asked = entry({ status: "claimed", ask: QUESTION });
-	assert.equal(yesTerminalLine({ said: "Y1", finding: news }, "nightly"), "claimed: nightly picks this up in the run that reported it, in the background. A card comes here when it ends.");
-	assert.equal(yesTerminalLine({ said: "Y1", finding: asked }, "nightly"), "approved: nightly resumes the run that asked, with this one command allowed. A card comes here when it ends.");
-	assert.equal(yesTerminalLine({ said: "Y2", finding: news, why: "the loop was removed" }, "nightly"), "the loop was removed; nothing runs");
-	assert.equal(yesTerminalLine({ said: "Y2", finding: news, why: "the conversation was deleted" }, "nightly"), "the conversation was deleted; nothing runs");
+	assert.equal(yesTerminalLine({ said: "Y1", finding: news }, "nightly", true), "claimed: nightly picks this up in the run that reported it, in the background. A card comes here when it ends.");
+	assert.equal(yesTerminalLine({ said: "Y1", finding: asked }, "nightly", true), "approved: nightly resumes the run that asked, with this one command allowed. A card comes here when it ends.");
+	assert.equal(yesTerminalLine({ said: "Y2", finding: news, why: "the loop was removed" }, "nightly", true), "the loop was removed; nothing runs");
+	assert.equal(yesTerminalLine({ said: "Y2", finding: news, why: "the conversation was deleted" }, "nightly", false), "the conversation was deleted; nothing runs", "a yes that runs nothing waits for nothing");
 	assert.equal(yesPageLine({ said: "Y1", finding: news }, "nightly", true), "Running in the background, in the run that reported it.");
 	assert.equal(yesPageLine({ said: "Y1", finding: news }, "nightly", false), "Running in the background. The run's transcript is gone, so nightly starts from the finding's text.");
 	assert.equal(yesPageLine({ said: "Y1", finding: { ...asked, answered_by: "page", answer: { state: "pending", at: AT } } }, "nightly", true), "Waiting to run", "a question shows its state at once");
 	assert.equal(yesPageLine({ said: "Y2", finding: news, why: "the loop was removed" }, "nightly", true), "Not run (the loop was removed)");
 	assert.equal(noQuestionLine("terminal", "nightly"), "said no: nightly is told why on its next run; the same command is refused for 14 days");
 	assert.equal(noQuestionLine("page", "nightly"), "You said no. nightly is told on its next run, and the same command is refused for 14 days.");
-	assert.deepEqual(shellClaimOfQuestion("inb-3f2a9c1d", "nightly"), ["claimed inb-3f2a9c1d. This finding is a question, and a claim from a shell allows no command:", "nothing runs. nightly asks again when it next needs the command; say yes to that in pi (/inbox)", "or on the page."]);
+	assert.equal(shellClaimOfQuestion("inb-3f2a9c1d", "nightly"), "inbox entry inb-3f2a9c1d is a question from nightly, and a claim from a shell allows no command: answer it on the page or in pi with /inbox");
+});
+
+test("[yes-waits] a yes said while pi-loops is not running in the background says it runs when pi-loops does", () => {
+	const news = entry({ status: "claimed" });
+	const asked = entry({ status: "claimed", ask: QUESTION });
+	assert.equal(yesTerminalLine({ said: "Y1", finding: news }, "nightly", false), "claimed: nightly picks this up in the run that reported it, in the background. It runs when pi-loops runs in the background. A card comes here when it ends.");
+	assert.equal(yesTerminalLine({ said: "Y1", finding: asked }, "nightly", false), "approved: nightly resumes the run that asked, with this one command allowed. It runs when pi-loops runs in the background. A card comes here when it ends.");
+});
+
+test("[clear] /inbox clear says how many questions it left, and nothing when it left none", () => {
+	assert.equal(clearLeftTail(0), "");
+	assert.equal(clearLeftTail(1), "; left 1 question for you to answer: /inbox claim <n> or /inbox dismiss <n>");
+	assert.equal(clearLeftTail(3), "; left 3 questions for you to answer: /inbox claim <n> or /inbox dismiss <n>");
 });
 
 test("who picks up a yes: the loop by its name, the check of the project, the job of a conversation, else the conversation", () => {

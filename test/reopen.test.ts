@@ -120,7 +120,7 @@ function guardedRunner(root: string, model: Awaited<ReturnType<typeof standIn>>,
 		customTools: () => [],
 		isTrusted: () => false,
 		ownDir: tmp("pi-loops-own-"),
-		guard: { seats, deps: { inbox, allowCommands: () => [], hop: 1, now: Date.now } },
+		guard: { seats, deps: { inbox, allowCommands: () => [], now: Date.now } },
 	});
 	return { runner, inbox, dropParentModel: () => (parentModel = undefined) };
 }

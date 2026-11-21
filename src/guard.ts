@@ -7,7 +7,7 @@
  * it with no SDK. `GuardSeats` finds a run's place in the guard by its session file: the guard is
  * one handler per loaded extension set, shared by every run of a directory.
  */
-import { type AskOrigin, type Call, ASK_COMMAND_MAX_CHARS, ASKS_OPEN_PER_LANE, ASKS_PER_TURN, type Grant, NO_HOLDS_MS, type ResolvedCap, callKey, inputHash, limitNames, questionFinding } from "./ask.ts";
+import { type AskOrigin, type Call, ASK_COMMAND_MAX_CHARS, ASKS_OPEN_PER_LANE, ASKS_PER_TURN, type Grant, NO_HOLDS_MS, type ResolvedCap, callKey, inputHash, questionFinding, questionOpen } from "./ask.ts";
 import { dangerousCommandReason, pathToolReason } from "./danger.ts";
 import type { Inbox, InboxEntry as Finding } from "./inbox.ts";
 import { cardText } from "./redact.ts";
@@ -28,18 +28,13 @@ export interface ToolCallFacts {
 
 /** What `judgeCall` is given for the lane the turn runs in (design 3.1, without `repo`). */
 export interface GuardTurn {
-	/** The mode of the row in force. A background run is always unattended. */
-	unattended: boolean;
-	hop: number;
-	tools?: readonly string[];
-	builtinTools?: readonly string[];
 	/** The turn writes a session file that a later row can open, and it has a lane. */
 	resumable: boolean;
 	/** The lane the turn runs in; absent for a turn with no seat (a checker). The two maps are this lane's. */
 	lane?: LaneId;
 	/** The one call this turn admits, until it is used. */
 	granted?: Grant;
-	/** `callKey` to ask id, from this lane's `new` questions. */
+	/** `callKey` to ask id, from this lane's open questions (`questionOpen`): `new`, or with a yes that waits to run or runs. */
 	open: ReadonlyMap<string, string>;
 	/** A no that holds: `callKey` to the date of the no, from this lane's questions dismissed less than `NO_HOLDS_MS` ago. */
 	refused: ReadonlyMap<string, string>;
@@ -240,21 +235,21 @@ export class GuardSeats {
 	}
 }
 
-/** The view of one lane's questions that `judgeCall` reads. Pure. */
-export function guardTurn(seat: GuardSeat | undefined, findings: readonly Finding[], hop: number, now: number): GuardTurn {
+/**
+ * The view of one lane's questions that `judgeCall` reads. Pure. A question with a yes that waits to
+ * run or runs is open: a later run of the lane that makes the same call is told it is asked, and no
+ * second question is filed beside the yes.
+ */
+export function guardTurn(seat: GuardSeat | undefined, findings: readonly Finding[], now: number): GuardTurn {
 	const open = new Map<string, string>();
 	const refused = new Map<string, string>();
 	for (const f of seat ? findings : []) {
 		if (!f.ask || f.ask.lane !== seat!.lane) continue;
 		const key = callKey(f.ask.call.tool, f.ask.call.input_sha256);
-		if (f.status === "new") open.set(key, f.ask.id);
+		if (questionOpen(f)) open.set(key, f.ask.id);
 		else if (f.status === "dismissed" && f.dismissed_at !== undefined && now - Date.parse(f.dismissed_at) < NO_HOLDS_MS) refused.set(key, f.dismissed_at.slice(0, 10));
 	}
 	return {
-		unattended: true,
-		hop,
-		...(seat && limitNames(seat.cap.tools) ? { tools: limitNames(seat.cap.tools) } : {}),
-		...(seat && limitNames(seat.cap.builtinTools) ? { builtinTools: limitNames(seat.cap.builtinTools) } : {}),
 		resumable: seat !== undefined,
 		...(seat ? { lane: seat.lane } : {}),
 		...(seat?.seed.grant && !seat.grantUsed ? { granted: seat.seed.grant } : {}),
@@ -269,7 +264,6 @@ export interface GuardDeps {
 	allowCommands(): readonly string[];
 	/** The loops directory of this process; `defaultLoopsDir()` when absent. */
 	loopsDir?: string;
-	hop: number;
 	now(): number;
 	log?(message: string): void;
 }
@@ -290,8 +284,8 @@ export async function guardCall(call: ToolCallFacts, seat: GuardSeat | undefined
 	let verdict: CallVerdict;
 	try {
 		const cfg: GuardPolicy = { allowCommands: deps.allowCommands(), loopsDir: deps.loopsDir ?? defaultLoopsDir() };
-		verdict = judgeCall(call, guardTurn(seat, [], deps.hop, deps.now()), cfg);
-		if (verdict.kind !== "allow" && verdict.kind !== "granted") verdict = judgeCall(call, guardTurn(seat, seat ? deps.inbox.list() : [], deps.hop, deps.now()), cfg);
+		verdict = judgeCall(call, guardTurn(seat, [], deps.now()), cfg);
+		if (verdict.kind !== "allow" && verdict.kind !== "granted") verdict = judgeCall(call, guardTurn(seat, seat ? deps.inbox.list() : [], deps.now()), cfg);
 	} catch (err: any) {
 		return block("the guard could not decide", refusedMessage("the guard could not decide", `the guard failed (${err?.message ?? err})`));
 	}

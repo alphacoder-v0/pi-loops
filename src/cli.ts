@@ -24,7 +24,8 @@ import { LeaseStore, procStart, sessionFileName } from "./lease.ts";
 import { RequestStore } from "./requests.ts";
 import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
 import { CANCELLED_LINE, answerWho, cancelRefusal, cardLine, cardOrigin, inboxCard, shellClaimOfQuestion } from "./inbox-card.ts";
-import { type PersonAnswers, personAnswers } from "./answers.ts";
+import { type PersonAnswers, conversationFile, personAnswers } from "./answers.ts";
+import { ConversationIndex } from "./conversation-rows.ts";
 import { sameProject } from "./paths.ts";
 import { crashPaused, crashPauseText, ensureHost, HOST_LOG, hostCommand, hostServiceAlive, LEAVE_WAIT_MS, readHostService, RESTART_WAIT_LINE, readSpawnLog, removeHostService, type EnsureHostOptions, type HostServiceRecord } from "./host-control.ts";
 import { loadConfig, pageBindPort } from "./config.ts";
@@ -459,7 +460,7 @@ const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "start",
  * types are fixed there, and `test/downstream/inbox.sh` reads them back with jq. What is not fixed:
  * the plain text, which is for a person at a prompt. A claim here marks the finding and stops,
  * since there is no session to hand it to; the caller is the one who acts on it (YC: a claim from a
- * shell approves no command and runs nothing). A cancel takes back a yes given in pi or on the page
+ * shell approves no command and runs nothing, and a question refuses it). A cancel takes back a yes given in pi or on the page
  * while it waits.
  */
 async function inboxCommand(positional: string[], opts: { all: boolean; json: boolean; reason?: string | true }, cwd: string, loopsDir: string, out: (line: string) => void): Promise<number> {
@@ -523,16 +524,13 @@ async function inboxCommandBody(positional: string[], opts: { all: boolean; json
 		const said = await shellAnswers(loopsDir).say(entry.id, sub === "claim" ? "yes" : "no", { by: "cli" }, sub === "dismiss" && opts.reason ? { reason: opts.reason } : {});
 		if (said.said === "nothing") {
 			const refusal = said.refusal;
+			if (refusal.refused === "question" && entry.ask) return fail(shellClaimOfQuestion(entry.id, answerWho(entry, entry.ask.lane, (id) => names.get(id))));
 			if (refusal.refused === "already") return fail(`inbox entry ${entry.id} is already ${refusal.status}`);
 			return fail(refusal.refused === "missing" ? `inbox entry ${entry.id} is gone` : `inbox entry ${entry.id} is already answered`);
 		}
 		const updated = said.finding;
 		if (opts.json) {
 			out(JSON.stringify({ finding: findingJson(updated) }));
-			return 0;
-		}
-		if (said.said === "YC" && updated.ask) {
-			for (const line of shellClaimOfQuestion(updated.id, answerWho(updated, updated.ask.lane, (id) => names.get(id)))) out(line);
 			return 0;
 		}
 		// The caller acts on the finding, so the hand-over shows it: the finding's one line from
@@ -554,7 +552,7 @@ function shellAnswers(loopsDir: string): PersonAnswers {
 		requests: new RequestStore(loopsDir),
 		jobs: new JobStore(loopsDir),
 		audit: new TriggerStore(loopsDir),
-		sessionFile: (id) => leases.read(id)?.sessionFile,
+		sessionFile: conversationFile(leases, new ConversationIndex(path.join(piAgentDir(), "sessions"))),
 		self: () => ({ pid: process.pid, instance: "cli", procStart: procStart(process.pid), version: PI_LOOPS_VERSION }),
 		now: Date.now,
 		log: () => undefined,

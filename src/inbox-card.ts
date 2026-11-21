@@ -121,10 +121,15 @@ export function ruleResultText(text: string): string {
  * src/ask.ts writes, with who asks as `answerWho` names it. Screened, redacted and on one line, as
  * any card text is.
  */
+/** A question's headline, from its `ask`: what a card, the activity strip and a notification show. Never cut from the finding's text. */
+export function questionHeadline(ask: NonNullable<InboxEntry["ask"]>): string {
+	return cardText(ask.title) || "a run asks";
+}
+
 function questionParts(entry: InboxEntry, ask: NonNullable<InboxEntry["ask"]>, ctx: CardContext): Pick<InboxCard, "headline" | "waits" | "ifNot" | "question"> {
 	const { tool, command, reason } = ask.call;
 	return {
-		headline: cardText(ask.title) || "a run asks",
+		headline: questionHeadline(ask),
 		question: { tool: cardText(tool), ...(command !== undefined ? { command: cardText(command) } : {}), reason: cardText(reason) },
 		waits: `${answerWho(entry, ask.lane, ctx.loopName)} went on without it`,
 		ifNot: "it stays undone",
@@ -319,15 +324,26 @@ export function cancelRefusal(refusal: StepRefusal): string {
 	return "it has no queued answer to cancel";
 }
 
+/** What a Y1 adds when pi-loops is not running in the background: only that process runs a yes. */
+export const YES_WAITS_FOR_BACKGROUND = "It runs when pi-loops runs in the background.";
+
 /**
  * What a terminal prints after a yes (design 6.1, 6.2). Y1 on a question: the run that asked
  * resumes with the one call allowed. Y1 on any other finding: the run that reported it picks it up.
- * Y2: why nothing runs.
+ * Y2: why nothing runs. `background`: pi-loops runs in the background now; when it does not, a Y1
+ * says that the yes runs once it does.
  */
-export function yesTerminalLine(said: { said: "Y1"; finding: InboxEntry } | { said: "Y2"; finding: InboxEntry; why: string }, who: string): string {
+export function yesTerminalLine(said: { said: "Y1"; finding: InboxEntry } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, background: boolean): string {
 	if (said.said === "Y2") return `${said.why}; nothing runs`;
-	if (said.finding.ask) return `approved: ${who} resumes the run that asked, with this one command allowed. A card comes here when it ends.`;
-	return `claimed: ${who} picks this up in the run that reported it, in the background. A card comes here when it ends.`;
+	const waits = background ? "" : ` ${YES_WAITS_FOR_BACKGROUND}`;
+	if (said.finding.ask) return `approved: ${who} resumes the run that asked, with this one command allowed.${waits} A card comes here when it ends.`;
+	return `claimed: ${who} picks this up in the run that reported it, in the background.${waits} A card comes here when it ends.`;
+}
+
+/** What `/inbox clear` adds when it left questions: a clear is no answer to a question, so each waits for its own yes or no. */
+export function clearLeftTail(questions: number): string {
+	if (!questions) return "";
+	return `; left ${questions} question${questions === 1 ? "" : "s"} for you to answer: /inbox claim <n> or /inbox dismiss <n>`;
 }
 
 /**
@@ -348,7 +364,7 @@ export function noQuestionLine(surface: "terminal" | "page", who: string): strin
 	return surface === "terminal" ? `said no: ${who} is told why on its next run; the same command is refused for 14 days` : `You said no. ${who} is told on its next run, and the same command is refused for 14 days.`;
 }
 
-/** What the CLI prints after a claim of a question (design 6.1): a claim from a shell allows no command. */
-export function shellClaimOfQuestion(id: string, who: string): string[] {
-	return [`claimed ${id}. This finding is a question, and a claim from a shell allows no command:`, `nothing runs. ${who} asks again when it next needs the command; say yes to that in pi (/inbox)`, "or on the page."];
+/** Why the CLI refuses a claim of a question (design 6.1): a claim from a shell allows no command, so the question stays open for a person to answer where a yes can run it. */
+export function shellClaimOfQuestion(id: string, who: string): string {
+	return `inbox entry ${id} is a question from ${who}, and a claim from a shell allows no command: answer it on the page or in pi with /inbox`;
 }

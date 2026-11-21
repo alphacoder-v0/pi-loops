@@ -26,7 +26,7 @@ const grantOf = (command: string, reason = PUSH_REASON): Grant => ({ finding: "i
 /** A run's own SessionManager, as the guard sees it: an object with its session id. */
 const sm = (id: string) => ({ getSessionId: () => id });
 const capOf = (declared: DeclaredCap): ResolvedCap => resolveCap(declared, 900_000);
-const turn = (over: Partial<GuardTurn> = {}): GuardTurn => ({ unattended: true, hop: 1, resumable: true, lane: LANE, open: new Map(), refused: new Map(), asked: 0, ...over });
+const turn = (over: Partial<GuardTurn> = {}): GuardTurn => ({ resumable: true, lane: LANE, open: new Map(), refused: new Map(), asked: 0, ...over });
 
 test("[Q1] judgeCall: the policy passes a call, whatever the inbox says", () => {
 	assert.deepEqual(judgeCall(bash("ls -la"), turn(), cfg), { kind: "allow" });
@@ -97,13 +97,13 @@ test("guardTurn: one lane's new questions and the nos of the last 14 days, and t
 	];
 	const seats = new GuardSeats();
 	const { seat } = seats.enter(sm("s"), "/s.jsonl", { lane: LANE, origin: ORIGIN, cap: capOf({ cwd: "/proj", tools: ["bash"] }), grant: grantOf(PUSH) });
-	const t = guardTurn(seat, findings, 1, NOW);
+	const t = guardTurn(seat, findings, NOW);
 	assert.deepEqual([...t.open], [[callKey("bash", inputHash({ command: "a" })), "ask-1"]], "another lane's question and a claimed one are not open here");
 	assert.deepEqual([...t.refused], [[callKey("bash", inputHash({ command: "c" })), "2026-11-15"]], "a no older than 14 days no longer holds");
-	assert.deepEqual([t.resumable, t.lane, t.tools, t.granted?.ask], [true, LANE, ["bash"], "ask-granted"]);
+	assert.deepEqual([t.resumable, t.lane, t.granted?.ask], [true, LANE, "ask-granted"]);
 	seat.grantUsed = true;
-	assert.equal(guardTurn(seat, findings, 1, NOW).granted, undefined, "a used grant admits nothing");
-	const none = guardTurn(undefined, findings, 1, NOW);
+	assert.equal(guardTurn(seat, findings, NOW).granted, undefined, "a used grant admits nothing");
+	const none = guardTurn(undefined, findings, NOW);
 	assert.deepEqual([none.resumable, none.lane, none.open.size, none.refused.size], [false, undefined, 0, 0], "no seat: no lane, nothing read");
 });
 
@@ -155,6 +155,24 @@ test("[Q1] guardCall: a blocked call files one question, with the derived id and
 	await guardCall(bash(PUSH, { toolCallId: "call-1" }), seat, w.deps);
 	assert.equal(w.inbox.list().length, 1, "a second block of the same call in the same lane files no second question");
 	assert.deepEqual(leave(), { asked: [ask] }, "and it is counted once");
+});
+
+test("[Q1] [asked-open] a question whose yes waits to run or runs is open: a later run of the lane that makes the same call is told it is asked, and files no second question", async () => {
+	const w = world();
+	const first = new GuardSeats().enter(sm("s1"), "/runs/s1.jsonl", { lane: LANE, origin: ORIGIN, cap: capOf({ cwd: "/proj" }) });
+	await guardCall(bash(PUSH), first.seat, w.deps);
+	const [question] = w.inbox.list();
+	const claim = { id: "ans-1", pid: 1, started_at: "2026-11-20T01:30:00.000Z" };
+	for (const answer of [{ state: "pending", at: "2026-11-20T01:00:00.000Z" }, { state: "started", run: claim, at: "2026-11-20T01:30:00.000Z" }]) {
+		const yes = { ...question, status: "claimed", answered_by: "terminal", claimed_by: "s0", answer } as Finding;
+		const filed: string[] = [];
+		const deps: GuardDeps = { ...w.deps, inbox: { list: () => [yes], fileOnce: (_entry, id) => (filed.push(id), Promise.resolve(yes)) } };
+		const later = new GuardSeats().enter(sm("s2"), "/runs/s2.jsonl", { lane: LANE, origin: ORIGIN, cap: capOf({ cwd: "/proj" }) });
+		const out = await guardCall(bash(PUSH, { toolCallId: "call-2" }), later.seat, deps);
+		assert.match(out!.reason, /^asked a person:/, `${answer.state}: the later run is told it is asked`);
+		assert.deepEqual([filed, later.leave().asked], [[], []], `${answer.state}: no second question beside the yes`);
+		assert.deepEqual([...guardTurn(later.seat, [yes], NOW).open.values()], [question.ask!.id], `${answer.state}: the question is open`);
+	}
 });
 
 test("[Q1] guardCall: a nested call is refused with the words of the guard before questions, and files nothing", async () => {

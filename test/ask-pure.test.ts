@@ -1,9 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { BESIDE, PROTOCOL } from "./answer-protocol.ts";
 import {
 	ANSWER_STEPS,
-	BESIDE,
-	PROTOCOL,
 	WHY,
 	type Answer,
 	type AnswerClaim,
@@ -41,7 +40,7 @@ import {
 	readAskFields,
 	repairRows,
 } from "../src/ask.ts";
-import { ASKS_OPEN_PER_LANE, answerPrompt, askedLines } from "../src/ask.ts";
+import { ASKS_OPEN_PER_LANE, answerPrompt, askedLines, waitingLanes } from "../src/ask.ts";
 import { type InboxEntry as Finding, findingId } from "../src/inbox.ts";
 import type { ResolvedCap } from "../src/ask.ts";
 import { BACKOFF_MS } from "../src/backoff.ts";
@@ -348,6 +347,13 @@ test("[F1] a dead claim beside pending counts an attempt with the backoff; the t
 	assert.ok(dead.case === "F1-dead" && dead.write.set.answer?.state === "not_run" && dead.write.set.answer.why === WHY.notStarted);
 });
 
+test("[F1] [answer-backoff] a queued yes whose row backs off holds until not_before, then starts", () => {
+	const backing = (until: string): Row => ({ ...queued(), attempts: 1, not_before: until });
+	assert.deepEqual(meetAnswerRow(backing("2026-11-20T11:00:30.000+08:00"), at("pending"), facts()), { case: "hold", why: "backing off until 2026-11-20T11:00:30.000+08:00" });
+	assert.equal(meetAnswerRow(backing(LATER), at("pending"), facts()).case, "E4", "at not_before it starts");
+	assert.equal(meetAnswerRow(backing("2026-11-20T11:00:30.000+08:00"), at("pending"), facts({ proof: { ask: askId(SID, CALL.tool_call_id), check: "no-call" } })).case, "E3", "the backoff holds E4 only");
+});
+
 test("[F2] a dead claim beside started with that claim closes the run", () => {
 	assert.deepEqual(meetAnswerRow(claimed(), at("started"), facts()), { case: "F2" });
 });
@@ -407,7 +413,8 @@ test("decideSay: a yes is Y1 with its row, Y2 with no lane, YC from the cli; a n
 	assert.ok(said.step === "Y1" && said.write.set.lane === LOOP && said.row.id === answerRowId(ID) && said.row.payload?.requested_by === CONV);
 	const nowhere = decideSay(question(), "yes", { by: "terminal", session: CONV }, { there: false, why: WHY.nowhere }, { at: LATER, self: SELF });
 	assert.ok(nowhere.step === "Y2" && nowhere.why === WHY.nowhere);
-	assert.equal(decideSay(question(), "yes", { by: "cli" }, fact, { at: LATER, self: SELF }).step, "YC");
+	assert.deepEqual(decideSay(question(), "yes", { by: "cli" }, fact, { at: LATER, self: SELF }), { step: "none", refusal: { refused: "question" } }, "a claim from the command line allows no command: a question is refused, and stays new");
+	assert.equal(decideSay(question({ ask: undefined }), "yes", { by: "cli" }, fact, { at: LATER, self: SELF }).step, "YC");
 	const no = decideSay(question(), "no", { by: "page", session: CONV }, fact, { at: LATER, self: SELF, reason: "risky" });
 	assert.ok(no.step === "N1" && no.row === undefined && no.write.set.dismiss_reason === "risky");
 	assert.deepEqual(decideSay(at("pending"), "yes", { by: "page", session: CONV }, fact, { at: LATER, self: SELF }), { step: "none", refusal: { refused: "already", status: "claimed", by: CONV } });
@@ -433,6 +440,10 @@ test("closeOutcome: done needs a run that ended ok and, for a question, a used g
 	assert.deepEqual(closeOutcome(at("started"), rec({ aborted: true }), { check: "there", prompt: true }), { to: "unfinished", why: WHY.stopped, ending: "The command may or may not have run." });
 	assert.deepEqual(closeOutcome(at("started"), rec({ ok: false, interrupted: true }), undefined), { to: "unfinished", why: WHY.died, ending: "The command may or may not have run." });
 	assert.deepEqual(closeOutcome(at("started"), rec({ ok: false, error: "model\nerror" }), { check: "file-gone", prompt: false }), { to: "unfinished", why: "model error", ending: "The command may or may not have run." });
+	for (const transcript of [{ check: "there" as const, prompt: true }, { check: "file-gone" as const, prompt: false }, undefined]) {
+		assert.deepEqual(closeOutcome(at("started"), rec({ grant_used: false }), transcript), { to: "unfinished", why: WHY.unused, ending: "The command was not run." }, `a run that ended and whose guard never let the call through: ${JSON.stringify(transcript)}`);
+	}
+	assert.equal(closeOutcome(at("started"), rec({ aborted: true, grant_used: false }), { check: "there", prompt: true }).ending, "The command may or may not have run.", "a stopped run keeps the careful sentence");
 	const plain = at("started", { ask: undefined });
 	assert.deepEqual(closeOutcome(plain, rec(), undefined), { to: "done" });
 	assert.deepEqual(closeOutcome(plain, rec({ aborted: true }), undefined), { to: "unfinished", why: WHY.stopped });
@@ -538,6 +549,26 @@ test("[asked-lines] askedLines: at most ASKS_OPEN_PER_LANE lines, the newest, ol
 	assert.equal(lines[1], "- 11-14 run `echo hi git push --force origin main`", "on one line");
 	assert.ok(!lines[2].includes(token), "a secret never reaches the prompt");
 	assert.equal(lines[3], "- 11-16 run `git push --force origin main`", "no terminal escape");
+});
+
+test("[asked-lines] [asked-open] a question whose yes waits to run or runs is in [asked]; a final one or another lane's is not", () => {
+	const q = (n: number, over: Partial<Finding>): Finding => question({ id: `inb-${String(n).padStart(32, "0")}`, created_at: `2026-11-1${n}T00:00:00.000Z`, ask: { kind: "call", id: `ask-${n}`, lane: LOOP, session_id: SID, title: "t", call: { ...CALL, command: `git push --force origin b${n}` }, created_at: AT }, ...over });
+	const yes = { status: "claimed" as const, answered_by: "terminal" as const, claimed_by: CONV };
+	const findings = [q(1, {}), q(2, { ...yes, answer: ARMS.pending }), q(3, { ...yes, answer: ARMS.started }), q(4, { ...yes, answer: ARMS.done }), q(5, { status: "dismissed" }), q(6, { ask: { ...question().ask!, lane: "@cron-other" } })];
+	assert.deepEqual(askedLines(findings, LOOP), ["- 11-11 run `git push --force origin b1`", "- 11-12 run `git push --force origin b2`", "- 11-13 run `git push --force origin b3`"]);
+});
+
+test("[sweep-keeps] waitingLanes: the lane of each open question and of each open answer, and nothing that is answered and final", () => {
+	const yes = { status: "claimed" as const, answered_by: "terminal" as const, claimed_by: CONV };
+	const other = "02b2dce4-8ad1-77c0-89b0-475ccfeaf684";
+	const third = "03c3dce4-8ad1-77c0-89b0-475ccfeaf685";
+	const findings = [
+		question({ ask: { ...question().ask!, lane: CONV }, lane: CONV }),
+		base({ id: "inb-1", ...yes, answer: ARMS.pending, lane: other }),
+		base({ id: "inb-2", ...yes, answer: ARMS.done, lane: third }),
+		question({ id: "inb-3", status: "dismissed", ask: { ...question().ask!, lane: third } }),
+	];
+	assert.deepEqual([...waitingLanes(findings)].sort(), [CONV, other].sort());
 });
 
 test("[answer-prompt] a finding's text is quoted as the earlier run's report, never as the person's words", () => {

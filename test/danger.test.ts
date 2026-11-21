@@ -466,7 +466,8 @@ test("[M5a.8d] a command that names the loops directory reads or writes pi-loops
 		"echo x > ~/loops/hooks.toml",
 	];
 	for (const c of refused) assert.equal(dangerousCommandReason(c, home, [], loops), OWN, c);
-	assert.equal(dangerousCommandReason(`cat ${loops}/inbox.jsonl`, home, [], link), OWN, "the directory's realpath, when it is reached through a link");
+	// The realpath itself: on macOS the temporary directory is under /var, a link to /private/var, so `loops` is not one.
+	assert.equal(dangerousCommandReason(`cat ${fs.realpathSync.native(loops)}/inbox.jsonl`, home, [], link), OWN, "the directory's realpath, when it is reached through a link");
 	assert.equal(dangerousCommandReason(`cat ${link}/inbox.jsonl`, home, [], link), OWN, "and the path it was given");
 	const allowed = ["grep loops README.md", `cat ${loops}-old/x`, `ls ${home}`, "echo ~/.pi/agent/loopsy", "ls src/loops", "npm test"];
 	for (const c of allowed) assert.equal(dangerousCommandReason(c, home, [], loops), undefined, c);
@@ -561,7 +562,10 @@ test("[M5a.8d] letter case is ignored on darwin and win32, whose file systems ig
 	}
 	const read = { toolName: "read", input: { path: path.join(home.toUpperCase(), "LOOPS", "web-token") } };
 	for (const platform of ["darwin", "win32"] as const) assert.equal(pathToolReason(read, home, loops, platform), OWN, platform);
-	assert.equal(pathToolReason(read, home, loops, "linux"), undefined);
+	// A path is resolved on the file system this runs on: where it ignores case (APFS), the realpath is the loops
+	// directory's own, whatever `platform` says, and the path is refused because it is that directory.
+	const foldsHere = fs.existsSync(home.toUpperCase());
+	assert.equal(pathToolReason(read, home, loops, "linux"), foldsHere ? OWN : undefined, foldsHere ? "a file system that ignores case reaches the directory" : "a file system that keeps case does not");
 });
 
 test("[M5a.8d] a quoted ~ or a single-quoted $ given to a program that takes text names no directory; pi-loops' program is a command, not a directory that has its name", () => {

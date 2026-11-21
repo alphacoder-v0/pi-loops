@@ -243,7 +243,7 @@ export interface ClaimRowStores {
 const OLD_CLAIM = "inbox:";
 
 /**
- * The third step of `convertStores` (design section 5; K1 and K2 of `PROTOCOL` in src/ask.ts): each
+ * The third step of `convertStores` (design section 5; K1 and K2 of `PROTOCOL` in test/answer-protocol.ts): each
  * row of a conversation that 0.24.2 queued for a claim leaves its lane. For each, one
  * `inbox.sectionSync`, and inside it one `removeIf` that decides on the row as it is under the lane's lock:
  *   - K1, `handed_at` is set: pi had the claim before the upgrade, so the row leaves and its finding stays claimed.

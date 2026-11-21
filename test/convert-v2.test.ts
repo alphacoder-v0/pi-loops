@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { type ClaimRowStores, RETIRED_FILES, convertClaimRows, convertStores } from "../src/convert-v2.ts";
-import { type ProtocolWrite, PROTOCOL } from "../src/ask.ts";
+import { type ProtocolWrite, PROTOCOL } from "./answer-protocol.ts";
 import { Inbox } from "../src/inbox.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { JobStore, JobsNotConverted } from "../src/store.ts";
@@ -257,7 +257,7 @@ test("convertStores reports a file it cannot remove, goes on to the next, and do
 	assert.match(said[0], /^could not remove presence, which an older version left: /);
 });
 
-/* A row that 0.24.2 queued for a claim (source `inbox:<finding>`), converted at start: K1 and K2 of PROTOCOL (src/ask.ts). */
+/* A row that 0.24.2 queued for a claim (source `inbox:<finding>`), converted at start: K1 and K2 of PROTOCOL (test/answer-protocol.ts). */
 
 const CONV = "01a1dce4-8ad1-77c0-89b0-475ccfeaf683";
 const HANDED = `inb-${"a".repeat(32)}`;

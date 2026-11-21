@@ -291,13 +291,13 @@ test("pi-loops inbox claim is a claim alone and runs nothing; on a question it s
 		assert.deepEqual([claimed.status, claimed.answered_by, claimed.answer], ["claimed", "cli", undefined], "YC: a claim, and no answer");
 		assert.deepEqual(rows(), [], "and no row: nothing runs from a shell");
 		let before = lines.length;
-		assert.equal(await runCli(["inbox", "claim", asked.id], out), 0);
-		assert.deepEqual(lines.slice(before), [
-			`claimed ${asked.id}. This finding is a question, and a claim from a shell allows no command:`,
-			"nothing runs. nightly asks again when it next needs the command; say yes to that in pi (/inbox)",
-			"or on the page.",
-		]);
+		assert.equal(await runCli(["inbox", "claim", asked.id], out), 1, "a claim of a question is refused");
+		assert.deepEqual(lines.slice(before), [`inbox entry ${asked.id} is a question from nightly, and a claim from a shell allows no command: answer it on the page or in pi with /inbox`]);
+		const still = inbox.list().find((e) => e.id === asked.id)!;
+		assert.deepEqual([still.status, still.answered_by], ["new", undefined], "the question stays open: a yes on the page or in pi can still run it");
 		assert.deepEqual(rows(), []);
+		assert.equal(await runCli(["inbox", "claim", asked.id, "--json"], out), 1);
+		assert.match(JSON.parse(lines[lines.length - 1]).error, /is a question from nightly/);
 
 		// A yes from pi waits in the loop's lane; the shell takes it back, and the question is open again.
 		const pi = (await import("../src/answers.ts")).personAnswers({ inbox, requests: new RequestStore(loops), jobs: new JobStore(loops), audit: new TriggerStore(loops), sessionFile: () => undefined, self: () => ({ pid: process.pid, instance: "w", version: "0" }), now: Date.now, log: () => undefined });

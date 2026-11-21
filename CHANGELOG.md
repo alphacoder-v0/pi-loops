@@ -58,7 +58,8 @@ All notable changes to pi-loops are documented here. The format follows
   that one call through once. A no is told to the loop or the rule on its next run, and the same
   command is refused for 14 days. A plain job's turn in a closed conversation asks in the same
   way, and its yes runs as a turn in that conversation. The checker and a `/goal` continuation are
-  refused as before.
+  refused as before. `/inbox clear` leaves every question for its own yes or no, and says how many
+  it left: a no refuses the command for 14 days.
 - **A yes to a finding runs in the background, in the run that reported it.** `/inbox claim` and
   the page's **Yes, do it** and **Look into it** resume the loop's or the rule check's run from its
   transcript, and tell it what you said yes to. If the transcript is gone, the run starts from the
@@ -68,7 +69,10 @@ All notable changes to pi-loops are documented here. The format follows
   finding of a conversation runs when nobody has the conversation open: pi-loops in the background
   takes the conversation, runs the yes as a turn in it, and gives it back. While a window or the
   page has it open, the yes waits. A yes to a finding of a deleted conversation does not run, and
-  says why. `pi-loops inbox claim` marks the finding claimed, and nothing runs.
+  says why. `pi-loops inbox claim` marks the finding claimed, and nothing runs. On a question it is
+  refused, and the question stays new: answer it on the page or in pi with `/inbox`. Only pi-loops
+  in the background runs a yes, so a yes that waits to run starts it, and while it is not running
+  `/inbox claim` says that the yes runs when it does.
 - **You can cancel a yes that has not started.** `/inbox cancel <n|id>`, `pi-loops inbox cancel
   <id>` and the page's **Cancel** make the finding `new` again, under the same id. `/inbox cancel`
   with no argument lists the answers that wait or run. A yes that started or ended cannot be

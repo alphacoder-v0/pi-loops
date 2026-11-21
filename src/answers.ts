@@ -1,7 +1,8 @@
 /**
  * The writers of every transition of an answer (`.docs/redesign-0243/answer-protocol.md`). The one
  * module that holds `inbox.lock` and a lane's lock together, in that order. It decides nothing: the
- * pure deciders of src/ask.ts do, and this module makes their writes in the order `PROTOCOL` lists.
+ * pure deciders of src/ask.ts do, and this module makes their writes in the order the protocol lists
+ * (`PROTOCOL` of test/answer-protocol.ts holds it to that).
  * It starts no run and takes no slot: the executor that calls `meet` does, so a window can use it
  * with an executor of its own.
  */
@@ -14,7 +15,6 @@ import {
 	type Grant,
 	type LaneFact,
 	type Met,
-	type RunRecordM5a,
 	type StepRefusal,
 	type TranscriptFacts,
 	WHY,
@@ -33,12 +33,13 @@ import {
 } from "./ask.ts";
 import { type Inbox, type InboxEntry as Finding, UNDER_INBOX_LOCK, screenFinding } from "./inbox.ts";
 import { type ConversationId, type Lane, type LaneId, parseLane } from "./lane.ts";
+import type { LeaseStore } from "./lease.ts";
 import type { LockOptions } from "./lock.ts";
 import type { ClaimedRow, RequestStore, Row, UnclaimedRow } from "./requests.ts";
 import type { Resume } from "./runner.ts";
 import { stamp } from "./schedule.ts";
 import { laneTranscript, ownTranscript } from "./session-head.ts";
-import type { JobStore } from "./store.ts";
+import type { JobStore, RunRecord } from "./store.ts";
 import type { TriggerStore } from "./triggers.ts";
 
 /** The audit states of an answer row's exits (design 2.1). `converted` is the conversion's. */
@@ -50,7 +51,7 @@ export interface AnswersDeps {
 	/** `jobs.json`, read before `inbox.lock`; the run log for C1. */
 	jobs: Pick<JobStore, "load" | "appendRunOnce" | "listRuns" | "sessionDirFor">;
 	audit: Pick<TriggerStore, "appendAudit">;
-	/** A conversation's session file, from its lease; undefined when there is none. */
+	/** A conversation's session file (`conversationFile`); undefined when there is none. */
 	sessionFile(id: ConversationId): string | undefined;
 	/** The entries of a session file, or undefined when the file is gone. */
 	entries(file: string): readonly unknown[] | undefined;
@@ -62,7 +63,7 @@ export interface AnswersDeps {
 	 * C2: `run_end` for `record`, on `lane`, a loop's lane. It makes a hook runner for the loop the lane
 	 * names when the run's own is gone (F2 after a restart), and fires nothing for a record of another job.
 	 */
-	runEnd(record: RunRecordM5a, lane: LaneId): void;
+	runEnd(record: RunRecord, lane: LaneId): void;
 	/** This process, as the `created_by` of a row it appends. */
 	self(): Row["created_by"];
 	now(): number;
@@ -81,7 +82,11 @@ export interface AnswerExecutor {
 	blocked(lane: Lane, finding: Finding | undefined, transcript?: string): string | undefined;
 	/** Whether the process of the claim is there and still runs the row. A claim of this process whose run left the list is not live. */
 	live(row: ClaimedRow): boolean;
-	/** E4a, inside both locks: a slot, then the claim with `lock`. undefined: no slot, or the row left. The run is in the list from here. */
+	/**
+	 * E4a, inside both locks: the lane asked again (`blocked`, as it is now: a run of the lane may have
+	 * started since the read before the locks), a slot, then the claim with `lock`. undefined: the lane
+	 * is held, no slot, or the row left; `meet` then asks `blocked` for why. The run is in the list from here.
+	 */
 	claim(row: UnclaimedRow, finding: Finding, lock: LockOptions, now: number): ClaimedRow | undefined;
 	/** E4b threw: the run leaves the list and gives its slot back. The claim stays on the row, and the next `meet` finds it not live (F1). */
 	release(runId: string): void;
@@ -123,7 +128,7 @@ export type MeetOutcome =
 export interface PersonAnswers {
 	/** A person's yes or no (Y1, Y2, YC, N1). The row of Y1 and N1 is appended after `inbox.lock`; an append that throws is `queued: false` or `told: false`, and H1 appends the row of a yes at the next tick. */
 	say(id: string, word: "yes" | "no", from: Answerer, opts?: { reason?: string }): Promise<SayOutcome>;
-	/** `/inbox clear`: N1 for every `new` finding `match` takes, in one section and one rewrite; then the `no-` rows. Returns the findings dismissed. */
+	/** `/inbox clear`: N1 for every `new` finding `match` takes that is no question, in one section and one rewrite; then the `no-` rows. A question is left for a person to answer. Returns the findings dismissed. */
 	clear(match: ((finding: Finding) => boolean) | undefined, from: Answerer): Promise<Finding[]>;
 	/** A person cancels a queued yes (V2, V1): the row leaves, and the finding is `new` again under its own id. `ref` is the finding's id or its `ans-` row's id. */
 	cancel(ref: string): Promise<{ cancelled: Finding } | { refusal: StepRefusal }>;
@@ -150,7 +155,7 @@ export interface Answers extends PersonAnswers {
 	 */
 	foresee(lane: Lane, rowId: string, executor: AnswerExecutor, now: number): Met["case"] | "nothing";
 	/** The closing of a run of an answer row (C1 to C4): by the process that ran it, with `ended`, and by `meet` for F2. Each write is safe to repeat. */
-	close(row: ClaimedRow, now: number, ended?: RunRecordM5a): Promise<{ state: FinalState | "none"; record: RunRecordM5a }>;
+	close(row: ClaimedRow, now: number, ended?: RunRecord): Promise<{ state: FinalState | "none"; record: RunRecord }>;
 	/** H1, at every tick of a process that executes lanes. Returns the ids of the rows appended. */
 	repair(executes: (lane: Lane) => boolean, now: number): Promise<string[]>;
 }
@@ -172,6 +177,21 @@ const finalOf = (finding: Finding | undefined): FinalState | "none" => {
 	const state = finding?.answer?.state;
 	return state !== undefined && finalStates.has(state) ? (state as FinalState) : "none";
 };
+
+/**
+ * A conversation's session file, as every surface finds it: the file its lease names, while it is
+ * there; else the file pi's sessions directory has under that id (`index`, as the page's
+ * `ConversationIndex.byId`). A lease is swept when nothing refers to the conversation, and a
+ * conversation without one is not deleted for that.
+ */
+export function conversationFile(leases: Pick<LeaseStore, "read">, index: { byId(id: string): { sessionFile: string } | undefined } | undefined): (id: ConversationId) => string | undefined {
+	return (id) => {
+		const leased = leases.read(id)?.sessionFile;
+		if (leased !== undefined && fs.existsSync(leased)) return leased;
+		const found = index?.byId(id)?.sessionFile;
+		return found !== undefined && fs.existsSync(found) ? found : leased;
+	};
+}
 
 /** No lane can be read for a row whose finding is missing: `meetAnswerRow` gives E1 before it reads this. */
 const NO_LANE: LaneFact = { there: false, why: WHY.nowhere };
@@ -233,7 +253,8 @@ export function personAnswers(deps: PersonAnswersDeps): PersonAnswers {
 			const at = stamp(deps.now());
 			const dismissed = await inbox.section((tx) => {
 				const writes = tx.list().flatMap((finding) => {
-					if (finding.status !== "new" || (match && !match(finding))) return [];
+					// A no to a question refuses its command for 14 days: a clear is not that no.
+					if (finding.status !== "new" || finding.ask || (match && !match(finding))) return [];
 					const step = answerStep("N1", finding, { to: "none", by: from.by }, { at, lane: undefined });
 					return "refused" in step ? [] : [step];
 				});
@@ -336,8 +357,8 @@ export function createAnswers(deps: AnswersDeps): Answers {
 		const claimedAt = Date.parse(row.run.started_at);
 
 		// C1: the record this claim's run wrote, else the one in hand, else one that says the process died.
-		let found: RunRecordM5a | undefined;
-		const interrupted: RunRecordM5a = {
+		let found: RunRecord | undefined;
+		const interrupted: RunRecord = {
 			runId: row.run.id,
 			jobId: lane ? jobIdOf(lane, seen) : "",
 			stateful: lane?.kind === "loop",
@@ -354,8 +375,8 @@ export function createAnswers(deps: AnswersDeps): Answers {
 			row: row.id,
 			cause: "answer",
 		};
-		const fresh: RunRecordM5a = ended ? { ...ended, cause: "answer" } : interrupted;
-		let record: RunRecordM5a;
+		const fresh: RunRecord = ended ? { ...ended, cause: "answer" } : interrupted;
+		let record: RunRecord;
 		try {
 			const written = jobs.appendRunOnce((records) => {
 				found = records.find((r) => r.runId === row.run.id && Date.parse(r.startedAt) >= claimedAt);
@@ -435,8 +456,10 @@ export function createAnswers(deps: AnswersDeps): Answers {
 						// meetAnswerRow gives E4 only for a row with no claim and a finding it read.
 						const unclaimed = row as UnclaimedRow;
 						// The run list shows its label and preview: the finding as a reader gets it.
-						const claimed = executor.claim(unclaimed, screenFinding(finding!), UNDER_INBOX_LOCK, now);
-						if (!claimed) return { out: { met: "hold", why: "no free slot" }, row };
+						const seen = screenFinding(finding!);
+						const claimed = executor.claim(unclaimed, seen, UNDER_INBOX_LOCK, now);
+						// The claim asks the lane again under the lock: what holds it now is why it waits.
+						if (!claimed) return { out: { met: "hold", why: executor.blocked(lane, seen, resume?.sessionId) ?? "no free slot" }, row };
 						try {
 							const step = answerStep("E4", finding, { to: "started", run: claimed.run }, { at, lane: lane.id });
 							if ("refused" in step) throw new Error(`E4b refused for ${findingId}: ${step.refused}`);

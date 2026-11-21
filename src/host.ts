@@ -26,6 +26,7 @@ import { piPackage } from "./pi-resolver.mjs";
 import { RequestStore } from "./requests.ts";
 import { awayFor, pruneSeen, readSeen, sinceCounts } from "./seen.ts";
 import { LeaseStore, holderAlive, openWindowPids, procStart } from "./lease.ts";
+import { waitingLanes } from "./ask.ts";
 import { sessionTitle, shortSessionId } from "./session-head.ts";
 import { openStores } from "./stores.ts";
 import { THINKING_LEVELS, thinkingLevelOrUndefined } from "./thinking.ts";
@@ -175,7 +176,7 @@ const inProcessRunner = createInProcessRunner({
 	// One set of seats for this process. The inbox is read at call time: the stores open after the runner.
 	guard: {
 		seats: new GuardSeats(),
-		deps: { inbox: { list: () => stores.inbox.list(), fileOnce: (entry, id) => stores.inbox.fileOnce(entry, id) }, allowCommands: () => config.allowCommands, hop: 1, now: Date.now, log: (msg) => log(`sub-agent: ${msg}`) },
+		deps: { inbox: { list: () => stores.inbox.list(), fileOnce: (entry, id) => stores.inbox.fileOnce(entry, id) }, allowCommands: () => config.allowCommands, now: Date.now, log: (msg) => log(`sub-agent: ${msg}`) },
 	},
 	// The daily cap, read while a run is in flight and not only before it is dispatched. Lazy: the
 	// host owns the scheduler and is built with this runner, so it can only be asked at run time.
@@ -221,6 +222,7 @@ const host = createHostRuntime({
 		if (lease?.sessionFile && fs.existsSync(lease.sessionFile)) return true;
 		return sessionExists(path.join(agentDir, "sessions"), id);
 	},
+	sessionsRoot: path.join(agentDir, "sessions"),
 	// Open in the page, its pi writes the file: a plain job's turn there would be a second writer.
 	pageHolds: (id) => pool.has(id),
 });
@@ -450,15 +452,16 @@ try {
 /** Every tick: am I still the host the record names (a stale lock break can let two claim). */
 /**
  * Every ten minutes: forget conversations nothing refers to any more. A lease is written for every
- * conversation a window opens; one that nobody holds and that has no plain job, rule or queued request
- * is deleted (a window opening it again writes it again), and so is its since-you-looked cursor.
+ * conversation a window opens; one that nobody holds and that has no plain job, rule, queued request,
+ * open question or open answer (`waitingLanes`) is deleted (a window opening it again writes it again),
+ * and so is its since-you-looked cursor.
  */
 let sweptAt = 0;
 function sweepConversations(now: number): void {
 	if (now - sweptAt < 10 * 60_000) return;
 	sweptAt = now;
 	// A loop's runs count for the conversation that created it (since-you-looked), so that one stays too.
-	const working = new Set<string>([...host.stores.jobs.load().flatMap((j) => [j.sessionId, j.createdBy?.sessionId].filter((id): id is string => !!id)), ...host.triggers.store.load().flatMap((r) => (r.createdBy?.sessionId ? [r.createdBy.sessionId] : [])), ...requests.sessions()]);
+	const working = new Set<string>([...host.stores.jobs.load().flatMap((j) => [j.sessionId, j.createdBy?.sessionId].filter((id): id is string => !!id)), ...host.triggers.store.load().flatMap((r) => (r.createdBy?.sessionId ? [r.createdBy.sessionId] : [])), ...requests.sessions(), ...waitingLanes(host.stores.inbox.list())]);
 	// The page's last conversation keeps its lease, which names its project: `GET /` opens a new
 	// conversation there when that one was never saved (src/page-server.ts rootPage).
 	const lastPage = readUiPrefs(dir).lastPage;

@@ -1,6 +1,6 @@
 /**
  * src/answers.ts against the stores, and the `PROTOCOL` harness. Each transition's durable writes are
- * logged with the lock held at each and compared with `PROTOCOL` of src/ask.ts. Then the process is
+ * logged with the lock held at each and compared with `PROTOCOL` of test/answer-protocol.ts. Then the process is
  * stopped after each prefix of those writes, a new process takes over with the same stores, and its
  * next ticks, drains and closings run until nothing moves. The final state is checked each time.
  *
@@ -14,12 +14,13 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type AnswerExecutor, type AnswerStart, type Answers, type AnswersDeps, type MeetOutcome, createAnswers } from "../src/answers.ts";
-import { type Call, type ProtocolWrite, type RunRecordM5a, PROTOCOL, WHY, answerRow, answerRowId, answerStep, besideId, inputHash, isAnswerRow, noRowId, questionFinding, resolveCap } from "../src/ask.ts";
+import { type Call, WHY, answerRow, answerRowId, answerStep, besideId, inputHash, isAnswerRow, noRowId, questionFinding, resolveCap } from "../src/ask.ts";
 import { Inbox, type InboxEntry as Finding, type InboxSection, type NewFinding, type Sync, UNDER_INBOX_LOCK } from "../src/inbox.ts";
 import { type Lane, type LaneId, parseLane } from "../src/lane.ts";
 import { type ClaimedRow, type Listed, type Row, RequestStore } from "../src/requests.ts";
 import { stamp } from "../src/schedule.ts";
-import { JobStore, type LoopJob } from "../src/store.ts";
+import { JobStore, type LoopJob, type RunRecord } from "../src/store.ts";
+import { type ProtocolWrite, PROTOCOL } from "./answer-protocol.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { tmp } from "./tmp.ts";
 
@@ -58,7 +59,7 @@ interface World {
 	failNext?: ProtocolWrite["write"];
 	inboxHeld: boolean;
 	sections: number;
-	runEnds: RunRecordM5a[];
+	runEnds: RunRecord[];
 	/** Runs started, by finding: a yes is run at most once. */
 	starts: Map<string, number>;
 	/** A conversation's session file, as its lease names it. */
@@ -260,16 +261,16 @@ const answerRows = (w: World): Row[] => [...w.requests.sessions(), ...w.requests
 const audits = (w: World): Array<{ state: string; traceId: string }> => (fs.existsSync(w.audit.auditFile) ? fs.readFileSync(w.audit.auditFile, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 
 /** The stand-in of an answer's run: it ends ok, makes the granted call when it has a grant, and closes. */
-async function run(w: World, start: AnswerStart, how: { ok?: boolean; grantUsed?: boolean; aborted?: boolean } = {}): Promise<void> {
+async function run(w: World, start: AnswerStart, how: { ok?: boolean; grantUsed?: boolean; aborted?: boolean } = {}, at = NOW): Promise<void> {
 	w.starts.set(start.finding.id, (w.starts.get(start.finding.id) ?? 0) + 1);
-	const record: RunRecordM5a = {
+	const record: RunRecord = {
 		runId: start.row.run.id,
 		jobId: start.jobId,
 		stateful: start.row.lane.startsWith("@cron-"),
 		cwd: start.finding.cwd,
 		pid: start.row.run.pid,
 		startedAt: start.row.run.started_at,
-		finishedAt: stamp(NOW),
+		finishedAt: stamp(at),
 		ok: how.ok ?? !how.aborted,
 		findings: 0,
 		droppedFindings: 0,
@@ -280,20 +281,26 @@ async function run(w: World, start: AnswerStart, how: { ok?: boolean; grantUsed?
 		...(start.resume ? { resumed: start.resume.file } : {}),
 		...(start.grant ? { grant_used: how.grantUsed ?? true } : {}),
 	};
-	await w.answers.close(start.row, NOW, record);
+	await w.answers.close(start.row, at, record);
 	w.proc.release(start.row.run.id);
 }
 
 /** The next ticks and drains of the process that runs now, until nothing moves: H1, then every `ans-` row met, and a run started by E4 run and closed. */
 async function settle(w: World): Promise<void> {
+	// The clock moves only to the end of a backoff: a later tick finds the row F1 held until then.
+	let at = NOW;
 	for (let round = 0; round < 12; round++) {
-		let moved = (await w.answers.repair(() => true, NOW)).length > 0;
+		let moved = (await w.answers.repair(() => true, at)).length > 0;
+		let wake = Infinity;
 		for (const row of answerRows(w)) {
-			const met = await w.answers.meet(parseLane(row.lane)!, row.id, w.proc, NOW);
-			if (met.met === "E4") await run(w, met.start);
+			const met = await w.answers.meet(parseLane(row.lane)!, row.id, w.proc, at);
+			if (met.met === "E4") await run(w, met.start, {}, at);
 			if (met.met !== "nothing" && met.met !== "hold" && met.met !== "W1") moved = true;
+			const until = Date.parse(w.requests.list(row.lane).find((r) => r.id === row.id)?.not_before ?? "");
+			if (met.met === "hold" && until > at) wake = Math.min(wake, until);
 		}
-		if (!moved) return;
+		if (!moved && wake === Infinity) return;
+		if (!moved) at = wake;
 	}
 	assert.fail("the drains did not settle");
 }

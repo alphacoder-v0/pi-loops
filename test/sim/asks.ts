@@ -401,6 +401,8 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 			budgetCap: () => undefined,
 			cwdExists: () => true,
 			transcriptHeld: () => false,
+			// A check's run here files its questions and ends in the same step: none is going when a lane drains.
+			checkRunning: () => false,
 			checkSessionDir: (at) => checkSessionDir(jobs, at),
 			checkCap,
 			conversations: conversations(me),

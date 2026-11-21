@@ -18,7 +18,8 @@ import { type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procSt
 import { type EngineSinks, laneClaimLive, promotionTarget, promotionView, ruleResultRow, proofOf, sessionFileEntries } from "./engine.ts";
 import type { ClaimedRow, Row } from "./requests.ts";
 import { type AnswerLanes, createAnswerLanes } from "./answer-lanes.ts";
-import { type Answers, createAnswers } from "./answers.ts";
+import { type Answers, conversationFile, createAnswers } from "./answers.ts";
+import { ConversationIndex } from "./conversation-rows.ts";
 import { type LaneId, parseLane } from "./lane.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { type BackgroundExecutor, createBackgroundExecutor } from "./background-executor.ts";
@@ -60,6 +61,8 @@ export interface HostRuntimeDeps {
 	log: (message: string) => void;
 	/** Does pi still have this session? Plain jobs of deleted sessions are parked by the host's sweep. */
 	sessionExists?: (sessionId: string) => boolean;
+	/** pi's sessions directory, where a conversation's file is looked for when no lease names it (`conversationFile`). Absent: only the directories of the files leases name. */
+	sessionsRoot?: string;
 	/** Is this conversation open in the browser page? Then its pi writes the file, and this process never holds it. */
 	pageHolds?: (sessionId: string) => boolean;
 }
@@ -292,7 +295,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		requests,
 		jobs: stores.jobs,
 		audit: stores.rules,
-		sessionFile: (id) => leases.read(id)?.sessionFile,
+		sessionFile: conversationFile(leases, new ConversationIndex(deps.sessionsRoot, undefined, () => leases.list().flatMap((l) => (l.sessionFile ? [l.sessionFile] : [])))),
 		entries: (file) => (fs.existsSync(file) ? sessionFileEntries(file) : undefined),
 		checkSessionDir: checkDir,
 		checkLaneOf: checkLane,
@@ -324,6 +327,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		budgetCap: () => deps.config().dailyBudgetUsd,
 		cwdExists: fs.existsSync,
 		transcriptHeld,
+		checkRunning: (lane) => triggers.checkRunningIn(lane),
 		checkSessionDir: checkDir,
 		// The cap of a check's answer is the check's own, from the same function (`checkCap`).
 		checkCap: (cwd) => triggers.checkCapOf(cwd),

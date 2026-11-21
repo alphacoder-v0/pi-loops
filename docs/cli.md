@@ -579,8 +579,8 @@ pi-loops inbox cancel inb-3f2a… --json        # take back a yes that has not s
 `/inbox` with no pi open ([loops.md](loops.md#the-inbox)). `claim` and `dismiss` take an id or a
 unique prefix of one. `dismiss` changes the entry the way the slash command does. `claim` only marks
 the finding claimed: unlike `/inbox claim`, it runs nothing, and the acting is left to whoever
-asked. On a question about a dangerous call, it allows no command: the loop asks again when it next
-needs the command, and a yes in pi or on the page answers that. `cancel` takes back a yes from pi or
+asked. A question about a dangerous call is refused here: answer it on the page or in pi with
+`/inbox`, where a yes runs the one command. `cancel` takes back a yes from pi or
 the page while it waits, as `/inbox cancel` does: the finding is new again, under the same id. A yes
 that has started or ended cannot be cancelled. Without `--json`, every line is for a
 person: one per finding, the full id first, then the finding, with a decision's clauses on the same

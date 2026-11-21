@@ -213,7 +213,7 @@ async function standIn(dir: string, reply: string, inbox: Pick<ReturnType<typeof
 		customTools: () => [],
 		isTrusted: () => false,
 		ownDir: tmp("pi-loops-own-"),
-		guard: { seats: new GuardSeats(), deps: { inbox, allowCommands: () => [], hop: 1, now: Date.now, ...(opts.loopsDir ? { loopsDir: opts.loopsDir } : {}) } },
+		guard: { seats: new GuardSeats(), deps: { inbox, allowCommands: () => [], now: Date.now, ...(opts.loopsDir ? { loopsDir: opts.loopsDir } : {}) } },
 	});
 	return { real, modelLog, fake };
 }

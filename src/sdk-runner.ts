@@ -142,7 +142,7 @@ function seatlessGuard(deps: Pick<InProcessRunnerDeps, "log" | "allowCommands">)
 		list: () => [],
 		fileOnce: () => Promise.reject(new Error("this runner has no inbox for questions")),
 	};
-	return { seats: new GuardSeats(), deps: { inbox, allowCommands: () => deps.allowCommands?.() ?? [], hop: 1, now: Date.now, log: deps.log } };
+	return { seats: new GuardSeats(), deps: { inbox, allowCommands: () => deps.allowCommands?.() ?? [], now: Date.now, log: deps.log } };
 }
 
 export interface SubSessionResources {

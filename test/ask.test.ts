@@ -1,6 +1,6 @@
 /**
  * src/answers.ts against the stores, and the `PROTOCOL` harness. Each transition's durable writes are
- * logged with the lock held at each and compared with `PROTOCOL` of src/ask.ts. Then the process is
+ * logged with the lock held at each and compared with `PROTOCOL` of test/answer-protocol.ts. Then the process is
  * stopped after each prefix of those writes, a new process takes over with the same stores, and its
  * next ticks, drains and closings run until nothing moves. The final state is checked each time.
  *
@@ -14,12 +14,13 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type AnswerExecutor, type AnswerStart, type Answers, type AnswersDeps, type MeetOutcome, createAnswers } from "../src/answers.ts";
-import { type Call, type ProtocolWrite, type RunRecordM5a, PROTOCOL, WHY, answerRow, answerRowId, answerStep, besideId, inputHash, isAnswerRow, noRowId, questionFinding, resolveCap } from "../src/ask.ts";
+import { type Call, WHY, answerRow, answerRowId, answerStep, besideId, inputHash, isAnswerRow, noRowId, questionFinding, resolveCap } from "../src/ask.ts";
 import { Inbox, type InboxEntry as Finding, type InboxSection, type NewFinding, type Sync, UNDER_INBOX_LOCK } from "../src/inbox.ts";
 import { type Lane, type LaneId, parseLane } from "../src/lane.ts";
 import { type ClaimedRow, type Listed, type Row, RequestStore } from "../src/requests.ts";
 import { stamp } from "../src/schedule.ts";
-import { JobStore, type LoopJob } from "../src/store.ts";
+import { JobStore, type LoopJob, type RunRecord } from "../src/store.ts";
+import { type ProtocolWrite, PROTOCOL } from "./answer-protocol.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { tmp } from "./tmp.ts";
 
@@ -58,7 +59,7 @@ interface World {
 	failNext?: ProtocolWrite["write"];
 	inboxHeld: boolean;
 	sections: number;
-	runEnds: RunRecordM5a[];
+	runEnds: RunRecord[];
 	/** Runs started, by finding: a yes is run at most once. */
 	starts: Map<string, number>;
 	/** A conversation's session file, as its lease names it. */
@@ -260,16 +261,16 @@ const answerRows = (w: World): Row[] => [...w.requests.sessions(), ...w.requests
 const audits = (w: World): Array<{ state: string; traceId: string }> => (fs.existsSync(w.audit.auditFile) ? fs.readFileSync(w.audit.auditFile, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 
 /** The stand-in of an answer's run: it ends ok, makes the granted call when it has a grant, and closes. */
-async function run(w: World, start: AnswerStart, how: { ok?: boolean; grantUsed?: boolean; aborted?: boolean } = {}): Promise<void> {
+async function run(w: World, start: AnswerStart, how: { ok?: boolean; grantUsed?: boolean; aborted?: boolean } = {}, at = NOW): Promise<void> {
 	w.starts.set(start.finding.id, (w.starts.get(start.finding.id) ?? 0) + 1);
-	const record: RunRecordM5a = {
+	const record: RunRecord = {
 		runId: start.row.run.id,
 		jobId: start.jobId,
 		stateful: start.row.lane.startsWith("@cron-"),
 		cwd: start.finding.cwd,
 		pid: start.row.run.pid,
 		startedAt: start.row.run.started_at,
-		finishedAt: stamp(NOW),
+		finishedAt: stamp(at),
 		ok: how.ok ?? !how.aborted,
 		findings: 0,
 		droppedFindings: 0,
@@ -280,20 +281,26 @@ async function run(w: World, start: AnswerStart, how: { ok?: boolean; grantUsed?
 		...(start.resume ? { resumed: start.resume.file } : {}),
 		...(start.grant ? { grant_used: how.grantUsed ?? true } : {}),
 	};
-	await w.answers.close(start.row, NOW, record);
+	await w.answers.close(start.row, at, record);
 	w.proc.release(start.row.run.id);
 }
 
 /** The next ticks and drains of the process that runs now, until nothing moves: H1, then every `ans-` row met, and a run started by E4 run and closed. */
 async function settle(w: World): Promise<void> {
+	// The clock moves only to the end of a backoff: a later tick finds the row F1 held until then.
+	let at = NOW;
 	for (let round = 0; round < 12; round++) {
-		let moved = (await w.answers.repair(() => true, NOW)).length > 0;
+		let moved = (await w.answers.repair(() => true, at)).length > 0;
+		let wake = Infinity;
 		for (const row of answerRows(w)) {
-			const met = await w.answers.meet(parseLane(row.lane)!, row.id, w.proc, NOW);
-			if (met.met === "E4") await run(w, met.start);
+			const met = await w.answers.meet(parseLane(row.lane)!, row.id, w.proc, at);
+			if (met.met === "E4") await run(w, met.start, {}, at);
 			if (met.met !== "nothing" && met.met !== "hold" && met.met !== "W1") moved = true;
+			const until = Date.parse(w.requests.list(row.lane).find((r) => r.id === row.id)?.not_before ?? "");
+			if (met.met === "hold" && until > at) wake = Math.min(wake, until);
 		}
-		if (!moved) return;
+		if (!moved && wake === Infinity) return;
+		if (!moved) at = wake;
 	}
 	assert.fail("the drains did not settle");
 }
@@ -478,6 +485,17 @@ test("[N1] a no to a conversation's question dismisses it and writes the no- row
 	const said = await w.answers.say(loopAsk.id, "no", PERSON);
 	assert.deepEqual(said.said === "N1" && said.told, false);
 	assert.deepEqual(w.log, want(PROTOCOL.N1.filter((p) => !("when" in p))), "a loop's question gets no no- row");
+});
+
+test("[clear] /inbox clear dismisses what is no question and leaves every question new: a clear is no 14-day no, and tells no conversation of one", async () => {
+	const w = await world();
+	const loopQuestion = await ask(w, "loop");
+	const conversationQuestion = await ask(w, "conversation");
+	const f = await news(w);
+	const dismissed = await w.answers.clear(undefined, PERSON);
+	assert.deepEqual(dismissed.map((d) => d.id), [f.id], "only the finding that is no question");
+	assert.deepEqual([find(w, loopQuestion.id)!.status, find(w, conversationQuestion.id)!.status, find(w, f.id)!.status], ["new", "new", "dismissed"]);
+	assert.deepEqual(w.requests.list(CONV), [], "no no- row: the conversation is told of no no");
 });
 
 test("[E1] a row that means nothing leaves, audit stale: each condition", async () => {
@@ -749,7 +767,9 @@ test("[F1] a dead claim beside pending is cleared with one attempt; a throw at E
 		for (let i = 1; i < 3; i++) {
 			assert.deepEqual(await meetRow(v, f), { met: "F1", attempts: i });
 			v.stopAfter = v.log.length + 1;
-			await meetRow(v, f).catch((err: unknown) => {
+			// The tick after F1's backoff claims the row again, and the process stops again.
+			const until = Date.parse(v.requests.list(LOOP)[0].not_before!);
+			await v.answers.meet(parseLane(LOOP)!, answerRowId(f.id), v.proc, until).catch((err: unknown) => {
 				if (!(err instanceof Crash)) throw err;
 			});
 			restart(v);
@@ -800,7 +820,7 @@ test("[F2] a dead claim beside started closes C1 to C4 with an interrupted recor
 			const records = w.jobs.listRuns(undefined, Number.MAX_SAFE_INTEGER);
 			assert.equal(records.length, 1);
 			assert.equal(records[0].interrupted, true);
-			assert.equal((records[0] as RunRecordM5a).cause, "answer");
+			assert.equal((records[0] as RunRecord).cause, "answer");
 			assert.ok(w.runEnds.length >= 1, "run_end at least once; it can repeat after a stop");
 		},
 	});
@@ -835,16 +855,22 @@ test("[F3] a dead claim beside a final answer: run_end only for an answer with a
 	const w = await world();
 	const g = await news(w);
 	await yes(w, g);
+	// Each claim after the first is made by the tick after F1's backoff.
+	let t = NOW;
+	const meetAt = (): Promise<MeetOutcome> => w.answers.meet(parseLane(LOOP)!, answerRowId(g.id), w.proc, t);
 	for (let i = 0; i < 3; i++) {
 		w.stopAfter = w.log.length + 1;
-		await meetRow(w, g).catch((err: unknown) => {
+		await meetAt().catch((err: unknown) => {
 			if (!(err instanceof Crash)) throw err;
 		});
 		restart(w);
-		if (i < 2) await meetRow(w, g);
+		if (i < 2) {
+			await meetAt();
+			t = Date.parse(w.requests.list(LOOP)[0].not_before!);
+		}
 	}
 	w.stopAfter = w.log.length + 1;
-	await meetRow(w, g).catch((err: unknown) => {
+	await meetAt().catch((err: unknown) => {
 		if (!(err instanceof Crash)) throw err;
 	});
 	restart(w);
@@ -874,7 +900,7 @@ async function closingTable(check: (w: World, f: Finding, stop: number | undefin
 
 test("[C1] one record per run id, with cause, resumed and grant_used", async () => {
 	await closingTable((w, f) => {
-		const records = w.jobs.listRuns(undefined, Number.MAX_SAFE_INTEGER) as RunRecordM5a[];
+		const records = w.jobs.listRuns(undefined, Number.MAX_SAFE_INTEGER) as RunRecord[];
 		assert.equal(records.length, 1);
 		assert.equal(records[0].cause, "answer");
 		assert.equal(records[0].resumed, f.transcript!);

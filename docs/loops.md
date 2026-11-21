@@ -192,7 +192,8 @@ Global JSONL, shared by every session and project. Each line is one finding in t
 /inbox dismiss <n|id> [reason]   say no: mark dismissed; the reason, if you give one, is shown to the loop's next run
 /inbox cancel [<n|id>] take back a yes that has not started: the finding is new again, under the same id
                        (with no argument: the answers that wait or run, numbered)
-/inbox clear [--all]   dismiss every new finding listed; a finding with an answer is not touched
+/inbox clear [--all]   dismiss every new finding listed but a question; a finding with an answer is not touched
+                       ("dismissed N inbox entries in <project>; left K questions for you to answer: …" when it left one)
 ```
 
 A yes is an answer to the finding, and it runs where the finding came from. pi-loops resumes the
@@ -208,7 +209,9 @@ pi-loops in the background takes the conversation, as for its plain job's turn, 
 a turn in the conversation's own file, then gives the conversation back. A conversation written in
 the last two minutes is left for a later tick. A yes to a finding of a conversation that was deleted
 does not run, and says why. `/inbox cancel` takes back a yes while it waits; a yes that has
-started or ended cannot be cancelled.
+started or ended cannot be cancelled. Only pi-loops in the background runs a yes: a yes that waits
+to run is work for it, so a window starts it, and while it is not running the line after `/inbox
+claim` adds "It runs when pi-loops runs in the background."
 
 A dismiss with words after the number — `/inbox dismiss 2 that file is generated, ignore it` — is
 the one way a person talks back to a loop. The reason is stored on the entry and put in front of
@@ -609,6 +612,12 @@ finishes what does not need the call. The loop's next runs see the open question
 an `[asked]` block of their prompt. A yes resumes the run that asked, from its transcript, and
 lets that one call through once, when its input is the same as the input that was asked about.
 A no is told to the loop or the rule on its next run, and the same command is refused for 14 days.
+While a yes to a question waits to run or runs, the question stays in the `[asked]` block, and a
+later run of its lane that makes the same call is told that a person was asked: no second question
+is filed. A question is answered in pi or on the page. `/inbox clear` leaves every question for its
+own yes or no, since a no refuses the command for 14 days, and says how many it left. `pi-loops
+inbox claim` refuses a question, since a claim from a shell allows no command: it says to answer
+it on the page or in pi with `/inbox`, and the question stays new.
 For a plain job's turn, the question is in its conversation's lane: a yes runs as a turn in that
 conversation, as described below for a yes to a finding of a conversation. The checker and a
 `/goal` continuation have nobody to ask, and refuse as before.

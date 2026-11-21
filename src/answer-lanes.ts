@@ -11,7 +11,7 @@ import { type Held, type HeldConversations, heldCap } from "./background-executo
 import { answerClaimLive } from "./engine.ts";
 import { budgetState, loopWait } from "./job-status.ts";
 import type { SessionSnapshot } from "./job-owner.ts";
-import { type Lane, parseLane } from "./lane.ts";
+import { type Lane, type LaneId, parseLane } from "./lane.ts";
 import { DEFAULT_RUN_TIMEOUT_MS } from "./loop-run.ts";
 import { findingKind, parseRunOutput, stripProtocolTags } from "./protocol.ts";
 import { previewRedacted, redact } from "./redact.ts";
@@ -37,6 +37,8 @@ export interface AnswerLaneDeps {
 	cwdExists(cwd: string): boolean;
 	/** Whether a live pi has the transcript with this session id open. A transcript that is held is not resumed. */
 	transcriptHeld(sessionId: string): boolean;
+	/** Whether a rule check of the project whose check lane this is runs now (`TriggerRuntime.checkRunningIn`): a check's run is in no `RunList`. */
+	checkRunning(lane: LaneId): boolean;
 	/** Where a check lane's transcripts are: `checkSessionDir` of src/trigger-runtime.ts. */
 	checkSessionDir(cwd: string): string;
 	/** The cap of the check of project `cwd`, as its own run has it: `checkCap` of src/trigger-runtime.ts. */
@@ -102,6 +104,13 @@ export function createAnswerLanes(deps: AnswerLaneDeps): AnswerLanes {
 	function executorFor(lane: Lane, held?: Held, notTaken?: string): AnswerExecutor {
 		const self = deps.holder();
 		const live = (row: ClaimedRow): boolean => answerClaimLive(row, self, listed);
+		/** Why a run of the lane that is going holds this one: a run in this process's list, a live claim on a row of the lane, or a rule check of the project. */
+		const busy = (job: LoopJob | undefined): string | undefined => {
+			const going = runs.all().some((run) => (job !== undefined && run.jobId === job.id) || run.answer?.lane === lane.id || run.turn?.sessionId === lane.id) || stores.requests.list(lane.id).some((row) => row.run !== undefined && live(row as ClaimedRow));
+			if (going) return lane.kind === "loop" ? "another run of the loop is going" : lane.kind === "conversation" ? "another run of pi-loops is writing the conversation" : "another answer of this project is running";
+			if (lane.kind === "check" && deps.checkRunning(lane.id)) return "a check of this project is running";
+			return undefined;
+		};
 		return {
 			blocked: (_lane, finding, transcript) => {
 				if (stopped) return "pi-loops is stopping";
@@ -113,8 +122,8 @@ export function createAnswerLanes(deps: AnswerLaneDeps): AnswerLanes {
 				const cwd = job?.cwd ?? finding?.cwd ?? "";
 				const gate = loopWait({ cwd }, undefined, { cwdExists: deps.cwdExists, budget: () => budgetState(stores.jobs, deps.budgetCap(), now()), slots: () => ({ inUse: slots.inUseCount, free: slots.free, limit: slots.limit }) }, now());
 				if (gate !== undefined) return gate;
-				const going = runs.all().some((run) => (job !== undefined && run.jobId === job.id) || run.answer?.lane === lane.id || run.turn?.sessionId === lane.id) || stores.requests.list(lane.id).some((row) => row.run !== undefined && live(row as ClaimedRow));
-				if (going) return lane.kind === "loop" ? "another run of the loop is going" : lane.kind === "conversation" ? "another run of pi-loops is writing the conversation" : "another answer of this project is running";
+				const busyWhy = busy(job);
+				if (busyWhy !== undefined) return busyWhy;
 				if (transcript !== undefined && deps.transcriptHeld(transcript)) return "a pi has its transcript open";
 				return notTaken;
 			},
@@ -123,9 +132,12 @@ export function createAnswerLanes(deps: AnswerLaneDeps): AnswerLanes {
 				if (stopped) return undefined;
 				// A conversation's run is claimed only under its lease.
 				if (lane.kind === "conversation" && !held) return undefined;
+				// `blocked` was read before the locks, and a run of the lane may have started since. From here
+				// to `runs.claim` nothing awaits, so no run of this process starts between this look and the claim.
+				const jobs = stores.book().jobs;
+				if (busy(loopOf(jobs, lane)) !== undefined) return undefined;
 				const permit = slots.acquire();
 				if (!permit) return undefined;
-				const jobs = stores.book().jobs;
 				const job = loopOf(jobs, lane) ?? plainOf(jobs, lane, finding.job_id);
 				const label = job ? (job.name ?? job.id) : lane.kind === "conversation" ? `an answer in conversation ${shortSessionId(lane.id)}` : `the check of ${path.basename(finding.cwd) || finding.cwd}`;
 				let claimed: ClaimedRow | undefined;

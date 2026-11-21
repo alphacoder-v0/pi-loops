@@ -5,7 +5,7 @@
  * Pure: the caller reads the files, and this decides what they say.
  */
 import type { InboxEntry } from "./inbox.ts";
-import { ruleResultText, splitFinding } from "./inbox-card.ts";
+import { questionHeadline, ruleResultText, splitFinding } from "./inbox-card.ts";
 import { failingJobs } from "./job-health.ts";
 import { redact } from "./redact.ts";
 import { runCardFor, runCardsHere } from "./run-card.ts";
@@ -189,7 +189,8 @@ export function attentionFrom(input: {
 		newDecisions: decisions
 			.slice(-NEW_DECISIONS_LIMIT)
 			.reverse()
-			.map((f) => ({ id: f.id, cwd: f.cwd, headline: clip(splitFinding(clip(f.text, 500), "checkpoint").headline, 120) })),
+			// A question's headline is its card's, from its `ask`: its text is never split, so a command cannot forge one.
+			.map((f) => ({ id: f.id, cwd: f.cwd, headline: clip(f.ask ? questionHeadline(f.ask) : splitFinding(clip(f.text, 500), "checkpoint").headline, 120) })),
 		failing: failingJobs([...input.jobs]).map((j) => ({ jobId: j.id, ...(j.name ? { name: j.name } : {}), streak: j.status.streak, key: `${j.id}:${j.status.runs - j.status.streak}` })),
 		...(input.budget?.over ? { budget: { day: input.day, spent: input.budget.spent, cap: input.budget.cap } } : {}),
 	};
