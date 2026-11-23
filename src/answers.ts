@@ -58,7 +58,7 @@ export interface AnswersDeps {
 	entries(file: string): readonly unknown[] | undefined;
 	/** Where a check lane's transcripts are: `checkSessionDir` of src/trigger-runtime.ts, from the resolved path of `cwd`. */
 	checkSessionDir(cwd: string): string;
-	/** `checkLane` of src/trigger-runtime.ts, given as a function so that this module does not import that module. */
+	/** `checkLane` of src/lane.ts, given as a function so that a test can name a check lane of its own. */
 	checkLaneOf(cwd: string): LaneId | undefined;
 	/**
 	 * C2: `run_end` for `record`, on `lane`, a loop's lane. It makes a hook runner for the loop the lane

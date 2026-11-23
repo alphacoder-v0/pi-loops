@@ -252,6 +252,9 @@ test("a row whose fields are not the shape the engine reads is skipped, not thro
 	assert.equal(parseRow(JSON.stringify({ ...row("1"), mode: null })), undefined);
 	assert.equal(parseRow(JSON.stringify({ ...row("1"), payload: { text: 3, cwd: "/" } })), undefined);
 	assert.equal(parseRow(JSON.stringify({ ...row("1"), payload: "text" })), undefined);
+	assert.equal(parseRow(JSON.stringify({ ...row("1"), payload: { text: "t", cwd: "/", events: "x" } })), undefined);
+	assert.equal(parseRow(JSON.stringify({ ...row("1"), payload: { text: "t", cwd: "/", events: [1] } })), undefined);
+	assert.deepEqual(parseRow(JSON.stringify({ ...row("1"), payload: { text: "t", cwd: "/", events: ["evt-1"] } }))?.payload?.events, ["evt-1"]);
 	// The engine reads the producer of every local row: one without it would throw in each drain.
 	const { created_by: _, ...noProducer } = row("1");
 	assert.equal(parseRow(JSON.stringify(noProducer)), undefined);

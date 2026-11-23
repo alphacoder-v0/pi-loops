@@ -13,6 +13,7 @@ import * as path from "node:path";
 import type { RestoredRow } from "./ask.ts";
 import { type ConversationId, type Lane, type LaneId, laneFileName, parseLane } from "./lane.ts";
 import { type LockOptions, withFileLockSync, writeFileAtomic } from "./lock.ts";
+import type { PushDecision } from "./push.ts";
 
 /** pi's image part, as `pi.sendUserMessage` takes it; pi does not export the type from its package. */
 export interface ImageContent {
@@ -86,6 +87,8 @@ interface RowBase {
 		woken?: string[];
 		/** The ids of those follow-ups: the proof a tick reads that a follow-up is in this row, and the ones its run's closing takes. */
 		woken_ids?: string[];
+		/** A push row only: the raw events (src/events.ts) it is for. */
+		events?: string[];
 	};
 	/** stop, cancel. Never "whatever runs next". */
 	target?: { id: string } | { current: true; started_before: string };
@@ -189,7 +192,7 @@ function readLine(line: string): { row: Row; version: 2 | 3 } | undefined {
 	if (typeof row.created_at !== "string" || (row.handed_at !== undefined && typeof row.handed_at !== "string")) return undefined;
 	const requires = row.payload?.requires;
 	if (requires !== undefined && (!Array.isArray(requires) || !requires.every((s) => typeof s === "string"))) return undefined;
-	for (const list of [row.payload?.woken, row.payload?.woken_ids] as unknown[]) if (list !== undefined && (!Array.isArray(list) || !list.every((s) => typeof s === "string"))) return undefined;
+	for (const list of [row.payload?.woken, row.payload?.woken_ids, row.payload?.events] as unknown[]) if (list !== undefined && (!Array.isArray(list) || !list.every((s) => typeof s === "string"))) return undefined;
 	const target = row.target as unknown;
 	if (target !== undefined && !(target && typeof target === "object" && (typeof (target as { id?: unknown }).id === "string" || ((target as { current?: unknown }).current === true && typeof (target as { started_before?: unknown }).started_before === "string")))) return undefined;
 	// A claim of the wrong shape is not a free row: the line is kept, unread, as a newer one is. Only
@@ -407,6 +410,27 @@ export class RequestStore {
 			});
 		}, lock);
 		return result;
+	}
+
+	/**
+	 * A push, under the lane lock: `decide` reads the lane's rows and its decision is written in the
+	 * same lock. `queued` appends its row and removes `drop`; `replaced` makes the newer event the only
+	 * one of the row it names, which keeps every other field. The other kinds write nothing.
+	 */
+	writePush(lane: LaneId, decide: (rows: readonly Row[]) => PushDecision, lock?: LockOptions): PushDecision {
+		let decision = { kind: "there" } as PushDecision;
+		this.rewrite(lane, (lines) => {
+			const decided = decide(lines.flatMap(({ row }) => (row ? [row] : [])));
+			decision = decided;
+			if (decided.kind === "queued") return [...lines.filter(({ row }) => !decided.drop || row?.id !== decided.drop.id), { raw: rowLine(decided.row) }];
+			if (decided.kind !== "replaced") return lines;
+			return lines.map(({ raw, row, version }) => {
+				if (!row?.payload || row.id !== decided.rowId) return { raw, row };
+				return { raw: rowLine({ ...row, payload: { ...row.payload, events: [decided.event] } }, version), row };
+			});
+		}, lock);
+		if (decision.kind === "queued" && decision.drop) fs.rmSync(this.imageFile(lane, decision.drop.id), { force: true });
+		return decision;
 	}
 
 	private appendLocked(row: UnclaimedRow | RestoredRow): void {

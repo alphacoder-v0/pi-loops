@@ -16,7 +16,7 @@ import { type ResolvedCap, resolveCap } from "./ask.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import type { JobStore } from "./store.ts";
 import type { Inbox } from "./inbox.ts";
-import { type LaneId, parseLane } from "./lane.ts";
+import { type LaneId, checkLane } from "./lane.ts";
 import { failurePause, FAILING_AFTER } from "./backoff.ts";
 import { stamp } from "./schedule.ts";
 import { type CommandGate, GATE_LOOK_EVERY_MS, type GatePolicy, type PathGate, type PathState, PathLooks, gateDecision, gateOf, lookCommand, pathReading } from "./gate.ts";
@@ -194,20 +194,6 @@ export function checkCap(cwd: string, rules: readonly Pick<DynamicTriggerRule, "
 	const withModel = rules.find((r) => r.model);
 	const timeoutMs = rules.reduce((max, r) => Math.max(max, r.timeoutMs ?? 0), 0) || runTimeoutMs;
 	return resolveCap({ cwd, ...(withModel?.model ? { model: withModel.model } : {}), ...(withModel?.thinking ? { thinking: withModel.thinking } : {}), timeoutMs }, runTimeoutMs);
-}
-
-/**
- * A project's check lane: `@check-`, the directory's name and the digest of `triggerSessionKey`.
- * What a rule check or a push files for the project names it. The name is made of the characters
- * a lane id takes and cut to 100, so that any directory has a lane; no project (`cwd` empty) has none.
- */
-export function checkLane(cwd: string): LaneId | undefined {
-	if (!cwd) return undefined;
-	// The real directory's name, as the digest is of the real path: a symlink to the project is the same lane.
-	const name = (path.basename(realpathish(cwd)).replace(/[^A-Za-z0-9._-]/g, "_").replace(/\.{2,}/g, "_") || "unknown").slice(0, 100);
-	const digest = createHash("sha256").update(realpathish(cwd)).digest("hex").slice(0, 8);
-	const lane = parseLane(`@check-${name}-${digest}`);
-	return lane?.kind === "check" ? lane.id : undefined;
 }
 
 /** Check transcripts kept per project, as docs/configuration.md promises. */

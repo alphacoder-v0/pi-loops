@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { FINDING_FIELDS, INBOX_ROTATE_BYTES, Inbox, type InboxEntry, findingId, inProject, resolveInboxRef, UNDER_INBOX_LOCK } from "../src/inbox.ts";
 import { type AnswerWrite, answerPrompt, answerRow, answerStep } from "../src/ask.ts";
 import { sameProject } from "../src/paths.ts";
-import { checkLane } from "../src/trigger-runtime.ts";
+import { checkLane } from "../src/lane.ts";
 import { queueLines } from "../src/job-lines.ts";
 import { type PersonAnswers, personAnswers } from "../src/answers.ts";
 import { RequestStore } from "../src/requests.ts";
