@@ -13,6 +13,7 @@ import type { Disabled, JobStore, LoopJob, RunRecord } from "./store.ts";
 import { jobStatus, runHistory, type JobHistory } from "./job-status.ts";
 import { oneShotDoneV3 } from "./settle.ts";
 import type { Book } from "./stores.ts";
+import type { PathState } from "./gate.ts";
 
 /** A clock decision that was not a run, for the job's status. */
 export interface ClockNote { at: string; text: string }
@@ -22,8 +23,13 @@ export interface JobClock {
 	/** When the drain first found the job's `cwd` missing, while it still is. */
 	cwdMissing?: string;
 }
-/** The versioned clock file. Unknown job keys are preserved by writes. */
-export interface ClockFile { v: 1; jobs: Record<string, JobClock> }
+/**
+ * A rule's gate: how many readings held its wake, and its last reading. A reading that opened a
+ * wake is in `events.jsonl`, not here.
+ */
+export interface GateClock { looks: number; last?: { at: string; state: PathState } }
+/** The versioned clock file. Unknown job keys are preserved by writes; `rules` is there once a rule's gate was looked at. */
+export interface ClockFile { v: 1; jobs: Record<string, JobClock>; rules?: Record<string, GateClock> }
 /** The cursor stamps as this ticker read them. */
 export interface CursorRead { readonly slot?: string; readonly fired?: string }
 export interface CursorMove {
@@ -66,6 +72,12 @@ export interface Clock {
 	/** One skipped overlap more, counted where the drain spends a slot that waited beside a going run. */
 	countCollapse(job: string): void;
 }
+/** Where a rule's gate readings are counted. */
+export interface GateClocks {
+	/** Record a rule's reading: the last reading always, and one look more when it held the wake. Returns the entry as it was. */
+	noteGate(rule: string, last: { at: string; state: PathState }, held: boolean): GateClock | undefined;
+	readGate(rule: string): GateClock | undefined;
+}
 /** The file belongs to a newer version and must not be replaced. */
 export class ClockNewer extends Error {}
 
@@ -85,8 +97,20 @@ export function validEntry(value: unknown): JobClock | undefined {
 	return value as JobClock;
 }
 
+const PATH_STATES: readonly string[] = ["present", "absent", "unknown"];
+
+/** A rule's gate entry, or undefined when it is not one this build wrote. */
+export function validGate(value: unknown): GateClock | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const entry = value as Record<string, unknown>;
+	if (!Number.isInteger(entry.looks) || (entry.looks as number) < 0) return undefined;
+	const last = entry.last as Record<string, unknown> | undefined;
+	if (last !== undefined && (!last || typeof last !== "object" || !validStamp(last.at) || !PATH_STATES.includes(last.state as string))) return undefined;
+	return value as GateClock;
+}
+
 /** The clock file and its lock. Scheduling and lease decisions stay outside this store. */
-export class ClockStore implements Clock {
+export class ClockStore implements Clock, GateClocks {
 	readonly paths: ClockPaths;
 	private readonly io: ClockIo;
 	constructor(paths: ClockPaths, io: ClockIo) { this.paths = paths; this.io = io; }
@@ -103,7 +127,25 @@ export class ClockStore implements Clock {
 			const entry = validEntry(value);
 			if (entry) jobs[job] = entry;
 		}
-		return { v: 1, jobs };
+		if (!file.rules || typeof file.rules !== "object" || Array.isArray(file.rules)) return { v: 1, jobs };
+		const rules: Record<string, GateClock> = {};
+		for (const [rule, value] of Object.entries(file.rules)) {
+			const entry = validGate(value);
+			if (entry) rules[rule] = entry;
+		}
+		return { v: 1, jobs, rules };
+	}
+	noteGate(rule: string, last: { at: string; state: PathState }, held: boolean): GateClock | undefined {
+		return this.io.locked(this.paths.lock, () => {
+			const file = this.read();
+			const before = file.rules?.[rule];
+			const next: GateClock = { looks: (before?.looks ?? 0) + (held ? 1 : 0), last };
+			this.io.write(this.paths.file, JSON.stringify({ ...file, rules: { ...file.rules, [rule]: next } }));
+			return before;
+		});
+	}
+	readGate(rule: string): GateClock | undefined {
+		return this.read().rules?.[rule];
 	}
 	advance(move: CursorMove, holds?: () => boolean): Advance {
 		return this.io.locked(this.paths.lock, () => {

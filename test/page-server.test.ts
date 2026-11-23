@@ -2447,12 +2447,13 @@ test("a rule that waits for a path says so on its row, with the next look from t
 		fs.mkdirSync(page.loops, { recursive: true });
 		const precheck = { v: 1, of: "~/build.done appears", raw: "~/build.done", resolved: "/home/me/build.done" };
 		const rule = (id: string, over: Record<string, unknown> = {}) => ({ id, condition: "~/build.done appears", action: "tell me", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: dir, precheck, ...over });
-		fs.writeFileSync(path.join(page.loops, "triggers.json"), JSON.stringify({ version: 1, rules: [rule(`dyn-${hex(1)}`), rule(`dyn-${hex(2)}`), rule(`dyn-${hex(3)}`, { precheck: undefined }), rule(`dyn-${hex(4)}`, { condition: "~/build.done appears and is not empty" })] }));
+		fs.writeFileSync(path.join(page.loops, "triggers.json"), JSON.stringify({ version: 1, rules: [rule(`dyn-${hex(1)}`), rule(`dyn-${hex(2)}`), rule(`dyn-${hex(3)}`, { precheck: undefined }), rule(`dyn-${hex(4)}`, { condition: "~/build.done appears and is not empty" }), rule(`dyn-${hex(5)}`, { precheck: undefined, gate: { kind: "path", of: "~/build.done appears", raw: "~/build.done", resolved: "/home/me/build.done" } })] }));
 		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
 		const rules = (await page.get("c/s1/state")).body.automation.rules;
 		assert.deepEqual([rules[0].waitsFor, rules[0].look, Date.parse(rules[0].nextLookAt)], ["~/build.done", "no model call until the file exists", next], "the next look as a stamp, for the page's own clock");
 		assert.deepEqual([rules[1].waitsFor, rules[1].look, rules[1].nextLookAt], ["~/build.done", "no model call until the file exists", undefined], "not looked at yet in this process");
 		assert.deepEqual([rules[2].look, rules[3].look], [undefined, undefined], "a rule from before the pre-check, and one edited by hand, are the model's");
+		assert.equal(rules[4].waitsFor, "~/build.done", "a rule with a gate and no precheck waits too");
 	} finally {
 		await page.stop();
 	}

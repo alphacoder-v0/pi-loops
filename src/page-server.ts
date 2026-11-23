@@ -21,7 +21,7 @@ import { buildSessionProjection, migrateSessionEntries, parseSessionEntries, typ
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName, shouldReadAgain } from "./lease.ts";
 import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom, machineWide } from "./activity.ts";
 import { formatSchedule, nextRunStamp, scheduleWords, stamp } from "./schedule.ts";
-import { type Look, lookLine, watchOf } from "./path-precheck.ts";
+import { type PathState, gateOf, lookLine } from "./gate.ts";
 import { failingJobs } from "./job-health.ts";
 import { type JobHistory, type ListedJob, listedJob, runHistory } from "./job-status.ts";
 import type { ClockFile } from "./clock.ts";
@@ -88,7 +88,7 @@ export interface PageServerOptions {
 	/** Stop this run, on a loop row (src/host-control-channel.ts stopRun): the whole run id, never a prefix. */
 	stopRun?: (runId: string) => StopAnswer;
 	/** A rule that waits for a path: its last look in the process that checks rules, and when the next one is. */
-	ruleLook?: (ruleId: string) => { look: Look; nextAt: number } | undefined;
+	ruleLook?: (ruleId: string) => { look: PathState; nextAt: number } | undefined;
 	/**
 	 * pi's sessions directory, which the conversation list reads (src/conversation-rows.ts). Without it
 	 * the list reads only the directories of the session files leases name, so a server built in a
@@ -1196,7 +1196,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	 * 09:22 · " in the browser's local time in front of the line.
 	 */
 	function ruleWait(r: any): { waitsFor?: string; look?: string; nextLookAt?: string } {
-		const w = typeof r?.condition === "string" ? watchOf(r) : undefined;
+		const w = typeof r?.condition === "string" ? gateOf(r) : undefined;
 		if (!w || !r.enabled) return {};
 		const last = opts.ruleLook?.(r.id);
 		const timed = (last?.look ?? "absent") === "absent" && last ? { nextLookAt: stamp(last.nextAt) } : {};

@@ -126,6 +126,8 @@ export interface Conversion {
 	readonly jobs: number;
 	/** Rows written for an owed slot or a dead marker. */
 	readonly rows: number;
+	/** Rules of `triggers.json` that gained a `gate` from their `precheck`. */
+	readonly gates: number;
 }
 
 /**
@@ -141,6 +143,7 @@ export interface Conversion {
  */
 export function convertStores(dir: string, log: (line: string) => void = () => {}): Conversion {
 	const converted = convertJobs(dir, log);
+	const gates = convertRules(dir, log);
 	convertClaimRows({ inbox: new Inbox(dir), requests: new RequestStore(dir), audit: new TriggerStore(dir) }, log);
 	const removed: string[] = [];
 	for (const name of RETIRED_FILES) {
@@ -153,7 +156,37 @@ export function convertStores(dir: string, log: (line: string) => void = () => {
 			log(`could not remove ${name}, which an older version left: ${err?.message ?? err}`);
 		}
 	}
-	return { removed, ...converted };
+	return { removed, ...converted, gates };
+}
+
+/**
+ * Step 4 (design section 5, as the owner decided on 2026-11-23): `triggers.json` stays `version: 1`,
+ * and a rule that has only 0.24.2's `precheck` gains the same path as a `gate`. Under the rules'
+ * lock. A rule that has a `gate` keeps it, and nothing else in the file changes; a file that does not
+ * parse is left for the store to say what is wrong with it. A second run finds nothing to fill.
+ */
+function convertRules(dir: string, log: (line: string) => void): number {
+	const file = path.join(dir, "triggers.json");
+	if (!fs.existsSync(file)) return 0;
+	return withFileLockSync(path.join(dir, "triggers.lock"), () => {
+		let parsed: { rules?: unknown };
+		try { parsed = JSON.parse(fs.readFileSync(file, "utf8")) as typeof parsed; }
+		catch { return 0; }
+		if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.rules)) return 0;
+		let filled = 0;
+		for (const rule of parsed.rules as unknown[]) {
+			if (!rule || typeof rule !== "object" || Array.isArray(rule)) continue;
+			const r = rule as { gate?: unknown; precheck?: unknown };
+			const pre = r.precheck as { of?: unknown; raw?: unknown; resolved?: unknown } | undefined;
+			if (r.gate !== undefined || !pre || typeof pre !== "object" || Array.isArray(pre)) continue;
+			r.gate = { kind: "path", of: pre.of, raw: pre.raw, resolved: pre.resolved };
+			filled++;
+		}
+		if (!filled) return 0;
+		writeFileAtomic(file, `${JSON.stringify(parsed, null, 2)}\n`);
+		log(`triggers.json: ${filled} rule(s) that wait for a path have their gate`);
+		return filled;
+	});
 }
 
 function convertJobs(dir: string, log: (line: string) => void): { jobs: number; rows: number } {

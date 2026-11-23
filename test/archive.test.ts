@@ -186,15 +186,18 @@ test("a path-only rule's pre-check is read again on import, against the new proj
 	const dir = tmp("pi-loops-arc-");
 	const sessionFile = fakeSession(dir);
 	const theirs = { v: 1, of: "./ready appears", raw: "./ready", resolved: "/old/ready" };
+	const theirGate = { kind: "path", of: "./ready appears", raw: "./ready", resolved: "/old/ready" };
 	const rules: any[] = [
-		{ id: "dyn-" + "4".repeat(32), condition: "./ready appears", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: "/old", precheck: theirs },
-		{ id: "dyn-" + "5".repeat(32), condition: "the build is green", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: "/old", precheck: theirs },
+		{ id: "dyn-" + "4".repeat(32), condition: "./ready appears", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: "/old", precheck: theirs, gate: theirGate },
+		{ id: "dyn-" + "5".repeat(32), condition: "the build is green", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: "/old", precheck: theirs, gate: theirGate },
 	];
 	const out = defaultExportPath(dir, "orig-pre");
 	exportV2({ sessionFile, cwd: "/old", jobs: [], rules, states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
 	const imp = importSession({ archivePath: out, sessionDir: path.join(dir, "sessions"), targetCwd: "/new", activate: true, existingJobIds: new Set(), existingRuleIds: new Set() });
+	assert.equal(imp.rules[0].gate?.resolved, "/new/ready");
 	assert.equal(imp.rules[0].precheck?.resolved, "/new/ready");
-	assert.equal(imp.rules[1].precheck, undefined, "a condition that is not path-only carries no pre-check, whatever the archive said");
+	assert.equal(imp.rules[1].gate, undefined, "a condition that is not path-only carries no gate, whatever the archive said");
+	assert.equal(imp.rules[1].precheck, undefined);
 });
 
 test("import refuses a structurally broken transcript instead of truncating history when it is opened", () => {

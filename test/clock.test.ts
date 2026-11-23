@@ -76,6 +76,26 @@ test("[clock-entry-dropped] Invalid clock entries read as absent while valid ent
 	assert.equal(validEntry({ runs: 0, note: { at: "bad", text: "no" } }), undefined);
 });
 
+test("[gate-held-count] A rule's gate entry counts held readings, keeps the last one, and survives the jobs' writes; a malformed one reads as absent.", () => {
+	const dir = tmp();
+	const location = path.join(dir, "clock.json");
+	const clock = new ClockStore({ file: location, lock: path.join(dir, "clock.lock") }, { locked: withFileLockSync, write: writeFileAtomic });
+	const absent = { at: stamp(now), state: "absent" as const };
+	assert.equal(clock.noteGate("dyn-a", absent, true), undefined, "nothing before the first look");
+	assert.deepEqual(clock.noteGate("dyn-a", absent, true), { looks: 1, last: absent });
+	const present = { at: stamp(now + 1000), state: "present" as const };
+	assert.deepEqual(clock.noteGate("dyn-a", present, false), { looks: 2, last: absent });
+	assert.deepEqual(clock.readGate("dyn-a"), { looks: 2, last: present }, "a reading that opens a wake is not a held look");
+	clock.advance({ job: "cron-job", read: {}, slot: stamp(now), fires: true });
+	clock.closeRun("cron-job", { ordinal: 1 });
+	assert.deepEqual(clock.read().rules, { "dyn-a": { looks: 2, last: present } }, "the jobs' writes keep the rules");
+	assert.equal(clock.read().jobs["cron-job"].runs, 1);
+	fs.writeFileSync(location, JSON.stringify({ v: 1, jobs: {}, rules: { bad: { looks: -1 }, badState: { looks: 1, last: { at: stamp(now), state: "maybe" } }, good: { looks: 0 } } }));
+	assert.deepEqual(Object.keys(clock.read().rules ?? {}), ["good"]);
+	fs.writeFileSync(location, JSON.stringify({ v: 1, jobs: {} }));
+	assert.deepEqual(clock.read(), { v: 1, jobs: {} }, "no rules key until a rule's gate is looked at");
+});
+
 test("[kept-enable-clears] The clock closes, resets and clears: an enable drops the note, as main's enable cleared the error.", () => {
 	const dir = tmp();
 	const clock = new ClockStore({ file: path.join(dir, "clock.json"), lock: path.join(dir, "clock.lock") }, { locked: withFileLockSync, write: writeFileAtomic });

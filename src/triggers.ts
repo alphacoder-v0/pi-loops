@@ -12,7 +12,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { clampFuture, stamp } from "./schedule.ts";
 import { withFileLock, writeFileAtomic } from "./lock.ts";
 import { capRedacted, previewRedacted } from "./redact.ts";
-import { type PathWatch, pathOnlyCondition } from "./path-precheck.ts";
+import { type PathGate, type Precheck, pathOnlyCondition, precheckOf } from "./gate.ts";
 
 export const DEFAULT_TRIGGER_POLL_INTERVAL_SECS = 10 * 60;
 export const DEDUP_WINDOW_MS = 5 * 60_000;
@@ -43,11 +43,13 @@ export interface DynamicTriggerRule {
 	/** When the last failing check ran: the backoff is measured from here, so a rule that has never been checked is never held back. */
 	lastCheckFailedAt?: string;
 	/**
-	 * Set when the condition is only "<path> exists / appears" (src/path-precheck.ts): each poll
-	 * `stat`s the path first, and no model is asked while it is absent. Recorded at creation only;
-	 * a rule without it is model-checked as before.
+	 * Set when the condition is only "<path> exists / appears" (src/gate.ts): each poll `stat`s the
+	 * path first, and no model is asked while it is absent. Recorded at creation only; a rule with
+	 * neither this nor `precheck` is model-checked as before.
 	 */
-	precheck?: PathWatch;
+	gate?: PathGate;
+	/** The same path as 0.24.2 reads it, written beside `gate` so that a 0.24.2 process still pre-checks the rule. Read when `gate` is absent. */
+	precheck?: Precheck;
 	/** A watch nobody has said yes to yet (design 2.5): `enabled` is false, and only its answer sets it up. */
 	proposed?: { at: string; session: string };
 }
@@ -337,7 +339,10 @@ export class TriggerStore {
 		// Here, in the process that creates the rule: `~` is the creator's home, which the background
 		// process started by a service manager may not share.
 		const only = pathOnlyCondition(condition, { cwd: input.cwd, home: os.homedir() });
-		if ("watch" in only) rule.precheck = only.watch;
+		if ("gate" in only) {
+			rule.gate = only.gate;
+			rule.precheck = precheckOf(only.gate);
+		}
 		await this.mutate((rules) => {
 			rules.push(rule);
 		});

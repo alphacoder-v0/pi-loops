@@ -54,8 +54,8 @@ test("convertStores removes nothing that is not in its list.", () => {
 test("convertStores does nothing the second time, and nothing in a directory that is not there.", () => {
 	const { dir } = seeded();
 	convertStores(dir);
-	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, rows: 0 });
-	assert.deepEqual(convertStores(path.join(dir, "no-such-directory")), { removed: [], jobs: 0, rows: 0 });
+	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, rows: 0, gates: 0 });
+	assert.deepEqual(convertStores(path.join(dir, "no-such-directory")), { removed: [], jobs: 0, rows: 0, gates: 0 });
 });
 
 test("convertStores does not throw when the loops directory is a file.", () => {
@@ -104,7 +104,7 @@ test("[convert-steps] A version 2 jobs.json: each cursor into clock.json, the te
 	const dir = tmp("pi-loops-convert-");
 	const text = writeV2(dir, [v2Loop(dir, { runCount: 7, skippedOverlap: 2, lastDueAt: "2026-01-05T09:00:00.000Z", lastFiredAt: "2026-01-05T09:00:01.000Z", lastCompletedAt: "2026-01-05T09:01:00.000Z", consecutiveFailures: 1, cwdMissingSince: "2026-01-05T08:30:00.000Z", clearedAt: "2026-01-05T08:10:00.000Z", host: "old-box" })]);
 	const said: string[] = [];
-	assert.deepEqual(convertStores(dir, (line) => void said.push(line)), { removed: [], jobs: 1, rows: 0 });
+	assert.deepEqual(convertStores(dir, (line) => void said.push(line)), { removed: [], jobs: 1, rows: 0, gates: 0 });
 	const clock = JSON.parse(fs.readFileSync(path.join(dir, "clock.json"), "utf8"));
 	assert.deepEqual(clock.jobs["cron-convert"], { slot: "2026-01-05T09:00:00.000Z", fired: "2026-01-05T09:00:01.000Z", runs: 7, collapsed: 2, cleared: "2026-01-05T08:10:00.000Z", cwdMissing: "2026-01-05T08:30:00.000Z" });
 	assert.equal(fs.readFileSync(path.join(dir, "jobs.json.v2.bak"), "utf8"), text);
@@ -115,7 +115,7 @@ test("[convert-steps] A version 2 jobs.json: each cursor into clock.json, the te
 	assert.match(said.join("\n"), /version 2 converted to version 3 \(1 job\(s\), 0 owed run\(s\) queued\)/);
 	// The second start finds version 3 and writes nothing.
 	const before = [fs.readFileSync(path.join(dir, "jobs.json"), "utf8"), fs.readFileSync(path.join(dir, "clock.json"), "utf8")];
-	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, rows: 0 });
+	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, rows: 0, gates: 0 });
 	assert.deepEqual([fs.readFileSync(path.join(dir, "jobs.json"), "utf8"), fs.readFileSync(path.join(dir, "clock.json"), "utf8")], before);
 });
 
@@ -156,7 +156,7 @@ test("[convert-crash] A start that stopped after the rows and before version 3 i
 	// The version 2 file is back as it was before step 5, with a stale cursor a partial attempt left.
 	fs.writeFileSync(path.join(dir, "jobs.json"), text);
 	fs.writeFileSync(path.join(dir, "clock.json"), JSON.stringify({ v: 1, jobs: { "cron-convert": { runs: 1 } } }));
-	assert.deepEqual(convertStores(dir), { removed: [], jobs: 1, rows: 0 });
+	assert.deepEqual(convertStores(dir), { removed: [], jobs: 1, rows: 0, gates: 0 });
 	assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "clock.json"), "utf8")).jobs["cron-convert"].runs, 4);
 	assert.equal(new RequestStore(dir).list("@cron-convert").length, 1);
 });
@@ -217,7 +217,7 @@ test("[convert-version-text] A version that is not a number is not converted: th
 	const dir = tmp("pi-loops-convert-");
 	const text = JSON.stringify({ version: "3", jobs: [{ ...v2Loop(dir), runCount: undefined, skippedOverlap: undefined, enabled: false, disabled: { code: "cwd-missing", why: "disabled: cwd /gone", at: "2026-01-05T08:00:00.000Z" } }] });
 	fs.writeFileSync(path.join(dir, "jobs.json"), text);
-	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, rows: 0 });
+	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, rows: 0, gates: 0 });
 	assert.equal(fs.readFileSync(path.join(dir, "jobs.json"), "utf8"), text);
 	assert.equal(fs.existsSync(path.join(dir, "jobs.json.v2.bak")), false);
 	assert.equal(new JobStore(dir).load()[0].disabled?.why, "disabled: cwd /gone");
@@ -226,9 +226,39 @@ test("[convert-version-text] A version that is not a number is not converted: th
 test("[convert-unreadable] A jobs.json that does not parse is left as it is, for the store to say what is wrong with it.", () => {
 	const dir = tmp("pi-loops-convert-");
 	fs.writeFileSync(path.join(dir, "jobs.json"), "{ half-typed");
-	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, rows: 0 });
+	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, rows: 0, gates: 0 });
 	assert.equal(fs.readFileSync(path.join(dir, "jobs.json"), "utf8"), "{ half-typed");
 	assert.equal(fs.existsSync(path.join(dir, "jobs.json.v2.bak")), false);
+});
+
+test("[triggers-v2] A rule that has only 0.24.2's precheck gains the same path as its gate; a rule with a gate keeps it; the file stays version 1, nothing else changes, and a second start writes nothing.", () => {
+	const dir = tmp("pi-loops-convert-rules-");
+	const file = path.join(dir, "triggers.json");
+	const pre = { v: 1, of: "~/build.done appears", raw: "~/build.done", resolved: "/home/me/build.done" };
+	const theirs = { kind: "path", of: "~/x appears", raw: "~/x", resolved: "/home/me/x" };
+	const base = { action: "tell me", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "2026-01-01T00:00:00Z", cwd: dir, consecutiveFailures: 2, lastCheckFailedAt: "2026-01-01T00:01:00Z" };
+	const rules = [
+		{ id: `dyn-${"1".repeat(32)}`, condition: "~/build.done appears", precheck: pre, ...base },
+		{ id: `dyn-${"2".repeat(32)}`, condition: "~/x appears", precheck: pre, gate: theirs, ...base },
+		{ id: `dyn-${"3".repeat(32)}`, condition: "the build is green", ...base },
+	];
+	fs.writeFileSync(file, JSON.stringify({ version: 1, extra: "kept", rules }));
+	const said: string[] = [];
+	assert.equal(convertStores(dir, (line) => void said.push(line)).gates, 1);
+	const after = JSON.parse(fs.readFileSync(file, "utf8"));
+	assert.equal(after.version, 1);
+	assert.equal(after.extra, "kept");
+	assert.deepEqual(after.rules[0], { ...rules[0], gate: { kind: "path", of: pre.of, raw: pre.raw, resolved: pre.resolved } }, "the gate is added, the precheck and the failure fields stay");
+	assert.deepEqual(after.rules[1], rules[1], "a rule that has a gate keeps it");
+	assert.deepEqual(after.rules[2], rules[2]);
+	assert.deepEqual(said, ["triggers.json: 1 rule(s) that wait for a path have their gate"]);
+	const text = fs.readFileSync(file, "utf8");
+	assert.equal(convertStores(dir).gates, 0);
+	assert.equal(fs.readFileSync(file, "utf8"), text, "a second start writes nothing");
+	assert.equal(new TriggerStore(dir).load()[0].gate?.resolved, "/home/me/build.done");
+	fs.writeFileSync(file, "{torn");
+	assert.equal(convertStores(dir).gates, 0, "a file that does not parse is left for the store");
+	assert.equal(fs.readFileSync(file, "utf8"), "{torn");
 });
 
 test("convertStores removes a retired name that is a link, and leaves what the link points to.", () => {
@@ -357,7 +387,7 @@ test("[K1] A claim row 0.24.2 handed over leaves at start, its finding stays cla
 	assert.equal(findingOf(dir, HANDED)?.status, "claimed", "it was handed to pi before the upgrade: nothing to open again");
 	assert.deepEqual(convertedAudit(dir), [[`claim-${HANDED.slice(4, 12)}`, HANDED, "handed over before the upgrade"]]);
 	const before = snapshot(dir);
-	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, rows: 0 });
+	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, rows: 0, gates: 0 });
 	assert.deepEqual(snapshot(dir), before, "the second start writes nothing");
 	for (let stop = 1; stop <= PROTOCOL.K1.length; stop++) {
 		const v = claimDir([{ finding: HANDED, handed: true }], [HANDED]);

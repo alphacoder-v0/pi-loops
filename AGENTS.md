@@ -48,6 +48,7 @@ src/loop-run.ts              one loop run, its stop record, and its ordered clos
 src/ticker.ts               one process timer and its typed, ordered riders
 src/stores.ts               stores of a loops directory, opened once, and job removal
 src/trigger-runtime.ts      dynamic-rule evaluation, deliveries, promotion, audit
+src/gate.ts                 a gate: a look before a model is asked (a path's `stat`, a command's digest) and whether it wakes; `pathOnlyCondition`
 src/triggers.ts             rule store, parsing, prompt, dedup window
 src/goal.ts                 /goal: the stop-condition state machine, evaluator prompts, continuation budget
 src/ask.ts                  a question from a background run and its answer, as values: the shapes, the table of steps, the pure deciders, and `PROTOCOL`, the writes of each transition in order
@@ -67,7 +68,6 @@ src/job-signal.ts           what a loop's runs came to: findings filed, claimed,
 src/job-lines.ts            the `/cron` listing itself, out of the unimportable extension so a marker or column is testable
 src/job-owner.ts            where a job runs, as one question the scheduler, the lists and `/cron run` all ask the same way
 src/job-tune.ts             the one change the page suggests for a loop, decided from its signal, never applied by itself
-src/path-precheck.ts        a rule that only waits for a path: `stat` before any model is asked
 src/run-card.ts             what a finished run writes into the conversation, and which runs are fresh (`freshRuns`)
 src/inbox-card.ts           a finding as a person reads it: card, terminal line, `screenText`, and the claim prompt
 src/activity.ts             the page's activity strip and attention counts, computed from the run, audit and inbox files

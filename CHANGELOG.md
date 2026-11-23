@@ -80,8 +80,21 @@ All notable changes to pi-loops are documented here. The format follows
 - **A loop's notes file from 0.24.2 needs no conversion.** `state/<id>.md` is read as it is. A
   file edited by hand to more than 2000 characters, which 0.24.2 cut when it read it, is now read
   whole, and the loop's next run writes it back under the cap.
+- **A rule that waits for a path gets a `gate` field, and `triggers.json` stays version 1.** The
+  first start of this version gives each rule that has only `precheck` a `gate` with the same path.
+  A rule keeps its `gate` when it has one. A new path rule is written with both fields, so 0.24.2
+  still reads the path and still makes no model call while it is absent. 0.24.2 keeps the `gate`
+  field when it writes the file. 0.24.2 ignores a gate that is not a path: such a rule costs it one
+  model call each poll, as a rule with no gate does.
 
 ### Changed
+
+- **A rule that waits for a path keeps its last look in `clock.json`.** How many looks found the
+  path absent, and the last look, are no longer in the memory of the process. A restart of pi-loops
+  writes no second `waiting` row, and the page shows the next look after a restart. A look that lets
+  the rule through is stored as it was taken in `events.jsonl` (source `gate:<rule id>`) before the
+  check starts, and the check's `running` row names it in `details.events`. A look that finds the
+  path absent is only counted.
 
 - **A loop's notes are cut at the write, and never silently (#214).** When a run writes notes over
   2000 characters, `state/<id>.md` keeps the leading whole lines that fit and ends with a line that

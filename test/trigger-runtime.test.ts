@@ -904,11 +904,15 @@ test("a promoted result that falls back to the inbox is one finding, and a repea
 
 /* ------------------------------------------------- rules that wait for a path */
 
-function waitingSetup(stat?: (p: string) => Promise<unknown>) {
+function waitingSetup(stat?: (p: string) => Promise<unknown>, beforeRun?: () => void) {
 	const dir = tmp("pi-loops-trt-path-");
 	const runner = matchingRunner();
 	const finished: any[] = [];
-	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ cwd: dir }), runner, pollIntervalSecs: 1, stat, hooks: { onFinished: (o) => void finished.push(o) } });
+	const run = (req: SubagentRequest) => {
+		beforeRun?.();
+		return runner(req);
+	};
+	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ cwd: dir }), runner: run, pollIntervalSecs: 1, stat, hooks: { onFinished: (o) => void finished.push(o) } });
 	let now = Date.now();
 	/** One poll, and the check it started (if any) to its end. */
 	const poll = async () => {
@@ -975,7 +979,10 @@ test("a rule without a pre-check (made before it existed, or seeded by hand) is 
 	const { rt, runner, poll, file } = waitingSetup();
 	const dir = path.dirname(file);
 	const old = await rt.store.add({ condition: "~/build.done appears", action: "tell me", cwd: dir, fireOnce: false });
-	await rt.store.update(old.id, (r) => void delete r.precheck);
+	await rt.store.update(old.id, (r) => {
+		delete r.gate;
+		delete r.precheck;
+	});
 	const waiting = await rt.store.add({ condition: `${file} appears`, action: "tell me", cwd: dir, fireOnce: false });
 	await poll();
 	await poll();
@@ -1005,6 +1012,63 @@ test("the next look the page shows is the last look plus the poll interval, and 
 	rt.pollIntervalSecs = 600;
 	assert.equal(rt.ruleLook(rule.id)!.nextAt - look.nextAt, 600_000 - 30_000, "600 s after the look");
 	assert.equal(rt.ruleLook("dyn-none"), undefined);
+});
+
+test("a rule 0.24.2 made, with only its precheck, is gated by the same path", async () => {
+	const { rt, runner, poll, file } = waitingSetup();
+	const rule = await rt.store.add({ condition: `${file} appears`, action: "tell me", cwd: path.dirname(file) });
+	await rt.store.update(rule.id, (r) => void delete r.gate);
+	await poll();
+	assert.equal(runner.calls.length, 0, "held while the file is absent");
+	fs.writeFileSync(file, "");
+	await poll();
+	assert.equal(runner.calls.length, 1);
+});
+
+test("[gate-raw-first] a reading that opens a check is in events.jsonl before the check runs, and the running row names it", async () => {
+	let seenByCheck: any[] = [];
+	const events = () => (fs.existsSync(path.join(dir, "events.jsonl")) ? fs.readFileSync(path.join(dir, "events.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+	const { dir, rt, runner, poll, rows, file } = waitingSetup(undefined, () => {
+		seenByCheck = events();
+	});
+	const rule = await rt.store.add({ condition: `${file} appears`, action: "tell me", cwd: path.dirname(file) });
+	await poll();
+	assert.deepEqual(events(), [], "a held reading stores nothing");
+	fs.writeFileSync(file, "");
+	await poll();
+	assert.equal(runner.calls.length, 1);
+	assert.equal(seenByCheck.length, 1, "stored before the check ran");
+	const [event] = seenByCheck;
+	assert.equal(event.source, `gate:${rule.id}`);
+	assert.deepEqual(JSON.parse(event.raw), { path: file, resolved: file, state: "present" });
+	assert.deepEqual((rows("running")[0].details as any).events, [event.id], "the check names the reading it ran on");
+});
+
+test("[gate-held-count] a reading that holds adds one to the rule's look count in clock.json and stores nothing", async () => {
+	const { dir, rt, runner, poll, file } = waitingSetup();
+	const rule = await rt.store.add({ condition: `${file} appears`, action: "tell me", cwd: path.dirname(file), fireOnce: false });
+	const clock = () => JSON.parse(fs.readFileSync(path.join(dir, "clock.json"), "utf8"));
+	for (let i = 0; i < 3; i++) await poll();
+	assert.equal(runner.calls.length, 0);
+	assert.equal(clock().rules[rule.id].looks, 3);
+	assert.equal(clock().rules[rule.id].last.state, "absent");
+	assert.equal(fs.existsSync(path.join(dir, "events.jsonl")), false, "no reading stored");
+	assert.equal(rule.consecutiveFailures, undefined);
+	fs.writeFileSync(file, "");
+	await poll();
+	assert.equal(runner.calls.length, 1);
+	assert.equal(clock().rules[rule.id].looks, 3, "a reading that opens the check is not a held look");
+	assert.equal(clock().rules[rule.id].last.state, "present");
+	assert.equal(rt.store.load()[0].gate?.resolved, file, "the rule itself is not written for a look");
+});
+
+test("a rule's last look outlives the process: a second runtime writes no second waiting row", async () => {
+	const { dir, rt, poll, rows, file } = waitingSetup();
+	await rt.store.add({ condition: `${file} appears`, action: "tell me", cwd: path.dirname(file) });
+	await poll();
+	const again = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ cwd: dir }), runner: matchingRunner(), pollIntervalSecs: 1 });
+	await again.tick(Date.now() + 60_000);
+	assert.equal(rows("waiting", "trigger").length, 1);
 });
 
 test("[check-lane-symlink] a project reached through a symlink has one check lane, named for the real directory", () => {

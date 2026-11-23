@@ -42,6 +42,7 @@ import { TriggerRuntime, checkLane, checkSessionDir, promotionToInbox } from "./
 import { auditCronFinish, auditCronStart, controlPlanePreflight } from "./triggers.ts";
 import { shortSessionId } from "./session-head.ts";
 import { DEAD_SESSION_MARKER } from "./convert-v2.ts";
+import { EventLog } from "./events.ts";
 
 export interface HostRuntimeDeps {
 	dir: string;
@@ -485,6 +486,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		slots,
 		budget: () => budgetState(stores.jobs, deps.config().dailyBudgetUsd, Date.now()),
 		inbox: stores.inbox,
+		events: new EventLog(dir, "background"),
 		hooks: {
 			onPromote: promote,
 			// A push that injects and runs reaches the host only when no window has its server (host.ts): the inbox.
