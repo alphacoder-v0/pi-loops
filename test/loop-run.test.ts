@@ -6,6 +6,8 @@ import { test } from "node:test";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { resolveCap } from "../src/ask.ts";
 import { GuardSeats } from "../src/guard.ts";
+import { personAnswers } from "../src/answers.ts";
+import { notesWrite } from "../src/notes.ts";
 import type { SubagentRequest } from "../src/runner.ts";
 import { createInProcessRunner } from "../src/sdk-runner.ts";
 import { openStores } from "../src/stores.ts";
@@ -299,6 +301,136 @@ test("[M5a.8d] a loop run whose model writes into the loops directory by a relat
 		assert.deepEqual(stores.inbox.list().filter((f) => f.ask), [], "no question is filed");
 		const toolResults = fs.readFileSync(modelLog, "utf8").trim().split("\n").map((line) => JSON.parse(line)).flatMap((body) => body.messages.filter((m: any) => m.role === "tool").map((m: any) => String(m.content)));
 		assert.ok(toolResults.some((text) => text.startsWith("refused by pi-loops: reads or writes pi-loops' own files. Nobody was asked: a person cannot see on the card what this call would read or write")), "the model is told it is refused and nobody was asked");
+	} finally {
+		fake.kill();
+	}
+});
+
+/** One run of `job` through `runLoop` with a runner that answers `reply` (or does `act` first), from a fresh row. */
+async function oneRun(f: ReturnType<typeof setup>, job: LoopJob, id: string, reply: string | ((request: SubagentRequest) => { ok: boolean; text: string; timedOut?: boolean })): Promise<{ prompt: string; record: RunRecordM4b }> {
+	const row: UnclaimedRow = { v: 3, id, lane: `@${job.id}`, kind: "input", source: `cron:${job.id}`, mode: "unattended", wake: "turn", payload: { text: "x", cwd: job.cwd }, created_at: stamp(now), created_by: f.createdBy, attempts: 0 };
+	f.stores.requests.append(row);
+	const claimed = f.deps.runs.claim(f.stores.requests, row, f.deps.holder(), { jobId: job.id, label: "watch", promptPreview: "x", ctrl: new AbortController() }, now)!;
+	let prompt = "";
+	f.deps.runner = async (request) => {
+		prompt = request.prompt;
+		const out = typeof reply === "string" ? { ok: true, text: reply } : reply(request);
+		return { ok: out.ok, exitCode: out.ok ? 0 : 1, timedOut: out.timedOut ?? false, text: out.text, usage: { input: 1, output: 1, cost: 0, turns: 1 }, ...(out.ok ? {} : { errorMessage: out.timedOut ? "timed out" : "the model failed" }) };
+	};
+	const before = f.finished.length;
+	await runLoop(claimed, job, f.deps);
+	return { prompt, record: f.finished[before] };
+}
+
+test("[notes-write] [overflow] [notes-cut-visible] a run's notes over the cap: the index keeps the leading lines and says it was cut, overflow.md has the whole text, the record has notesCut and the log one warning", async () => {
+	const f = setup();
+	const warnings: string[] = [];
+	f.deps.sinks.log = (line, level) => { if (level === "warning") warnings.push(line); };
+	const job = await f.stores.jobs.add(makeJob({ name: "watch" })) as LoopJob;
+	const notes = Array.from({ length: 40 }, (_, i) => `- PR #${1000 + i}: watched since 2026-11-${String(1 + (i % 28)).padStart(2, "0")}, ${"x".repeat(50)}`).join("\n");
+	const { record } = await oneRun(f, job, "run-00000000000000000000000000000001", `done <loop-state>${notes}</loop-state>`);
+	const written = notesWrite(notes);
+	assert.ok(written.cut, "the notes are over the cap");
+	assert.equal(fs.readFileSync(f.stores.jobs.statePath(job.id), "utf8"), `${written.index}\n`, "the index is notesWrite's");
+	assert.equal(fs.readFileSync(path.join(f.stores.jobs.notesDir(job.id), "overflow.md"), "utf8"), `${notes}\n`, "the whole text is in overflow.md");
+	assert.deepEqual(record.notesCut, written.cut);
+	assert.equal(record.stateUpdated, true);
+	assert.deepEqual(f.stores.jobs.listRuns(job.id).at(-1)?.notesCut, written.cut, "the run log carries it");
+	assert.equal(warnings.length, 1, "one warning");
+	assert.match(warnings[0], new RegExp(`notes cut ${written.cut!.from}→${written.cut!.to}`));
+	assert.ok(warnings[0].includes(path.join(f.stores.jobs.notesDir(job.id), "overflow.md")));
+
+	const next = await oneRun(f, job, "run-00000000000000000000000000000002", "done <loop-state>short now</loop-state>");
+	assert.ok(next.prompt.includes(`[loop-state] (your notes from the previous run of this recurring job)\n${written.index}\n[/loop-state]`), "the next run reads the index as it is on disk, cut line included");
+	assert.equal(f.stores.jobs.readState(job.id), "short now");
+	assert.equal(next.record.notesCut, undefined, "notes that fit are not cut");
+	assert.equal(warnings.length, 1);
+});
+
+test("[failed-run-keeps-index] a failed or timed-out run does not change the index, and the files it wrote in its notes directory stay", async () => {
+	const f = setup();
+	const job = await f.stores.jobs.add(makeJob({ name: "watch" })) as LoopJob;
+	f.stores.jobs.writeState(job.id, "baseline: 3");
+	const dir = f.stores.jobs.notesDir(job.id);
+	let n = 0;
+	for (const timedOut of [false, true]) {
+		const file = path.join(dir, `run-${n}.md`);
+		const { record } = await oneRun(f, job, `run-0000000000000000000000000000000${++n}`, () => {
+			fs.mkdirSync(dir, { recursive: true });
+			fs.writeFileSync(file, "written by the run");
+			return { ok: false, timedOut, text: `<loop-state>${"y".repeat(3000)}</loop-state>` };
+		});
+		assert.equal(record.ok, false);
+		assert.equal(record.stateUpdated, false);
+		assert.equal(record.notesCut, undefined);
+		assert.equal(f.stores.jobs.readState(job.id), "baseline: 3", timedOut ? "timed out: the index is as it was" : "failed: the index is as it was");
+		assert.equal(fs.readFileSync(file, "utf8"), "written by the run", "the file the run wrote stays");
+		assert.equal(fs.existsSync(path.join(dir, "overflow.md")), false, "and a failed run's notes are not written anywhere");
+	}
+});
+
+test("[repeat-rule] a loop run's finding with the words of a new finding of the same loop is not filed again, and the record counts what was filed and what repeated", async () => {
+	const f = setup();
+	const job = await f.stores.jobs.add(makeJob({ name: "watch" })) as LoopJob;
+	const first = await oneRun(f, job, "run-00000000000000000000000000000001", "<inbox>PR #12 has failing CI</inbox><inbox>PR #12 has failing CI</inbox><inbox>main is behind</inbox><loop-state>s</loop-state>");
+	assert.deepEqual([first.record.findings, first.record.repeats], [2, 1]);
+	const second = await oneRun(f, job, "run-00000000000000000000000000000002", "<inbox>PR #12 has failing CI</inbox><inbox>PR #13 is new</inbox><loop-state>s</loop-state>");
+	assert.deepEqual([second.record.findings, second.record.repeats], [1, 1], "only the new words are filed; the repeat is counted apart");
+	const third = await oneRun(f, job, "run-00000000000000000000000000000003", "<inbox>PR #13 is new</inbox><loop-state>s</loop-state>");
+	assert.deepEqual([third.record.findings, third.record.repeats], [0, 1], "a run whose findings all repeat filed none, and says it found them");
+	const quiet = await oneRun(f, job, "run-00000000000000000000000000000004", "<loop-state>s</loop-state>");
+	assert.equal("repeats" in quiet.record, false, "a run with no repeat writes no count");
+	assert.deepEqual(f.stores.inbox.list().map((e) => e.text), ["PR #12 has failing CI", "main is behind", "PR #13 is new"]);
+});
+
+test("[reported] [notes-files] the next run is told what its loop reported and what a person did with it, and which files its notes directory holds", async () => {
+	const f = setup();
+	const job = await f.stores.jobs.add(makeJob({ name: "watch" })) as LoopJob;
+	await oneRun(f, job, "run-00000000000000000000000000000001", "<inbox>flaky test in foo.test.ts</inbox><inbox>PR #12 has failing CI</inbox><loop-state>s</loop-state>");
+	const flaky = f.stores.inbox.list().find((e) => e.text.startsWith("flaky"))!;
+	await personAnswers({ inbox: f.stores.inbox, requests: f.stores.requests, jobs: f.stores.jobs, audit: f.stores.rules, sessionFile: () => undefined, self: () => f.createdBy, now: Date.now, log: () => undefined }).say(flaky.id, "no", { by: "cli" }, { reason: "Not a bug" });
+	fs.mkdirSync(f.stores.jobs.notesDir(job.id), { recursive: true });
+	fs.writeFileSync(path.join(f.stores.jobs.notesDir(job.id), "prs.md"), "p".repeat(3174));
+	const { prompt } = await oneRun(f, job, "run-00000000000000000000000000000002", "<loop-state>s</loop-state>");
+	const dismissedOn = f.stores.inbox.list().find((e) => e.id === flaky.id)!.dismissed_at!.slice(5, 10);
+	const pr = f.stores.inbox.list().find((e) => e.text.startsWith("PR #12"))!;
+	assert.ok(prompt.includes(`[reported] (what this loop already told a person, and what they did with it; do not report these again unless what they describe has changed)\n- ${pr.created_at.slice(5, 10)} new: PR #12 has failing CI\n- ${dismissedOn} dismissed ("Not a bug"): flaky test in foo.test.ts\n[/reported]`) || prompt.includes(`- ${dismissedOn} dismissed ("Not a bug"): flaky test in foo.test.ts\n- ${pr.created_at.slice(5, 10)} new: PR #12 has failing CI\n[/reported]`), prompt);
+	const dir = f.stores.jobs.notesDir(job.id);
+	assert.match(prompt, new RegExp(`\\[notes-files\\] \\(longer notes you keep as files in ${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/; read one when you need it\\)\\n- prs\\.md · 3\\.1 KB · changed \\d{4}-\\d\\d-\\d\\d\\n\\[/notes-files\\]`));
+	assert.ok(prompt.includes(`Put anything longer in a file under ${dir}/ and name the file in your notes.`));
+});
+
+test("[own-notes-dir] through the seated guard, a loop run writes a file in its own notes directory; its index and another loop's notes stay refused", { timeout: 90_000 }, async () => {
+	const { dir, stores, deps, createdBy } = setup();
+	const cwd = tmp("pi-loops-loop-run-proj-");
+	const own = makeJob({ cwd, prompt: "PROMPT-OWN keep notes", name: "own" });
+	const other = makeJob({ id: "cron-fedcba9876543210fedcba9876543210", cwd, prompt: "PROMPT-OTHER keep notes", name: "other" });
+	const index = makeJob({ id: "cron-00000000000000000000000000000abc", cwd, prompt: "PROMPT-INDEX keep notes", name: "index" });
+	const ownFile = path.join(stores.jobs.notesDir(own.id), "prs.md");
+	// The other loop's run climbs out of its own notes directory into this one's.
+	const planted = `${stores.jobs.notesDir(other.id)}${path.sep}..${path.sep}${own.id}${path.sep}planted.md`;
+	const { real, modelLog, fake } = await standIn(dir, "<loop-state>see prs.md</loop-state>", stores.inbox, { loopsDir: dir, script: [
+		{ match: "PROMPT-OWN", tool: "write", args: { path: ownFile, content: "PR #12: red since 11-12\n" } },
+		{ match: "PROMPT-OTHER", tool: "write", args: { path: planted, content: "planted" } },
+		{ match: "PROMPT-INDEX", tool: "write", args: { path: stores.jobs.statePath(index.id), content: "forged index" } },
+	] });
+	try {
+		const runOf = async (job: LoopJob, id: string) => {
+			await stores.jobs.add(job);
+			const row: UnclaimedRow = { v: 3, id, lane: `@${job.id}`, kind: "input", source: `cron:${job.id}`, mode: "unattended", wake: "turn", payload: { text: "x", cwd }, created_at: stamp(now), created_by: createdBy, attempts: 0 };
+			stores.requests.append(row);
+			const claimed = deps.runs.claim(stores.requests, row, deps.holder(), { jobId: job.id, label: job.name!, promptPreview: "x", ctrl: new AbortController() }, now)!;
+			await runLoop(claimed, job, { ...deps, runner: real, session: () => ({ sessionId: "s1", cwd }) });
+		};
+		await runOf(own, "run-00000000000000000000000000000001");
+		assert.equal(fs.readFileSync(ownFile, "utf8"), "PR #12: red since 11-12\n", "the write into its own notes directory went through");
+		await runOf(other, "run-00000000000000000000000000000002");
+		assert.equal(fs.existsSync(path.join(stores.jobs.notesDir(own.id), "planted.md")), false, "another loop's notes directory, reached by ../ out of its own, is refused");
+		await runOf(index, "run-00000000000000000000000000000003");
+		assert.equal(stores.jobs.readState(index.id), "see prs.md", "the index is written by pi-loops alone: the model's write was refused");
+		const toolResults = fs.readFileSync(modelLog, "utf8").trim().split("\n").map((line) => JSON.parse(line)).flatMap((body) => body.messages.filter((m: any) => m.role === "tool").map((m: any) => String(m.content)));
+		assert.equal(toolResults.filter((text) => text.startsWith("refused by pi-loops: reads or writes pi-loops' own files")).length, 2, "two refusals: the other loop's notes and the index");
+		assert.deepEqual(stores.inbox.list().filter((f) => f.ask), [], "no question is filed");
 	} finally {
 		fake.kill();
 	}

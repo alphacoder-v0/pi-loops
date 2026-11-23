@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { dangerousCommandReason, pathToolReason } from "../src/danger.ts";
+import { OWN_FILES, dangerousCommandReason, pathToolReason } from "../src/danger.ts";
 import { openFileDir } from "../src/open-file.ts";
 import { tmp } from "./tmp.ts";
 
@@ -719,4 +719,66 @@ test("[PR271] the 0600 file the browser opens on, which holds a one-use key, is 
 	fs.writeFileSync(file, "<meta http-equiv=refresh content='0;url=http://127.0.0.1:4173/?open=k'>", { mode: 0o600 });
 	for (const toolName of ["read", "grep", "find", "ls"]) assert.equal(pathToolReason({ toolName, input: { path: toolName === "read" ? file : path.dirname(file) } }, home, loops), OWN, toolName);
 	for (const c of [`cat ${file}`, `cat ${loops}/pages/open/*.html`, "grep -r open= ~/loops/pages", `ls ${path.dirname(file)}`]) assert.equal(dangerousCommandReason(c, home, [], loops), OWN, c);
+});
+
+test("[own-notes-dir] a loop's run may read, write, edit and list inside its own notes directory by realpath; its index, another loop's notes, the rest of the loops directory, ../ out of it and a link in it that leads back are refused", () => {
+	const { loops, proj } = pathWorld();
+	const job = "cron-a1";
+	const notes = path.join(loops, "state", job);
+	fs.mkdirSync(path.join(notes, "deep"), { recursive: true });
+	fs.mkdirSync(path.join(loops, "state", "cron-b2"), { recursive: true });
+	fs.writeFileSync(path.join(loops, "inbox.jsonl"), "");
+	fs.symlinkSync(path.join(loops, "inbox.jsonl"), path.join(notes, "inbox-link"));
+	fs.symlinkSync(path.join(loops, "state"), path.join(notes, "up"));
+	const allowed = [
+		{ toolName: "write", input: { path: path.join(notes, "prs.md"), content: "x" } },
+		{ toolName: "edit", input: { path: path.join(notes, "deep", "a.md") } },
+		{ toolName: "read", input: { path: path.join(notes, "overflow.md") } },
+		{ toolName: "ls", input: { path: notes } },
+		{ toolName: "grep", input: { pattern: "x", path: notes } },
+		{ toolName: "find", input: { pattern: "*", path: path.join(notes, "deep") } },
+		{ toolName: "write", input: { path: path.join(notes, "not-there-yet", "b.md"), content: "x" } },
+	];
+	for (const call of allowed) {
+		assert.equal(pathToolReason(call, proj, loops, undefined, job), undefined, JSON.stringify(call));
+		assert.equal(pathToolReason(call, proj, loops), OWN, `without the run's job it stays refused: ${JSON.stringify(call)}`);
+		assert.equal(pathToolReason(call, proj, loops, undefined, "cron-b2"), OWN, `another loop's run is refused: ${JSON.stringify(call)}`);
+	}
+	const refused = [
+		{ toolName: "write", input: { path: path.join(loops, "state", `${job}.md`), content: "x" } },
+		{ toolName: "write", input: { path: path.join(loops, "state", "cron-b2", "x.md"), content: "x" } },
+		{ toolName: "read", input: { path: path.join(loops, "jobs.json") } },
+		{ toolName: "write", input: { path: `${notes}/../${job}.md`, content: "x" } },
+		{ toolName: "write", input: { path: `${notes}/../../inbox.jsonl`, content: "x" } },
+		{ toolName: "write", input: { path: path.join(notes, "inbox-link"), content: "{}" } },
+		{ toolName: "read", input: { path: path.join(notes, "up", `${job}.md`) } },
+		{ toolName: "ls", input: { path: path.join(loops, "state") } },
+		{ toolName: "grep", input: { pattern: "x", path: loops } },
+	];
+	for (const call of refused) assert.equal(pathToolReason(call, proj, loops, undefined, job), OWN, JSON.stringify(call));
+	assert.equal(pathToolReason({ toolName: "write", input: { path: "prs.md", content: "x" } }, notes, loops, undefined, job), undefined, "a relative path from a cwd inside it");
+});
+
+test("[own-notes-dir] the exception is not folded for case: on a platform that folds, cron-AAAA gets no way into state/cron-aaaa", (t) => {
+	const { loops, proj } = pathWorld();
+	fs.mkdirSync(path.join(loops, "state", "cron-AAAA"), { recursive: true });
+	// The defect needs two directories that differ by case alone. A volume that ignores case (APFS by default) has one.
+	if (fs.existsSync(path.join(loops, "state", "cron-aaaa"))) return void t.skip("the temporary directory's volume ignores letter case: state/cron-AAAA and state/cron-aaaa are one directory there");
+	fs.mkdirSync(path.join(loops, "state", "cron-aaaa"), { recursive: true });
+	const into = (p: string) => pathToolReason({ toolName: "write", input: { path: p, content: "x" } }, proj, loops, "darwin", "cron-AAAA");
+	assert.equal(into(path.join(loops, "state", "cron-aaaa", "x.md")), OWN_FILES, "another loop's notes, by case");
+	assert.equal(into(path.join(loops, "state", "cron-AAAA", "x.md")), undefined, "its own notes");
+});
+
+test("[own-notes-dir] a notes directory that a link puts elsewhere gets no exception", () => {
+	const { loops, proj } = pathWorld();
+	fs.mkdirSync(path.join(loops, "state"), { recursive: true });
+	fs.symlinkSync(loops, path.join(loops, "state", "cron-a1"));
+	const call = { toolName: "write", input: { path: path.join(loops, "state", "cron-a1", "inbox.jsonl"), content: "{}" } };
+	assert.equal(pathToolReason(call, proj, loops, undefined, "cron-a1"), OWN, "state/cron-a1 is a link to the loops directory: the exception would cover all of it");
+	const elsewhere = path.join(path.dirname(loops), "elsewhere");
+	fs.mkdirSync(elsewhere);
+	fs.symlinkSync(elsewhere, path.join(loops, "state", "cron-c3"));
+	assert.equal(pathToolReason({ toolName: "write", input: { path: path.join(loops, "state", "cron-c3", "x.md"), content: "{}" } }, proj, loops, undefined, "cron-c3"), undefined, "a link that leads out of the loops directory is a path like any other outside it");
+	assert.equal(dangerousCommandReason(`echo x > ${path.join(loops, "state", "cron-a1", "prs.md")}`, undefined, [], loops), OWN, "a shell command into its notes directory is judged as before");
 });

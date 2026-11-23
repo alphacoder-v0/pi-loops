@@ -8,6 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
+import { reportedFor } from "../src/notes.ts";
 import { readUiPrefs, writeUiPref } from "../src/ui-prefs.ts";
 import { UsageError, abortTarget, addLauncher, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherAction, launcherScript, launcherState, launcherTarget, loopsDir, pageAddress, pageFlagRefusal, pageLaunchHost, pageLink, pageOutcomeLines, openOutcome, keySpent, pageTarget, parseCliArgs, webPageRequest, cliRoute, isNewerVersion, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, slashDir, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
@@ -262,7 +263,7 @@ test("pi-loops inbox: list, claim and dismiss with no pi open, as JSON a program
 		assert.match(last().error, /--reason needs a text/);
 		assert.equal(await runCli(["inbox", "dismiss", news.id, "--reason", "that file is generated"], out), 0);
 		assert.equal(lines[lines.length - 1], `dismissed ${news.id}  a TODO went stale  (project, watch, ${formatLocal(Date.parse(news.created_at))})`, "a plain dismiss shows the finding too");
-		assert.equal(inbox.feedbackFor("cron-1").length, 1, "the reason reaches the loop's next run, as /inbox dismiss does");
+		assert.ok(reportedFor(inbox.list(), "cron-1", Date.now()).some((line) => line.includes('dismissed ("that file is generated"): a TODO went stale')), "the reason reaches the loop's next run under [reported], as /inbox dismiss does");
 		assert.equal(await runCli(["inbox", "list", "--cwd", project], out), 0);
 		assert.match(lines[lines.length - 1], /nothing new/);
 		assert.equal(await runCli(["inbox", "wat", "--json"], out), 1);
@@ -285,6 +286,24 @@ test("[thread] pi-loops inbox --json shows re, the root of a reply's thread, aft
 	assert.deepEqual(Object.keys(shown), ["id", "created_at", "status", "kind", "source", "run_id", "cwd", "text", "verified", "dismiss_reason", "re"]);
 	assert.equal(shown.re, question.id);
 	assert.equal("re" in findings.find((f: any) => f.id === question.id), false);
+});
+
+test("[reported] a finding filed 20 days ago and claimed from the command line today is under [reported]: the claim writes its time", async () => {
+	const root = tmp("pi-loops-inbox-cli-reported-");
+	const loops = path.join(root, "loops");
+	const inbox = new Inbox(loops);
+	const old = await inbox.append({ source: "cron:watch", text: "a TODO went stale", run_id: "run-1", job_id: "cron-1", cwd: root });
+	const file = path.join(loops, "inbox.jsonl");
+	const filed = stamp(Date.now() - 20 * 86_400_000);
+	fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace(old.created_at, filed));
+	assert.equal(inbox.list()[0].created_at, filed);
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: "off" }, async () => {
+		assert.equal(await runCli(["inbox", "claim", old.id], () => undefined), 0);
+	});
+	const lines = reportedFor(inbox.list(), "cron-1", Date.now());
+	assert.equal(lines.length, 1, "listed, so the loop does not file it again");
+	assert.match(lines[0], /claimed: a TODO went stale$/);
+	assert.equal(lines[0].slice(2, 7), stamp().slice(5, 10), "dated by the claim, not the filing");
 });
 
 test("pi-loops inbox claim is a claim alone and runs nothing; on a question it says so; cancel takes back a yes that waits and refuses one too late", async () => {

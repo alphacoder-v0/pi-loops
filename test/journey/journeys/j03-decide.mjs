@@ -148,8 +148,8 @@ export async function run(ctx) {
 		return { ok: !!now && now.line.startsWith("Done"), last: { now, lines: linesOf(CLAIMED) }, value: now };
 	}, 120000);
 	if (done.acts.length) throw new Error(`a done answer still has buttons: ${JSON.stringify(done)}`);
-	await ctx.waitFor("the loop's next run is told the reason", () => {
-		const told = requests().map((r) => JSON.stringify(r.messages ?? [])).filter((t) => t.includes("[dismissed]"));
+	await ctx.waitFor("the loop's next run is told the reason in [reported]", () => {
+		const told = requests().map((r) => JSON.stringify(r.messages ?? [])).filter((t) => t.includes("[reported]"));
 		return { ok: told.some((t) => t.includes("Not a bug") && t.includes("#15 looks like a crash")), last: told.length };
 	}, 120000);
 	shot("claim.png");

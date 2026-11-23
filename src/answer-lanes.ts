@@ -12,7 +12,7 @@ import { answerClaimLive } from "./engine.ts";
 import { budgetState, loopWait } from "./job-status.ts";
 import type { SessionSnapshot } from "./job-owner.ts";
 import { type Lane, type LaneId, parseLane } from "./lane.ts";
-import { DEFAULT_RUN_TIMEOUT_MS } from "./loop-run.ts";
+import { DEFAULT_RUN_TIMEOUT_MS, type RunRecordM4b } from "./loop-run.ts";
 import { findingKind, parseRunOutput, stripProtocolTags } from "./protocol.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { shortSessionId } from "./session-head.ts";
@@ -21,7 +21,7 @@ import { type RunList, STOPPED_BY_PERSON } from "./run-list.ts";
 import { type RunnerResult, type SubagentRequest, type SubagentRunner, failedRun } from "./runner.ts";
 import { stamp } from "./schedule.ts";
 import type { SubagentSlot, SubagentSlots } from "./slots.ts";
-import type { LoopJob, RunRecord } from "./store.ts";
+import type { LoopJob } from "./store.ts";
 import type { Stores } from "./stores.ts";
 
 export interface AnswerLaneDeps {
@@ -390,26 +390,31 @@ async function runAnswer(start: AnswerStart, seat: AnswerSeat | undefined, deps:
 		const parsed = parseRunOutput(result.text);
 		const stillThere = !job || deps.stores.book().jobs.some((candidate) => candidate.id === job.id);
 		const filed: string[] = [];
+		let repeats = 0;
 		if (result.ok && stillThere && capOf && !held) {
 			for (const text of parsed.findings) {
 				try {
-					await deps.stores.inbox.append({
+					const entry = {
 						source: loop ? `cron:${loop.name ?? loop.id.slice(0, "cron-".length + 8)}` : finding.source,
 						text, run_id: runId, job_id: loop?.id ?? finding.job_id, cwd: capOf.cwd, kind: findingKind(text),
 						session_id: loop ? loop.createdBy?.sessionId : finding.session_id, transcript: result.sessionFile, transcript_id: result.sessionId, lane: row.lane,
-					});
-					filed.push(text);
+					};
+					// A loop's run files as its scheduled runs do: the repeat rule holds for a resumed run too.
+					const added = loop ? await deps.stores.inbox.append(entry, { unlessRepeat: true }) : await deps.stores.inbox.append(entry);
+					if (added) filed.push(text);
+					else repeats++;
 				} catch (error) { deps.log(`answer ${runId.slice(0, 12)}: inbox append failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
 			}
 		}
 		const aborted = !result.ok && (result.stopReason === "aborted" || signal.aborted || takenBack());
 		const byPerson = aborted && signal.reason === STOPPED_BY_PERSON;
 		const requestedBy = row.payload?.requested_by ?? finding.claimed_by;
-		const record: RunRecord = {
+		const record: RunRecordM4b = {
 			runId, row: row.id, jobId: start.jobId, jobName: job?.name, stateful: lane?.kind === "loop", cwd: capOf?.cwd ?? finding.cwd,
 			pid: row.run.pid, startedAt: row.run.started_at, finishedAt: stamp(now()), ok: result.ok, exitCode: result.exitCode,
 			error: result.ok ? undefined : byPerson ? STOPPED_BY_PERSON : redact(result.errorMessage ?? "unknown error"),
 			findings: filed.length, droppedFindings: parsed.droppedFindings, stateUpdated: false,
+			...(repeats ? { repeats } : {}),
 			model: result.model ?? capOf?.model ?? undefined, usage: result.usage, warning: result.warning, retries: result.retries, compactions: result.compactions,
 			summary: previewRedacted(filed[0] ?? stripProtocolTags(result.text), 400) || undefined,
 			sessionId: result.sessionId ?? held?.sessionId, sessionFile: result.sessionFile ?? held?.sessionFile,

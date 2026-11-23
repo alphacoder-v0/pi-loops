@@ -255,6 +255,16 @@ test("every packaged recipe says what it does in one sentence of at most twelve 
 	}
 });
 
+test("[reported] the digest and the PR watch keep no record of what they reported in their notes: they read [reported], as the protocol line says", () => {
+	for (const [recipe, playbook] of [["daily-digest", "digest.md"], ["pr-watch", "watch.md"]]) {
+		const text = fs.readFileSync(path.join(packagedRecipesDir(), recipe, playbook), "utf8");
+		const notes = text.slice(text.indexOf("## Notes for the next run"), text.indexOf("## Never"));
+		assert.ok(notes.length > 0, `${recipe} has a notes section`);
+		assert.doesNotMatch(notes, /`reported[-:=]|reported-day/, `${recipe}: its notes keep no reported things`);
+		assert.match(text, /`\[reported\]`/, `${recipe} names the block it reads instead`);
+	}
+});
+
 test("a starter carries its line whole, and a recipe without one carries its summary", () => {
 	const at = (text: string): Recipe => ({ dir: "/nowhere", manifest: parseManifest(text) }) as Recipe;
 	const starter = 'summary = "A demo recipe that says a great deal more than twelve words about what it does every day."\ntier = "starter"';

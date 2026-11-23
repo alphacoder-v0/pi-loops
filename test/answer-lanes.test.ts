@@ -12,7 +12,7 @@ import * as path from "node:path";
 import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { type AnswerExecutor, type Answerer } from "../src/answers.ts";
 import { type Call, type ResolvedCap, WHY, answerRowId, besideId, inputHash, questionFinding, resolveCap } from "../src/ask.ts";
-import { DEFAULT_RUN_TIMEOUT_MS } from "../src/loop-run.ts";
+import { DEFAULT_RUN_TIMEOUT_MS, type RunRecordM4b } from "../src/loop-run.ts";
 import { loadConfig } from "../src/config.ts";
 import { plainJobRow, plainRunId, ruleResultRow } from "../src/engine.ts";
 import { GuardSeats } from "../src/guard.ts";
@@ -54,7 +54,7 @@ function world(makeRunner: (inbox: ReturnType<typeof openStores>["inbox"]) => Su
 		for (const name of RUNTIME_RIDERS) await host.riders[name](now, { startedAt: 0, tickMs: 30_000 });
 	};
 	const find = (id: string): InboxEntry | undefined => stores.inbox.list().find((f) => f.id === id);
-	const answerRecords = (): RunRecord[] => stores.jobs.allRuns().filter((r) => r.cause === "answer");
+	const answerRecords = (): RunRecordM4b[] => stores.jobs.allRuns().filter((r) => r.cause === "answer");
 	return { dir, cwd, stores, host, logs, tick, find, answerRecords };
 }
 
@@ -136,7 +136,9 @@ test("[answer-loop] a yes to a loop's question resumes the run that asked: the g
 		const answered = w.find(question.id)!;
 		assert.equal(answered.answer?.state, "done");
 		assert.equal(w.find(besideId(question.id, "outcome")), undefined, "done files no companion");
-		assert.deepEqual(w.stores.inbox.list().filter((f) => f.run_id === rowId).map((f) => [f.text, f.lane, f.transcript]), [["the release is out", LANE, file]], "the run's <inbox> finding is filed once, in its lane");
+		const released = w.stores.inbox.list().filter((f) => f.text === "the release is out");
+		assert.deepEqual(released.map((f) => [f.lane, f.transcript, f.run_id === rowId]), [[LANE, file, false]], "the run that asked filed its <inbox> finding in its lane; the resumed run's same words are a repeat of it and are not filed again");
+		assert.deepEqual([record.findings, record.repeats], [0, 1]);
 		assert.deepEqual(w.stores.requests.list(LANE), [], "the row is gone");
 		assert.equal(w.host.runs.all().length, 0);
 	} finally {
@@ -255,6 +257,26 @@ test("[answer-off] a yes to a loop that is off waits, with the answer lane's rea
 		assert.equal(s.answerCalls().length, 1, "it runs once the loop is on");
 		assert.equal(w.find(finding.id)!.answer?.state, "done");
 		assert.deepEqual(w.stores.requests.list(LANE), []);
+	} finally {
+		await w.host.stop();
+	}
+});
+
+test("[answer-repeat] a loop's resumed run files as its scheduled runs do: a finding that repeats an open one of the loop is not filed again, and the record counts it as a repeat", async () => {
+	const s = scripted();
+	const w = world(() => s.runner);
+	try {
+		await w.stores.jobs.add(loopJob(w.cwd));
+		const open = await w.stores.inbox.append({ source: "cron:release", text: "looked into it", run_id: "run-earlier", job_id: JOB, cwd: w.cwd, kind: "news", lane: LANE });
+		const finding = await yesTo(w, "the build is red");
+		await w.tick();
+		s.release();
+		await w.host.drain(5_000);
+		assert.equal(s.answerCalls().length, 1);
+		assert.equal(w.find(finding.id)!.answer?.state, "done");
+		assert.deepEqual(w.stores.inbox.list().filter((f) => f.text === "looked into it").map((f) => f.id), [open.id], "the open finding is the only one");
+		const [record] = w.answerRecords();
+		assert.deepEqual([record?.findings, record?.repeats], [0, 1]);
 	} finally {
 		await w.host.stop();
 	}

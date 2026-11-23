@@ -16,7 +16,7 @@ import * as path from "node:path";
 import { fromV2, type V2Job } from "./convert-v2.ts";
 import { randomBytes } from "node:crypto";
 import { withFileLock, withFileLockSync, writeFileAtomic } from "./lock.ts";
-import { LOOP_STATE_MAX_CHARS, capChars } from "./protocol.ts";
+import { OVERFLOW_FILE, notesDirOf, walkNoLinks } from "./notes.ts";
 import type { Schedule } from "./schedule.ts";
 
 export const MAX_PROMPT_BYTES = 8192;
@@ -116,6 +116,8 @@ export interface RunRecord {
 	findings: number;
 	droppedFindings: number;
 	stateUpdated: boolean;
+	/** The notes the run wrote were over the cap: characters written, and characters kept in the index (src/notes.ts `notesWrite`). */
+	notesCut?: { from: number; to: number };
 	model?: string;
 	usage?: { input: number; output: number; cost: number; turns: number; cacheRead?: number; cacheWrite?: number };
 	/** Something the run survived but the user should know about (a pinned model that fell back). */
@@ -492,14 +494,7 @@ export class JobStore {
 	async removeWhere(pred: (job: LoopJob) => boolean, opts: { purge?: boolean } = {}): Promise<LoopJob[]> {
 		const removed = await this.mutate((jobs) => ({ jobs: jobs.filter((j) => !pred(j)), result: jobs.filter(pred) }));
 		if (!opts.purge) return removed;
-		for (const job of removed) {
-			try {
-				fs.rmSync(this.statePath(job.id), { force: true });
-				fs.rmSync(path.join(this.sessionsDir, job.id), { recursive: true, force: true });
-			} catch {
-				/* best effort */
-			}
-		}
+		for (const job of removed) this.purgeState(job.id);
 		return removed;
 	}
 
@@ -514,21 +509,15 @@ export class JobStore {
 			const job = jobs.find((j) => j.id === id);
 			return { jobs: jobs.filter((j) => j.id !== id), result: job };
 		});
-		if (removed && opts.purge) {
-			try {
-				fs.rmSync(this.statePath(id), { force: true });
-				fs.rmSync(path.join(this.sessionsDir, id), { recursive: true, force: true });
-			} catch {
-				/* best effort */
-			}
-		}
+		if (removed && opts.purge) this.purgeState(id);
 		return removed;
 	}
 
-	/** Delete one loop's state and transcripts (`/cron gc --purge`). */
+	/** Delete one loop's notes (the index and its notes directory) and transcripts (`/cron gc --purge`). */
 	purgeState(id: string): void {
 		try {
 			fs.rmSync(this.statePath(id), { force: true });
+			fs.rmSync(this.notesDir(id), { recursive: true, force: true });
 			fs.rmSync(path.join(this.sessionsDir, id), { recursive: true, force: true });
 		} catch {
 			/* best effort */
@@ -537,8 +526,9 @@ export class JobStore {
 
 	/**
 	 * Loop state and transcripts left behind by removed jobs, so `/cron gc` can offer to clear both.
-	 * An id qualifies if a `state/<id>.md` or a `sessions/<id>/` directory is there and no job claims
-	 * it; `bytes` is the state file plus the whole transcript tree, since that is what `purgeState` deletes.
+	 * An id qualifies if a `state/<id>.md`, a `state/<id>/` notes directory or a `sessions/<id>/`
+	 * directory is there and no job claims it; `bytes` is the state file plus the whole notes and
+	 * transcript trees, since that is what `purgeState` deletes.
 	 */
 	orphanStates(): Array<{ id: string; bytes: number }> {
 		const live = new Set(this.load().map((j) => j.id));
@@ -546,35 +536,12 @@ export class JobStore {
 		const add = (id: string, n: number) => {
 			if (!live.has(id)) bytes.set(id, (bytes.get(id) ?? 0) + n);
 		};
-		let states: string[] = [];
-		try {
-			states = fs.readdirSync(this.stateDir);
-		} catch {
-			/* no state directory yet */
-		}
-		for (const f of states) {
-			if (!f.endsWith(".md")) continue;
+		// The whole tree: `purgeState` deletes a directory recursively, so counting only the files
+		// directly under it understated what `/cron gc` is about to remove.
+		const treeBytes = (dir: string): number => {
 			let size = 0;
 			try {
-				size = fs.statSync(path.join(this.stateDir, f)).size;
-			} catch {
-				/* a file that vanished between the read and the stat counts 0 */
-			}
-			add(f.slice(0, -3), size);
-		}
-		let transcripts: fs.Dirent[] = [];
-		try {
-			transcripts = fs.readdirSync(this.sessionsDir, { withFileTypes: true });
-		} catch {
-			/* no transcript directory yet */
-		}
-		for (const e of transcripts) {
-			if (!e.isDirectory()) continue;
-			let size = 0;
-			try {
-				// The whole tree: `purgeState` deletes the directory recursively, so counting only the
-				// files directly under it understated what `/cron gc` is about to remove.
-				for (const f of fs.readdirSync(path.join(this.sessionsDir, e.name), { recursive: true, withFileTypes: true })) {
+				for (const f of walkNoLinks(dir)) {
 					if (!f.isFile()) continue;
 					try {
 						size += fs.statSync(path.join(f.parentPath, f.name)).size;
@@ -583,10 +550,37 @@ export class JobStore {
 					}
 				}
 			} catch {
-				size = 0; // an unreadable directory counts 0
+				return 0; // an unreadable directory counts 0
 			}
-			add(e.name, size);
+			return size;
+		};
+		let states: fs.Dirent[] = [];
+		try {
+			states = fs.readdirSync(this.stateDir, { withFileTypes: true });
+		} catch {
+			/* no state directory yet */
 		}
+		for (const e of states) {
+			if (e.isDirectory()) {
+				add(e.name, treeBytes(path.join(this.stateDir, e.name)));
+				continue;
+			}
+			if (!e.name.endsWith(".md")) continue;
+			let size = 0;
+			try {
+				size = fs.statSync(path.join(this.stateDir, e.name)).size;
+			} catch {
+				/* a file that vanished between the read and the stat counts 0 */
+			}
+			add(e.name.slice(0, -3), size);
+		}
+		let transcripts: fs.Dirent[] = [];
+		try {
+			transcripts = fs.readdirSync(this.sessionsDir, { withFileTypes: true });
+		} catch {
+			/* no transcript directory yet */
+		}
+		for (const e of transcripts) if (e.isDirectory()) add(e.name, treeBytes(path.join(this.sessionsDir, e.name)));
 		return [...bytes.entries()].map(([id, n]) => ({ id, bytes: n }));
 	}
 
@@ -596,18 +590,31 @@ export class JobStore {
 		return path.join(this.stateDir, `${jobId}.md`);
 	}
 
+	/** The loop's notes directory, `state/<id>/`: the files it keeps, and `overflow.md`. */
+	notesDir(jobId: string): string {
+		return notesDirOf(this.dir, jobId);
+	}
+
+	/** The index as it is on disk: it was capped when it was written (src/notes.ts `notesWrite`). */
 	readState(jobId: string): string | undefined {
 		try {
 			const text = fs.readFileSync(this.statePath(jobId), "utf8");
-			return text.trim() ? capChars(text, LOOP_STATE_MAX_CHARS) : undefined;
+			return text.trim() ? text.trim() : undefined;
 		} catch (err: any) {
 			if (err?.code === "ENOENT") return undefined;
 			throw err;
 		}
 	}
 
+	/** Write the index as given: the caller gives what `notesWrite` decided. */
 	writeState(jobId: string, state: string): void {
-		writeFileAtomic(this.statePath(jobId), `${capChars(state, LOOP_STATE_MAX_CHARS)}\n`);
+		writeFileAtomic(this.statePath(jobId), `${state}\n`);
+	}
+
+	/** The whole text of a write that was cut, in `state/<id>/overflow.md`. */
+	writeOverflow(jobId: string, text: string): void {
+		fs.mkdirSync(this.notesDir(jobId), { recursive: true });
+		writeFileAtomic(path.join(this.notesDir(jobId), OVERFLOW_FILE), `${text}\n`);
 	}
 
 	/* ------------------------------------------------------- run log */

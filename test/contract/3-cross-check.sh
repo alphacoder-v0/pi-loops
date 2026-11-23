@@ -67,6 +67,9 @@ same "finding: the command and the file say the same object" "$ROOT/finding.a" "
 echo "event: the same loop run by a host started directly and by the host a pi starts on demand gives a run_end of the same shape"
 # The first host's run_end is $ROOT/run_end.json. The same job, seeded again so it is due, runs once
 # more in the host that a pi driven over rpc (lib.sh's start_pi) starts because there is a loop.
+# A loop's finding is not filed again while the same words wait as `new` (docs/loops.md): the first
+# run's findings are dismissed, so the second run files its two again.
+jq -r '.id' "$ROOT/finding.a" | while read -r id; do $PI_LOOPS inbox dismiss "$id" >/dev/null || fail "could not dismiss $id"; done
 cat > "$PI_LOOPS_DIR/hooks.toml" <<EOF
 [[hook]]
 event = "run_end"

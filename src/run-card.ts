@@ -6,6 +6,7 @@
  */
 import { screenText } from "./redact.ts";
 import { loopLabel } from "./job-lines.ts";
+import { OVERFLOW_FILE } from "./notes.ts";
 import { plural } from "./plural.ts";
 import { previewRedacted } from "./redact.ts";
 import type { RunRecord } from "./store.ts";
@@ -50,6 +51,11 @@ export function runLine(r: RunRecord, name?: string): string {
 	if (!r.ok) return `${label} FAILED · ${secs}s · ${previewRedacted(r.error ?? "unknown error", ERROR_CHARS)}`;
 	const cost = r.usage?.cost ? ` · $${r.usage.cost.toFixed(3)}` : "";
 	return `${label} · ${secs}s${cost} · ${plural(r.findings, "finding")}`;
+}
+
+/** What `/cron runs` adds to a run whose notes were cut at the write (src/notes.ts `notesWrite`), or "". */
+export function notesCutWords(r: Pick<RunRecord, "notesCut">): string {
+	return r.notesCut ? `, notes cut ${r.notesCut.from}→${r.notesCut.to} (whole text in ${OVERFLOW_FILE})` : "";
 }
 
 /** The one line a burst's carded rest is folded into. */

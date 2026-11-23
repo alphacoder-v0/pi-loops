@@ -593,3 +593,20 @@ test("[screen] a line whose id is not inb- and 32 hex digits is no finding to a 
 	const after = fs.readFileSync(inbox.file, "utf8").split("\n");
 	for (const line of bad) assert.ok(after.includes(line), `kept as it was: ${line.slice(0, 30)}`);
 });
+
+test("[repeat-rule] a loop's finding whose text equals a new finding of the same loop is not filed again; a decided one, another loop's or other words are", async () => {
+	const inbox = new Inbox(tmp("pi-loops-repeat-"));
+	const of = (job: string, text: string, run = "run-1") => ({ source: "cron:watch", text, run_id: run, job_id: job, cwd: "/p" });
+	const first = await inbox.append(of("cron-a", "PR #12 has failing CI"), { unlessRepeat: true });
+	assert.ok(first, "the first is filed");
+	assert.equal(await inbox.append(of("cron-a", "PR #12 has failing CI", "run-2"), { unlessRepeat: true }), undefined, "the next run's same words are not filed");
+	assert.equal(await inbox.append(of("cron-a", "PR #12 has failing CI"), { unlessRepeat: true }), undefined, "nor the same run's second tag");
+	await inbox.append(of("cron-a", "something newer"), { unlessRepeat: true });
+	assert.equal(await inbox.append(of("cron-a", "PR #12 has failing CI", "run-3"), { unlessRepeat: true }), undefined, "any new finding of the loop counts, not only the latest");
+	assert.ok(await inbox.append(of("cron-b", "PR #12 has failing CI"), { unlessRepeat: true }), "another loop's finding is its own");
+	assert.ok(await inbox.append(of("cron-a", "PR #12 has failing CI again"), { unlessRepeat: true }), "other words are filed");
+	await answersOver(inbox).say(first!.id, "no", { by: "cli" }, { reason: "fixed" });
+	assert.ok(await inbox.append(of("cron-a", "PR #12 has failing CI", "run-4"), { unlessRepeat: true }), "once the person decided it, the same words are news again");
+	assert.ok(await inbox.append(of("cron-a", "PR #12 has failing CI", "run-5")), "a plain append files whatever it is given, as before");
+	assert.deepEqual(inbox.list().filter((f) => f.job_id === "cron-a" && f.text === "PR #12 has failing CI").map((f) => f.status), ["dismissed", "new", "new"]);
+});

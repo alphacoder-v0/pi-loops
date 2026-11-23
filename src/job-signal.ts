@@ -8,7 +8,7 @@
  * the shape of `job-health.ts`, for the other half of "is this loop worth keeping".
  */
 import type { InboxEntry } from "./inbox.ts";
-import type { RunRecord } from "./store.ts";
+import type { RunRecordM4b } from "./loop-run.ts";
 import { plural } from "./plural.ts";
 
 export interface LoopSignal {
@@ -34,7 +34,7 @@ export const QUIET_MARK_AFTER = 3;
  * hand over what it already loaded. `sinceMs` bounds the counts; `quiet` is counted from the newest
  * run backwards regardless of it, because a streak is a streak whenever it started.
  */
-export function loopSignal(jobId: string, runs: RunRecord[], inbox: InboxEntry[], sinceMs: number): LoopSignal {
+export function loopSignal(jobId: string, runs: RunRecordM4b[], inbox: InboxEntry[], sinceMs: number): LoopSignal {
 	const own = runs.filter((r) => r.jobId === jobId);
 	const at = (iso: string) => Date.parse(iso);
 	const inWindow = own.filter((r) => {
@@ -59,10 +59,11 @@ export function loopSignal(jobId: string, runs: RunRecord[], inbox: InboxEntry[]
 	// caller merged two sources. A run that failed found nothing, and counts toward the streak:
 	// a loop that has been erroring for a week is quiet in the sense that matters here too, and
 	// `job-health.ts` already says why. A run its process took down looked at nothing, so it is not
-	// part of the streak: main wrote no record for it.
+	// part of the streak: main wrote no record for it. A run whose findings were all repeats filed
+	// none, but it still found what is open: it is not quiet either.
 	const ordered = [...own].filter((r) => !r.interrupted).sort((a, b) => at(a.finishedAt || a.startedAt) - at(b.finishedAt || b.startedAt));
 	let quiet = 0;
-	for (let i = ordered.length - 1; i >= 0 && (ordered[i].findings ?? 0) === 0; i--) quiet++;
+	for (let i = ordered.length - 1; i >= 0 && (ordered[i].findings ?? 0) === 0 && !ordered[i].repeats; i--) quiet++;
 	return { runs: inWindow.length, findings, claimed, dismissed, dismissedWithReason, quiet };
 }
 
