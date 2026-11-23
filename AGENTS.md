@@ -109,6 +109,7 @@ storage
 src/lane.ts                 a lane's id and its one grammar: a conversation's session id, `@cron-…` for a loop, `@check-…` for a project's checks; the file name it gives
 src/store.ts                jobs.json (version 3: definitions only), state/, runs.jsonl, sessions/
 src/inbox.ts                inbox.jsonl
+src/events.ts               events.jsonl: what arrived from outside (an MCP push, a gate's reading), stored as received before anything reads it; rotated by rename to events.1.jsonl
 src/archive.ts              .pisession export/import
 src/lock.ts                 the mkdir lock, atomic writes, is-that-pid-alive
 src/convert-v2.ts           what older versions left in the loops directory, at every start: a version 2 jobs.json converted to version 3 (cursors to clock.json, owed slots to rows), retired files removed; version 2's shape (`V2Job`, `fromV2`) lives here, and the store and an archive's import read through it
