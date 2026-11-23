@@ -19,7 +19,7 @@ import type { ClaimedRow, Row } from "./requests.ts";
 import { type JobClock, dayTime } from "./clock.ts";
 import { type ListedJob, listedJob, runHistory } from "./job-status.ts";
 import { loopLane } from "./lane.ts";
-import { computeNext, formatLocal, formatSchedule, stamp } from "./schedule.ts";
+import { formatLocal, formatSchedule, nextRunAt, stamp } from "./schedule.ts";
 import { failurePause } from "./backoff.ts";
 import type { CapWords } from "./guard.ts";
 import type { LoopJob, RunRecord } from "./store.ts";
@@ -294,14 +294,7 @@ export function jobLines(stored: LoopJob[], opts: JobLinesInput): string[] {
 			// A next run is shown when it will happen somewhere: a plain job of a session nobody holds has none.
 			const next =
 				job.enabled && runsSomewhere(job, view)
-					? computeNext(
-							{
-								schedule: job.schedule,
-								createdAt: Date.parse(job.createdAt),
-								fired: job.status.fired ? Date.parse(job.status.fired) : undefined,
-							},
-							now,
-						)
+					? nextRunAt({ schedule: job.schedule, createdAt: job.createdAt, fired: job.status.fired, quietUntil: job.status.quiet?.until }, now)
 					: undefined;
 			const asleepMark = asleepNote(job, view);
 			const dormant = asleepMark ? `[${asleepMark}]` : undefined;

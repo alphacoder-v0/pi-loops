@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { proofOf, landed, plainRunId } from "../src/engine.ts";
-import { ClockStore, applyFollowup, applyTick, decideTick, writeFollowup, writeSlot, commitSlot, type ClockFile, type Mine, type TickInput } from "../src/clock.ts";
+import { ClockStore, applyFollowup, applyTick, decideTick, nextScheduled, writeFollowup, writeSlot, commitSlot, type ClockFile, type Mine, type TickInput } from "../src/clock.ts";
+import { listedJob } from "../src/job-status.ts";
 import { closeLoopRun, type RunRecordM4b } from "../src/loop-run.ts";
 import { openStores } from "../src/stores.ts";
 import { withFileLockSync, writeFileAtomic } from "../src/lock.ts";
 import { RequestStore, type ClaimedRow, type Row } from "../src/requests.ts";
-import { stamp } from "../src/schedule.ts";
+import { nextRunAt, stamp } from "../src/schedule.ts";
 import { runEnd } from "../src/settle.ts";
 import type { LoopJob, RunRecord } from "../src/store.ts";
 
@@ -262,4 +263,34 @@ test("[wake-collapse] Two tickers decide one follow-up from different reads: the
 	assert.equal(clock.read().jobs[job.id].followup, undefined);
 	assert.equal(writeFollowup(stale, { requests, clock }), "gone");
 	assert.deepEqual(requests.list(lane), []);
+});
+
+test("[wake-keeps-schedule] An every 2m loop's follow-up at +1m runs: while it goes and after it closed, the next scheduled run is the one the schedule named, and its slot runs then.", async () => {
+	const every2m: LoopJob = { ...job, schedule: { kind: "every", ms: 120_000 } };
+	for (const when of ["running", "closed"] as const) {
+		const stores = openStores(tmp("pi-loops-clock-scene-"));
+		writeFileAtomic(stores.jobs.jobsFile, JSON.stringify({ version: 3, jobs: [every2m] }));
+		stores.clock.seed({ [every2m.id]: { slot: stamp(base), fired: stamp(base), runs: 1 } });
+		stores.clock.setFollowup(every2m.id, { at: stamp(base + 60_000), note: "look again", set_by: "run-a" }, false, base);
+		const lane = `@${every2m.id}`;
+		const tick = (at: number) => decideTick({ jobs: [every2m], clock: stores.clock.read(), view: { now: at, startedAt: base, tickMs: 30_000, catchUp: true, budgetOver: false, kind: "background", self, mine: new Map<string, Mine>([[every2m.id, { kind: "loop" }]]), read: new Map([[every2m.id, { rows: stores.requests.list(lane), cwdMissing: false, history: stores.history().get(every2m.id) }]]) } });
+		assert.equal(nextScheduled(every2m, stores.clock.read().jobs[every2m.id], base + 30_000), base + 120_000, "before the follow-up, the next scheduled run is +2m");
+		const [slot, woke] = tick(base + 60_000);
+		assert.ok(slot.do === "pass" && woke?.do === "followup" && woke.write === "row", "at +1m the follow-up gets its own row and no slot is due");
+		if (woke?.do !== "followup") return;
+		assert.equal(applyFollowup(woke, stores, base + 60_000).t2, "wrote");
+		const started = base + 61_000;
+		assert.equal(stores.requests.claim(lane, woke.followup.id, { id: woke.followup.id, pid: self.pid, started_at: stamp(started) } as never), true);
+		if (when === "closed") {
+			const claimed = stores.requests.list(lane)[0] as ClaimedRow;
+			await closeLoopRun(claimed, sceneDeps(stores), started + 5_000, { ...record(woke.followup.id, started), row: woke.followup.id, cause: "wake", woken: ["look again"], ordinal: 2 });
+			assert.deepEqual(stores.requests.list(lane), [], "the follow-up's run left");
+			assert.equal(stores.clock.read().jobs[every2m.id].fired, stamp(base), "a follow-up's run leaves fired");
+			assert.equal(stores.clock.read().jobs[every2m.id].slot, stamp(base), "a follow-up's run leaves the cursor");
+		}
+		const listed = listedJob(every2m, stores.clock.read().jobs[every2m.id], stores.requests.list(lane), stores.history().get(every2m.id), () => true);
+		assert.equal(nextRunAt({ schedule: listed.schedule, createdAt: listed.createdAt, fired: listed.status.fired }, base + 90_000), base + 120_000, `${when}: the lists' next run is still +2m`);
+		const [due] = tick(base + 120_000);
+		assert.equal("slot" in due ? due.slot : due.do, stamp(base + 120_000), `${when}: the +2m slot is decided at +2m`);
+	}
 });

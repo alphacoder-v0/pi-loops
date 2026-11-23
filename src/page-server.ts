@@ -1287,7 +1287,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			ref: j.name || j.id,
 			// Only for a job that is actually going to run, which is the rule `/cron` follows. The time
 			// is computed from the job when the page asks for its state.
-			next: j.enabled && runsSomewhere(owned(j), view) ? nextRunStamp({ schedule: j.schedule, createdAt: j.createdAt, fired: j.status.fired }, now) : undefined,
+			next: j.enabled && runsSomewhere(owned(j), view) ? nextRunStamp({ schedule: j.schedule, createdAt: j.createdAt, fired: j.status.fired, quietUntil: j.status.quiet?.until }, now) : undefined,
 			// Where it runs when that is not here, in the terminal's words (src/job-owner.ts). A disabled
 			// one runs nowhere, and the card already says it is off.
 			asleep: j.enabled ? asleepNote(owned(j), view) : undefined,

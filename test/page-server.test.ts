@@ -16,7 +16,8 @@ import { JobStore } from "../src/store.ts";
 import { clockStore } from "../src/stores.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { Inbox } from "../src/inbox.ts";
-import { stamp } from "../src/schedule.ts";
+import { formatLocal, stamp } from "../src/schedule.ts";
+import { jobLines } from "../src/job-lines.ts";
 import { RequestStore } from "../src/requests.ts";
 import { convertStores, fromV2 } from "../src/convert-v2.ts";
 import { DELIVERY_JOB_ID, LeaseStore } from "../src/lease.ts";
@@ -2570,6 +2571,32 @@ test("[wake-me] a loop row carries what the loop set for itself; POST /loops/wak
 		assert.equal(fs.readFileSync(path.join(page.loops, "jobs.json"), "utf8"), jobsBefore, "jobs.json is not written");
 		const after = (await page.get("c/s1/state")).body.automation.jobs.find((j: any) => j.id === "cron-aaaaaaaa");
 		assert.deepEqual([after.wake, after.quiet], [undefined, undefined]);
+	} finally {
+		await page.stop();
+	}
+});
+
+test("[next-run] a quiet loop's next run is the first slot the tick runs after the quiet, and the page's row and /cron say that one time", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-next-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "host-service.json"), JSON.stringify({ v: 1, pid: process.pid, startedAt: new Date().toISOString() }));
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [loopJob(dir, { lastFiredAt: new Date(Date.now() - 60_000).toISOString() })] }));
+		convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
+		const clock = clockStore(page.loops);
+		const until = Date.now() + 40 * 60_000;
+		clock.setFollowup("cron-aaaaaaaa", { at: stamp(until), note: "nothing before then", set_by: "run-a" }, true, Date.now());
+		const entry = clock.read().jobs["cron-aaaaaaaa"];
+		const ms = 15 * 60_000;
+		const fired = Date.parse(entry.fired!);
+		const expected = fired + Math.ceil((until - fired) / ms) * ms;
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const row = (await page.get("c/s1/state")).body.automation.jobs.find((j: any) => j.id === "cron-aaaaaaaa");
+		assert.equal(row.next, stamp(expected), "the page's row: the slot at or after the quiet, not the ones the tick skips");
+		const definitions = JSON.parse(fs.readFileSync(path.join(page.loops, "jobs.json"), "utf8")).jobs;
+		const listing = jobLines(definitions, { clock: clock.read().jobs, runs: [], inbox: [], requests: () => [], view: { sessionId: "s1", holdsOwn: true, holderOf: () => undefined }, now: Date.now(), home: "/nowhere", cwdExists: () => true, showCwd: false });
+		assert.ok(listing.some((line) => line.includes(`next ${formatLocal(expected)}`)), `/cron says the same time:\n${listing.join("\n")}`);
 	} finally {
 		await page.stop();
 	}

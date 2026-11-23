@@ -9,9 +9,9 @@ import type { LockOptions } from "./lock.ts";
 import type { RequestStore, Row, UnclaimedRow } from "./requests.ts";
 
 type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
-import { computeDue, computeNext, formatLocal, formatLocalZoned, isValidSchedule, parseSchedule, stamp } from "./schedule.ts";
+import { computeDue, formatLocal, formatLocalZoned, isValidSchedule, nextRunAt, parseSchedule, stamp } from "./schedule.ts";
 import type { Disabled, JobStore, LoopJob, RunRecord } from "./store.ts";
-import { jobStatus, runHistory, type JobHistory } from "./job-status.ts";
+import { firedBy, jobStatus, runHistory, type JobHistory } from "./job-status.ts";
 import { oneShotDoneV3 } from "./settle.ts";
 import type { Book } from "./stores.ts";
 import { GATE_LOOK_EVERY_MS, type Look, type PathState, type Reading, gateDecision } from "./gate.ts";
@@ -182,9 +182,7 @@ export type WakeAnswer = { readonly refused: string } | { readonly at: string; r
 
 /** The first scheduled slot after `now`, and after `quietUntil` while the loop is quiet; undefined when the schedule has none. */
 export function nextScheduled(job: Pick<LoopJob, "schedule" | "createdAt">, clock: JobClock | undefined, now: number, quietUntil?: string): number | undefined {
-	const quiet = quietUntil === undefined ? undefined : Date.parse(quietUntil);
-	try { return computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), fired: clock?.fired === undefined ? undefined : Date.parse(clock.fired) }, quiet !== undefined && quiet > now ? quiet - 1 : now); }
-	catch { return undefined; }
+	return nextRunAt({ schedule: job.schedule, createdAt: job.createdAt, fired: clock?.fired, quietUntil }, now);
 }
 
 function nextScheduledWords(next: number | undefined, now: number): string {
@@ -412,11 +410,11 @@ export class ClockStore implements Clock, GateClocks {
 
 export interface SimClockSubject { readonly name: "clock.json"; readonly clock: Clock; read(): ClockFile; forget?(): void; newer?(): void }
 
-/** When a job last fired: a live claim's start wins over the cursor's last closed run. */
+/** When a job last fired: a live claim's fire (`firedBy`) wins over the cursor's last closed run. */
 export function firedOf(clock: JobClock | undefined, rows: readonly Row[]): string | undefined {
 	let latest = clock?.fired;
 	for (const row of rows) {
-		const at = row.run?.started_at;
+		const at = row.run ? firedBy(row) : undefined;
 		if (at !== undefined && (latest === undefined || Date.parse(at) > Date.parse(latest))) latest = at;
 	}
 	return latest;

@@ -10,7 +10,7 @@ import { RunList, STOPPED_BY_PERSON } from "./run-list.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { formatLocalZoned, stamp } from "./schedule.ts";
-import { type JobHistory, runHistory } from "./job-status.ts";
+import { type JobHistory, firedBy, runHistory } from "./job-status.ts";
 import { type LoopSettlement, INTERRUPTED, loopEnd, oneShotDoneV3, runEnd, settleLoop } from "./settle.ts";
 import type { SessionSnapshot } from "./job-owner.ts";
 import type { Stores } from "./stores.ts";
@@ -325,7 +325,7 @@ export function closeSteps(input: CloseInput): ClosePlan {
 	const digest = input.gate && end.how === "succeeded" && input.gate.reading.command === job?.gate?.command ? readingDigest(input.gate.reading) : undefined;
 	const close: RunClose = {
 		...(end.how === "succeeded" || end.how === "failed" ? { ordinal: history.ordinal } : {}),
-		...(end.how === "succeeded" || end.how === "failed" || end.how === "stopped" ? { fired: row.run.started_at } : {}),
+		...((end.how === "succeeded" || end.how === "failed" || end.how === "stopped") && firedBy(row) !== undefined ? { fired: firedBy(row) } : {}),
 		...(row.payload?.woken_ids?.length ? { followups: row.payload.woken_ids } : {}),
 		...(row.collapsed_slot === undefined ? {} : { slot: row.collapsed_slot }),
 		...(digest === undefined ? {} : { seen: { digest, at: input.gate!.at } }),

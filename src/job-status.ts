@@ -216,6 +216,16 @@ function wakeStatus(clock: JobClock | undefined): Pick<ListedStatus, "wake" | "q
 /** A job as every list shows it: the definition, and its status from its clock, its rows and its run log. */
 export type ListedJob = LoopJob & { readonly status: ListedStatus };
 
+/**
+ * When a run on this row fired the schedule (`fired`, the base of an `every` schedule), or undefined
+ * when it did not. A follow-up's own row (`wake_me`) is the loop's one timer beside its schedule, so
+ * its run fires nothing; a slot that collapsed onto it fired at that slot. Any other row fired when
+ * its run started.
+ */
+export function firedBy(row: Pick<Row, "source" | "collapsed_slot"> & { readonly run?: { readonly started_at: string } }): string | undefined {
+	return row.source.startsWith("wake:") ? row.collapsed_slot : row.run?.started_at;
+}
+
 export function listedJob(job: LoopJob, clock: JobClock | undefined, rows: readonly Row[], history: JobHistory | undefined, live: (row: ClaimedRow) => boolean = claimAlive): ListedJob {
 	const cleared = clock?.cleared;
 	const afterEnable = (at: string) => !(cleared && Date.parse(at) <= Date.parse(cleared));
@@ -245,7 +255,8 @@ export function listedJob(job: LoopJob, clock: JobClock | undefined, rows: reado
 	const parked = !job.enabled && job.disabled?.code === "interrupted";
 	const owedAgain = parked || (!claim && waiting !== undefined && (waiting.attempts > 0 || oneShotRetry));
 	let fired = clock?.fired;
-	if (claim && (!fired || Date.parse(claim.run.started_at) > Date.parse(fired))) fired = claim.run.started_at;
+	const claimFired = claim ? firedBy(claim) : undefined;
+	if (claimFired && (!fired || Date.parse(claimFired) > Date.parse(fired))) fired = claimFired;
 	let due = clock?.slot;
 	if (owedAgain || (!claim && waiting)) due = undefined;
 	if (owedAgain) fired = undefined;
