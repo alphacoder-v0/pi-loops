@@ -32,7 +32,7 @@ import { SubagentSlots } from "./slots.ts";
 import { type LoopJob, type RunRecord, newId } from "./store.ts";
 import { RUNTIME_RIDERS, type Riders, type TickFacts } from "./ticker.ts";
 import { openStores, type Stores } from "./stores.ts";
-import { createLoopLanes, abortRemovedJobs, type LoopLanes } from "./background-executor.ts";
+import { createLoopLanes, createCheckLanes, abortRemovedJobs, type CheckLanes, type LoopLanes } from "./background-executor.ts";
 import { gateSources, runClockTick, type TickScope } from "./clock.ts";
 import { type GatePolicy, lookCommand } from "./gate.ts";
 import { FAILING_AFTER, failurePause } from "./backoff.ts";
@@ -305,6 +305,32 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			},
 			log: loopLog,
 		},
+	});
+	/** A project's check lane: its pushes (and, in M8.3b, its periodic checks), each one run with `runCheck`. */
+	const checks: CheckLanes = createCheckLanes({
+		requests: stores.requests,
+		runs,
+		slots,
+		allRuns: () => stores.jobs.allRuns(),
+		events,
+		rules: stores.rules,
+		budget: () => budgetState(stores.jobs, deps.config().dailyBudgetUsd, Date.now()),
+		check: () => ({
+			runner: deps.runner,
+			rules: stores.rules,
+			jobs: stores.jobs,
+			inbox: stores.inbox,
+			clock: stores.clock,
+			promote: (content, trigger, forSession) => promote(content, trigger, forSession),
+			session: deps.session(),
+			hop: 0,
+			runTimeoutMs: deps.config().triggerRunTimeoutMs,
+			log: (message) => log(redact(message)),
+			now: Date.now,
+		}),
+		engine: sinks,
+		holder: () => ({ pid: process.pid, procStart: ownStart }),
+		log: (message) => log(redact(message)),
 	});
 	/** A check lane's transcripts: where its checks keep them (`checkSessionDir`, the one source). */
 	const checkDir = (cwd: string): string => checkSessionDir(stores.jobs, cwd);
@@ -614,6 +640,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		},
 		// Before the loop lanes: an answer E4 starts here holds its lane, so a slot due beside it is skipped as an overlap in this tick.
 		answers: (now) => answerLanes.tick(now),
+		"check-lanes": (now) => checks.drainAll(now),
 		"loop-lanes": (now) => loops.drainAll(now),
 		notices: (now, facts) => {
 			const budget = budgetState(stores.jobs, deps.config().dailyBudgetUsd, now);
@@ -646,6 +673,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			const deadline = Date.now() + ms;
 			while (plainRuns.size && Date.now() < deadline) await Promise.race([Promise.allSettled([...plainRuns]), new Promise((resolve) => setTimeout(resolve, 25))]);
 			await loops.settle(Math.max(0, deadline - Date.now()));
+			await checks.settle(Math.max(0, deadline - Date.now()));
 			await answerLanes.settle(Math.max(0, deadline - Date.now()));
 		},
 		riders,
@@ -681,6 +709,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			await triggers.stop();
 			await answerLanes.stop(5_000);
 			await loops.stop(5_000);
+			await checks.stop(5_000);
 			for (const run of runs.all()) run.ctrl.abort();
 			await Promise.race([Promise.allSettled([...plainRuns]), new Promise((resolve) => setTimeout(resolve, 5_000).unref())]);
 			// A held turn that claimed its row while the loops stopped is in the list only now: stopped too.

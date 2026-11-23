@@ -1449,7 +1449,7 @@ export async function closeRun(store: RequestStore, sinks: EngineSinks, row: Cla
 	let end = proof.ran(row);
 	if (!end) {
 		const named = jobId === undefined ? undefined : sinks.ledger.load().find((j) => j.id === jobId);
-		const written: RunRecord = record ?? { runId: row.run.id, jobId: jobId ?? "", ...(named?.name ? { jobName: named.name } : {}), stateful: false, cwd: row.payload?.cwd ?? named?.cwd ?? "", pid: row.run.pid, startedAt: row.run.started_at, finishedAt: stamp(now), ok: false, error: INTERRUPTED, findings: 0, droppedFindings: 0, stateUpdated: false, interrupted: true };
+		const written: RunRecord = record ?? { runId: row.run.id, jobId: jobId ?? (parseLane(row.lane)?.kind === "check" ? row.lane : ""), ...(named?.name ? { jobName: named.name } : {}), stateful: false, cwd: row.payload?.cwd ?? named?.cwd ?? "", pid: row.run.pid, startedAt: row.run.started_at, finishedAt: stamp(now), ok: false, error: INTERRUPTED, findings: 0, droppedFindings: 0, stateUpdated: false, interrupted: true };
 		sinks.ledger.appendRun(written);
 		end = runEnd(written);
 	}

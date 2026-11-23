@@ -26,6 +26,11 @@ import type { SubagentSlot, SubagentSlots } from "./slots.ts";
 import type { JobStore, LoopJob, RunRecord } from "./store.ts";
 import { FAILING_AFTER, failurePause } from "./backoff.ts";
 import { loopLane, type LaneId } from "./lane.ts";
+import { type CheckDeps, runCheck } from "./check-run.ts";
+import type { EventLog } from "./events.ts";
+import { withinProject } from "./paths.ts";
+import { pushTrigger } from "./push.ts";
+import type { DynamicTriggerRule, TriggerStore } from "./triggers.ts";
 import { runLoop, closeLoopRun, type LoopRunDeps } from "./loop-run.ts";
 import { budgetState, loopWait } from "./job-status.ts";
 
@@ -523,6 +528,8 @@ export function abortRemovedJobs(runs: Pick<RunList, "all">, exists: (jobId: str
 	let aborted = 0;
 	for (const run of runs.all()) {
 		if (run.answer && parseLane(run.answer.lane)?.kind !== "loop") continue;
+		// A check lane's own run (a push, a periodic check) names its lane, which is no job either.
+		if (parseLane(run.jobId)?.kind === "check") continue;
 		if (exists(run.jobId) || run.ctrl.signal.aborted) continue;
 		run.ctrl.abort();
 		log(`cron ${run.label}: removed while it ran; stopped run ${run.runId}`);
@@ -712,6 +719,124 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 		async stop(drainMs) {
 			stopped = true;
 			for (const run of runs.all()) if (!run.turn) run.ctrl.abort();
+			const deadline = Date.now() + drainMs;
+			while (inFlight.size && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+		},
+		async settle(ms) {
+			const deadline = Date.now() + ms;
+			while (inFlight.size && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+		},
+	};
+}
+
+/** What the check lanes run with: the stores, the slots and today's budget, and the deps of one check (src/check-run.ts). */
+export interface CheckLaneDeps {
+	readonly requests: RequestStore;
+	readonly runs: RunList;
+	readonly slots: SubagentSlots;
+	readonly allRuns: () => readonly RunRecord[];
+	readonly events: Pick<EventLog, "get">;
+	readonly rules: Pick<TriggerStore, "load" | "appendAudit">;
+	readonly budget: () => { spent: number; cap: number; over: boolean };
+	readonly check: () => CheckDeps;
+	readonly engine: () => EngineSinks;
+	readonly holder: () => { readonly pid: number; readonly procStart: string | undefined };
+	readonly log: (message: string) => void;
+}
+
+export interface CheckLanes {
+	drainAll(now: number): Promise<void>;
+	drain(lane: LaneId, now: number): ReturnType<typeof drain>;
+	stop(drainMs: number): Promise<void>;
+	settle(ms: number): Promise<void>;
+}
+
+/** A check lane's own rows: a push's and a periodic check's. An `ans-` row is the answer lane's (src/answer-lanes.ts). */
+const checkRow = (row: Row): boolean => !isAnswerRow(row) && (row.source.startsWith("push:") || row.source.startsWith("check:"));
+
+/**
+ * The rows of a project's check lane that are not answers: each one is one check, run unattended by
+ * this process with `runCheck`. A row waits on disk for a free slot and while another run of the lane
+ * goes; over today's budget it leaves with `budget_exceeded`, because acting on this morning's event at
+ * midnight is worse than not acting.
+ */
+export function createCheckLanes(deps: CheckLaneDeps): CheckLanes {
+	const { requests, runs, slots } = deps;
+	let stopped = false;
+	const inFlight = new Set<Promise<void>>();
+	const rulesOf = (cwd: string): DynamicTriggerRule[] => deps.rules.load().filter((r) => r.enabled && !r.proposed && withinProject(r.cwd, cwd));
+
+	async function drainLane(lane: LaneId, now: number): ReturnType<typeof drain> {
+		const sinks = deps.engine();
+		const self = deps.holder();
+		const live = (row: ClaimedRow): boolean => laneClaimLive(row, self, (runId) => runs.get(runId) !== undefined);
+		const proof = proofOf(lane, () => [], deps.allRuns);
+		const leave = (row: UnclaimedRow, state: string, why: string, details: Record<string, unknown> = {}): "sent" => {
+			requests.remove(lane, [row.id]);
+			deps.rules.appendAudit({ cwd: row.payload?.cwd ?? "", type: "trigger", traceId: row.id, state, sourceLabel: row.source.slice(row.source.indexOf(":") + 1), summary: row.payload?.text, details: { row: row.id, reason: why, ...details } });
+			deps.log(`trigger ${row.id.slice(0, 12)} ${state}: ${why}`);
+			return "sent";
+		};
+		const executor: Executor = {
+			holds: () => true,
+			proof: () => proof,
+			view: () => ({
+				kind: "held", ceiling: CEILING.held, idle: true,
+				running: undefined, inFlight: new Set(), connected: () => true, producerAlive: () => true,
+				mine: () => false, claimLive: live,
+				blocked: (row) => {
+					if (stopped) return "pi-loops is stopping";
+					// Another run of the lane holds the row already: the engine starts nothing beside a live claim.
+					if (deps.budget().over) return undefined; // the turn takes it out, with its audit row
+					if (slots.free <= 0) return `${slots.inUseCount} sub-agent(s) already in flight (max ${slots.limit})`;
+					return undefined;
+				},
+			}),
+			turn: (row) => {
+				if (stopped) return "no-slot";
+				const budget = deps.budget();
+				if (budget.over) return leave(row, "budget_exceeded", `today's automation has cost $${budget.spent.toFixed(2)} of the $${budget.cap.toFixed(2)} budget`, { spent_usd: budget.spent, cap_usd: budget.cap });
+				const cwd = row.payload?.cwd ?? "";
+				const eventId = row.payload?.events?.[0];
+				const event = eventId === undefined ? undefined : deps.events.get(eventId);
+				const stored = event === undefined ? undefined : pushTrigger(event);
+				if (!stored) return leave(row, "dead", eventId === undefined ? "the row names no stored event" : `its stored event ${eventId} is gone or is not a push`);
+				const permit = slots.acquire();
+				if (!permit) return "no-slot";
+				const claimed = runs.claim(requests, row, self, { jobId: lane, label: `the check of ${path.basename(cwd) || cwd}`, promptPreview: previewRedacted(row.payload?.text ?? "", 120), ctrl: new AbortController() }, now);
+				if (!claimed) { permit.release(); return "sent"; }
+				const signal = runs.get(claimed.run.id)?.ctrl.signal ?? new AbortController().signal;
+				const trigger = { ...stored, traceId: row.id, cwd };
+				const task = runCheck(deps.check(), { trigger, rules: rulesOf(cwd), signal, run: { id: claimed.run.id, row: row.id, cause: "push" } })
+					.then(async () => { await closeRun(requests, deps.engine(), claimed, proofOf(lane, () => [], deps.allRuns), Date.now()); })
+					.finally(() => { runs.remove(claimed.run.id); permit.release(); inFlight.delete(task); })
+					.catch((error) => deps.log(`check lane ${lane}: ${error instanceof Error ? error.message : String(error)}`));
+				inFlight.add(task);
+				return "sent";
+			},
+			append: () => "sent",
+			abort: () => { for (const run of runs.all()) if (run.jobId === lane) runs.stop(run.runId); },
+			abortWhenStarted: () => undefined, refused: () => undefined,
+			close: async (row, at) => {
+				const closed = await closeRun(requests, sinks, row, proof, at);
+				return { end: closed.end, outcome: closed.outcome };
+			},
+		};
+		return drain(lane, requests, executor, now, sinks);
+	}
+
+	return {
+		async drainAll(now) {
+			for (const lane of requests.lanes()) if (lane.kind === "check") {
+				if (!requests.list(lane.id).some(checkRow)) continue;
+				try { await drainLane(lane.id, now); }
+				catch (error) { deps.log(`check lane ${lane.id}: ${error instanceof Error ? error.message : String(error)}`); }
+			}
+		},
+		drain: drainLane,
+		async stop(drainMs) {
+			stopped = true;
+			for (const run of runs.all()) if (parseLane(run.jobId)?.kind === "check") run.ctrl.abort();
 			const deadline = Date.now() + drainMs;
 			while (inFlight.size && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
 		},

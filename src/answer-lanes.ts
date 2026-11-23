@@ -106,7 +106,10 @@ export function createAnswerLanes(deps: AnswerLaneDeps): AnswerLanes {
 		const live = (row: ClaimedRow): boolean => answerClaimLive(row, self, listed);
 		/** Why a run of the lane that is going holds this one: a run in this process's list, a live claim on a row of the lane, or a rule check of the project. */
 		const busy = (job: LoopJob | undefined): string | undefined => {
-			const going = runs.all().some((run) => (job !== undefined && run.jobId === job.id) || run.answer?.lane === lane.id || run.turn?.sessionId === lane.id) || stores.requests.list(lane.id).some((row) => row.run !== undefined && live(row as ClaimedRow));
+			const rows = stores.requests.list(lane.id);
+			// A push or a periodic check of the project is a claimed row of its check lane (src/background-executor.ts `createCheckLanes`).
+			if (lane.kind === "check" && rows.some((row) => row.run !== undefined && !isAnswerRow(row) && live(row as ClaimedRow))) return "a check of this project is running";
+			const going = runs.all().some((run) => (job !== undefined && run.jobId === job.id) || run.answer?.lane === lane.id || run.turn?.sessionId === lane.id) || rows.some((row) => row.run !== undefined && live(row as ClaimedRow));
 			if (going) return lane.kind === "loop" ? "another run of the loop is going" : lane.kind === "conversation" ? "another run of pi-loops is writing the conversation" : "another answer of this project is running";
 			if (lane.kind === "check" && deps.checkRunning(lane.id)) return "a check of this project is running";
 			return undefined;

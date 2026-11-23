@@ -42,7 +42,7 @@ test("[push-row-derived] a push is one row per project in its check lane, and de
 		source: "push:ci",
 		mode: "unattended",
 		wake: "turn",
-		payload: { text: `push ci / build red token=[REDACTED:keyed_value] ${"x".repeat(300)}`.slice(0, 200), cwd: a, events: ["evt-1"] },
+		payload: { text: `[Trigger ${pushRowId(ev.id, a)}] ${`push ci / build red token=[REDACTED:keyed_value] ${"x".repeat(300)}`.slice(0, 200)}`, cwd: a, events: ["evt-1"] },
 		created_at: stamp(NOW),
 		created_by: BY,
 		attempts: 0,
