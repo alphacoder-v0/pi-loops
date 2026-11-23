@@ -14,7 +14,7 @@ import { asleepNote, runsSomewhere, type OwnerView } from "./job-owner.ts";
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal, signalSummary } from "./job-signal.ts";
 import { gateShown } from "./gate.ts";
 import { plural } from "./plural.ts";
-import { previewRedacted } from "./redact.ts";
+import { plainLine, previewRedacted } from "./redact.ts";
 import type { ClaimedRow, Row } from "./requests.ts";
 import { type JobClock, dayTime } from "./clock.ts";
 import { type ListedJob, listedJob, runHistory } from "./job-status.ts";
@@ -278,6 +278,10 @@ function catchUpMark(job: Pick<LoopJob, "stateful" | "catchUp">): string | undef
 	return job.catchUp ? "[catchup]" : undefined;
 }
 
+/**
+ * Every line `/cron` lists, each through `plainLine` as its last step: a field added later is cleaned
+ * too. A gate inside one is already shown through `gateShown`.
+ */
 export function jobLines(stored: LoopJob[], opts: JobLinesInput): string[] {
 	const { runs, inbox, requests, view, now, home, cwdExists, showCwd } = opts;
 	// A loop's run, failures and last error, from its rows and the run log (src/job-status.ts `listedJob`).
@@ -323,7 +327,8 @@ export function jobLines(stored: LoopJob[], opts: JobLinesInput): string[] {
 			const answer = job.proposed ? `    /cron enable ${ref} asks again · /cron remove ${ref} cancels it` : undefined;
 			return [head, action, meta, answer, err, ...wakeLines(job, now), ...gateLines(job, now)].filter((l): l is string => !!l);
 		})
-		.flat();
+		.flat()
+		.map(plainLine);
 }
 
 /** More than five rules or loops is a list, not a panel: `/triggers` and `/cron` have the rest. */

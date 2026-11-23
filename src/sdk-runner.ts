@@ -21,6 +21,8 @@ import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { projectNeedsTrust } from "./trust.ts";
 import { wakeMeTool } from "./tools.ts";
 import { clockStore } from "./stores.ts";
+import { RequestStore } from "./requests.ts";
+import { loopLane } from "./lane.ts";
 import { JobStore, defaultLoopsDir } from "./store.ts";
 
 export interface InProcessRunnerDeps {
@@ -523,7 +525,9 @@ export function loopRunTools(req: Pick<SubagentRequest, "kind" | "jobId" | "runI
 	if (req.kind !== "loop" || !req.jobId || !req.runId) return [];
 	const jobId = req.jobId;
 	const jobs = new JobStore(loopsDir);
-	return [wakeMeTool({ jobId, runId: req.runId, job: () => jobs.load().find((job) => job.id === jobId), clock: clockStore(loopsDir), runs: () => jobs.allRuns() })];
+	const requests = new RequestStore(loopsDir);
+	const lane = loopLane(jobId);
+	return [wakeMeTool({ jobId, runId: req.runId, job: () => jobs.load().find((job) => job.id === jobId), clock: clockStore(loopsDir), runs: () => jobs.allRuns(), rows: () => (lane ? requests.list(lane) : []) })];
 }
 
 /** `run` with `names` added to its list and never cut: a run's own tools are not the job's to declare. */

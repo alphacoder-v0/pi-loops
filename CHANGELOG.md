@@ -112,13 +112,18 @@ All notable changes to pi-loops are documented here. The format follows
   `new_trigger` take `gate` only where the call proposes: the card shows it in a `Checks first` row.
   A rule's command gate runs the same way in its check. A gate is refused where it is set, and an
   imported archive's gate is dropped with a note, when the policy would refuse or ask about it in an
-  unattended run (the loops directory and `[limits] allow_commands` included), or when it would not
-  show as itself: a line break, a control or format character (a terminal escape, a bidi override, a
-  zero-width space), or a part that reads as a secret. Every surface shows a gate whole, and a name
-  beside it with those characters taken out. The question that
-  enables imported automation lists each gate it brings. A look kills its whole process group when it
+  unattended run (the loops directory included; `[danger] allow` is not, only a look uses it), or
+  when it would not show as itself: a line break, a control or format character (a terminal escape,
+  a bidi override, a zero-width space), or a part that reads as a secret. Every surface shows a gate
+  whole, and the text beside it with those characters taken out: each line of `/cron`, `/cron runs`,
+  `/triggers rules` and `cron_list`'s text is cleaned as its last step, whichever field it shows.
+  The question that enables imported automation lists each gate it brings, and
+  `pi-loops import --activate-triggers=on` prints each gate before it enables anything.
+  `pi-loops inspect` shows each loop's and rule's gate. A look kills its whole process group when it
   ends. `pi-loops inspect` and `import` also take every format character (Unicode `Cf`) and line
-  separator out of what they print from an archive, where they took out only the bidi ones. 0.24.2 ignores a loop's gate and runs every
+  separator out of what they print from an archive, where they took out only the bidi ones.
+  `pi-loops inbox` lines now drop Unicode `Cf` characters too (emoji joiners among them), as
+  `inspect` and `import` do. 0.24.2 ignores a loop's gate and runs every
   slot, and checks a rule with a command gate with the model each poll. `CONTRACT.md` 2.2 lists
   `gate` among a recipe job's optional keys. See docs/loops.md, "A gate: no model call while nothing
   changed".

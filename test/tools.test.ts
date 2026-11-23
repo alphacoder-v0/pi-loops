@@ -9,7 +9,9 @@ import { ownerViewOf } from "../src/job-owner.ts";
 import { openStores } from "../src/stores.ts";
 import { type ConfirmTurn, type ToolHost, automationTools, confirmControlPlane, controlTarget, createLoopJob, wakeMeTool } from "../src/tools.ts";
 import { TriggerRuntime } from "../src/trigger-runtime.ts";
-import { parseSchedule } from "../src/schedule.ts";
+import { parseSchedule, stamp } from "../src/schedule.ts";
+import { dayTime } from "../src/clock.ts";
+import { plainJobRow } from "../src/engine.ts";
 
 function tools() {
 	const dir = tmp("pi-loops-tools-");
@@ -146,7 +148,7 @@ test("[wake-me] wake_me writes its own loop's follow-up and no other's; a refusa
 	const job = (id: string, name: string) => t.stores.jobs.add({ id, name, schedule: parseSchedule("every 1h"), stateful: true, prompt: "look", cwd: path.join(cwd, "mine"), enabled: true, catchUp: true, createdAt: new Date().toISOString() });
 	const a = await job("cron-aaaaaaaa", "ci");
 	await job("cron-bbbbbbbb", "other");
-	const tool = wakeMeTool({ jobId: a.id, runId: "run-a", job: () => t.stores.jobs.load().find((j) => j.id === a.id), clock: t.stores.clock, runs: () => t.stores.jobs.allRuns() });
+	const tool = wakeMeTool({ jobId: a.id, runId: "run-a", job: () => t.stores.jobs.load().find((j) => j.id === a.id), clock: t.stores.clock, runs: () => t.stores.jobs.allRuns(), rows: () => [] });
 	const call = (args: Record<string, unknown>) => tool.execute("i", args, undefined, undefined, {} as any);
 	const refused = await call({ when: "in 30s", note: "x" });
 	assert.equal(refused.isError, true);
@@ -178,4 +180,42 @@ test("[gate-held-count] cron_list gives the model a loop's gate and its state: i
 	t.stores.clock.noteLook(job.id, { at: new Date().toISOString(), failed: "timed out after 5s" });
 	const failing = String((await t.call("cron_list", {})).content[0].text);
 	assert.match(failing, /\n  gate_failing: timed out after 5s \(the loop runs without the gate until it works\)/);
+});
+
+test("[wake-me-next] wake_me's reply reads the next scheduled run as /cron does: from the run in flight, which fires an every schedule when it starts", async () => {
+	const t = tools();
+	const now = Date.parse("2026-11-23T09:55:00.000+08:00");
+	const a = await t.stores.jobs.add({ id: "cron-aaaaaaaa", name: "ci", schedule: parseSchedule("every 1h"), stateful: true, prompt: "look", cwd: path.join(t.stores.dir, "mine"), enabled: true, catchUp: true, createdAt: stamp(now - 86_400_000) });
+	t.stores.clock.seed({ [a.id]: { runs: 3, fired: stamp(now - 55 * 60_000) } });
+	const started = now - 5 * 60_000;
+	const mine = { ...plainJobRow(a, "row-a", `cron:${a.id}`, "", { pid: process.pid, instance: "x", version: "0" }, started), lane: `@${a.id}`, run: { id: "run-a", pid: process.pid, started_at: stamp(started) } };
+	const reply = async (rows: any[]) => {
+		const tool = wakeMeTool({ jobId: a.id, runId: "run-a", job: () => t.stores.jobs.load().find((j) => j.id === a.id), clock: t.stores.clock, runs: () => [], rows: () => rows, now: () => now });
+		return String((await tool.execute("i", { when: "in 20m", note: "look again" }, undefined, undefined, {} as any)).content[0].text);
+	};
+	assert.match(await reply([mine]), new RegExp(`Its next scheduled run is ${dayTime(started + 3_600_000, now)}\\.$`), "an hour after the run in flight started, not after the last one that ended");
+	assert.match(await reply([]), new RegExp(`Its next scheduled run is ${dayTime(now + 5 * 60_000, now)}\\.$`), "with no run in flight, from the clock");
+	const refused = await (wakeMeTool({ jobId: a.id, runId: "run-a", job: () => t.stores.jobs.load().find((j) => j.id === a.id), clock: t.stores.clock, runs: () => [], rows: () => [mine], now: () => now }).execute("i", { when: "in 10s", note: "x" }, undefined, undefined, {} as any));
+	assert.match(String(refused.content[0].text), new RegExp(`Its next scheduled run is ${dayTime(started + 3_600_000, now)}\\.$`), "a refusal says the same next run");
+});
+
+test("[wake-quiet] cron_list's next_run is the one /cron shows: a quiet time holds the slots before it", async () => {
+	const t = tools();
+	const a = await t.stores.jobs.add({ id: "cron-aaaaaaaa", name: "ci", schedule: parseSchedule("every 1h"), stateful: true, prompt: "look", cwd: path.join(t.stores.dir, "mine"), enabled: true, catchUp: true, createdAt: new Date(Date.now() - 86_400_000).toISOString() });
+	const until = new Date(Date.now() + 3 * 3_600_000).toISOString();
+	t.stores.clock.seed({ [a.id]: { runs: 1, fired: new Date(Date.now() - 30 * 60_000).toISOString(), quietUntil: until, quietWhy: "weekend" } });
+	const listed = (await t.call("cron_list", {})).details as any;
+	const job = (listed.jobs ?? listed).find((j: any) => j.id === a.id);
+	assert.ok(job?.next_run, JSON.stringify(listed));
+	assert.ok(Date.parse(job.next_run) >= Date.parse(until), `next_run ${job.next_run} is not before the quiet time ends (${until})`);
+});
+
+test("[clean-at-sink] cron_list's text carries no control or format character, whichever field held it", async () => {
+	const t = tools();
+	const nasty = "a\u001b[2J\u202eb\u200bc\u009bd";
+	const a = await t.stores.jobs.add({ id: "cron-aaaaaaaa", name: `n ${nasty}`, schedule: parseSchedule("every 1h"), stateful: true, prompt: `p ${nasty}`, cwd: path.join(t.stores.dir, "mine"), enabled: true, catchUp: true, createdAt: new Date().toISOString(), gate: { kind: "command", command: "gh pr list" } });
+	t.stores.clock.seed({ [a.id]: { runs: 1, note: { at: new Date().toISOString(), text: `note ${nasty}` }, followup: { id: "fu", at: new Date(Date.now() + 3_600_000).toISOString(), note: `w ${nasty}`, set_by: "r", created_at: new Date().toISOString() }, gate: { looks: 0, last: { at: new Date().toISOString(), failed: `f ${nasty}` } } } });
+	const text = String((await t.call("cron_list", {})).content[0].text);
+	for (const word of ["n a", "p a", "note a", "w a", "f a"]) assert.ok(text.includes(word), `${word}: ${text}`);
+	for (const line of text.split("\n")) assert.equal(/[\p{Cc}\p{Cf}]/u.test(line), false, JSON.stringify(line));
 });

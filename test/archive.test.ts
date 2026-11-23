@@ -4,7 +4,7 @@ import { tmp } from "./tmp.ts";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { ARCHIVE_SCHEMA, applyImport, automationOf, defaultExportPath, exportSession, importSession, offerToEnable, parseActivateMode, readTar, writeTar } from "../src/archive.ts";
+import { ARCHIVE_SCHEMA, applyImport, automationOf, defaultExportPath, exportSession, importSession, inspectArchive, offerToEnable, parseActivateMode, readTar, writeTar } from "../src/archive.ts";
 import { JobStore } from "../src/store.ts";
 import { fromV2, type V2Job } from "../src/convert-v2.ts";
 import { clockStore } from "../src/stores.ts";
@@ -399,4 +399,17 @@ test("[gate-policy] every imported gate gets the whole check a set gate gets: a 
 	let detail = "";
 	await offerToEnable(imp, jobStore, triggerStore, (_q, d) => { detail = d; return false; });
 	assert.match(detail, /\nThese gates run a command in the background before each run:\n- loop "fine" runs first: gh pr list$/);
+});
+
+test("[inspect-gates] pi-loops inspect shows each loop's and rule's gate, whole and cleaned as every surface shows one", () => {
+	const dir = tmp("pi-loops-arc-");
+	const sessionFile = fakeSession(dir);
+	const loop = { id: "cron-" + "1".repeat(8), schedule: { kind: "every", ms: 3_600_000 }, stateful: true, prompt: "look", cwd: "/old", enabled: true, catchUp: true, createdAt: "2026-01-01T00:00:00.000Z", gate: { kind: "command", command: "gh pr list\u001b[2J --json number" } };
+	const bare = { ...loop, id: "cron-" + "2".repeat(8), prompt: "bare", gate: undefined };
+	const rule = { id: "dyn-" + "6".repeat(32), condition: "a new pull request is opened", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: "/old", gate: { kind: "command", command: "git log -1" } };
+	const out = defaultExportPath(dir, "orig-inspect-gate");
+	exportV2({ sessionFile, cwd: "/old", jobs: [loop, bare] as any, rules: [rule] as any, states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
+	const info = inspectArchive(out);
+	assert.deepEqual(info.jobs.map((j) => [j.prompt, j.gate]), [["look", "gh pr list [2J --json number"], ["bare", undefined]]);
+	assert.deepEqual(info.rules.map((r) => r.gate), ["git log -1"]);
 });

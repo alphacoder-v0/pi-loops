@@ -309,24 +309,29 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
  * you have to trust blindly at exactly the moment you are least able to (restoring on a new
  * machine); a summary is printed before importing, which makes it available on its own.
  */
-export function inspectArchive(archivePath: string): { schema: string; createdAt: string; sourceCwd: string; entryCount: number; loopStateCount: number; jobs: Array<{ schedule: string; prompt: string; enabled: boolean }>; rules: Array<{ condition: string; action: string; enabled: boolean }> } {
+export function inspectArchive(archivePath: string): { schema: string; createdAt: string; sourceCwd: string; entryCount: number; loopStateCount: number; jobs: Array<{ schedule: string; prompt: string; enabled: boolean; gate?: string }>; rules: Array<{ condition: string; action: string; enabled: boolean; gate?: string }> } {
 	const files = readTar(fs.readFileSync(archivePath));
 	for (const name of files.keys()) validateArchivePath(name);
 	const manifestBytes = files.get(MANIFEST_PATH);
 	if (!manifestBytes) throw new Error("archive has no manifest.json");
 	const manifest = JSON.parse(manifestBytes.toString("utf8")) as Manifest;
-	const jobs: Array<{ schedule: string; prompt: string; enabled: boolean }> = [];
-	const rules: Array<{ condition: string; action: string; enabled: boolean }> = [];
+	const jobs: Array<{ schedule: string; prompt: string; enabled: boolean; gate?: string }> = [];
+	const rules: Array<{ condition: string; action: string; enabled: boolean; gate?: string }> = [];
+	// Each gate whole, as every surface shows one (`gateShown`): it is a command the archive's author wrote.
+	const gateOfRaw = (value: unknown) => {
+		const gate = commandGateOf(value);
+		return gate ? { gate: gateShown(gate.command) } : {};
+	};
 	const cron = files.get(CRON_PATH);
 	if (cron) {
 		for (const j of (JSON.parse(cron.toString("utf8"))?.jobs ?? []) as LoopJob[]) {
-			jobs.push({ schedule: isValidSchedule(j.schedule) ? formatSchedule(j.schedule) : "(invalid)", prompt: previewRedacted(j.prompt ?? "", 100), enabled: !!j.enabled });
+			jobs.push({ schedule: isValidSchedule(j.schedule) ? formatSchedule(j.schedule) : "(invalid)", prompt: previewRedacted(j.prompt ?? "", 100), enabled: !!j.enabled, ...gateOfRaw(j.gate) });
 		}
 	}
 	const trig = files.get(TRIGGERS_PATH);
 	if (trig) {
 		for (const r of (JSON.parse(trig.toString("utf8"))?.rules ?? []) as DynamicTriggerRule[]) {
-			rules.push({ condition: previewRedacted(r.condition ?? "", 80), action: previewRedacted(r.action ?? "", 80), enabled: !!r.enabled });
+			rules.push({ condition: previewRedacted(r.condition ?? "", 80), action: previewRedacted(r.action ?? "", 80), enabled: !!r.enabled, ...gateOfRaw(r.gate) });
 		}
 	}
 	return {
@@ -541,6 +546,21 @@ export async function applyImport(imp: ImportSummary, jobStore: JobStore, trigge
 	}
 }
 
+/** The line above an import's gates, in the question that enables them and before `--activate-triggers=on` enables them. */
+export const GATES_HEAD = "These gates run a command in the background before each run:";
+
+/**
+ * Each gate an import brings on the loops and rules named in `enabled`, one line each. A gate is a
+ * command that runs unattended once they are on: shown whole, through `gateShown` (an imported gate
+ * passed `gateCommandWhy`, so it shows as itself), and a name from the archive is cleaned the same way.
+ */
+export function importedGateLines(imp: Pick<ImportSummary, "jobs" | "rules">, enabled: { readonly jobs: readonly string[]; readonly rules: readonly string[] }): string[] {
+	return [
+		...imp.jobs.filter((j) => enabled.jobs.includes(j.id) && j.gate).map((j) => `- loop "${gateShown(j.name ?? j.id)}" runs first: ${gateShown(j.gate!.command)}`),
+		...imp.rules.filter((r) => enabled.rules.includes(r.id) && r.gate?.kind === "command").map((r) => `- rule ${r.id} runs first: ${gateShown((r.gate as CommandGate).command)}`),
+	];
+}
+
 /**
  * What `ask` means: after an import that did not activate, offer once to switch back on what the
  * source session had on, and do it if the answer is yes. Returns what was enabled.
@@ -560,14 +580,8 @@ export async function offerToEnable(
 	if (imp.automationEnabled) return none;
 	const pending = imp.originallyEnabledJobs.length + imp.originallyEnabledRules.length;
 	if (!pending || !confirm) return none;
-	// Each gate is a command that runs unattended once this says yes: the question shows them whole,
-	// through gateShown (an imported gate passed gateCommandWhy, so it shows as itself), and a name
-	// from the archive is cleaned the same way.
-	const gates = [
-		...imp.jobs.filter((j) => imp.originallyEnabledJobs.includes(j.id) && j.gate).map((j) => `- loop "${gateShown(j.name ?? j.id)}" runs first: ${gateShown(j.gate!.command)}`),
-		...imp.rules.filter((r) => imp.originallyEnabledRules.includes(r.id) && r.gate?.kind === "command").map((r) => `- rule ${r.id} runs first: ${gateShown((r.gate as CommandGate).command)}`),
-	];
-	const ok = await confirm("Enable imported automation?", `${count(imp.originallyEnabledJobs.length, "loop")} and ${count(imp.originallyEnabledRules.length, "rule")} were enabled in the source conversation. Enable them here now?${gates.length ? `\nThese gates run a command in the background before each run:\n${gates.join("\n")}` : ""}`);
+	const gates = importedGateLines(imp, { jobs: imp.originallyEnabledJobs, rules: imp.originallyEnabledRules });
+	const ok = await confirm("Enable imported automation?", `${count(imp.originallyEnabledJobs.length, "loop")} and ${count(imp.originallyEnabledRules.length, "rule")} were enabled in the source conversation. Enable them here now?${gates.length ? `\n${GATES_HEAD}\n${gates.join("\n")}` : ""}`);
 	if (!ok) return none;
 	for (const id of imp.originallyEnabledJobs) {
 		const before = jobStore.load().find((j) => j.id === id);

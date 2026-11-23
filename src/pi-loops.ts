@@ -17,7 +17,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { ProjectTrustStore, SessionManager, VERSION as PI_VERSION, copyToClipboard, formatDimensionNote, getAgentDir, readStoredCredential, resizeImage } from "@earendil-works/pi-coding-agent";
-import { ARCHIVE_EXT, type ActivateMode, applyImport, automationOf, defaultExportPath, exportSession, importSession, offerToEnable, parseActivateMode } from "./archive.ts";
+import { ARCHIVE_EXT, type ActivateMode, GATES_HEAD, applyImport, automationOf, defaultExportPath, exportSession, importSession, importedGateLines, offerToEnable, parseActivateMode } from "./archive.ts";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "./args.ts";
@@ -32,7 +32,7 @@ import { LoopsLog, pruneLogs } from "./log.ts";
 import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
-import { capRedacted, previewRedacted, redact, screenText } from "./redact.ts";
+import { capRedacted, plainLine, previewRedacted, redact, screenText } from "./redact.ts";
 import { CANCELLED_LINE, answerLine, answerWho, cancelRefusal, cardLines, cardOrigin, clearLeftTail, dismissOutcome, dismissTail, inboxCard, noQuestionLine, questionActions, threadOrder, threadedLines, threads, yesTerminalLine } from "./inbox-card.ts";
 import { type Answers, conversationFile, createAnswers } from "./answers.ts";
 import { type StepRefusal, answerOpen, answerRowId } from "./ask.ts";
@@ -1661,7 +1661,8 @@ export default function piLoops(pi: ExtensionAPI) {
 							return;
 						}
 						const newestFirst = [...runs].reverse();
-						show(ctx, `Recent runs${job ? ` of ${job.name ?? job.id}` : ""} (${runs.length}, newest first)`, [
+						// Each line through `plainLine` as its last step, as every `/cron` line is (src/job-lines.ts `jobLines`).
+						show(ctx, plainLine(`Recent runs${job ? ` of ${job.name ?? job.id}` : ""} (${runs.length}, newest first)`), [
 							...newestFirst.map((r, i) => {
 								const secs = Math.max(0, Math.round((Date.parse(r.finishedAt) - Date.parse(r.startedAt)) / 1000));
 								const who = job ? "" : `${r.jobName ?? r.jobId} `;
@@ -1671,7 +1672,7 @@ export default function piLoops(pi: ExtensionAPI) {
 								return `${String(i + 1).padStart(2)}. ${formatLocal(Date.parse(r.startedAt))} ${who}${secs}s${cost} · ${tail}${r.sessionFile ? "" : " (no transcript)"}`;
 							}),
 							job ? `transcript: /cron trace ${job.name ?? job.id} <k>` : "transcript: /cron trace <job> <k>",
-						]);
+						].map(plainLine));
 						return;
 					}
 					case "trace": {
@@ -3223,6 +3224,9 @@ export default function piLoops(pi: ExtensionAPI) {
 					existingJobIds: new Set(store.load().map((j) => j.id)),
 					existingRuleIds: new Set(triggers.store.load().map((r) => r.id)),
 				});
+				// With `on` the import enables what it brings: its gates are shown before anything is on, as the CLI does.
+				const gates = mode === "on" ? importedGateLines(imp, { jobs: imp.jobs.filter((j) => j.enabled).map((j) => j.id), rules: imp.rules.filter((r) => r.enabled).map((r) => r.id) }) : [];
+				if (gates.length) show(ctx, GATES_HEAD, gates);
 				await applyImport(imp, store, triggers.store, stores.clock);
 				for (const job of imp.jobs) cronControlAudit("add", "slash", undefined, job);
 				refreshBadge();

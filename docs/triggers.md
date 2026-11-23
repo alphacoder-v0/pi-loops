@@ -103,7 +103,8 @@ back. The rule's row on the page says what it waits for and when the next look i
 A rule can also have a command gate: `gate` is `{"kind": "command", "command": "…"}`. Only a
 proposal sets one: `new_trigger` with `gate`, which the person sees in the card's `Checks first`
 row before they say yes. `new_trigger` where it creates at once (a pi with no UI) refuses a `gate`
-whole: `a gate needs a person: set it with /cron set <name> --gate`. After the poll is claimed,
+whole: `a gate needs a person: new_trigger with a gate proposes the rule, and the person sets it up`.
+`/cron set` cannot set a rule's gate. After the poll is claimed,
 pi-loops runs the command in the rule's project, as a loop's gate runs (see [loops.md](loops.md), "A
 gate: no model call while nothing changed"): the same checks where it is set, the
 dangerous-command policy with the loops directory first, 5 seconds, the first 4000 characters, its

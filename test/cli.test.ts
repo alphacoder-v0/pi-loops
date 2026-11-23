@@ -1232,6 +1232,36 @@ test("pi-loops import refuses an --activate-triggers it does not know, before it
 	assert.deepEqual(fs.readdirSync(loops), [], "an argument nobody understands writes nothing");
 });
 
+test("[import-gates-first] pi-loops import --activate-triggers=on prints each gate before anything is enabled; inspect shows each gate", async () => {
+	const { exportSession } = await import("../src/archive.ts");
+	const root = tmp("pi-loops-import-gates-");
+	const loops = path.join(root, "loops");
+	const project = path.join(root, "project");
+	fs.mkdirSync(loops);
+	fs.mkdirSync(project);
+	const sessionFile = path.join(root, "s.jsonl");
+	fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "01a08416-0000-0000-0000-00000000000c", cwd: "/old" })}\n`);
+	const job: any = { id: "cron-" + "c".repeat(32), name: "prs", schedule: { kind: "every", ms: 3_600_000 }, stateful: true, prompt: "look", cwd: "/old", enabled: true, catchUp: true, createdAt: "2026-01-01T00:00:00.000Z", gate: { kind: "command", command: "gh pr list" } };
+	const rule: any = { id: "dyn-" + "c".repeat(32), condition: "a pull request opens", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: "/old", gate: { kind: "command", command: "git log -1" } };
+	const archive = path.join(root, "a.pisession");
+	exportSession({ sessionFile, cwd: "/old", jobs: [job], clock: { v: 1, jobs: {} }, rules: [rule], states: {}, outputPath: archive, piVersion: "x", piLoopsVersion: "y" });
+	const inspected: string[] = [];
+	assert.equal(await runCli(["inspect", archive], (l) => void inspected.push(l)), 0);
+	assert.ok(inspected.includes("  cron  enabled  every 1h  look  gate: gh pr list"), inspected.join("\n"));
+	assert.ok(inspected.includes("  rule  enabled  when a pull request opens -> a  gate: git log -1"), inspected.join("\n"));
+	const lines: string[] = [];
+	const enabledWhenSaid: boolean[] = [];
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: "off" }, async () => {
+		assert.equal(await runCli(["import", archive, "--cwd", project, "--activate-triggers=on"], (l) => {
+			if (/runs first: /.test(l)) enabledWhenSaid.push(new JobStore(loops).load().some((j) => j.enabled) || new TriggerStore(loops).load().some((r) => r.enabled));
+			lines.push(l);
+		}), 0);
+	});
+	assert.deepEqual(lines.slice(0, 3), ["These gates run a command in the background before each run:", '- loop "prs" runs first: gh pr list', `- rule ${rule.id} runs first: git log -1`], lines.join("\n"));
+	assert.deepEqual(enabledWhenSaid, [false, false], "each gate is said before anything is enabled");
+	assert.deepEqual([new JobStore(loops).load().map((j) => j.enabled), new TriggerStore(loops).load().map((r) => r.enabled)], [[true], [true]], "and then the flag enables them");
+});
+
 test("pi-loops start --foreground leaves cleanly on SIGHUP: exit 0, its record gone", { timeout: 60_000, skip: process.platform === "win32" ? "POSIX signals" : false }, async () => {
 	// Closing the terminal it runs in sends SIGHUP. Unhandled, the process died with its record left
 	// behind: the next window counted a crash, and a service manager restarted it as a failure (129).

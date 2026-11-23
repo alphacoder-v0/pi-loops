@@ -15,7 +15,7 @@ import { ownerViewOf } from "../src/job-owner.ts";
 import { switchTargets } from "../src/job-status.ts";
 import { ruleLines } from "../src/rule-lines.ts";
 import { openStores, type Stores } from "../src/stores.ts";
-import { type ToolHost, GATE_NEEDS_PERSON, automationTools, confirmControlPlane, createLoopJob } from "../src/tools.ts";
+import { type ToolHost, GATE_NEEDS_PERSON, RULE_GATE_NEEDS_PERSON, automationTools, confirmControlPlane, createLoopJob } from "../src/tools.ts";
 import { TriggerRuntime } from "../src/trigger-runtime.ts";
 import { RUNTIME_RIDERS } from "../src/ticker.ts";
 import { type AnswerContext, type Proposal, answerProposal, askProposal, askTitle, planCard, planOf, proposalCard, receiptRowId, watchChoice, watchOptions } from "../src/watch-plan.ts";
@@ -167,10 +167,12 @@ test("[gate-person-only] a gate is accepted only where the call proposes: the ca
 	const NO_UI = { hasUI: false } as any;
 	const noUi = world();
 	const tools = automationTools({ hop: 0, actor: "tool" }, noUi.host);
-	for (const [name, args] of [["cron_create", { schedule: "every 10m", action: "look", stateful: true, gate: GATE }], ["new_trigger", { condition: "c", action: "a", gate: GATE }]] as const) {
+	// A rule's refusal names the proposal, the one way a rule gets a gate: `/cron set` cannot set one.
+	for (const [name, args, words] of [["cron_create", { schedule: "every 10m", action: "look", stateful: true, gate: GATE }, GATE_NEEDS_PERSON], ["new_trigger", { condition: "c", action: "a", gate: GATE }, RULE_GATE_NEEDS_PERSON]] as const) {
 		const out = await tools.find((t) => t.name === name)!.execute("i", args, undefined, undefined, NO_UI);
-		assert.deepEqual([out.isError, String(out.content[0].text)], [true, GATE_NEEDS_PERSON], `${name} with no UI creates at once, so a gate is refused`);
+		assert.deepEqual([out.isError, String(out.content[0].text)], [true, words], `${name} with no UI creates at once, so a gate is refused`);
 	}
+	assert.equal(RULE_GATE_NEEDS_PERSON, "a gate needs a person: new_trigger with a gate proposes the rule, and the person sets it up");
 	assert.deepEqual([noUi.jobsFile(), noUi.stores.rules.load()], ["absent", []], "nothing is created");
 	for (const [label, at] of [["hop 1", world({ hop: 1 })], ["a scheduled turn", world({ scheduled: true })]] as const) {
 		const out = await at.call("cron_create", { schedule: "every 10m", action: "look", stateful: true, gate: GATE });

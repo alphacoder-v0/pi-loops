@@ -17,7 +17,7 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { isRemoteTty, openFileTarget, openUrl, thisMachine } from "./browser-open.ts";
-import { applyImport, automationOf, exportSession, defaultExportPath, importSession, inspectArchive, offerToEnable, parseActivateMode } from "./archive.ts";
+import { GATES_HEAD, applyImport, automationOf, exportSession, defaultExportPath, importSession, importedGateLines, inspectArchive, offerToEnable, parseActivateMode } from "./archive.ts";
 import { API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, COPY_KEY_MS, askHost, hostSocketPath, openConversations, renderHostSnapshot, requestLines, requestQueues, ringHost } from "./host-control-channel.ts";
 import { heldTurnFor, stopRow } from "./engine.ts";
 import { LeaseStore, procStart, sessionFileName } from "./lease.ts";
@@ -349,8 +349,8 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		out(`${plainLine(info.schema)}  exported ${plainLine(info.createdAt)}  from ${plainLine(info.sourceCwd)}`);
 		// The counts come out of the same manifest and are only numbers if it says so.
 		out(`entries=${plainLine(String(info.entryCount))} cron=${info.jobs.length} triggers=${info.rules.length} loop-state=${plainLine(String(info.loopStateCount))}`);
-		for (const j of info.jobs) out(`  cron  ${j.enabled ? "enabled " : "disabled"} ${plainLine(j.schedule)}  ${plainLine(j.prompt)}`);
-		for (const r of info.rules) out(`  rule  ${r.enabled ? "enabled " : "disabled"} when ${plainLine(r.condition)} -> ${plainLine(r.action)}`);
+		for (const j of info.jobs) out(`  cron  ${j.enabled ? "enabled " : "disabled"} ${plainLine(j.schedule)}  ${plainLine(j.prompt)}${j.gate === undefined ? "" : `  gate: ${j.gate}`}`);
+		for (const r of info.rules) out(`  rule  ${r.enabled ? "enabled " : "disabled"} when ${plainLine(r.condition)} -> ${plainLine(r.action)}${r.gate === undefined ? "" : `  gate: ${r.gate}`}`);
 		return 0;
 	}
 
@@ -391,6 +391,9 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		const existingJobs = jobStore.load();
 		const existingRules = triggerStore.load();
 		const summary = importSession({ archivePath: path.resolve(file), sessionDir, targetCwd: cwd, activate: mode === "on", existingJobs, existingRules, existingJobIds: new Set(existingJobs.map((j) => j.id)), existingRuleIds: new Set(existingRules.map((r) => r.id)) });
+		// With `on` the write below enables them: each gate is said before it, as the question says it on `ask`.
+		const gates = importedGateLines(summary, { jobs: summary.jobs.filter((j) => j.enabled).map((j) => j.id), rules: summary.rules.filter((r) => r.enabled).map((r) => r.id) });
+		if (gates.length) for (const line of [GATES_HEAD, ...gates]) out(line);
 		// The writes and the rollback the slash command does, in `applyImport`.
 		await applyImport(summary, jobStore, triggerStore, stores.clock);
 		const skipped = (summary.skippedJobs ?? 0) + (summary.skippedRules ?? 0);

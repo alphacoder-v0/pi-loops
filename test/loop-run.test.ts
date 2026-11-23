@@ -547,7 +547,7 @@ test("[gate-seen-on-success] a gated run that ends without a failure writes the 
 			},
 		};
 		await runLoop(claimed, job as LoopJob, deps);
-		assert.match(prompt, /\n\[gate\] \(the output of this loop's gate, which changed since your last run\)\ncommand: gh pr list\nexit code: 0\noutput:\n#12 fix login\n\[\/gate\]\n\ncheck changes/, how);
+		assert.match(prompt, /\n\[gate\] \(what this loop's gate reads now, which your last run that ended well did not see\)\ncommand: gh pr list\nexit code: 0\noutput:\n#12 fix login\n\[\/gate\]\n\ncheck changes/, how);
 		assert.deepEqual(f.stores.requests.list(row.lane), [], `${how}: the row is closed`);
 		const seen = f.stores.clock.read().jobs[job.id]?.gate?.seen;
 		if (how === "succeeded") assert.deepEqual(seen, { digest: commandDigest(0, "#12 fix login\n"), at: event.received_at });

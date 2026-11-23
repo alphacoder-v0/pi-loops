@@ -43,7 +43,7 @@ export const GATE_COMMAND_MAX = 1000;
 
 /**
  * What a gate's command is judged by, as an unattended run's command is (src/guard.ts `policyNeed`):
- * the dangerous-command policy with the loops directory and `[limits] allow_commands`. A command a
+ * the dangerous-command policy with the loops directory (and `[danger] allow` where the look runs). A command a
  * run would be asked about is refused: a gate runs with nobody there to ask.
  */
 export interface GatePolicy {

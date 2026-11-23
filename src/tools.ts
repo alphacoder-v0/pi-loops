@@ -7,7 +7,7 @@
  */
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal } from "./job-signal.ts";
 import { formatWait, queuedPrompt, type QueuedPrompt, runningRun } from "./engine.ts";
-import { type ListedJob, listedJobs } from "./job-status.ts";
+import { type ListedJob, listedJob, listedJobs } from "./job-status.ts";
 import { gateFields, statusField, statusWord, wakeFields } from "./job-lines.ts";
 import { gateCommandWhy, gateShown } from "./gate.ts";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -15,14 +15,14 @@ import { createHash } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Type, type TSchema } from "typebox";
-import { previewRedacted } from "./redact.ts";
-import { computeNext, formatLocal, formatSchedule, parseSchedule, stamp } from "./schedule.ts";
+import { plainLine, previewRedacted } from "./redact.ts";
+import { computeNext, formatLocal, formatSchedule, nextRunAt, parseSchedule, stamp } from "./schedule.ts";
 import type { SessionSnapshot } from "./job-owner.ts";
 import { removeJob } from "./stores.ts";
 import type { Stores } from "./stores.ts";
 import type { RunList } from "./run-list.ts";
 import { DISABLED_BY_PERSON, MAX_PROMPT_BYTES, type JobStore, type LoopJob, type RunRecord, newId, owningSessionId, resolveJobRef } from "./store.ts";
-import type { RequestStore } from "./requests.ts";
+import type { RequestStore, Row } from "./requests.ts";
 import type { Inbox } from "./inbox.ts";
 import { jobNameFrom } from "./job-name.ts";
 import { asleepNote, ownerSession, runsSomewhere, whereRuns, type OwnerView } from "./job-owner.ts";
@@ -303,6 +303,9 @@ function turnOf(scope: ToolScope, host: ToolHost, ctx: Pick<ExtensionContext, "h
 /** Where a create tool makes a job at once, a gate is refused whole: only a person sets one (design 3.3). */
 export const GATE_NEEDS_PERSON = "a gate needs a person: set it with /cron set <name> --gate";
 
+/** The same for a rule, which `/cron set` cannot reach: a rule's gate is set only from a proposal the person answers. */
+export const RULE_GATE_NEEDS_PERSON = "a gate needs a person: new_trigger with a gate proposes the rule, and the person sets it up";
+
 const GATE_DESCRIPTION = "Optional: one shell command looked at before each run, at most once a minute, in the watch's directory (5 s, its first 4000 characters of output). While it prints what the last run saw, no model is called. Only when the watch is proposed to a person, who sees the command on the card; refused anywhere the tool creates at once. Use a cheap, read-only command whose output changes exactly when there is something new (gh pr list --json number,updatedAt).";
 
 /** A gate a create tool was given, or why it cannot be one: the whole check, against this loops directory, before the card shows it. */
@@ -345,7 +348,8 @@ function renderTriggerRulesForTool(rules: ReturnType<TriggerStore["load"]>, host
  */
 function nextRunForTool(job: ListedJob, now: number, view: OwnerView): number | undefined {
 	if (!job.enabled || !runsSomewhere(job, view)) return undefined;
-	return computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), fired: job.status.fired ? Date.parse(job.status.fired) : undefined }, now);
+	// The one next-run function /cron, the page and wake_me read, so cron_list agrees with them.
+	return nextRunAt({ schedule: job.schedule, createdAt: job.createdAt, fired: job.status.fired, quietUntil: job.status.quiet?.until }, now);
 }
 
 /** A plain job's prompt waiting in its conversation's queue (src/engine.ts `queuedPrompt`); a loop has no queue. */
@@ -393,7 +397,8 @@ function renderCronJobsForTool(jobs: readonly ListedJob[], host: Pick<ToolHost, 
 			if (s.quiet >= QUIET_MARK_AFTER) lines.push(`  quiet_streak: ${s.quiet} (consecutive runs with no finding)`);
 		}
 	}
-	return lines.join("\n");
+	// Each line through `plainLine` as its last step, as `/cron` does: a field added later is cleaned too.
+	return lines.map(plainLine).join("\n");
 }
 
 /** A rule made at once, as `new_trigger` made one before proposals: the person's own turn with no UI, after `confirmTool`. */
@@ -496,7 +501,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const gate = params.gate === undefined ? undefined : gateOf(params.gate, host.stores.dir);
 			if (typeof gate === "string") return deny(gate);
 			// A gate needs a person (design 3.3): only a proposal, which they see on the card, carries one.
-			if (gate && turn === "no-ui") return deny(GATE_NEEDS_PERSON);
+			if (gate && turn === "no-ui") return deny(RULE_GATE_NEEDS_PERSON);
 			if (turn === "no-ui") {
 				// Nobody could answer a proposal here: the rule is asked for as before proposals, with
 				// `confirmTool`, which a pi with no UI refuses.
@@ -743,6 +748,8 @@ export interface WakeMeHost {
 	readonly clock: Pick<ClockStore, "read" | "setFollowup">;
 	/** The run log, for the follow-ups of the last 24 hours. */
 	runs(): readonly RunRecord[];
+	/** The loop's lane (`requests/<lane>.jsonl`): the row this run claimed fires the schedule, as `/cron` reads it. */
+	rows(): readonly Row[];
 	now?(): number;
 }
 
@@ -765,7 +772,11 @@ export function wakeMeTool(host: WakeMeHost): ToolDefinition<any, any> {
 			const job = host.job();
 			if (!job || !job.stateful) return { content: [{ type: "text", text: "not set: this loop is no longer in the store." }], isError: true, details: { set: false } };
 			const p = params as { when: string; note: string; quiet?: boolean };
-			const clock = host.clock.read().jobs[job.id];
+			const stored = host.clock.read().jobs[job.id];
+			// The run in flight fires the schedule when it starts, as `/cron` reads it (src/job-status.ts
+			// `listedJob`): the next scheduled run counts from it, not from the last run that ended.
+			const fired = listedJob(job, stored, host.rows(), undefined, (row) => row.run.id === host.runId).status.fired;
+			const clock = stored ? { ...stored, fired } : fired === undefined ? undefined : { runs: 0, fired };
 			const answer = decideWake({ when: String(p.when ?? ""), note: String(p.note ?? ""), quiet: p.quiet === true }, { job, clock, runs: host.runs(), now });
 			if ("refused" in answer) return { content: [{ type: "text", text: answer.refused }], isError: true, details: { set: false } };
 			const replaced = host.clock.setFollowup(job.id, { at: answer.at, note: answer.note, set_by: host.runId }, answer.quiet, now);

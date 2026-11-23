@@ -4,7 +4,7 @@
  */
 import { projectLabel } from "./conversation-rows.ts";
 import { ruleFailureMark } from "./job-health.ts";
-import { previewRedacted } from "./redact.ts";
+import { plainLine, previewRedacted } from "./redact.ts";
 import { formatLocal } from "./schedule.ts";
 import { shortSessionId } from "./session-head.ts";
 import type { DynamicTriggerRule } from "./triggers.ts";
@@ -22,10 +22,11 @@ export interface RuleLinesOptions {
 /**
  * One row a rule. The marks say only where the rule differs from the Watch card's first answers
  * (shown here, once): `disabled`, `every time`, `to inbox`, and when it fired. A proposal says it
- * waits for a yes, and a second line names the two commands that answer it (design 6.3).
+ * waits for a yes, and a second line names the two commands that answer it (design 6.3). Each line
+ * goes through `plainLine` as its last step, so a field added later is cleaned too.
  */
 export function ruleLines(rules: readonly DynamicTriggerRule[], opts: RuleLinesOptions): string[] {
-	return rules.flatMap((r, i) => {
+	return rules.flatMap((r, i): string[] => {
 		const marks = [r.proposed ? "proposed: waits for your yes" : r.enabled ? "" : "disabled", r.fireOnce ? "" : "every time", r.promoteToChat ? "" : "to inbox", r.firedAt ? `fired ${formatLocal(Date.parse(r.firedAt))}` : ""].filter(Boolean).join(", ");
 		const head = opts.numbered ? `${String(i + 1).padStart(2)}. ` : "  - ";
 		const failing = ruleFailureMark(r);
@@ -34,7 +35,7 @@ export function ruleLines(rules: readonly DynamicTriggerRule[], opts: RuleLinesO
 		const line = `${head}${r.id}${marks ? ` [${marks}]` : ""}${failing ? ` ${failing}` : ""} when ${previewRedacted(r.condition, 80)} -> ${previewRedacted(r.action, 80)}${elsewhere}${other}`;
 		const ref = opts.numbered ? String(i + 1) : r.id;
 		return r.proposed ? [line, `    /triggers enable ${ref} asks again · /triggers remove ${ref} cancels it`] : [line];
-	});
+	}).map(plainLine);
 }
 
 export interface TriggerStatusInput {

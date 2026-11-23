@@ -366,3 +366,21 @@ test("[gate-held-count] /cron under a gated loop: the same for N looks since the
 	assert.deepEqual(gateFields(listedJob(fromV2(loop).job, failing, [], undefined)), ["gate: `gh pr list --json number,updatedAt`", "gate_failing: timed out after 5s (the loop runs without the gate until it works)"]);
 	assert.equal(linesFor([job()], { clock: { [job().id]: held } }).some((l) => l.includes("gate")), false, "a loop with no gate says nothing of one");
 });
+
+test("[clean-at-sink] no /cron line carries a control or format character, whichever field held it: name, note, wake note, quiet, error, prompt, gate", () => {
+	const nasty = "a\u001b[2J‮b​c\u009bd";
+	const id = "cron-0123456789abcdef0123456789abcdef";
+	const failedAt = stamp(NOW - 60_000);
+	const failed: RunRecord = { runId: "run-f", jobId: id, stateful: true, cwd: "/", pid: 1, startedAt: failedAt, finishedAt: failedAt, ok: false, error: `boom ${nasty}`, findings: 0, droppedFindings: 0, stateUpdated: false };
+	const gated = { ...fromV2(job({ name: `n ${nasty}`, prompt: `p ${nasty}` })).job, gate: { kind: "command" as const, command: `gh ${nasty}` } };
+	const erring = { ...fromV2(job({ id, name: `e ${nasty}` })).job };
+	const noted = { ...fromV2(job({ id: "cron-0000eeee", name: "noted" })).job };
+	const clock = {
+		[gated.id]: { runs: 3, followup: { id: "fu-1", at: stamp(NOW + 3_600_000), note: `w ${nasty}`, set_by: "r", created_at: stamp(NOW) }, quietUntil: stamp(NOW + 7_200_000), quietWhy: `q ${nasty}`, gate: { looks: 1, seen: { digest: "d", at: stamp(NOW - 60_000) }, last: { at: stamp(NOW - 30_000), failed: `f ${nasty}` } } },
+		[noted.id]: { runs: 1, note: { at: stamp(NOW - 30_000), text: `note ${nasty}` } },
+	};
+	const lines = jobLines([gated, erring, noted], { clock, runs: [failed], inbox: [], requests: () => [], view: { sessionId: SESSION, holdsOwn: true, holderOf: () => undefined }, now: NOW, home: HOME, cwdExists: () => true, showCwd: false });
+	const text = lines.join("\n");
+	for (const word of ["n a", "p a", "w a", "q a", "f a", "e a", "boom a", "note a"]) assert.ok(text.includes(word), `${word}: ${text}`);
+	for (const line of lines) assert.equal(/[\p{Cc}\p{Cf}]/u.test(line), false, JSON.stringify(line));
+});

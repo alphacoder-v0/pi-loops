@@ -136,7 +136,7 @@ export function composeLoopPrompt(action: string, previousState: string | undefi
 	const reported = dataBlock(REPORTED_OPEN, REPORTED_CLOSE, "what this loop already told a person, and what they did with it; do not report these again unless what they describe has changed", meta?.reported);
 	const asked = dataBlock(ASKED_OPEN, ASKED_CLOSE, "questions of yours that wait for a person; do not ask them again", meta?.asked);
 	const woken = dataBlock(WOKEN_OPEN, WOKEN_CLOSE, "why this run started", meta?.woken?.map((note) => `you asked to be woken: ${note}`));
-	const gate = dataBlock(GATE_OPEN, GATE_CLOSE, "the output of this loop's gate, which changed since your last run", meta?.gate);
+	const gate = dataBlock(GATE_OPEN, GATE_CLOSE, "what this loop's gate reads now, which your last run that ended well did not see", meta?.gate);
 	const header = meta?.name ? `You are running the recurring loop "${meta.name}"` : "You are running a recurring loop";
 	/**
 	 * The run time, and how to write one.

@@ -332,14 +332,20 @@ How a look works:
 
 - A gate is one line of at most 1000 characters. It is refused where it is set (`/cron add`,
   `/cron set`, a recipe, a proposal, an imported archive) when the dangerous-command policy would
-  refuse it or ask about it in an unattended run, with the loops directory and `[limits]
-  allow_commands` as a run's command has them: a gate runs with nobody there to ask.
+  refuse it or ask about it in an unattended run, with the loops directory: a gate runs with nobody
+  there to ask. Where a gate is set, the policy is asked without `[danger] allow`. Only a look, when
+  the gate runs, also lets through the prefixes `[danger] allow` lists.
 - A gate is shown as itself everywhere, whole: on the card, in `/cron`, `cron_list`, the page, an
   archive's question and the run's `[gate]` block. So a command that would not show as itself is
   refused where it is set: one with a line break, a control character (a terminal escape among
   them), a format character (a bidi override, a zero-width space, any Unicode `Cf`), or a part that
   reads as a secret (`password=…`), which every surface would hide. A person never says yes to part
-  of what runs.
+  of what runs. The text beside a gate is cleaned too: each line of `/cron`, `/cron runs`,
+  `/triggers rules` and `cron_list`'s text has every control and format character made a space as
+  its last step, whichever field it shows (a name, a note, a wake's note, an error, a prompt).
+- An archive's gates are shown before anything runs them: `pi-loops inspect` shows each loop's and
+  rule's gate, and `pi-loops import` prints each gate it brings before it enables anything, with
+  `--activate-triggers=on` as in the question it asks.
 - When a slot comes due, pi-loops runs the command in the loop's directory, with `sh -c`, stdin
   closed, a timeout of 5 seconds, and the first 4000 characters of its output. It runs the policy
   first, as for every unattended command. When the look ends, its whole process group is killed, so
