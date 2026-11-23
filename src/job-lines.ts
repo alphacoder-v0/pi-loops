@@ -12,6 +12,7 @@ import { shortSessionId } from "./session-head.ts";
 import type { InboxEntry } from "./inbox.ts";
 import { asleepNote, runsSomewhere, type OwnerView } from "./job-owner.ts";
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal, signalSummary } from "./job-signal.ts";
+import { gateShown } from "./gate.ts";
 import { plural } from "./plural.ts";
 import { previewRedacted } from "./redact.ts";
 import type { ClaimedRow, Row } from "./requests.ts";
@@ -242,6 +243,30 @@ export function wakeFields(job: ListedJob, now: number): string[] {
 	];
 }
 
+/**
+ * A gated loop's gate (design 6.7), as `/cron` says it under the loop: how long its output has said
+ * the same, or why the gate is failing and that the loop runs without it meanwhile.
+ */
+export function gateLines(job: ListedJob, now: number): string[] {
+	const gate = job.status.gate;
+	if (!gate) return [];
+	// Whole, as it runs: a gate shows as itself (src/gate.ts gateShown), and a cut would hide what follows it.
+	const command = `\`${gateShown(gate.command)}\``;
+	if (gate.failing !== undefined) return [`    gate failing: ${gateShown(gate.failing)}; ${gateShown(job.name ?? job.id)} runs without the gate until it works`];
+	if (gate.since === undefined) return [`    gate: ${command}: no run has seen its output yet; the next look wakes the loop`];
+	return [`    gate: ${command}: the same for ${plural(gate.looks, "look")} since ${dayTime(Date.parse(gate.since), now)}; no model call until it changes`];
+}
+
+/** The `cron_list` fields of the same facts, with stamps. */
+export function gateFields(job: ListedJob): string[] {
+	const gate = job.status.gate;
+	if (!gate) return [];
+	const command = `gate: \`${gateShown(gate.command)}\``;
+	if (gate.failing !== undefined) return [command, `gate_failing: ${gateShown(gate.failing)} (the loop runs without the gate until it works)`];
+	if (gate.since === undefined) return [`${command} (no run has seen its output yet: the next look wakes the loop)`];
+	return [`${command} (the same for ${plural(gate.looks, "look")} since ${gate.since}: no model call until its output changes)`];
+}
+
 /** What `/cron runs` adds to a run that a follow-up started (design 6.6), or "". */
 export function wokeWords(r: RunRecord & { woken?: readonly string[] }): string {
 	return r.woken?.length ? `, woke itself: ${r.woken.map((note) => `"${previewRedacted(note, 80)}"`).join(", ")}` : "";
@@ -303,7 +328,7 @@ export function jobLines(stored: LoopJob[], opts: JobLinesInput): string[] {
 			const err = word ? statusLine(word, now) : job.status.fired ? `    last fired: ${formatLocal(Date.parse(job.status.fired))}` : undefined;
 			const ref = job.name ?? job.id;
 			const answer = job.proposed ? `    /cron enable ${ref} asks again · /cron remove ${ref} cancels it` : undefined;
-			return [head, action, meta, answer, err, ...wakeLines(job, now)].filter((l): l is string => !!l);
+			return [head, action, meta, answer, err, ...wakeLines(job, now), ...gateLines(job, now)].filter((l): l is string => !!l);
 		})
 		.flat();
 }

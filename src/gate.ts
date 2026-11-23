@@ -5,7 +5,8 @@
  *
  * Two kinds of look. A path gate `stat`s one path: a rule whose condition is only "<path> exists /
  * appears" (docs/triggers.md, "Rules that wait for a path"). A command gate runs one shell command
- * and compares a digest of what it printed with the last one a gated run saw.
+ * and compares a digest of what it printed with the last one a gated run saw (`seen`). A loop's
+ * gate is always a command; a rule's is a command when a proposal set one.
  *
  * Whether a condition is path-only is decided once, when the rule is created, and recorded on the
  * rule (`gate`, and `precheck` for 0.24.2): the creating process is the person's own window or page,
@@ -20,6 +21,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { dangerousCommandReason } from "./danger.ts";
 import { BoundedText } from "./hooks.ts";
+import { plainLine, redact } from "./redact.ts";
+import { defaultLoopsDir } from "./store.ts";
 
 /** A path gate. `of` is the condition it was read from; `raw` the path as typed; `resolved` the absolute path. */
 export interface PathGate {
@@ -28,6 +31,100 @@ export interface PathGate {
 	raw: string;
 	resolved: string;
 }
+
+/** A command gate: what a person set with `--gate`, a recipe's `gate` key, or a proposal the person said yes to. */
+export interface CommandGate {
+	kind: "command";
+	command: string;
+}
+
+/** A gate command longer than this is not one line a person reads on a card. */
+export const GATE_COMMAND_MAX = 1000;
+
+/**
+ * What a gate's command is judged by, as an unattended run's command is (src/guard.ts `policyNeed`):
+ * the dangerous-command policy with the loops directory and `[limits] allow_commands`. A command a
+ * run would be asked about is refused: a gate runs with nobody there to ask.
+ */
+export interface GatePolicy {
+	loopsDir: string;
+	allowCommands?: readonly string[];
+}
+
+/** The policy of this process's loops directory, with no allowlist: where a gate is set without the config at hand, the stricter reading. */
+export function defaultGatePolicy(): GatePolicy {
+	return { loopsDir: defaultLoopsDir() };
+}
+
+/** Why the policy refuses `command` as a gate, or undefined. */
+export function gateRefusal(command: string, policy: GatePolicy = defaultGatePolicy()): string | undefined {
+	return dangerousCommandReason(command, undefined, policy.allowCommands ?? [], policy.loopsDir);
+}
+
+/**
+ * The one way a surface shows a gate command (the watch card and the terminal's question, the page's
+ * loop row, `/cron`, `cron_list`, an archive's confirm and notes, the `[gate]` block), and the text
+ * shown beside one (a job's name): on one line, each character a screen would not draw as itself a
+ * space, and redacted. A command is a gate only when this leaves it as it is (`gateCommandWhy`), so
+ * what a person sees is what runs.
+ */
+export function gateShown(text: string): string {
+	return redact(plainLine(text));
+}
+
+/**
+ * Why `command` cannot be a gate, or undefined: it is empty, too long, it does not show as itself
+ * (`gateShown`), or the policy refuses it. Asked wherever a gate is set (a person's command, a
+ * recipe, a proposal, an archive); every look asks the policy again.
+ */
+export function gateCommandWhy(command: string, policy: GatePolicy = defaultGatePolicy()): string | undefined {
+	if (!command.trim()) return "a gate needs a command";
+	if (command.length > GATE_COMMAND_MAX) return `a gate command is at most ${GATE_COMMAND_MAX} characters`;
+	if (gateShown(command) !== command) {
+		// A line break, a terminal escape, a bidi override or a zero-width character shows the command
+		// as other than it runs; a secret shows redacted. Either way a person would say yes to part of it,
+		// and a secret would also be stored in events.jsonl with every reading.
+		return plainLine(command) !== command
+			? "a gate is one line a person can read: it holds a line break, a control character or an invisible one"
+			: "a gate cannot hold a secret: part of this command reads as one, and pi-loops would hide it wherever it shows the gate, so nobody could see all of what runs";
+	}
+	const refused = gateRefusal(command, policy);
+	return refused ? `the gate would be refused when it runs: ${refused}` : undefined;
+}
+
+/** A job's or a rule's `gate` field when it is a command gate this build reads, else undefined. */
+export function commandGateOf(value: unknown): CommandGate | undefined {
+	const g = value as Partial<CommandGate> | undefined;
+	return g?.kind === "command" && typeof g.command === "string" && g.command.trim() ? { kind: "command", command: g.command } : undefined;
+}
+
+/** What `lookCommand` stored for one reading (`events.jsonl`'s `raw`), read back for the `[gate]` block and `seen`. */
+export interface CommandReading {
+	command: string;
+	exit?: number | null;
+	stdout?: string;
+	why?: string;
+	refused?: string;
+}
+
+export function commandReadingOf(raw: string): CommandReading | undefined {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return undefined; // not a reading this build stored
+	}
+	const r = parsed as Partial<CommandReading> | null;
+	return r && typeof r.command === "string" ? (r as CommandReading) : undefined;
+}
+
+/** The digest a reading gives, as `gateDecision` compares it; undefined for a reading that failed. */
+export function readingDigest(r: CommandReading): string | undefined {
+	return typeof r.exit === "number" && r.why === undefined && r.refused === undefined && typeof r.stdout === "string" ? commandDigest(r.exit, r.stdout) : undefined;
+}
+
+/** How often one job's or rule's command gate is looked at, at most (design 3.3). */
+export const GATE_LOOK_EVERY_MS = 60_000;
 
 /** The same path as 0.24.2 reads it from a rule (`precheck`), so a 0.24.2 process still pre-checks the rule. */
 export interface Precheck {
@@ -192,8 +289,10 @@ function resolvePath(p: string, at: { cwd: string; home: string }): string {
  * Undefined when `of` is no longer the rule's condition (a hand edit) or the record is not one this
  * build or 0.24.2 wrote.
  */
-export function gateOf(rule: { condition: string; gate?: unknown; precheck?: unknown }): PathGate | undefined {
+export function gateOf(rule: { condition: string; gate?: unknown; precheck?: unknown }): PathGate | CommandGate | undefined {
 	if (rule.gate !== undefined) {
+		const command = commandGateOf(rule.gate);
+		if (command) return command;
 		const g = rule.gate as Partial<PathGate>;
 		return g?.kind === "path" && applies(g, rule.condition) ? { kind: "path", of: g.of!, raw: g.raw!, resolved: g.resolved! } : undefined;
 	}
@@ -282,19 +381,26 @@ export function commandDigest(exitCode: number, stdout: string): string {
 export interface CommandLookOptions {
 	cwd: string;
 	timeoutMs?: number;
-	/** Why the command is refused, or undefined: the dangerous-command policy unless a test gives another. */
-	policy?: (command: string) => string | undefined;
+	/** The policy the command is judged by: the loops directory and the allowlist of the process that looks. */
+	policy?: GatePolicy;
+	/** A test's own refusal in place of the policy. */
+	refuse?: (command: string) => string | undefined;
 }
 
 /**
- * One run of a command gate: the dangerous-command policy first, then `sh -c` in `cwd` with stdin
- * closed, a timeout that kills the whole process group, and at most `COMMAND_OUTPUT_CHARS` of
- * stdout. A refusal, a timeout, a command that could not start, a signal and an exit code of 126 or
- * more are a `failed` look; any other exit is a reading whose digest is of the exit code and stdout.
+ * One run of a command gate: the policy and the rest of `gateCommandWhy` first, then `sh -c` in `cwd` with stdin closed, its own
+ * process group, and at most `COMMAND_OUTPUT_CHARS` of stdout. The group is killed when the look
+ * ends, whatever ended it (an exit, the timeout, an error), so a child the shell left running in the
+ * background does not outlive the look. A refusal, a timeout, a command that could not start, a
+ * signal and an exit code of 126 or more are a `failed` look; any other exit is a reading whose
+ * digest is of the exit code and stdout.
  */
 export async function lookCommand(command: string, opts: CommandLookOptions): Promise<Reading> {
-	const refusal = (opts.policy ?? ((c: string) => dangerousCommandReason(c)))(command);
-	if (refusal) return { look: { kind: "failed", why: `refused: ${refusal}` }, raw: JSON.stringify({ command, refused: refusal }) };
+	// The whole check a gate gets where it is set, again here: a gate written into jobs.json or
+	// triggers.json by hand that does not show as itself (src/gate.ts gateShown) is never run, and
+	// the stored reading names it only as it shows, so no secret it holds reaches events.jsonl.
+	const refusal = opts.refuse ? opts.refuse(command) : (gateRefusal(command, opts.policy) ?? gateCommandWhy(command, opts.policy));
+	if (refusal) return { look: { kind: "failed", why: `refused: ${refusal}` }, raw: JSON.stringify({ command: gateShown(command), refused: refusal }) };
 	const timeoutMs = opts.timeoutMs ?? COMMAND_TIMEOUT_MS;
 	const isWin = process.platform === "win32";
 	return new Promise<Reading>((resolve) => {
@@ -302,13 +408,22 @@ export async function lookCommand(command: string, opts: CommandLookOptions): Pr
 		let done = false;
 		let timer: NodeJS.Timeout | undefined;
 		const failed = (why: string, exit: number | null) => finish({ look: { kind: "failed", why }, raw: JSON.stringify({ command, exit, stdout: stdout.text(), why }) });
+		let proc: ReturnType<typeof spawn> | undefined;
+		const killGroup = () => {
+			try {
+				if (!isWin && proc?.pid) process.kill(-proc.pid, "SIGKILL");
+				else proc?.kill("SIGKILL");
+			} catch {
+				/* the group is gone already: nothing is left to kill */
+			}
+		};
 		const finish = (reading: Reading) => {
 			if (done) return;
 			done = true;
 			clearTimeout(timer);
+			killGroup();
 			resolve(reading);
 		};
-		let proc: ReturnType<typeof spawn>;
 		try {
 			proc = spawn(isWin ? "cmd" : "sh", [isWin ? "/C" : "-c", command], { cwd: opts.cwd, stdio: ["ignore", "pipe", "ignore"], detached: !isWin });
 		} catch (err: any) {
@@ -316,15 +431,7 @@ export async function lookCommand(command: string, opts: CommandLookOptions): Pr
 			return;
 		}
 		proc.stdout?.on("data", (d: Buffer) => stdout.push(d));
-		timer = setTimeout(() => {
-			try {
-				if (!isWin && proc.pid) process.kill(-proc.pid, "SIGKILL");
-				else proc.kill("SIGKILL");
-			} catch {
-				/* already gone */
-			}
-			failed(`timed out after ${timeoutMs / 1000}s`, null);
-		}, timeoutMs);
+		timer = setTimeout(() => failed(`timed out after ${timeoutMs / 1000}s`, null), timeoutMs);
 		proc.on("error", (err) => failed(`could not start: ${err.message}`, null));
 		proc.on("close", (code) => {
 			if (code === null) return failed("ended by a signal", null);

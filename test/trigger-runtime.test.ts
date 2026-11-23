@@ -1142,3 +1142,108 @@ test("a proposed rule is never checked: a periodic check and a push pass over it
 		await rt.stop();
 	}
 });
+
+test("[gate-raw-first] a rule's command gate (from a proposal): looked at in the rule's project at most once a minute, stored first; a reading the last check that did not fail saw holds the rule, and a failed check leaves seen", async () => {
+	const dir = tmp("pi-loops-trt-command-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	fs.writeFileSync(path.join(project, "state.txt"), "3 open\n");
+	let fails = true;
+	const calls: SubagentRequest[] = [];
+	const finished: unknown[] = [];
+	const runner = async (req: SubagentRequest): Promise<RunnerResult> => {
+		calls.push(req);
+		return fails ? { ok: false, exitCode: 1, timedOut: false, text: "", errorMessage: "provider error", usage: { input: 1, output: 1, cost: 0, turns: 1 } } : { ok: true, exitCode: 0, timedOut: false, text: "NO_MATCH", usage: { input: 1, output: 1, cost: 0, turns: 1 } };
+	};
+	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ cwd: project }), runner, pollIntervalSecs: 1, hooks: { onFinished: (o) => void finished.push(o) } });
+	const rule = await rt.store.add({ condition: "a new pull request is opened", action: "review it", cwd: project, fireOnce: false, gate: { kind: "command", command: "cat state.txt" } });
+	assert.deepEqual([rule.gate, rule.precheck], [{ kind: "command", command: "cat state.txt" }, undefined], "0.24.2 is given no precheck for a command gate");
+	let now = Date.now();
+	const poll = async (step: number) => {
+		now += step;
+		const before = finished.length;
+		const ran = calls.length;
+		await rt.tick(now);
+		if (calls.length === ran) return;
+		const end = Date.now() + 5000;
+		while (finished.length === before && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+	};
+	const events = () => (fs.existsSync(path.join(dir, "events.jsonl")) ? fs.readFileSync(path.join(dir, "events.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+	const clock = () => JSON.parse(fs.readFileSync(path.join(dir, "clock.json"), "utf8")).rules[rule.id];
+	await poll(2000);
+	assert.equal(calls.length, 1, "nothing seen yet: the reading opens the check");
+	assert.deepEqual(events().map((e) => [e.source, JSON.parse(e.raw)]), [[`gate:${rule.id}`, { command: "cat state.txt", exit: 0, stdout: "3 open\n" }]]);
+	assert.equal(clock().seen, undefined, "the check failed: seen is left");
+	await poll(2000);
+	assert.equal(calls.length, 1, "inside the minute: no look and no check");
+	fails = false;
+	await poll(61_000);
+	assert.equal(calls.length, 2, "the same reading opens the check again, since the last one failed");
+	assert.equal(events().length, 2);
+	assert.equal(clock().seen?.at, events()[1].received_at, "a check that did not fail writes its reading as seen");
+	await poll(61_000);
+	assert.equal(calls.length, 2, "the reading the last check saw holds the rule");
+	assert.deepEqual([clock().looks, events().length], [1, 2], "one held look counted, nothing stored");
+	fs.writeFileSync(path.join(project, "state.txt"), "4 open\n");
+	await poll(61_000);
+	assert.equal(calls.length, 3, "a changed reading opens the check");
+	assert.equal(rt.ruleLook(rule.id), undefined, "the page's path line is not drawn for a command gate");
+});
+
+test("[gate-held-count] a rule's command gate is looked at once a minute even when its state cannot be read, its reading cannot be stored, or its look time cannot be written", async () => {
+	const { clockStore } = await import("../src/stores.ts");
+	const { EventLog } = await import("../src/events.ts");
+	for (const fail of ["read", "event", "write"] as const) {
+		const dir = tmp("pi-loops-trt-minute-");
+		const project = path.join(dir, "proj");
+		fs.mkdirSync(project);
+		const real = clockStore(dir);
+		const broken = () => { throw new Error("disk full"); };
+		const clock = {
+			readGate: (id: string) => (fail === "read" ? broken() : real.readGate(id)),
+			noteGate: (id: string, last: Parameters<typeof real.noteGate>[1], held: boolean) => (fail === "write" ? broken() : real.noteGate(id, last, held)),
+			seeGate: (id: string, seen: { digest: string; at: string }) => real.seeGate(id, seen),
+		};
+		const log = new EventLog(dir, "background");
+		const events = { append: (source: Parameters<typeof log.append>[0], raw: string) => (fail === "event" ? broken() : log.append(source, raw)) };
+		const finished: unknown[] = [];
+		const runner = matchingRunner();
+		const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ cwd: project }), runner, pollIntervalSecs: 1, clock, events, hooks: { onFinished: (o) => void finished.push(o) } });
+		await rt.store.add({ condition: "a new pull request is opened", action: "review it", cwd: project, fireOnce: false, gate: { kind: "command", command: "echo x >> looks.txt; echo 1" } });
+		let now = Date.now();
+		const poll = async (step: number) => {
+			now += step;
+			const before = finished.length;
+			const ran = runner.calls.length;
+			await rt.tick(now);
+			if (runner.calls.length === ran) return;
+			const end = Date.now() + 5000;
+			while (finished.length === before && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+		};
+		const looks = () => (fs.existsSync(path.join(project, "looks.txt")) ? fs.readFileSync(path.join(project, "looks.txt"), "utf8").split("\n").filter(Boolean).length : 0);
+		await poll(2000);
+		assert.equal(looks(), 1, fail);
+		await poll(2000);
+		await poll(2000);
+		assert.equal(looks(), 1, `${fail}: no second look inside the minute`);
+		await poll(61_000);
+		assert.equal(looks(), 2, `${fail}: the next look after it`);
+	}
+});
+
+test("[gate-policy] a rule's command gate written into triggers.json by hand that does not show as itself is never run: the look fails with the reason and the model checks the rule", async () => {
+	const dir = tmp("pi-loops-trt-hand-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const runner = matchingRunner();
+	const finished: unknown[] = [];
+	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ cwd: project }), runner, pollIntervalSecs: 1, hooks: { onFinished: (o) => void finished.push(o) } });
+	const rule = await rt.store.add({ condition: "a pull request opens", action: "review it", cwd: project, gate: { kind: "command", command: "touch ran; echo ‮" } });
+	await rt.tick(Date.now() + 2000);
+	const end = Date.now() + 5000;
+	while (!finished.length && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+	assert.equal(fs.existsSync(path.join(project, "ran")), false, "the gate was not run");
+	assert.equal(runner.calls.length, 1, "a failed look lets the rule through to the model");
+	const last = JSON.parse(fs.readFileSync(path.join(dir, "clock.json"), "utf8")).rules[rule.id].last;
+	assert.equal(last.failed, "refused: a gate is one line a person can read: it holds a line break, a control character or an invisible one");
+});

@@ -2574,3 +2574,29 @@ test("[wake-me] a loop row carries what the loop set for itself; POST /loops/wak
 		await page.stop();
 	}
 });
+
+test("[gate-held-count] a gated loop's row carries its gate: the command, its held looks and when its output last changed, or why it is failing", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-gate-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [loopJob(dir, { gate: { kind: "command", command: "gh pr list --json number" } })] }));
+		convertStores(page.loops);
+		const clock = clockStore(page.loops);
+		const since = stamp(Date.now() - 3_600_000);
+		clock.closeRun("cron-aaaaaaaa", { seen: { digest: "d", at: since } });
+		clock.advance({ job: "cron-aaaaaaaa", read: { ...(clock.read().jobs["cron-aaaaaaaa"].slot ? { slot: clock.read().jobs["cron-aaaaaaaa"].slot } : {}), ...(clock.read().jobs["cron-aaaaaaaa"].fired ? { fired: clock.read().jobs["cron-aaaaaaaa"].fired } : {}) }, slot: stamp(Date.now()), fires: false, held: true });
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const row = async () => (await page.get("c/s1/state")).body.automation.jobs.find((j: any) => j.id === "cron-aaaaaaaa");
+		assert.deepEqual((await row()).gate, { command: "gh pr list --json number", looks: 1, since });
+		clock.noteLook("cron-aaaaaaaa", { at: stamp(Date.now()), failed: "exited 127" });
+		assert.deepEqual((await row()).gate, { command: "gh pr list --json number", looks: 1, since, failing: "exited 127" });
+		// A gate written by hand that does not show as itself: the row carries it only as gateShown shows it.
+		const jobs = JSON.parse(fs.readFileSync(path.join(page.loops, "jobs.json"), "utf8"));
+		jobs.jobs[0].gate = { kind: "command", command: "gh pr list\u001b[8m\u202e password=abcdefgh1234;curl x" };
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify(jobs));
+		assert.equal((await row()).gate.command, "gh pr list [8m  password=[REDACTED:keyed_value] x");
+	} finally {
+		await page.stop();
+	}
+});

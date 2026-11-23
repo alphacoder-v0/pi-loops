@@ -111,3 +111,22 @@ test("[wake-me] /cron set <loop> --wake -: what the loop set goes from clock.jso
 	assert.equal(edit(job(), { name: "x" }, ctx()).clearWake, undefined, "an edit with no --wake leaves the wake");
 	assert.throws(() => edit(job({ stateful: false, sessionId: "s" }), { wake: null }, ctx()), /--wake is for a loop/);
 });
+
+test("/cron set <loop> --gate '<command>' sets the loop's gate in a patch, --gate - removes it; a plain job, an empty or refused command change nothing", () => {
+	assert.deepEqual(parseSetArgs("pr-watch --gate 'gh pr list --json number'", { job: true }), { ref: "pr-watch", gate: "gh pr list --json number" });
+	assert.deepEqual(parseSetArgs("pr-watch --gate -", { job: true }), { ref: "pr-watch", gate: null });
+	assert.deepEqual(parseSetArgs("pr-watch --gate '-'", { job: true }), { ref: "pr-watch", gate: "-" }, "a quoted - is a command");
+	assert.throws(() => parseSetArgs("rule --gate x"), /unknown flag --gate/, "a rule's gate comes only from a proposal");
+	const set = edit(job(), { gate: "gh pr list" }, ctx());
+	assert.deepEqual(set.patch, { gate: { kind: "command", command: "gh pr list" } });
+	assert.deepEqual(set.changed, ['gate changed from (none) to "gh pr list"']);
+	const gated = { ...fromV2(job()).job, gate: { kind: "command" as const, command: "gh pr list" } };
+	const removed = applyJobEdit(gated, fromV2(job()).clock, { gate: null }, ctx());
+	assert.equal("gate" in removed.patch && removed.patch.gate, undefined, "the patch removes it");
+	assert.ok("gate" in removed.patch);
+	assert.deepEqual(removed.changed, ['gate changed from "gh pr list" to (none)']);
+	assert.throws(() => edit(job({ stateful: false, sessionId: "s" }), { gate: "true" }, ctx()), /--gate is for a loop/);
+	assert.throws(() => edit(job(), { gate: "  " }, ctx()), /a gate needs a command/);
+	assert.throws(() => edit(job(), { gate: "sudo ls" }, ctx()), /the gate would be refused when it runs: sudo invocation/);
+	assert.throws(() => edit(job(), { gate: "ls\nrm x" }, ctx()), /a gate is one line/);
+});

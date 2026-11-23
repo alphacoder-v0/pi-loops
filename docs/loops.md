@@ -101,7 +101,10 @@ expire. The model reads `proposed cron job cron-… "pr-watch": the person sees 
 not to wait, not to do the action now and not to call the tool again. A sub-agent's `cron_create`
 (hop 1), `cron_create` in a scheduled or held turn, `/cron add` and a recipe still create an
 enabled job. A `gate` passed to `cron_create` where it creates at once is refused whole: `a gate
-needs a person: set it with /cron set <name> --gate`. A proposal needs a saved conversation: with
+needs a person: set it with /cron set <name> --gate`. Where the call writes a proposal, the gate is
+on it, and the card shows the command in a `Checks first` row: ``runs `gh pr list` first; no model
+call while it says the same``. A gated watch is a loop, so its card does not offer *this
+conversation* (see "A gate: no model call while nothing changed"). A proposal needs a saved conversation: with
 `--no-session` the tools refuse it. In your own turn in a pi with no UI (`pi -p`) nobody could
 answer a proposal, so the tools do what 0.24.2 did: `cron_create` creates an enabled job, and
 `new_trigger` asks pi's confirm, which a pi with no UI refuses (`create dynamic trigger requires
@@ -306,6 +309,68 @@ wake and the quiet are gone, and the loop runs at its next scheduled time.
 `cron_list` gives the model the same facts as `next_wake` and `quiet_until`, with full stamps. The
 page's loop row shows the same two lines, each with a ✕. `/cron set <ref> --wake -` and the ✕ remove
 the wake and the quiet. `/cron runs` adds `, woke itself: "<note>"` to a run that a wake started.
+
+### A gate: no model call while nothing changed
+
+A loop can have a gate: one shell command that pi-loops runs before a scheduled run, to see whether
+anything changed. While the command prints what the last run saw, the slot is held: no row, no run
+and no model call. Set it when you add the loop, or later:
+
+```text
+/cron add --stateful --gate 'gh pr list --json number,updatedAt' "every 10m" report new or updated pull requests
+/cron set pr-watch --gate 'gh pr list --json number,updatedAt'
+/cron set pr-watch --gate -
+```
+
+`--gate` makes the job a loop: a plain job's turn has no gate. A recipe sets one with its job's
+`gate` key (see [recipes.md](recipes.md)). A model sets one only when it proposes the watch, and you
+see the command on the card, in its `Checks first` row (see "A proposed watch"). A model that
+creates a job at once, in a scheduled turn or in a loop's run, is refused with `a gate needs a
+person: set it with /cron set <name> --gate`.
+
+How a look works:
+
+- A gate is one line of at most 1000 characters. It is refused where it is set (`/cron add`,
+  `/cron set`, a recipe, a proposal, an imported archive) when the dangerous-command policy would
+  refuse it or ask about it in an unattended run, with the loops directory and `[limits]
+  allow_commands` as a run's command has them: a gate runs with nobody there to ask.
+- A gate is shown as itself everywhere, whole: on the card, in `/cron`, `cron_list`, the page, an
+  archive's question and the run's `[gate]` block. So a command that would not show as itself is
+  refused where it is set: one with a line break, a control character (a terminal escape among
+  them), a format character (a bidi override, a zero-width space, any Unicode `Cf`), or a part that
+  reads as a secret (`password=…`), which every surface would hide. A person never says yes to part
+  of what runs.
+- When a slot comes due, pi-loops runs the command in the loop's directory, with `sh -c`, stdin
+  closed, a timeout of 5 seconds, and the first 4000 characters of its output. It runs the policy
+  first, as for every unattended command. When the look ends, its whole process group is killed, so
+  a command that the shell left running in the background does not outlive the look. It looks at
+  most once a minute for each loop, also when the time of the last look could not be written to
+  `clock.json`. A slot that comes due while a run of the loop is queued or going is counted onto
+  that run, and nothing is looked at.
+- The reading is the exit code and the output. When it is the reading the last gated run saw (its
+  `seen` in `clock.json`), the slot is held. The slot is decided, the look is counted in
+  `clock.json`, and nothing else is written.
+- Any other reading opens the slot. pi-loops first stores it in `events.jsonl` (source
+  `gate:<job id>`, with the command, the exit code and the output), then writes the row, which names
+  that event. The run reads it in its `[gate]` block: the command, the exit code and the output.
+- When the run ends without a failure, that reading becomes `seen`. A run that fails, times out or
+  is stopped leaves `seen` as it was, so the same change opens the next slot again.
+- A look that fails opens the slot, which is what a loop with no gate does. A look fails when the
+  policy refuses the command, after 5 seconds, when the command cannot start, when a signal ends it,
+  and when it exits with 126 or more. Any other exit code is a reading.
+
+`/cron` says what the gate does, under the loop:
+
+```text
+    gate: `gh pr list --json number,updatedAt`: the same for 37 looks since 09:00; no model call until it changes
+    gate failing: timed out after 5s; pr-watch runs without the gate until it works
+```
+
+Before the first gated run ends, the line says ``no run has seen its output yet; the next look
+wakes the loop``. The page's loop row says ``No model call while `gh pr list --json number,updatedAt` says
+the same · last changed 09:00``, or `Gate failing: <why>`. `cron_list` gives the model the gate and its state. A
+held slot is not a run: it is in no run list and writes no card. A slot that `quiet` skips (see "A
+loop wakes itself") is not looked at. A wake that the loop set, and `/cron run`, run without a look.
 
 Every run leaves a trail: the sub-agent's full transcript (`/cron trace <job> [k]`, 20 per job) and
 a run log with exit code, duration, cost and finding counts (`/cron runs`). Prompts are capped at 8 KB.

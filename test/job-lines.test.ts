@@ -2,12 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { personRow, plainJobRow, queuedPrompt, recipeRow } from "../src/engine.ts";
 import type { InboxEntry } from "../src/inbox.ts";
-import { heldJobsNotice, jobLines, leftConversationLine, panelLines, pickQueued, proposalsNotice, queueLines, statusField, statusWord, toolsCapNotice, loopLabel, wokeWords } from "../src/job-lines.ts";
+import { gateFields, heldJobsNotice, jobLines, leftConversationLine, panelLines, pickQueued, proposalsNotice, queueLines, statusField, statusWord, toolsCapNotice, loopLabel, wokeWords } from "../src/job-lines.ts";
 import { formatLocal } from "../src/schedule.ts";
 import { capWords } from "../src/guard.ts";
 import { parseSchedule, stamp } from "../src/schedule.ts";
 import type { RunRecord } from "../src/store.ts";
 import { fromV2, type V2Job } from "../src/convert-v2.ts";
+import { dayTime } from "../src/clock.ts";
 import { type ListedJob, listedJob, runHistory } from "../src/job-status.ts";
 
 /**
@@ -347,4 +348,21 @@ test("[wake-me] /cron under a loop: its next wake and its quiet, as the loop ask
 	const record = { runId: "fu-1", jobId: loop.id, stateful: true, cwd: loop.cwd, pid: 1, startedAt: stamp(NOW), finishedAt: stamp(NOW + 5_000), ok: true, findings: 0, droppedFindings: 0, stateUpdated: true };
 	assert.equal(wokeWords({ ...record, woken: ["check CI on #12"] } as RunRecord), `, woke itself: "check CI on #12"`);
 	assert.equal(wokeWords(record as RunRecord), "", "a scheduled run says nothing more");
+});
+
+test("[gate-held-count] /cron under a gated loop: the same for N looks since the reading the last run saw, no run has seen one yet, or the gate failing (design 6.7); cron_list gives the model the same", () => {
+	const loop = { ...job(), gate: { kind: "command", command: "gh pr list --json number,updatedAt" } } as V2Job;
+	const seenAt = NOW - 3 * 60 * 60_000;
+	const held = { ...fromV2(loop).clock!, gate: { looks: 37, seen: { digest: "d", at: stamp(seenAt) }, last: { at: stamp(NOW - 60_000), digest: "d" } } };
+	const lines = linesFor([loop], { clock: { [loop.id]: held } });
+	assert.ok(lines.includes(`    gate: \`gh pr list --json number,updatedAt\`: the same for 37 looks since ${dayTime(seenAt, NOW)}; no model call until it changes`), lines.join("\n"));
+	const fresh = linesFor([loop], { clock: { [loop.id]: fromV2(loop).clock! } });
+	assert.ok(fresh.includes("    gate: `gh pr list --json number,updatedAt`: no run has seen its output yet; the next look wakes the loop"), fresh.join("\n"));
+	const failing = { ...held, gate: { ...held.gate, last: { at: stamp(NOW - 60_000), failed: "timed out after 5s" } } };
+	const failed = linesFor([loop], { clock: { [loop.id]: failing } });
+	assert.ok(failed.includes("    gate failing: timed out after 5s; pr-watch runs without the gate until it works"), failed.join("\n"));
+	assert.equal(failed.some((l) => l.includes("the same for")), false, "a failing gate says only that");
+	assert.deepEqual(gateFields(listedJob(fromV2(loop).job, held, [], undefined)), [`gate: \`gh pr list --json number,updatedAt\` (the same for 37 looks since ${stamp(seenAt)}: no model call until its output changes)`]);
+	assert.deepEqual(gateFields(listedJob(fromV2(loop).job, failing, [], undefined)), ["gate: `gh pr list --json number,updatedAt`", "gate_failing: timed out after 5s (the loop runs without the gate until it works)"]);
+	assert.equal(linesFor([job()], { clock: { [job().id]: held } }).some((l) => l.includes("gate")), false, "a loop with no gate says nothing of one");
 });

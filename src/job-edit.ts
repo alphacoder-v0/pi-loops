@@ -13,6 +13,7 @@
  */
 import { computeDue, computeNext, formatSchedule, stamp, type DueInput, type Schedule } from "./schedule.ts";
 import type { JobClock } from "./clock.ts";
+import { gateCommandWhy, gateShown } from "./gate.ts";
 import type { LoopJob } from "./store.ts";
 
 export interface JobEdit {
@@ -26,6 +27,8 @@ export interface JobEdit {
 	schedule?: Schedule;
 	/** `--wake -`: remove what the loop set for itself (its follow-up and its quiet). */
 	wake?: null;
+	/** `--gate '<command>'` sets the loop's gate; `--gate -` (null) removes it. */
+	gate?: string | null;
 }
 
 /** When the job runs next, for the confirmation. `due` means the next tick will fire it. */
@@ -66,6 +69,9 @@ export function applyJobEdit(job: LoopJob, clock: JobClock | undefined, edit: Jo
 	// loop's notes with it. That is the opposite of why editing in place exists.
 	if (edit.schedule?.kind === "once") throw new Error("a job cannot be changed to a one-shot schedule; /cron run <id> runs it now instead");
 	if (edit.wake === null && !job.stateful) throw new Error("--wake is for a loop: only a loop sets a wake for itself");
+	if (edit.gate !== undefined && !job.stateful) throw new Error("--gate is for a loop: a plain job's turn is not gated");
+	const gateWhy = typeof edit.gate === "string" ? gateCommandWhy(edit.gate) : undefined;
+	if (gateWhy) throw new Error(gateWhy);
 
 	const patch: Partial<LoopJob> = {};
 	let slot: string | undefined;
@@ -84,6 +90,12 @@ export function applyJobEdit(job: LoopJob, clock: JobClock | undefined, edit: Jo
 		// The old wording is otherwise unrecoverable, and it is what ties "this loop started
 		// behaving differently" to the edit that caused it. Only when it actually changed.
 		if (edit.prompt !== job.prompt) changed.push(`prompt changed from ${JSON.stringify(job.prompt)} to ${JSON.stringify(edit.prompt)}`);
+	}
+	if (edit.gate !== undefined) {
+		patch.gate = edit.gate === null ? undefined : { kind: "command", command: edit.gate };
+		// The old command is what held the loop; a person reading why it ran (or did not) needs it.
+		// Through gateShown, as every surface shows a gate: an old one written by hand may not show as itself.
+		if (edit.gate !== (job.gate?.command ?? null)) changed.push(`gate changed from ${job.gate ? `"${gateShown(job.gate.command)}"` : "(none)"} to ${edit.gate === null ? "(none)" : `"${gateShown(edit.gate)}"`}`);
 	}
 
 	const schedule = edit.schedule ?? job.schedule;

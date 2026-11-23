@@ -44,6 +44,7 @@ import { copyText, isRemoteTty } from "./browser-open.ts";
 import { execFile } from "node:child_process";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
+import { gateShown } from "./gate.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
 import { plural } from "./plural.ts";
 import { type OwnerView, type PlainJobLeases, type SessionSnapshot, openWhere, ownerViewOf, runsHere } from "./job-owner.ts";
@@ -1264,6 +1265,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		'    e.g. /cron add --stateful "0 9 * * *" check the repo issues and report anything new since the last run',
 		"    schedule also accepts @daily | every 30m | in 10m | at 2026-09-08T18:00",
 		"    --verify: maker/checker — a second adversarial sub-agent reviews findings before they enter /inbox (--checker-model <provider/id> to use another model)",
+		"    --gate '<command>': a loop runs that command first, at most once a minute, and calls no model while it prints what the last run saw (/cron set <ref> --gate '<command>'|- changes it)",
 		"    more flags: --name <n> --cwd <dir> --model <provider/id> --thinking <lvl> --tools a,b --timeout 20m --catchup|--no-catchup (default: loops catch up a missed tick, plain jobs do not)",
 		"/cron enable|disable|remove <n|id|name>      /cron run <n|id|name>   fire now",
 		"/cron set <n|id|name> [--model <p/id>|-] [--thinking <lvl>|-] [--timeout <dur>|-] [--name <n>|-] [--tools a,b|-]   change what a job runs with (- = clear it: a loop then uses pi's default, a plain job its conversation's; --tools - uncaps a plain job's turns)",
@@ -1398,6 +1400,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							catchUp: parsed.catchUp,
 							verify: parsed.verify,
 							checkerModel: parsed.checkerModel,
+							...(parsed.gate !== undefined ? { gate: { kind: "command" as const, command: parsed.gate } } : {}),
 						});
 						const next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt) }, Date.now());
 						cronControlAudit("add", "slash", undefined, job);
@@ -1415,6 +1418,7 @@ export default function piLoops(pi: ExtensionAPI) {
 									]
 								: ["  mode: inject-and-run (the result appears in this chat; while this chat is closed it still runs, in the background, and each run is a model turn)"]),
 							`  action: ${previewRedacted(job.prompt, 120)}`,
+							...(job.gate ? [`  gate: \`${gateShown(job.gate.command)}\` runs first, at most once a minute; no model call while it prints what the last run saw`] : []),
 						]);
 						refreshBadge();
 						return;
@@ -1633,6 +1637,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							`  timeout: ${updated.timeoutMs ? `${Math.round(updated.timeoutMs / 1000)}s` : "default"}`,
 							`  tools: ${updated.tools?.length ? updated.tools.join(", ") : updated.stateful ? "(this chat's built-in tools)" : "(none: its turns run uncapped, as your own do)"}`,
 							...(woke === undefined ? [] : [`  wake: ${woke ? "removed what the loop set; it runs on its schedule" : "(the loop had set none)"}`]),
+							...(change.gate === undefined ? [] : [`  gate: ${updated.gate ? `\`${gateShown(updated.gate.command)}\` runs first; no model call while it prints what the last run saw` : "(none: every due slot runs)"}`]),
 						]);
 						return;
 					}
@@ -2888,7 +2893,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (owner.projectOwned) lines.push("  the loops belong to this project: this conversation is not saved yet, so a finding runs in the conversation you claim it from");
 		for (const line of plan.addLines) {
 			const parsed = parseAddArgs(line);
-			const job = await createJob({ schedule: parsed.schedule, prompt: parsed.prompt, stateful: parsed.stateful, name: parsed.name, model: parsed.model, thinking: parsed.thinking, tools: parsed.tools, timeoutMs: parsed.timeoutMs, catchUp: parsed.catchUp, verify: parsed.verify, checkerModel: parsed.checkerModel, recipe: m.name }, owner);
+			const job = await createJob({ schedule: parsed.schedule, prompt: parsed.prompt, stateful: parsed.stateful, name: parsed.name, model: parsed.model, thinking: parsed.thinking, tools: parsed.tools, timeoutMs: parsed.timeoutMs, catchUp: parsed.catchUp, verify: parsed.verify, checkerModel: parsed.checkerModel, recipe: m.name, ...(parsed.gate !== undefined ? { gate: { kind: "command" as const, command: parsed.gate } } : {}) }, owner);
 			cronControlAudit("add", "slash", undefined, job);
 			const next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt) }, Date.now());
 			lines.push(`  job ${job.name}: ${formatSchedule(job.schedule)}${next ? ` (next run ${formatLocal(next)})` : ""}${job.stateful ? "" : " · runs in this chat, and in the background while it is closed (each run a model turn)"}`);

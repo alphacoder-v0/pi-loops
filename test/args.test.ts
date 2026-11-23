@@ -48,7 +48,7 @@ test("parseAddArgs errors", () => {
  * decision about what the person who just mistyped the command is told, not only a case in the parser.
  */
 const ON_THE_USAGE_LINE = ["--stateful", "--verify"];
-const LEFT_TO_CRON_HELP = ["--loop", "--inject", "--catchup", "--no-catchup", "--name", "--cwd", "--model", "--thinking", "--tools", "--timeout", "--checker-model"];
+const LEFT_TO_CRON_HELP = ["--loop", "--inject", "--catchup", "--no-catchup", "--name", "--cwd", "--model", "--thinking", "--tools", "--timeout", "--checker-model", "--gate"];
 
 test("every flag /cron add accepts is either on the usage line or left to /cron help on purpose", () => {
 	// Read the accepted flags out of the parser rather than keeping a third list by hand: the usage
@@ -58,7 +58,7 @@ test("every flag /cron add accepts is either on the usage line or left to /cron 
 	const accepted = [...new Set([...parser.matchAll(/"(--[a-z][a-z-]*)"/g)].map((m) => m[1]))].sort();
 	assert.deepEqual(accepted, [...ON_THE_USAGE_LINE, ...LEFT_TO_CRON_HELP].sort(), "a flag /cron add accepts belongs on one of the two lists above");
 	// And each of them really parses, so a stale list cannot pass by naming a flag nothing accepts.
-	const value: Record<string, string> = { "--name": "n", "--cwd": "/tmp", "--model": "openai/gpt-5", "--thinking": "high", "--tools": "read", "--timeout": "20m", "--checker-model": "openai/gpt-5" };
+	const value: Record<string, string> = { "--name": "n", "--cwd": "/tmp", "--model": "openai/gpt-5", "--thinking": "high", "--tools": "read", "--timeout": "20m", "--checker-model": "openai/gpt-5", "--gate": "'gh pr list'" };
 	for (const flag of accepted) assert.doesNotThrow(() => parseAddArgs(`${flag} ${value[flag] ?? ""} every 1h x`), `${flag} should parse`);
 
 	const named = [...new Set([...CRON_ADD_USAGE.matchAll(/--[a-z][a-z-]*/g)].map((m) => m[0]))].sort();
@@ -169,4 +169,12 @@ test("a job's name has to be usable as a reference, on the edit path as much as 
 	assert.doesNotThrow(() => checkJobName("build.2_x-y", jobs));
 	assert.doesNotThrow(() => checkJobName("检查新issue", jobs));
 	assert.doesNotThrow(() => checkJobName(undefined, jobs));
+});
+
+test("parseAddArgs: --gate takes one quoted command and makes the job a loop; with --inject after it, it is refused", () => {
+	const a = parseAddArgs(`--gate 'gh pr list --json number,updatedAt' "every 10m" report new pull requests`);
+	assert.deepEqual([a.gate, a.stateful, a.prompt], ["gh pr list --json number,updatedAt", true, "report new pull requests"]);
+	assert.equal(parseAddArgs(`--gate "grep -c \\"x\\" log" every 1h x`).gate, 'grep -c "x" log');
+	assert.throws(() => parseAddArgs("--gate true --inject every 1h x"), /--gate is for a loop/);
+	assert.throws(() => parseAddArgs("--gate"), /--gate needs a value/);
 });

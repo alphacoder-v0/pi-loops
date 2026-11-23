@@ -39,6 +39,7 @@ import { openStores } from "./stores.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { formatLocal, stamp } from "./schedule.ts";
 import { canonicalDir } from "./paths.ts";
+import { plainLine } from "./redact.ts";
 
 /**
  * Which front end `pi-loops` opens when you do not say. A browser is the better window when one is
@@ -147,18 +148,6 @@ const CLI_USAGE = [
 	"pi-loops inbox list [--all] [--cwd <dir>] | claim <id> | dismiss <id> [--reason <text>] | cancel <id>   [--json]",
 	"    List, claim or dismiss findings with no pi open.",
 ].join("\n");
-
-/**
- * An archive is a file someone sent you, and `inspect` is the command you run *before* trusting it.
- * Escape sequences in a prompt could clear the screen, repaint earlier lines or hide the rest of
- * the listing, so nothing from the archive reaches the terminal with control characters intact.
- */
-function plain(text: string): string {
-	// Newlines go too: every field printed through here is one line, and a prompt carrying one could
-	// forge a whole extra row in the listing. The last group is the bidi overrides and isolates,
-	// which reorder what is around them without being visible themselves.
-	return text.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ");
-}
 
 interface SessionFile {
 	id: string;
@@ -357,11 +346,11 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		const file = positional[0];
 		if (!file) throw new UsageError("inspect needs an archive path");
 		const info = inspectArchive(path.resolve(file));
-		out(`${plain(info.schema)}  exported ${plain(info.createdAt)}  from ${plain(info.sourceCwd)}`);
+		out(`${plainLine(info.schema)}  exported ${plainLine(info.createdAt)}  from ${plainLine(info.sourceCwd)}`);
 		// The counts come out of the same manifest and are only numbers if it says so.
-		out(`entries=${plain(String(info.entryCount))} cron=${info.jobs.length} triggers=${info.rules.length} loop-state=${plain(String(info.loopStateCount))}`);
-		for (const j of info.jobs) out(`  cron  ${j.enabled ? "enabled " : "disabled"} ${plain(j.schedule)}  ${plain(j.prompt)}`);
-		for (const r of info.rules) out(`  rule  ${r.enabled ? "enabled " : "disabled"} when ${plain(r.condition)} -> ${plain(r.action)}`);
+		out(`entries=${plainLine(String(info.entryCount))} cron=${info.jobs.length} triggers=${info.rules.length} loop-state=${plainLine(String(info.loopStateCount))}`);
+		for (const j of info.jobs) out(`  cron  ${j.enabled ? "enabled " : "disabled"} ${plainLine(j.schedule)}  ${plainLine(j.prompt)}`);
+		for (const r of info.rules) out(`  rule  ${r.enabled ? "enabled " : "disabled"} when ${plainLine(r.condition)} -> ${plainLine(r.action)}`);
 		return 0;
 	}
 
@@ -406,9 +395,9 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		await applyImport(summary, jobStore, triggerStore, stores.clock);
 		const skipped = (summary.skippedJobs ?? 0) + (summary.skippedRules ?? 0);
 		// The id and the notes come out of the archive's own header, like everything `inspect` prints.
-		out(`imported ${plain(summary.originalSessionId)} → ${summary.sessionId}`);
-		out(`entries=${plain(String(summary.entryCount))} cron=${summary.jobs.length} triggers=${summary.rules.length} automation=${summary.automationEnabled ? "enabled" : "disabled"}${skipped ? ` skipped=${skipped} (already imported)` : ""}`);
-		for (const note of summary.notes ?? []) out(`note: ${plain(note)}`);
+		out(`imported ${plainLine(summary.originalSessionId)} → ${summary.sessionId}`);
+		out(`entries=${plainLine(String(summary.entryCount))} cron=${summary.jobs.length} triggers=${summary.rules.length} automation=${summary.automationEnabled ? "enabled" : "disabled"}${skipped ? ` skipped=${skipped} (already imported)` : ""}`);
+		for (const note of summary.notes ?? []) out(`note: ${plainLine(note)}`);
 		out(`session: ${summary.sessionPath}`);
 		// `ask` is the default: the same question the slash command asks, once, after the import.
 		// `askYesNo` already answers no with no terminal to ask at.
@@ -492,7 +481,7 @@ async function inboxCommandBody(positional: string[], opts: { all: boolean; json
 		if (!entries.length) out(opts.all ? "inbox: nothing new on this machine" : `inbox: nothing new in ${cwd} (--all lists every project)`);
 		for (const e of entries) {
 			const card = inboxCard(e, ctx);
-			if (card) out(plain(cardLine(card, `${e.id}  `, `  (${path.basename(e.cwd) || e.cwd || "—"}, ${cardOrigin(card)}, ${formatLocal(Date.parse(e.created_at))})`)));
+			if (card) out(plainLine(cardLine(card, `${e.id}  `, `  (${path.basename(e.cwd) || e.cwd || "—"}, ${cardOrigin(card)}, ${formatLocal(Date.parse(e.created_at))})`)));
 		}
 		return 0;
 	}
@@ -537,7 +526,7 @@ async function inboxCommandBody(positional: string[], opts: { all: boolean; json
 		// `list`, prefixed with what was done. Once the entry is decided it leaves every CLI list,
 		// so this line is the only record the CLI gives of it.
 		const card = inboxCard(updated, ctx);
-		if (card) out(plain(cardLine(card, `${updated.status} ${updated.id}  `, `  (${path.basename(updated.cwd) || updated.cwd || "—"}, ${cardOrigin(card)}, ${formatLocal(Date.parse(updated.created_at))})`)));
+		if (card) out(plainLine(cardLine(card, `${updated.status} ${updated.id}  `, `  (${path.basename(updated.cwd) || updated.cwd || "—"}, ${cardOrigin(card)}, ${formatLocal(Date.parse(updated.created_at))})`)));
 		else out(`${updated.status} ${updated.id}`);
 		return 0;
 	}

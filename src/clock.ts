@@ -14,7 +14,7 @@ import type { Disabled, JobStore, LoopJob, RunRecord } from "./store.ts";
 import { jobStatus, runHistory, type JobHistory } from "./job-status.ts";
 import { oneShotDoneV3 } from "./settle.ts";
 import type { Book } from "./stores.ts";
-import type { PathState } from "./gate.ts";
+import { GATE_LOOK_EVERY_MS, type Look, type PathState, type Reading, gateDecision } from "./gate.ts";
 
 /** A clock decision that was not a run, for the job's status. */
 export interface ClockNote { at: string; text: string }
@@ -39,12 +39,17 @@ export interface JobClock {
 	followup?: Followup;
 	/** The loop asked for no scheduled run before this, and why. */
 	quietUntil?: string; quietWhy?: string;
+	/** A gated loop's looks (design 3.3). */
+	gate?: GateClock;
 }
+/** One look at a gate: a path's state, a command's digest, or why the look failed. */
+export interface GateLast { at: string; state?: PathState; digest?: string; failed?: string }
 /**
- * A rule's gate: how many readings held its wake, and its last reading. A reading that opened a
- * wake is in `events.jsonl`, not here.
+ * A rule's or a loop's gate: how many readings held its wake since `seen` changed, its last
+ * reading, and `seen`, the digest of the reading the last gated run that did not fail saw, with
+ * when that reading was taken. A reading that opened a wake is in `events.jsonl`, not here.
  */
-export interface GateClock { looks: number; last?: { at: string; state: PathState } }
+export interface GateClock { looks: number; last?: GateLast; seen?: { digest: string; at: string } }
 /** The versioned clock file. Unknown job keys are preserved by writes; `rules` is there once a rule's gate was looked at. */
 export interface ClockFile { v: 1; jobs: Record<string, JobClock>; rules?: Record<string, GateClock> }
 /** The cursor stamps as this ticker read them. */
@@ -57,6 +62,8 @@ export interface CursorMove {
 	readonly fires: boolean;
 	readonly note?: ClockNote | null;
 	readonly collapsed?: true;
+	/** The slot was held by the loop's gate: one look more is counted with the cursor. */
+	readonly held?: true;
 }
 export type Advance = "moved" | "lost" | "not-holder";
 
@@ -69,6 +76,7 @@ export function advanceClock(file: ClockFile, move: CursorMove, holds: boolean):
 	if (move.fired !== undefined) entry.fired = move.fired;
 	if (move.note === null) delete entry.note;
 	else if (move.note) entry.note = move.note;
+	if (move.held) entry.gate = { ...current?.gate, looks: (current?.gate?.looks ?? 0) + 1 };
 	return { next: { ...file, jobs: { ...file.jobs, [move.job]: entry } }, result: "moved" };
 }
 
@@ -83,6 +91,8 @@ export interface RunClose {
 	readonly slot?: string;
 	/** The follow-ups the run's row carried (`woken_ids`): one still in the clock goes, as the tick's own take would have taken it. */
 	readonly followups?: readonly string[];
+	/** A gated run that ended without a failure: the reading its row named is the gate's `seen` now. */
+	readonly seen?: { readonly digest: string; readonly at: string };
 }
 export interface Clock {
 	read(): ClockFile;
@@ -105,8 +115,10 @@ export interface Clock {
 /** Where a rule's gate readings are counted. */
 export interface GateClocks {
 	/** Record a rule's reading: the last reading always, and one look more when it held the wake. Returns the entry as it was. */
-	noteGate(rule: string, last: { at: string; state: PathState }, held: boolean): GateClock | undefined;
+	noteGate(rule: string, last: GateLast, held: boolean): GateClock | undefined;
 	readGate(rule: string): GateClock | undefined;
+	/** A rule's check that a command gate let through ended without a failure: its reading is `seen` now. */
+	seeGate(rule: string, seen: { digest: string; at: string }): void;
 }
 /** The file belongs to a newer version and must not be replaced. */
 export class ClockNewer extends Error {}
@@ -124,12 +136,15 @@ export function validEntry(value: unknown): JobClock | undefined {
 	if (entry.cwdMissing !== undefined && !validStamp(entry.cwdMissing)) return undefined;
 	if (entry.collapsed !== undefined && (!Number.isInteger(entry.collapsed) || (entry.collapsed as number) < 0)) return undefined;
 	if (entry.note !== undefined && (!entry.note || typeof entry.note !== "object" || Array.isArray(entry.note) || !validStamp((entry.note as ClockNote).at) || typeof (entry.note as ClockNote).text !== "string")) return undefined;
+	// A gate entry this build does not read is dropped alone: the next look starts it again.
+	const badGate = entry.gate !== undefined && validGate(entry.gate) === undefined;
 	// A wake that is not the shape this build writes is dropped, and the cursor stays.
 	const followup = entry.followup as Record<string, unknown> | undefined;
 	const badFollowup = followup !== undefined && (!followup || typeof followup !== "object" || typeof followup.id !== "string" || !validStamp(followup.at) || typeof followup.note !== "string" || typeof followup.set_by !== "string" || !validStamp(followup.created_at));
 	const badQuiet = (entry.quietUntil !== undefined || entry.quietWhy !== undefined) && (!validStamp(entry.quietUntil) || typeof entry.quietWhy !== "string");
-	if (!badFollowup && !badQuiet) return value as JobClock;
+	if (!badFollowup && !badQuiet && !badGate) return value as JobClock;
 	const kept = { ...entry } as unknown as JobClock;
+	if (badGate) delete kept.gate;
 	if (badFollowup) delete kept.followup;
 	if (badQuiet) { delete kept.quietUntil; delete kept.quietWhy; }
 	return kept;
@@ -214,8 +229,20 @@ export function validGate(value: unknown): GateClock | undefined {
 	const entry = value as Record<string, unknown>;
 	if (!Number.isInteger(entry.looks) || (entry.looks as number) < 0) return undefined;
 	const last = entry.last as Record<string, unknown> | undefined;
-	if (last !== undefined && (!last || typeof last !== "object" || !validStamp(last.at) || !PATH_STATES.includes(last.state as string))) return undefined;
+	if (last !== undefined && (!last || typeof last !== "object" || !validStamp(last.at) || (last.state !== undefined && !PATH_STATES.includes(last.state as string)) || (last.digest !== undefined && typeof last.digest !== "string") || (last.failed !== undefined && typeof last.failed !== "string"))) return undefined;
+	const seen = entry.seen as Record<string, unknown> | undefined;
+	if (seen !== undefined && (!seen || typeof seen !== "object" || typeof seen.digest !== "string" || !validStamp(seen.at))) return undefined;
 	return value as GateClock;
+}
+
+/**
+ * A gate entry with `seen` written, or undefined when it holds it already. The look count is of
+ * readings that held since `seen` changed, so a new digest starts it again; an older reading never
+ * replaces a newer one (a run that ended late).
+ */
+function seenGate(current: GateClock | undefined, seen: { digest: string; at: string }): GateClock | undefined {
+	if (current?.seen && Date.parse(current.seen.at) >= Date.parse(seen.at)) return undefined;
+	return { ...current, looks: current?.seen?.digest === seen.digest ? current.looks : 0, seen };
 }
 
 /** The follow-up goes, and a quiet whose time is not after `at` goes with it. */
@@ -250,13 +277,28 @@ export class ClockStore implements Clock, GateClocks {
 		}
 		return { v: 1, jobs, rules };
 	}
-	noteGate(rule: string, last: { at: string; state: PathState }, held: boolean): GateClock | undefined {
+	noteGate(rule: string, last: GateLast, held: boolean): GateClock | undefined {
 		return this.io.locked(this.paths.lock, () => {
 			const file = this.read();
 			const before = file.rules?.[rule];
-			const next: GateClock = { looks: (before?.looks ?? 0) + (held ? 1 : 0), last };
+			const next: GateClock = { ...before, looks: (before?.looks ?? 0) + (held ? 1 : 0), last };
 			this.io.write(this.paths.file, JSON.stringify({ ...file, rules: { ...file.rules, [rule]: next } }));
 			return before;
+		});
+	}
+	seeGate(rule: string, seen: { digest: string; at: string }): void {
+		this.io.locked(this.paths.lock, () => {
+			const file = this.read();
+			const next = seenGate(file.rules?.[rule], seen);
+			if (next) this.io.write(this.paths.file, JSON.stringify({ ...file, rules: { ...file.rules, [rule]: next } }));
+		});
+	}
+	/** A loop's look, taken before the tick decides its slot: written first, so a look is never taken twice in a minute, whatever follows it. */
+	noteLook(job: string, last: GateLast): void {
+		this.io.locked(this.paths.lock, () => {
+			const file = this.read();
+			const current = file.jobs[job] ?? { runs: 0 };
+			this.io.write(this.paths.file, JSON.stringify({ ...file, jobs: { ...file.jobs, [job]: { ...current, gate: { ...current.gate, looks: current.gate?.looks ?? 0, last } } } }));
 		});
 	}
 	readGate(rule: string): GateClock | undefined {
@@ -280,6 +322,8 @@ export class ClockStore implements Clock, GateClocks {
 			if (close.slot !== undefined && (current.slot === undefined || Date.parse(close.slot) > Date.parse(current.slot))) next.slot = close.slot;
 			// A tick that joined the follow-up to this row and died before it took it: the run took its place.
 			if (current.followup && close.followups?.includes(current.followup.id)) dropFollowup(next, Date.parse(current.followup.at));
+			const seen = close.seen ? seenGate(current.gate, close.seen) : undefined;
+			if (seen) next.gate = seen;
 			if (JSON.stringify(next) !== JSON.stringify(current)) this.io.write(this.paths.file, JSON.stringify({ ...file, jobs: { ...file.jobs, [job]: next } }));
 		});
 	}
@@ -398,9 +442,15 @@ export function wanted(probe: TickProbe): ReadonlyMap<string, LaneId> {
 }
 
 export interface JobRead { readonly rows: readonly CountedRow[]; readonly history: JobHistory | undefined; readonly cwdMissing: boolean }
+/** A loop's gate as this tick looked at it: when, what it read, and the event that stored the reading when it opened the wake. */
+export interface TakenLook { readonly at: string; readonly look: Look; readonly event?: string }
 export interface TickView {
 	readonly now: number; readonly startedAt: number; readonly tickMs: number; readonly catchUp: boolean; readonly kind: "background" | "window"; readonly self: Row["created_by"];
 	readonly budgetOver: boolean; readonly mine: ReadonlyMap<string, Mine>; readonly read: ReadonlyMap<string, JobRead>;
+	/** The gates the tick looked at since its first pass, by job: a due slot of a gated loop is decided on its look. */
+	readonly looks?: ReadonlyMap<string, TakenLook>;
+	/** A gate's last look that `clock.json` does not hold (its write failed), by job: it counts for the minute as a written one does. */
+	readonly lookedAt?: ReadonlyMap<string, number>;
 }
 export interface TickInput { readonly jobs: readonly LoopJob[]; readonly clock: ClockFile; readonly view: TickView }
 interface SlotSpend { readonly job: string; readonly lane: LaneId; readonly slot: string; readonly read: CursorRead; readonly at: string; readonly owner: { readonly kind: "loop" } | { readonly kind: "plain"; readonly session: string; readonly epoch: number } }
@@ -408,7 +458,10 @@ export type SpendDecision =
 	| (SlotSpend & { readonly do: "row"; readonly row: UnclaimedRow; readonly replaces?: string; readonly missed?: string })
 	| (SlotSpend & { readonly do: "collapse"; readonly onto: string; readonly overlap: boolean })
 	| (SlotSpend & { readonly do: "cursor"; readonly why: "own-row" | "spent" })
-	| (SlotSpend & { readonly do: "skip"; readonly note: string });
+	| (SlotSpend & { readonly do: "skip"; readonly note: string })
+	| (SlotSpend & { readonly do: "gated" });
+/** A gated loop's slot came due and its gate was not looked at this tick: the tick looks, then decides the slot again on what it read. */
+export interface LookDecision { readonly do: "look"; readonly job: string; readonly command: string; readonly cwd: string; readonly seen?: string }
 /**
  * A loop's follow-up that came due: its row, its note added to the loop's queued row (the slot's row
  * this tick writes, or one that waits), or nothing to write when its row is queued or ran already (a
@@ -418,19 +471,20 @@ export type FollowupDecision = { readonly do: "followup"; readonly job: string; 
 	| { readonly write: "row"; readonly row: UnclaimedRow }
 	| { readonly write: "onto"; readonly onto: string }
 	| { readonly write: "none"; readonly why: "own-row" | "spent" });
-export type Pass = "not-mine" | "disabled" | "proposed" | "no-lane" | "not-due" | "unread" | "running" | "budget" | "not-a-loop-id";
-export type TickDecision = SpendDecision | FollowupDecision | { readonly do: "disable"; readonly job: string; readonly disabled: Disabled } | { readonly do: "retire"; readonly job: string } | { readonly do: "pass"; readonly job: string; readonly why: Pass };
+export type Pass = "not-mine" | "disabled" | "proposed" | "no-lane" | "not-due" | "unread" | "running" | "budget" | "not-a-loop-id" | "gate-wait" | "gate-unstored";
+export type TickDecision = SpendDecision | FollowupDecision | LookDecision | { readonly do: "disable"; readonly job: string; readonly disabled: Disabled } | { readonly do: "retire"; readonly job: string } | { readonly do: "pass"; readonly job: string; readonly why: Pass };
 
 const T3_WRITES: Record<SpendDecision["do"], Record<"loop" | "plain", { readonly fired: boolean; readonly fires: boolean }>> = {
 	row: { loop: { fired: false, fires: false }, plain: { fired: true, fires: true } },
 	cursor: { loop: { fired: false, fires: false }, plain: { fired: true, fires: true } },
 	collapse: { loop: { fired: false, fires: false }, plain: { fired: true, fires: false } },
 	skip: { loop: { fired: false, fires: false }, plain: { fired: false, fires: false } },
+	gated: { loop: { fired: false, fires: false }, plain: { fired: false, fires: false } },
 };
 /** Derive T3's cursor update from the chosen T2 arm and job kind. */
 export function cursorMove(decision: SpendDecision): CursorMove {
 	const write = T3_WRITES[decision.do][decision.owner.kind];
-	return { job: decision.job, read: decision.read, slot: decision.slot, ...(write.fired ? { fired: decision.at } : {}), fires: write.fires, ...(decision.do === "collapse" && decision.overlap ? { collapsed: true } : {}), ...(decision.do === "skip" ? { note: { at: decision.at, text: decision.note } } : decision.do === "row" || decision.do === "cursor" ? { note: null } : {}) };
+	return { job: decision.job, read: decision.read, slot: decision.slot, ...(write.fired ? { fired: decision.at } : {}), fires: write.fires, ...(decision.do === "collapse" && decision.overlap ? { collapsed: true } : {}), ...(decision.do === "skip" ? { note: { at: decision.at, text: decision.note } } : decision.do === "row" || decision.do === "cursor" || decision.do === "gated" ? { note: null } : {}), ...(decision.do === "gated" ? { held: true as const } : {}) };
 }
 
 const AFTER_OWN_ROW = { loop: ["collapse", "missed"], plain: ["missed", "collapse"] } as const;
@@ -513,11 +567,26 @@ function decideSlot(job: LoopJob, input: TickInput): TickDecision {
 		if (rule === "collapse" && mineKind === "plain" && view.budgetOver) return { do: "pass", job: job.id, why: "budget" };
 		if (rule === "collapse" && collapseTarget) return { ...spend, do: "collapse", onto: collapseTarget.id, overlap: mineKind === "plain" || !!collapseTarget.run };
 	}
+	// A loop's gate (design 3.3): looked at before the row, at most once a minute. A reading the run
+	// saw already holds the slot; one that opens it was stored first, and the row names it.
+	let events: string[] | undefined;
+	if (mineKind === "loop" && job.gate) {
+		const taken = view.looks?.get(job.id);
+		const seen = entry?.gate?.seen?.digest;
+		if (!taken) {
+			const last = Math.max(entry?.gate?.last ? Date.parse(entry.gate.last.at) : -Infinity, view.lookedAt?.get(job.id) ?? -Infinity);
+			if (view.now - last < GATE_LOOK_EVERY_MS) return { do: "pass", job: job.id, why: "gate-wait" };
+			return { do: "look", job: job.id, command: job.gate.command, cwd: job.cwd, ...(seen === undefined ? {} : { seen }) };
+		}
+		if (gateDecision(seen, taken.look) === "hold") return { ...spend, do: "gated" };
+		if (!taken.event) return { do: "pass", job: job.id, why: "gate-unstored" };
+		events = [taken.event];
+	}
 	const streak = data.history?.streak ?? 0;
 	const wait = job.stateful || view.kind === "background" ? failurePause(streak) : 0;
 	const not_before = wait ? stamp(Date.parse(data.history!.failed!.at) + wait) : undefined;
 	const base = plainJobRow(job, id, `cron:${job.id}`, missed && mineKind === "plain" ? `\n(catching up a run due ${formatLocal(slot)})` : "", view.self, view.now);
-	const row: UnclaimedRow = { ...base, lane, payload: { ...base.payload!, slot: spend.slot, ...(missed && mineKind === "loop" ? { catch_up: true } : {}) } as UnclaimedRow["payload"], ...(not_before ? { not_before } : {}) };
+	const row: UnclaimedRow = { ...base, lane, payload: { ...base.payload!, slot: spend.slot, ...(missed && mineKind === "loop" ? { catch_up: true } : {}), ...(events ? { events } : {}) } as UnclaimedRow["payload"], ...(not_before ? { not_before } : {}) };
 	return { ...spend, do: "row", row, ...(refused ? { replaces: refused.id } : {}), ...(missed && view.catchUp && job.catchUp ? { missed } : {}) };
 }
 
@@ -528,7 +597,7 @@ export interface SlotWritten { readonly decision: SpendDecision; readonly t2: T2
 export type TickOutcome =
 	| { readonly job: string; readonly slot: string; readonly t2: T2; readonly t3: Advance | "not-written" }
 	| { readonly job: string; readonly followup: string; readonly t2: FollowupT2; readonly t3: "moved" | "lost" | "not-written" }
-	| { readonly job: string; readonly decided: "disable" | "retire" | "pass" }
+	| { readonly job: string; readonly decided: "disable" | "retire" | "pass" | "look" }
 	| { readonly job: string; readonly failed: string };
 /** Apply T2 under the request store's lane lock. */
 export function writeSlot(decision: SpendDecision, stores: Pick<TickStores, "requests">): SlotWritten {
@@ -573,7 +642,7 @@ export function applyFollowup(decision: FollowupDecision, stores: Pick<TickStore
 /** Apply each job's T2 and T3 in order. A failed job does not stop the others. */
 export function applyTick(decisions: readonly TickDecision[], stores: TickStores, now = Date.now()): TickOutcome[] {
 	return decisions.map((decision) => {
-		if (decision.do === "pass" || decision.do === "disable" || decision.do === "retire") return { job: decision.job, decided: decision.do };
+		if (decision.do === "pass" || decision.do === "disable" || decision.do === "retire" || decision.do === "look") return { job: decision.job, decided: decision.do };
 		try { return decision.do === "followup" ? applyFollowup(decision, stores, now) : commitSlot(writeSlot(decision, stores), stores); }
 		catch (error) { return { job: decision.job, failed: error instanceof Error ? error.message : String(error) }; }
 	});
@@ -602,11 +671,47 @@ export interface TickSources {
 	 * row, and counts no skipped overlap: main clears a dead run's marker before it decides the tick.
 	 */
 	claimLive?(row: import("./requests.ts").ClaimedRow): boolean;
+	/** How the background looks at a loop's gate. Absent (a window, which runs no loop): a gated loop's slot waits. */
+	readonly gate?: GateSources;
+}
+/** A loop's gate look, its stored reading and its look time: what the tick does between its two passes. */
+export interface GateSources {
+	/** `lookCommand` in the job's directory: the policy first, 5 s, 4000 characters. */
+	look(command: string, cwd: string): Promise<Reading>;
+	/** Append the reading to `events.jsonl`; returns the event's id. */
+	store(source: `gate:${string}`, raw: string): string;
+	/** The look's time and what it read, in `clock.json` (`ClockStore.noteLook`). */
+	noted(job: string, last: GateLast): void;
+	/** A look whose time `noted` could not write, while its minute lasts: the limit holds without the file. */
+	lookedAt?(job: string): number | undefined;
+}
+
+/**
+ * The background's gate sources, one for the process. A look's time is written to `clock.json`; when
+ * that write fails, the time is held here instead, so the job is not looked at again within the
+ * minute (design 3.3: never more often than once a minute).
+ */
+export function gateSources(io: { look: GateSources["look"]; store: GateSources["store"]; write(job: string, last: GateLast): void }): GateSources {
+	const unwritten = new Map<string, number>();
+	return {
+		look: io.look,
+		store: io.store,
+		noted(job, last) {
+			try {
+				io.write(job, last);
+				unwritten.delete(job);
+			} catch (error) {
+				unwritten.set(job, Date.parse(last.at));
+				throw error;
+			}
+		},
+		lookedAt: (job) => unwritten.get(job),
+	};
 }
 export interface Ticked { readonly decision: TickDecision; readonly outcome: TickOutcome }
 
 /** Read the due lanes, decide each job, then apply its row and cursor writes synchronously. */
-function clockPass(scope: TickScope, sources: TickSources, now: number): { readonly ticked: Ticked[]; readonly jobs: ReadonlyMap<string, LoopJob> } {
+function clockPass(scope: TickScope, sources: TickSources, now: number, looks?: ReadonlyMap<string, TakenLook>): { readonly ticked: Ticked[]; readonly jobs: ReadonlyMap<string, LoopJob> } {
 	const { jobs, clock } = sources.book();
 	const mine = new Map<string, Mine>();
 	for (const job of jobs) {
@@ -631,7 +736,7 @@ function clockPass(scope: TickScope, sources: TickSources, now: number): { reado
 		const live = sources.claimLive;
 		read.set(id, { rows: job.stateful && live ? rows.map((row) => row.run && !live(row as import("./requests.ts").ClaimedRow) ? { ...row, run: undefined } : row) : rows, history: history.get(id), cwdMissing: job.stateful && !sources.cwdExists(job.cwd) });
 	}
-	const decisions = decideTick({ jobs, clock, view: { now, startedAt: scope.startedAt, tickMs: scope.tickMs, catchUp: scope.catchUp, kind: scope.kind, self: scope.self, budgetOver: scope.budgetOver, mine, read } });
+	const decisions = decideTick({ jobs, clock, view: { now, startedAt: scope.startedAt, tickMs: scope.tickMs, catchUp: scope.catchUp, kind: scope.kind, self: scope.self, budgetOver: scope.budgetOver, mine, read, ...(looks ? { looks } : {}), ...lookedAtOf(jobs, sources.gate) } });
 	const outcomes = applyTick(decisions, { requests: sources.requests, clock: sources.clock, heldEpoch: sources.heldEpoch }, now);
 	return { ticked: decisions.map((decision, i) => ({ decision, outcome: outcomes[i] })), jobs: byId };
 }
@@ -649,9 +754,54 @@ export interface TickSinks {
 	log(message: string, level?: "info" | "warning", job?: Pick<LoopJob, "cwd">): void;
 }
 
+/** The looks whose time is held in memory only, for the jobs this tick reads. */
+function lookedAtOf(jobs: readonly LoopJob[], gate: GateSources | undefined): Pick<TickView, "lookedAt"> {
+	if (!gate?.lookedAt) return {};
+	const held = new Map<string, number>();
+	for (const job of jobs) {
+		const at = gate.lookedAt(job.id);
+		if (at !== undefined) held.set(job.id, at);
+	}
+	return held.size ? { lookedAt: held } : {};
+}
+
+/** What a look read, as `clock.json` keeps it. */
+function lastOf(at: string, look: Look): GateLast {
+	return look.kind === "command" ? { at, digest: look.digest } : look.kind === "failed" ? { at, failed: look.why } : { at, state: look.state };
+}
+
+/**
+ * The tick's second pass: each gate the first pass asked for is looked at (in parallel, each with its
+ * own timeout), its look time written, a reading that opens the wake stored in `events.jsonl`, and
+ * then only those jobs are decided again, on what was read. A reading that was not stored leaves the
+ * slot due: nothing runs on a reading that is not in the log.
+ */
+async function gatePass(scope: TickScope, sources: TickSources, sinks: TickSinks, first: readonly Ticked[], now: number): Promise<{ readonly ticked: Ticked[]; readonly jobs: ReadonlyMap<string, LoopJob> }> {
+	const gate = sources.gate;
+	const asks = first.flatMap(({ decision }) => (decision.do === "look" ? [decision] : []));
+	if (!gate || !asks.length) return { ticked: [], jobs: new Map() };
+	const looks = new Map<string, TakenLook>();
+	await Promise.all(asks.map(async (ask) => {
+		const reading = await gate.look(ask.command, ask.cwd);
+		const at = stamp(now);
+		try { gate.noted(ask.job, lastOf(at, reading.look)); }
+		catch (error) { sinks.log(`loop ${ask.job}: its gate look was not written: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
+		let event: string | undefined;
+		if (gateDecision(ask.seen, reading.look) === "wake") {
+			try { event = gate.store(`gate:${ask.job}`, reading.raw); }
+			catch (error) { sinks.log(`loop ${ask.job}: its gate reading was not stored, so it does not run this tick: ${error instanceof Error ? error.message : String(error)}`, "warning"); }
+		}
+		looks.set(ask.job, { at, look: reading.look, ...(event ? { event } : {}) });
+	}));
+	return clockPass({ ...scope, mine: (job) => (looks.has(job.id) ? scope.mine(job) : undefined) }, sources, now, looks);
+}
+
 /** Apply the tick's non-clock side effects, continuing after each job's failure. */
 export async function runClockTick(scope: TickScope, sources: TickSources, sinks: TickSinks, now: number): Promise<void> {
-	const { ticked, jobs } = clockPass(scope, sources, now);
+	const first = clockPass(scope, sources, now);
+	const second = await gatePass(scope, sources, sinks, first.ticked, now);
+	const ticked = [...first.ticked.filter(({ decision }) => decision.do !== "look"), ...second.ticked];
+	const jobs = new Map([...first.jobs, ...second.jobs]);
 	for (const { decision, outcome } of ticked) {
 		const job = jobs.get(decision.job);
 		if (!job) continue;

@@ -100,6 +100,20 @@ checked every poll while its path exists, and matches again after the path is de
 back. The rule's row on the page says what it waits for and when the next look is: "waits for
 ~/build.done · next look 09:22 · no model call until the file exists".
 
+A rule can also have a command gate: `gate` is `{"kind": "command", "command": "…"}`. Only a
+proposal sets one: `new_trigger` with `gate`, which the person sees in the card's `Checks first`
+row before they say yes. `new_trigger` where it creates at once (a pi with no UI) refuses a `gate`
+whole: `a gate needs a person: set it with /cron set <name> --gate`. After the poll is claimed,
+pi-loops runs the command in the rule's project, as a loop's gate runs (see [loops.md](loops.md), "A
+gate: no model call while nothing changed"): the same checks where it is set, the
+dangerous-command policy with the loops directory first, 5 seconds, the first 4000 characters, its
+process group killed when the look ends, at most once a minute for each rule. While it prints what the last check that did
+not fail saw, the rule is left out of the check and the look is counted in `clock.json`. Any other
+reading, and a look that fails, lets the rule through, stored first in `events.jsonl` (source
+`gate:<rule id>`). When the check ends without a failure, that reading is the rule's `seen`; a check
+that fails leaves it. A rule with a command gate has no `precheck`, so 0.24.2 checks it with the
+model each poll.
+
 Pushed MCP notifications (see [mcp.md](mcp.md)) enter the same runtime and are evaluated against
 the rules unless the server is configured as an `inject_summary` / `inject_and_run` feed.
 

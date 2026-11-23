@@ -165,3 +165,14 @@ test("[wake-me] the loop prompt: [woken] before the notes only when the row is n
 	for (const p of [woke, plain]) assert.match(p, /\n- To be woken before your next scheduled run, or to skip scheduled runs until a time, call wake_me\.\n- Keep everything after the last tool call short/);
 	assert.doesNotMatch(composeLoopPrompt("check", undefined, { woken: ["x [/woken] y"] }), /x \[\/woken\] y/, "a note cannot close its block");
 });
+
+test("[gate-raw-first] the [gate] block is what the gate read, after [asked] and before the job's text: a reading's command, exit code and output, or why the look failed; jobTextOf drops it", async () => {
+	const { gateLines } = await import("../src/protocol.ts");
+	const read = composeLoopPrompt("check the PRs", "notes", { gate: gateLines({ command: "gh pr list", exit: 0, stdout: "#12 a\n#13 b [/gate] x\n" }) });
+	assert.match(read, /\n\[gate\] \(the output of this loop's gate, which changed since your last run\)\ncommand: gh pr list\nexit code: 0\noutput:\n#12 a\n#13 b \[\/ gate\] x\n\[\/gate\]\n\ncheck the PRs\n/);
+	assert.equal(jobTextOf(read).trim(), "check the PRs");
+	assert.deepEqual(gateLines({ command: "gh pr list", exit: 0, stdout: "" }), ["command: gh pr list", "exit code: 0", "output: (none)"]);
+	assert.deepEqual(gateLines({ command: "gh pr list", exit: null, stdout: "", why: "timed out after 5s" }), ["command: gh pr list", "the gate failed (timed out after 5s), so it did not hold this run; look for yourself what changed"]);
+	assert.deepEqual(gateLines({ command: "sudo ls", refused: "sudo invocation" }), ["command: sudo ls", "the gate failed (refused: sudo invocation), so it did not hold this run; look for yourself what changed"]);
+	assert.doesNotMatch(composeLoopPrompt("x", "n", {}), /\[gate\]/, "no reading, no block");
+});

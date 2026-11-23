@@ -11,6 +11,11 @@ import { withFileLockSync, writeFileAtomic } from "../src/lock.ts";
 import { formatLocal, formatLocalZoned, stamp } from "../src/schedule.ts";
 import { advanceClock, applyTick, decideWake, followupId, nextScheduled, wakeSetText, ClockNewer, ClockStore, cursorMove, decideTick, decideRunNow, firedOf, tickClock, wanted, validEntry, type ClockFile, type Mine, type TickInput, type TickStores, writeSlot, commitSlot } from "../src/clock.ts";
 import { JobStore, type LoopJob } from "../src/store.ts";
+import { EventLog } from "../src/events.ts";
+import { commandDigest, lookCommand } from "../src/gate.ts";
+import { gateSources, runClockTick } from "../src/clock.ts";
+import { listedJob } from "../src/job-status.ts";
+import { gateLines } from "../src/job-lines.ts";
 
 const now = Date.parse("2026-01-02T03:04:05.000Z");
 const job = (over: Partial<LoopJob> = {}): LoopJob => ({ id: "cron-job", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "work", cwd: "/", enabled: true, catchUp: true, createdAt: stamp(now - 120_000), ...over });
@@ -498,4 +503,145 @@ test("[wake-me] a disabled or proposed loop's follow-up waits, and a wake the fi
 	assert.deepEqual(decideTick({ ...loopTick(due), jobs: [job({ enabled: false })] }).map((d) => d.do), ["pass"]);
 	assert.deepEqual(decideTick({ ...loopTick(due), jobs: [job({ enabled: false, proposed: { at: stamp(now), session: "s" } })] }).map((d) => d.do), ["pass"]);
 	assert.deepEqual(validEntry({ slot: stamp(now), runs: 2, followup: { at: "never" }, quietUntil: stamp(now) }), { slot: stamp(now), runs: 2 });
+});
+
+/**
+ * A gated loop in the background's tick: the real job store, clock, request store, events.jsonl and
+ * lookCommand. `order` records the event's append and the row's write; `looks` each look's tick.
+ */
+async function gatedLoop(command: string, fail: { store?: boolean; write?: boolean } = {}) {
+	const dir = tmp();
+	const jobs = new JobStore(dir);
+	await jobs.add({ ...job({ cwd: dir, name: "prs" }), gate: { kind: "command", command } });
+	const { requests, clock } = stores(dir);
+	const events = new EventLog(dir, "background");
+	const order: string[] = [];
+	const looks: number[] = [];
+	const append = requests.appendIfAbsent.bind(requests);
+	let at = now;
+	// One for the world, as the background has one for the process.
+	const sources = gateSources({
+		look: (c, cwd) => { looks.push(at); return lookCommand(c, { cwd }); },
+		store: (source, raw) => { if (fail.store) throw new Error("disk full"); order.push("event"); return events.append(source, raw).id; },
+		write: (id, last) => { if (fail.write) throw new Error("disk full"); clock.noteLook(id, last); },
+	});
+	requests.appendIfAbsent = (r) => { order.push("row"); return append(r); };
+	const tick = (when: number) => (at = when, runClockTick({ kind: "background", self, startedAt: now - 3_600_000, tickMs: 30_000, catchUp: true, budgetOver: false, mine: (j) => (j.stateful ? { kind: "loop" } : undefined) }, {
+		book: () => ({ jobs: jobs.load(), clock: clock.read() }), history: () => new Map(), requests, clock,
+		proof: () => ({ has: () => false, older: () => false, heldRunWrote: () => false, ran: () => undefined }),
+		cwdExists: () => true, heldEpoch: () => undefined,
+		gate: sources,
+	}, { jobs: { remove: (id) => jobs.remove(id), disable: (id, d) => jobs.disable(id, d) }, log: () => undefined }, at));
+	const rows = () => requests.list("@cron-job");
+	const gate = () => clock.read().jobs["cron-job"]?.gate;
+	return { dir, jobs, requests, clock, events, order, looks, tick, rows, gate };
+}
+
+test("[gate-raw-first] a loop's gate reading that opens the wake is in events.jsonl before the row, and the row names it", async () => {
+	const w = await gatedLoop("cat state.txt");
+	fs.writeFileSync(path.join(w.dir, "state.txt"), "3 open\n");
+	await w.tick(now);
+	assert.deepEqual(w.order, ["event", "row"], "the reading is stored first");
+	const [event] = w.events.since(0);
+	assert.equal(event.source, "gate:cron-job");
+	assert.deepEqual(JSON.parse(event.raw), { command: "cat state.txt", exit: 0, stdout: "3 open\n" }, "stored raw, as the look read it");
+	const [r] = w.rows();
+	assert.deepEqual((r.payload as { events?: string[] }).events, [event.id], "the row names the event");
+	assert.deepEqual(w.gate()?.last, { at: stamp(now), digest: commandDigest(0, "3 open\n") });
+	assert.equal(w.gate()?.seen, undefined, "seen is not written when the row is");
+});
+
+test("[gate-held-count] a loop's reading that the last gated run saw holds the slot: the cursor moves, one look is counted, no row and nothing stored; at most one look a minute", async () => {
+	const w = await gatedLoop("cat state.txt");
+	fs.writeFileSync(path.join(w.dir, "state.txt"), "3 open\n");
+	await w.tick(now);
+	const [first] = w.rows();
+	const [event] = w.events.since(0);
+	// The gated run ends without a failure: its closing writes the reading it was woken by as seen.
+	w.requests.remove("@cron-job", [first.id]);
+	w.clock.closeRun("cron-job", { seen: { digest: commandDigest(0, "3 open\n"), at: event.received_at } });
+	const slotBefore = w.clock.read().jobs["cron-job"].slot!;
+	await w.tick(now + 60_000);
+	assert.deepEqual(w.rows(), [], "no row");
+	assert.equal(w.events.since(0).length, 1, "a held reading is not stored");
+	assert.ok(Date.parse(w.clock.read().jobs["cron-job"].slot!) > Date.parse(slotBefore), "the slot is decided: the cursor moved");
+	assert.equal(w.gate()?.looks, 1, "one look counted");
+	assert.equal(w.gate()?.seen?.at, event.received_at);
+	await w.tick(now + 120_000);
+	assert.equal(w.gate()?.looks, 2);
+	// A look inside the last minute: the slot waits for the next tick, and nothing is looked at.
+	w.clock.noteLook("cron-job", { at: stamp(now + 170_000), digest: commandDigest(0, "3 open\n") });
+	const looked = w.looks.length;
+	await w.tick(now + 180_000);
+	assert.equal(w.looks.length, looked, "no second look in a minute");
+	assert.deepEqual(w.rows(), []);
+	// The output changes: the next look wakes the loop, stored first; the count stays until seen changes.
+	fs.writeFileSync(path.join(w.dir, "state.txt"), "4 open\n");
+	await w.tick(now + 240_000);
+	assert.equal(w.rows().length, 1, "a changed reading writes the row");
+	assert.equal(w.events.since(0).length, 2);
+	assert.equal(w.gate()?.looks, 2);
+	const [, changed] = w.events.since(0);
+	w.clock.closeRun("cron-job", { seen: { digest: commandDigest(0, "4 open\n"), at: changed.received_at } });
+	assert.equal(w.gate()?.looks, 0, "a new seen starts the count again");
+});
+
+test("[gate-failed-wakes] a loop's gate that fails wakes the loop as a loop with no gate, stored first; the status says the gate is failing", async () => {
+	const w = await gatedLoop("no-such-program-for-a-gate");
+	w.clock.closeRun("cron-job", { seen: { digest: commandDigest(0, "x"), at: stamp(now - 600_000) } });
+	await w.tick(now);
+	assert.deepEqual(w.order, ["event", "row"]);
+	const [event] = w.events.since(0);
+	assert.equal(JSON.parse(event.raw).why, "exited 127");
+	assert.equal(w.rows().length, 1, "a failed look wakes");
+	assert.equal(w.gate()?.last?.failed, "exited 127");
+	const listed = listedJob(w.jobs.load()[0], w.clock.read().jobs["cron-job"], w.rows(), undefined);
+	assert.deepEqual(gateLines(listed, now), ["    gate failing: exited 127; prs runs without the gate until it works"]);
+});
+
+test("[gate-policy] a loop's gate passes the dangerous-command policy first: a refused command does not run, and the refusal is a failed look that wakes", async () => {
+	const w = await gatedLoop("touch ran; echo x | eval cat");
+	await w.tick(now);
+	assert.equal(fs.existsSync(path.join(w.dir, "ran")), false, "the command did not run");
+	const [event] = w.events.since(0);
+	assert.deepEqual(JSON.parse(event.raw), { command: "touch ran; echo x | eval cat", refused: "piping or substituting into eval" });
+	assert.equal(w.rows().length, 1);
+	assert.equal(w.gate()?.last?.failed, "refused: piping or substituting into eval");
+});
+
+test("a loop's gate entry in clock.json that this build does not read is dropped alone; a plain job with a gate is not looked at", () => {
+	assert.deepEqual(validEntry({ slot: stamp(now), runs: 2, gate: { looks: "x" } }), { slot: stamp(now), runs: 2 });
+	assert.deepEqual(validEntry({ runs: 0, gate: { looks: 3, last: { at: stamp(now), failed: "exited 127" }, seen: { digest: "d", at: stamp(now) } } })?.gate?.looks, 3);
+	const plain = { ...job({ stateful: false, sessionId: "s" }), gate: { kind: "command" as const, command: "true" } };
+	const [decision] = decideTick(input([plain], new Map([[plain.id, { kind: "plain", epoch: 1 }]])));
+	assert.equal(decision.do, "row", "a plain job's turn is not gated");
+});
+
+test("[gate-held-count] a look whose time could not be written still counts for its minute: the next tick does not look again", async () => {
+	// The reading is not stored either, so the slot stays due and every tick would look if nothing held it.
+	const w = await gatedLoop("echo 1", { store: true, write: true });
+	await w.tick(now);
+	assert.deepEqual([w.looks.length, w.rows().length, w.gate()?.last], [1, 0, undefined], "looked once; nothing written");
+	await w.tick(now + 30_000);
+	assert.equal(w.looks.length, 1, "no second look inside the minute");
+	await w.tick(now + 61_000);
+	assert.equal(w.looks.length, 2, "the next look after it");
+});
+
+test("[gate-policy] a loop's gate written into jobs.json by hand that does not show as itself is never run: the look fails with the reason, the loop wakes without it, and /cron says the gate is failing", async () => {
+	for (const [what, command, why] of [
+		["a bidi override", "touch ran; echo \u202e", "a gate is one line a person can read: it holds a line break, a control character or an invisible one"],
+		["a secret", "touch ran; echo password=abcdefgh12345678", "a gate cannot hold a secret: part of this command reads as one, and pi-loops would hide it wherever it shows the gate, so nobody could see all of what runs"],
+	] as const) {
+		const w = await gatedLoop(command);
+		assert.equal(w.jobs.load()[0].gate?.command, command, `${what}: the store holds it as written`);
+		await w.tick(now);
+		assert.equal(fs.existsSync(path.join(w.dir, "ran")), false, `${what}: the gate was not run`);
+		assert.equal(w.rows().length, 1, `${what}: the loop wakes, as with a gate that failed`);
+		assert.equal(w.gate()?.last?.failed, `refused: ${why}`, what);
+		const [event] = w.events.since(0);
+		assert.equal(event.raw.includes("abcdefgh12345678"), false, `${what}: no secret is stored with the reading`);
+		const listed = listedJob(w.jobs.load()[0], w.clock.read().jobs["cron-job"], w.rows(), undefined);
+		assert.deepEqual(gateLines(listed, now), [`    gate failing: refused: ${why}; prs runs without the gate until it works`], what);
+	}
 });

@@ -20,6 +20,8 @@ import { stamp } from "../src/schedule.ts";
 import { type LoopJob } from "../src/store.ts";
 import { tmp } from "./tmp.ts";
 import { fakeRunner } from "./fake-runner.ts";
+import { EventLog } from "../src/events.ts";
+import { commandDigest } from "../src/gate.ts";
 
 const now = Date.now();
 const makeJob = (over: Partial<LoopJob> = {}): LoopJob => ({
@@ -517,5 +519,38 @@ test("[wake-collapse] a run whose row carries a follow-up records its id, and it
 		assert.deepEqual(f.finished[0].woken_ids, [joined.id]);
 		assert.deepEqual(f.stores.requests.list(row.lane), [], "the row is closed");
 		assert.equal(f.stores.clock.read().jobs[job.id].followup?.note, setsItsOwn ? "look again" : undefined);
+	}
+});
+
+test("[gate-seen-on-success] a gated run that ends without a failure writes the reading its row named as the gate's seen; a failed run leaves it, and so does a run of a gate the person changed since; the run reads it in [gate]", async () => {
+	for (const how of ["failed", "succeeded", "changed"] as const) {
+		const f = setup();
+		const job = await f.stores.jobs.add(makeJob({ gate: { kind: "command", command: how === "changed" ? "gh pr list --state all" : "gh pr list" } }));
+		const events = new EventLog(f.dir, "background");
+		const event = events.append(`gate:${job.id}`, JSON.stringify({ command: "gh pr list", exit: 0, stdout: "#12 fix login\n" }));
+		const id = "run-00000000000000000000000000000007";
+		const row: UnclaimedRow = {
+			v: 3, id, lane: `@${job.id}`, kind: "input", source: `cron:${job.id}`, mode: "unattended", wake: "turn",
+			payload: { text: `[Trigger ${id}] check changes`, cwd: process.cwd(), events: [event.id] } as UnclaimedRow["payload"], collapse_key: `cron:${job.id}`, created_at: stamp(now), created_by: f.createdBy, attempts: 0,
+		};
+		f.stores.requests.append(row);
+		const claimed = f.runs.claim(f.stores.requests, row, { pid: process.pid, procStart: "self" }, { jobId: job.id, label: "check", promptPreview: "check", ctrl: new AbortController() }, now)!;
+		let prompt = "";
+		const deps: LoopRunDeps = {
+			...f.deps,
+			events,
+			runner: async (request) => {
+				prompt = request.prompt;
+				return how === "failed"
+					? { ok: false, exitCode: 1, timedOut: false, text: "", errorMessage: "provider error", usage: { input: 1, output: 1, cost: 0, turns: 1 } }
+					: { ok: true, exitCode: 0, timedOut: false, text: "<loop-state>n</loop-state>", usage: { input: 1, output: 1, cost: 0, turns: 1 } };
+			},
+		};
+		await runLoop(claimed, job as LoopJob, deps);
+		assert.match(prompt, /\n\[gate\] \(the output of this loop's gate, which changed since your last run\)\ncommand: gh pr list\nexit code: 0\noutput:\n#12 fix login\n\[\/gate\]\n\ncheck changes/, how);
+		assert.deepEqual(f.stores.requests.list(row.lane), [], `${how}: the row is closed`);
+		const seen = f.stores.clock.read().jobs[job.id]?.gate?.seen;
+		if (how === "succeeded") assert.deepEqual(seen, { digest: commandDigest(0, "#12 fix login\n"), at: event.received_at });
+		else assert.equal(seen, undefined, `${how}: seen is left, so the same change wakes the loop again`);
 	}
 });

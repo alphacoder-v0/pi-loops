@@ -5282,3 +5282,22 @@ test("a send takes the conversation to its end, wherever it was scrolled to", { 
 	assert.equal(doc.getElementById("newer").hidden, true);
 	dom.dispose();
 });
+
+test("[gate-held-count] a gated loop's row says no model call while its command says the same, with the command whole and when its output last changed; a failing gate says why", { timeout: 20_000 }, async () => {
+	const since = new Date(Date.now() - 2 * 3_600_000);
+	const hhmm = String(since.getHours()).padStart(2, "0") + ":" + String(since.getMinutes()).padStart(2, "0");
+	const state: any = loopState({ gate: { command: "gh pr list --json number,updatedAt", looks: 37, since: since.toISOString() } });
+	const dom = await startPage(state, {});
+	try {
+		assert.match(textOf(loopSlot()), new RegExp("No model call while `gh pr list --json number,updatedAt` says the same · last changed " + hhmm), "whole: a cut would hide what follows it");
+		state.automation.jobs[0] = { ...state.automation.jobs[0], gate: { command: "gh pr list", looks: 0, failing: "timed out after 5s" } };
+		await dom.poll();
+		assert.match(textOf(loopSlot()), /Gate failing: timed out after 5s; it runs without the gate until it works/);
+		assert.doesNotMatch(textOf(loopSlot()), /No model call/);
+		state.automation.jobs[0] = { ...state.automation.jobs[0], gate: undefined };
+		await dom.poll();
+		assert.doesNotMatch(textOf(loopSlot()), /No model call|Gate failing/, "a loop with no gate says nothing of one");
+	} finally {
+		dom.dispose();
+	}
+});

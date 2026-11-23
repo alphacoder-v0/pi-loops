@@ -76,6 +76,12 @@ export interface LoopJob {
 	disabled?: Disabled;
 	/** A watch nobody has said yes to yet (design 2.5): `enabled` is false, nothing runs it, and only its answer sets it up. */
 	proposed?: { at: string; session: string };
+	/**
+	 * A loop only: a command looked at before a due slot's row is written (design 3.3). While its
+	 * output is the one the last gated run saw, the slot is held and no model is called. Only a person
+	 * sets one: `--gate`, a recipe's `gate` key, or their yes to a proposal that shows it.
+	 */
+	gate?: { kind: "command"; command: string };
 }
 
 /** The reason of a job a person turned off: main's `/cron disable` wrote no error, so a list shows the last failure instead. */

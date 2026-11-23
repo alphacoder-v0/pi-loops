@@ -2,7 +2,9 @@ import * as path from "node:path";
 import { askedLines, resolveCap } from "./ask.ts";
 import { type EngineSinks, applyFate, plainJobRow, plainRunId } from "./engine.ts";
 import { OVERFLOW_FILE, notesFileLines, notesFiles as listNotesFiles, notesWrite, reportedFor } from "./notes.ts";
-import { findingKind, composeCheckerPrompt, composeLoopPrompt, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
+import { findingKind, composeCheckerPrompt, composeLoopPrompt, gateLines, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
+import type { EventLog } from "./events.ts";
+import { commandReadingOf, readingDigest, type CommandReading } from "./gate.ts";
 import type { ClaimedRow, Row, UnclaimedRow } from "./requests.ts";
 import { RunList, STOPPED_BY_PERSON } from "./run-list.ts";
 import { previewRedacted, redact } from "./redact.ts";
@@ -52,12 +54,25 @@ export interface LoopRunDeps {
 	readonly engine: () => EngineSinks;
 	readonly sinks: LoopSinks;
 	readonly now?: () => number;
+	/** `events.jsonl`: the gate reading a row names (`payload.events`), for the `[gate]` block and for `seen`. */
+	readonly events?: Pick<EventLog, "get">;
 }
 
 export interface LoopRowPayload extends NonNullable<ClaimedRow["payload"]> {
 	slot?: string;
 	catch_up?: true;
 	requested_by?: string;
+	/** The gate reading that opened this run (`events.jsonl` ids, design 3.3): one, from the tick. */
+	events?: string[];
+}
+
+/** The gate reading a row names, read back from `events.jsonl`, with when it was stored. Undefined when the row names none or the log no longer has it. */
+export function gateReadingOf(row: Pick<Row, "payload">, events: Pick<EventLog, "get"> | undefined): { reading: CommandReading; at: string } | undefined {
+	const id = (row.payload as LoopRowPayload | undefined)?.events?.[0];
+	const event = id === undefined ? undefined : events?.get(id);
+	if (!event || !event.source.startsWith("gate:")) return undefined;
+	const reading = commandReadingOf(event.raw);
+	return reading && { reading, at: event.received_at };
 }
 
 export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps): Promise<void> {
@@ -86,6 +101,9 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 		} catch (error) { deps.sinks.log(`loop ${job.id}: inbox read failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
 		// From jobs.json only, as tools and cwd are: a row in the lane file can be written by hand.
 		const timeoutMs = job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
+		let gate: string[] | undefined;
+		try { const read = gateReadingOf(row, deps.events); gate = read && gateLines(read.reading); }
+		catch (error) { deps.sinks.log(`loop ${job.id}: gate reading read failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
 		const prompt = composeLoopPrompt(job.prompt, previousState, {
 			name: job.name,
 			notesDir,
@@ -93,6 +111,7 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 			reported,
 			asked,
 			woken: payload?.woken,
+			gate,
 			timeoutMs,
 			runAt: `${formatLocalZoned(started)}${payload?.catch_up ? " (catching up a missed tick)" : ""}`,
 		});
@@ -278,7 +297,7 @@ export function ensureRecord(row: ClaimedRow, deps: Pick<LoopRunDeps, "stores" |
 	return existing ?? (deps.stores.jobs.listRuns().find((record) => record.runId === row.run.id && Date.parse(record.startedAt) >= Date.parse(row.run.started_at)) as RunRecordM4b);
 }
 
-export interface RunClose { readonly ordinal?: number; readonly fired?: string; readonly slot?: string }
+export interface RunClose { readonly ordinal?: number; readonly fired?: string; readonly slot?: string; readonly seen?: { readonly digest: string; readonly at: string } }
 export type Fate =
 	| { readonly do: "leave"; readonly exit: "delivered" | "stopped" | "parked" }
 	| { readonly do: "owed" }
@@ -292,17 +311,24 @@ export type CloseStep =
 	| { readonly write: "successor"; readonly row: UnclaimedRow };
 export type RowStep = { readonly write: "row"; readonly fate: Fate };
 export type ClosePlan = readonly [...CloseStep[], RowStep];
-export interface CloseInput { readonly row: ClaimedRow; readonly job: LoopJob | undefined; readonly record: RunRecordM4b; readonly history: JobHistory; readonly self: Row["created_by"]; readonly now: number }
+export interface CloseInput {
+	readonly row: ClaimedRow; readonly job: LoopJob | undefined; readonly record: RunRecordM4b; readonly history: JobHistory; readonly self: Row["created_by"]; readonly now: number;
+	/** The gate reading the row named (`gateReadingOf`): `seen` when the run succeeded and the reading is of the job's gate as it is now. */
+	readonly gate?: { readonly reading: CommandReading; readonly at: string };
+}
 
 export function closeSteps(input: CloseInput): ClosePlan {
 	const { row, job, record, history, self, now } = input;
 	const settled: LoopSettlement = settleLoop(row, job, loopEnd(record, history), aloneIn(record));
 	const end = runEnd(record);
+	// `seen` only after a run that did not fail (design 3.3): a failed one leaves it, and the same change wakes the loop again.
+	const digest = input.gate && end.how === "succeeded" && input.gate.reading.command === job?.gate?.command ? readingDigest(input.gate.reading) : undefined;
 	const close: RunClose = {
 		...(end.how === "succeeded" || end.how === "failed" ? { ordinal: history.ordinal } : {}),
 		...(end.how === "succeeded" || end.how === "failed" || end.how === "stopped" ? { fired: row.run.started_at } : {}),
 		...(row.payload?.woken_ids?.length ? { followups: row.payload.woken_ids } : {}),
 		...(row.collapsed_slot === undefined ? {} : { slot: row.collapsed_slot }),
+		...(digest === undefined ? {} : { seen: { digest, at: input.gate!.at } }),
 	};
 	const steps: CloseStep[] = [{ write: "run-end", record }];
 	if (job && Object.keys(close).length) steps.push({ write: "clock", job: job.id, close });
@@ -314,7 +340,7 @@ export function closeSteps(input: CloseInput): ClosePlan {
 	return [...steps, { write: "row", fate: settled.row }] as ClosePlan;
 }
 
-export async function closeLoopRun(row: ClaimedRow, deps: Pick<LoopRunDeps, "stores" | "engine" | "sinks" | "holder">, now: number, ended?: RunRecordM4b): Promise<ClosedM4b> {
+export async function closeLoopRun(row: ClaimedRow, deps: Pick<LoopRunDeps, "stores" | "engine" | "sinks" | "holder" | "events">, now: number, ended?: RunRecordM4b): Promise<ClosedM4b> {
 	const fail = (what: string, error: unknown): void => deps.sinks.log(`loop run ${row.id}: ${what} failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 	// A run that ended here closes on what it holds, as main's end of a run does: a store that cannot be
 	// read or written now is logged, and the row is still written last. Whatever still throws before the
@@ -342,9 +368,12 @@ export async function closeLoopRun(row: ClaimedRow, deps: Pick<LoopRunDeps, "sto
 	let current = row;
 	try { current = (deps.stores.requests.list(row.lane).find((item) => item.id === row.id && item.run?.started_at === row.run.started_at) as ClaimedRow | undefined) ?? row; }
 	catch (error) { fail("row read", error); }
+	let gate: CloseInput["gate"];
+	try { gate = job?.gate ? gateReadingOf(current, deps.events) : undefined; }
+	catch (error) { fail("gate reading read", error); }
 	let outcome: ClosedM4b["outcome"] = "waiting";
 	let closedJob = job;
-	for (const step of closeSteps({ row: current, job, record, history, self: deps.engine().self(), now })) {
+	for (const step of closeSteps({ row: current, job, record, history, self: deps.engine().self(), now, ...(gate ? { gate } : {}) })) {
 		if (step.write === "row") {
 			outcome = await applyFate(deps.stores.requests, deps.engine(), row, step.fate, now);
 			continue;

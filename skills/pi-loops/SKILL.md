@@ -57,6 +57,21 @@ Do not call it to run more often in general: change the schedule for that (the u
 session: put what it needs in the note, which it reads under `[woken]`, and in the notes. Outside a
 loop's run, `wake_me` is not offered: use `cron_create` for a new job.
 
+## When to propose a gate
+
+A gate is one shell command that runs before each scheduled run of a loop. While it prints what the
+last run saw, the run is skipped and no model is called. Propose one with `gate` on `cron_create`
+(or `new_trigger`) when the person asks for a watch whose news can be read by a cheap, read-only
+command: "tell me about new or updated pull requests every 10 minutes" is `cron_create` with
+`gate: "gh pr list --json number,updatedAt"`. Pick a command whose output changes exactly when there
+is something new: no timestamps of now, no counters that move on their own. Keep it one line.
+
+Only a person sets a gate. Pass `gate` only in the person's own turn, where the call proposes and
+the person sees the command on the card. Where the tool creates at once (inside a loop's run, a
+scheduled turn, a pi with no UI) a `gate` is refused whole with `a gate needs a person: set it with
+/cron set <name> --gate`: create the job without it and tell the person they can add one with that
+command. Inside a gated run, the `[gate]` block shows what the command printed this time.
+
 ## Triage
 
 `/inbox` lists findings; `/inbox claim <n>` is the user's yes: the loop's run that reported the

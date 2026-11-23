@@ -165,3 +165,17 @@ test("[wake-me] wake_me writes its own loop's follow-up and no other's; a refusa
 	const listed = list.details.jobs.find((j: any) => j.id === a.id);
 	assert.deepEqual([listed.next_wake, listed.quiet_until], [{ at: jobs[a.id]!.followup!.at, note: "nothing before then" }, { until: jobs[a.id]!.quietUntil, why: "nothing before then" }]);
 });
+
+test("[gate-held-count] cron_list gives the model a loop's gate and its state: its command, the looks it held since its output changed, or why it is failing", async () => {
+	const t = tools();
+	const cwd = t.stores.dir;
+	const job = await t.stores.jobs.add({ id: "cron-cccccccc", name: "prs", schedule: parseSchedule("every 1h"), stateful: true, prompt: "look", cwd: path.join(cwd, "mine"), enabled: true, catchUp: true, createdAt: new Date().toISOString(), gate: { kind: "command", command: "gh pr list" } });
+	const seenAt = new Date(Date.now() - 3_600_000).toISOString();
+	t.stores.clock.seed({ [job.id]: { runs: 3, gate: { looks: 5, seen: { digest: "d", at: seenAt }, last: { at: new Date().toISOString(), digest: "d" } } } });
+	const list = await t.call("cron_list", {});
+	assert.match(String(list.content[0].text), new RegExp(`\\n  gate: \`gh pr list\` \\(the same for 5 looks since ${seenAt.replace(/[.+]/g, "\\$&")}: no model call until its output changes\\)`));
+	assert.deepEqual(list.details.jobs.find((j: any) => j.id === job.id).gate, { command: "gh pr list", looks: 5, since: seenAt });
+	t.stores.clock.noteLook(job.id, { at: new Date().toISOString(), failed: "timed out after 5s" });
+	const failing = String((await t.call("cron_list", {})).content[0].text);
+	assert.match(failing, /\n  gate_failing: timed out after 5s \(the loop runs without the gate until it works\)/);
+});

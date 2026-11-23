@@ -21,7 +21,7 @@ import { buildSessionProjection, migrateSessionEntries, parseSessionEntries, typ
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName, shouldReadAgain } from "./lease.ts";
 import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom, machineWide } from "./activity.ts";
 import { formatSchedule, nextRunStamp, scheduleWords, stamp } from "./schedule.ts";
-import { type PathState, gateOf, lookLine } from "./gate.ts";
+import { type PathState, gateOf, gateShown, lookLine } from "./gate.ts";
 import { failingJobs } from "./job-health.ts";
 import { type JobHistory, type ListedJob, listedJob, runHistory } from "./job-status.ts";
 import type { ClockFile } from "./clock.ts";
@@ -1197,7 +1197,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	 */
 	function ruleWait(r: any): { waitsFor?: string; look?: string; nextLookAt?: string } {
 		const w = typeof r?.condition === "string" ? gateOf(r) : undefined;
-		if (!w || !r.enabled) return {};
+		if (w?.kind !== "path" || !r.enabled) return {};
 		const last = opts.ruleLook?.(r.id);
 		const timed = (last?.look ?? "absent") === "absent" && last ? { nextLookAt: stamp(last.nextAt) } : {};
 		return { waitsFor: maskSecrets(w.raw), look: lookLine(last?.look, undefined, String), ...timed };
@@ -1271,6 +1271,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			// What the loop set for itself with wake_me (design 6.6): its next wake, and its quiet while that is ahead.
 			wake: j.stateful && j.status.wake ? { at: j.status.wake.at, note: maskSecrets(j.status.wake.note) } : undefined,
 			quiet: j.stateful && j.status.quiet && Date.parse(j.status.quiet.until) > now ? { until: j.status.quiet.until, why: maskSecrets(j.status.quiet.why) } : undefined,
+			// The loop's gate (design 6.7): its command, how many looks held it since its output changed and when that was, or why it is failing.
+			gate: j.stateful && j.status.gate ? { command: gateShown(j.status.gate.command), looks: j.status.gate.looks, ...(j.status.gate.since ? { since: j.status.gate.since } : {}), ...(j.status.gate.failing !== undefined ? { failing: gateShown(j.status.gate.failing) } : {}) } : undefined,
 			// The open body of a card shows these, which the terminal's `/cron` line has and the panel
 			// did not; they leave the store as they were written, no reshaping.
 			cwd: j.cwd,

@@ -190,6 +190,19 @@ export interface ListedStatus {
 	readonly wake?: { readonly at: string; readonly note: string };
 	/** The loop asked for no scheduled run before this (`wake_me` with quiet), and why. Shown while it is ahead. */
 	readonly quiet?: { readonly until: string; readonly why: string };
+	/**
+	 * A gated loop's gate (design 6.7): its command; how many looks held the loop since the reading
+	 * changed, and when the reading the last gated run saw was taken (`since`); and why the last look
+	 * failed, while it is the last one.
+	 */
+	readonly gate?: { readonly command: string; readonly looks: number; readonly since?: string; readonly failing?: string };
+}
+
+/** A gated loop's gate as the lists show it, from its definition and its clock entry. */
+function gateStatus(job: LoopJob, clock: JobClock | undefined): Pick<ListedStatus, "gate"> {
+	if (!job.stateful || !job.gate) return {};
+	const g = clock?.gate;
+	return { gate: { command: job.gate.command, looks: g?.looks ?? 0, ...(g?.seen ? { since: g.seen.at } : {}), ...(g?.last?.failed !== undefined ? { failing: g.last.failed } : {}) } };
 }
 
 /** What the loop set for itself, as the lists show it: from its clock entry, for a loop only. */
@@ -256,6 +269,7 @@ export function listedJob(job: LoopJob, clock: JobClock | undefined, rows: reado
 			...error,
 			...(claim ? { run: { runId: claim.run.id, pid: claim.run.pid, startedAt: claim.run.started_at } } : {}),
 			...wakeStatus(clock),
+			...gateStatus(job, clock),
 		},
 	};
 }

@@ -48,6 +48,25 @@ export function redact(input: string): string {
 	return out;
 }
 
+/**
+ * Every character a screen does not draw as itself on one line: the controls (C0, DEL, C1, so a
+ * terminal's escape sequences too), the format characters (Unicode Cf: the bidi marks, overrides and
+ * isolates that reorder a line, the zero-width and invisible ones) and the line and paragraph
+ * separators. Text from somewhere else that carries one can clear a screen, repaint earlier lines,
+ * hide part of itself or forge a second row.
+ */
+const UNSHOWN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+
+/**
+ * Text someone else wrote, on one line as a screen may show it: each character the screen would not
+ * draw as itself (`UNSHOWN`) is a space. An archive is a file someone sent you, and `pi-loops
+ * inspect` is the command you run before trusting it; a gate is a command that runs with nobody
+ * watching. Neither reaches a screen with such a character intact.
+ */
+export function plainLine(text: string): string {
+	return text.replace(UNSHOWN, " ");
+}
+
 /** Redacted and capped, but with the text's own line structure intact: capped, never reflowed. */
 export function capRedacted(input: string, maxChars: number): string {
 	const chars = Array.from(redact(input));

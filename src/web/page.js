@@ -1320,6 +1320,18 @@ async function sendWake(j) {
   refresh().catch(() => {});
 }
 
+/**
+ * A loop's gate line (design 6.7): the command whole, as the server sent it (`gateShown`: what runs),
+ * and when its output last changed, in this browser's time. Not cut: a cut would hide what follows it.
+ */
+function gateWords(g) {
+  if (typeof g.failing === "string") return "Gate failing: " + str(g.failing) + "; it runs without the gate until it works";
+  const command = str(g.command);
+  const at = typeof g.since === "string" ? new Date(Date.parse(g.since)) : undefined;
+  const changed = at && Number.isFinite(at.getTime()) ? " · last changed " + String(at.getHours()).padStart(2, "0") + ":" + String(at.getMinutes()).padStart(2, "0") : "";
+  return "No model call while `" + command + "` says the same" + changed;
+}
+
 /** One line of what a loop set for itself (design 6.6), with its ✕. */
 function wakeLine(text, j) {
   const line = document.createElement("span");
@@ -1370,6 +1382,8 @@ function drawLoopRow(slot, j) {
   // What the loop set for itself with wake_me: its next wake, and its quiet while that is ahead.
   if (j.wake && typeof j.wake.at === "string") slot.append(wakeLine("next wake " + clock(j.wake.at) + ', asked by the loop: "' + str(j.wake.note) + '"', j));
   if (j.quiet && typeof j.quiet.until === "string") slot.append(wakeLine("quiet until " + clock(j.quiet.until) + ', asked by the loop: "' + str(j.quiet.why) + '"', j));
+  // The loop's gate (design 6.7): no model call while its command says the same, or why it is failing.
+  if (j.gate && typeof j.gate.command === "string") slot.append(textEl("span", "runline", gateWords(j.gate)));
   const woke = wakeNote.get(j.id);
   if (woke) { slot.append(textEl("span", "signal note", woke)); wakeNote.delete(j.id); }
   const g = j.signal;

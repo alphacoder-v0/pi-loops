@@ -487,3 +487,14 @@ test("runPreflight: each check reports what it found, and a missing gh is not an
 	assert.deepEqual(renderPreflight([]), []);
 	assert.deepEqual(renderPreflight(after.slice(0, 3)), ["  all checks pass"]);
 });
+
+test("parseManifest: a job's gate key is the --gate a person would type, kept whole through the line, and refused as /cron add would refuse it", () => {
+	const gated = GOOD.replace('timeout = "20m"', 'timeout = "20m"\ngate = "gh pr list --json number,updatedAt --jq \'.[] | \\\"\\\\(.number)\\\"\'"');
+	const m = parseManifest(gated);
+	assert.equal(m.jobs[0].gate, `gh pr list --json number,updatedAt --jq '.[] | "\\(.number)"'`);
+	const line = addLineFor(m.jobs[0], path.join(INSTALL_ROOT, "demo"));
+	assert.match(line, / --gate "gh pr list --json number,updatedAt --jq '\.\[\] \| \\"\\\\\(\.number\)\\"'" /);
+	assert.equal(addArgsFor(m.jobs[0], path.join(INSTALL_ROOT, "demo")).gate, m.jobs[0].gate, "read back whole, backslash and quotes included");
+	assert.equal(parseManifest(GOOD).jobs[0].gate, undefined, "the key is optional");
+	assert.throws(() => parseManifest(GOOD.replace('timeout = "20m"', 'timeout = "20m"\ngate = "sudo ls"')), /demo-watch.*the gate would be refused when it runs: sudo invocation/);
+});

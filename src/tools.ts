@@ -8,7 +8,8 @@
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal } from "./job-signal.ts";
 import { formatWait, queuedPrompt, type QueuedPrompt, runningRun } from "./engine.ts";
 import { type ListedJob, listedJobs } from "./job-status.ts";
-import { statusField, statusWord, wakeFields } from "./job-lines.ts";
+import { gateFields, statusField, statusWord, wakeFields } from "./job-lines.ts";
+import { gateCommandWhy, gateShown } from "./gate.ts";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
 import * as os from "node:os";
@@ -155,6 +156,8 @@ export interface CreateJobInput {
 	recipe?: string;
 	/** A watch the person has not said yes to (design 2.5): written with `enabled: false`. */
 	proposed?: { at: string; session: string };
+	/** A loop's gate (design 3.3): a person's `--gate`, a recipe's key, or a proposal's, which the person sees on the card. */
+	gate?: { kind: "command"; command: string };
 }
 
 export interface JobScope {
@@ -243,6 +246,8 @@ export function checkJobInput(input: Pick<CreateJobInput, "schedule" | "prompt" 
 export async function createLoopJob(host: ToolStoresHost & Pick<ToolHost, "session" | "ensureHost">, input: CreateJobInput, scope?: JobScope): Promise<LoopJob> {
 	const existing = jobsOf(host as ToolHost).load();
 	const cwd = checkJobInput(input, existing, host.session());
+	const gateWhy = input.gate ? (input.stateful ? gateCommandWhy(input.gate.command, { loopsDir: host.stores.dir }) : "a gate is for a loop: a plain job's turn is not gated") : undefined;
+	if (gateWhy) throw new Error(gateWhy);
 	const job: LoopJob = {
 		id: newId("cron"),
 		name: input.name ?? jobNameFrom(input.prompt, existing),
@@ -270,6 +275,7 @@ export async function createLoopJob(host: ToolStoresHost & Pick<ToolHost, "sessi
 		...(scope?.projectOwned ? { owner: "project" as const } : { createdBy: { sessionId: scope?.parentSessionId ?? host.session().sessionId, cwd: scope?.parentCwd ?? host.session().cwd } }),
 		sessionId: owningSessionId(input.stateful, host.session().sessionId, scope?.parentSessionId),
 		...(input.proposed ? { proposed: input.proposed } : {}),
+		...(input.stateful && input.gate ? { gate: { kind: "command" as const, command: input.gate.command } } : {}),
 	};
 	await jobsOf(host).add(job);
 	if (job.stateful) host.ensureHost?.();
@@ -296,6 +302,14 @@ function turnOf(scope: ToolScope, host: ToolHost, ctx: Pick<ExtensionContext, "h
 
 /** Where a create tool makes a job at once, a gate is refused whole: only a person sets one (design 3.3). */
 export const GATE_NEEDS_PERSON = "a gate needs a person: set it with /cron set <name> --gate";
+
+const GATE_DESCRIPTION = "Optional: one shell command looked at before each run, at most once a minute, in the watch's directory (5 s, its first 4000 characters of output). While it prints what the last run saw, no model is called. Only when the watch is proposed to a person, who sees the command on the card; refused anywhere the tool creates at once. Use a cheap, read-only command whose output changes exactly when there is something new (gh pr list --json number,updatedAt).";
+
+/** A gate a create tool was given, or why it cannot be one: the whole check, against this loops directory, before the card shows it. */
+function gateOf(command: string, loopsDir: string): { kind: "command"; command: string } | string {
+	const why = gateCommandWhy(command, { loopsDir });
+	return why ?? { kind: "command", command };
+}
 
 /** A proposal waits in a conversation for its answer, and its receipt lands there: one pi has not saved has no lane for either. */
 const NO_CONVERSATION = "a watch is proposed in a saved conversation, and this one is not saved (--no-session): /cron add or /new-trigger in a saved one sets it up";
@@ -370,6 +384,7 @@ function renderCronJobsForTool(jobs: readonly ListedJob[], host: Pick<ToolHost, 
 		if (job.status.streak) lines.push(`  consecutive_failures: ${job.status.streak}`);
 		if (job.status.collapsed) lines.push(`  skipped_overlap_count: ${job.status.collapsed}`);
 		for (const field of wakeFields(job, now)) lines.push(`  ${field}`);
+		for (const field of gateFields(job)) lines.push(`  ${field}`);
 		if (job.stateful) {
 			// The same two facts `/cron` shows, so the model can say "this loop's findings are all
 			// dismissed" or "it has found nothing in 12 runs" when the user asks about their automation.
@@ -456,6 +471,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 				spec: Type.Optional(Type.String({ description: "The whole rule as one sentence, only when condition and action cannot be given apart." })),
 				fire_once: Type.Optional(Type.Boolean({ description: "Whether to disable the rule after the first successful match. Defaults to true unless the user explicitly asks for a repeating trigger." })),
 				promote_to_chat: Type.Optional(Type.Boolean({ description: "Whether a match's result goes into this conversation (true) or the inbox (false). With a person present the question starts at this conversation whatever this says; with nobody to ask, the default is false." })),
+				gate: Type.Optional(Type.String({ description: GATE_DESCRIPTION })),
 			},
 			{ additionalProperties: false },
 		),
@@ -477,6 +493,10 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			if (!fromSpec && looksLikeFixedScheduleRequest(params.condition ?? "")) return deny("fixed scheduled jobs must use cron_create, not new_trigger");
 			const s = host.session();
 			const turn = turnOf(scope, host, ctx);
+			const gate = params.gate === undefined ? undefined : gateOf(params.gate, host.stores.dir);
+			if (typeof gate === "string") return deny(gate);
+			// A gate needs a person (design 3.3): only a proposal, which they see on the card, carries one.
+			if (gate && turn === "no-ui") return deny(GATE_NEEDS_PERSON);
 			if (turn === "no-ui") {
 				// Nobody could answer a proposal here: the rule is asked for as before proposals, with
 				// `confirmTool`, which a pi with no UI refuses.
@@ -491,7 +511,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			// turn Result starts at this conversation whatever `promote_to_chat` said (its documented
 			// default is not a choice anyone made); Repeats follows `fire_once`.
 			const promoteToChat = turn === "person" ? true : (params.promote_to_chat ?? false);
-			return proposeRule(host, scope, { condition, action, cwd: s.cwd, sessionId: s.sessionId, model: s.model, thinking: s.thinking, fireOnce: params.fire_once ?? true, promoteToChat, proposed: { at: stamp(), session: s.sessionId } });
+			return proposeRule(host, scope, { condition, action, cwd: s.cwd, sessionId: s.sessionId, model: s.model, thinking: s.thinking, fireOnce: params.fire_once ?? true, promoteToChat, proposed: { at: stamp(), session: s.sessionId }, ...(gate ? { gate } : {}) });
 		},
 	});
 	register({
@@ -580,6 +600,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			name: Type.Optional(Type.String({ description: "Short unique label (letters, digits, . _ -)." })),
 			cwd: Type.Optional(Type.String({ description: "Directory a stateful job's sub-agent runs in. Default: current project." })),
 			catch_up: Type.Optional(Type.Boolean({ description: "Run once for a missed tick (default: true for stateful jobs, false for plain jobs)." })),
+			gate: Type.Optional(Type.String({ description: GATE_DESCRIPTION })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			let schedule: LoopJob["schedule"];
@@ -589,9 +610,12 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 				return deny(err?.message ?? String(err));
 			}
 			const turn = turnOf(scope, host, ctx);
-			// Not in the schema until a gate is something a job can carry; a model that sends one anyway
-			// gets the refusal of design 6.3 where nobody can see the card, and creates nothing.
-			if ((params as { gate?: unknown }).gate !== undefined) return deny(turn === "person" ? "a gate is not something this version of pi-loops can set up: propose the watch without one" : GATE_NEEDS_PERSON);
+			// A gate needs a person (design 3.3): accepted only in the person's own turn, where the call
+			// writes a proposal and the card shows the command. Anywhere the tool creates at once the call
+			// is refused whole, and nothing is created.
+			if (params.gate !== undefined && turn !== "person") return deny(GATE_NEEDS_PERSON);
+			const gate = params.gate === undefined ? undefined : gateOf(params.gate, host.stores.dir);
+			if (typeof gate === "string") return deny(gate);
 			if (turn === "person") {
 				// P1 (design 2.5): a proposal, which nothing runs until the person says yes. A schedule's
 				// Result starts at the inbox (a loop) unless the model said plainly that it belongs in this
@@ -599,8 +623,9 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 				// cannot make.
 				const s = host.session();
 				if (!s.sessionId) return deny(NO_CONVERSATION);
-				const where = params.stateful === false && !params.verify ? "chat" : "inbox";
-				const draft = { schedule, prompt: params.action, verify: params.verify ?? false, name: params.name, catchUp: params.catch_up };
+				// A gate is a loop's: a gated watch starts at the inbox, and its card offers no plain job.
+				const where = params.stateful === false && !params.verify && !gate ? "chat" : "inbox";
+				const draft = { schedule, prompt: params.action, verify: params.verify ?? false, name: params.name, catchUp: params.catch_up, ...(gate ? { gate } : {}) };
 				let cwd: string;
 				try {
 					cwd = checkJobInput({ ...draft, stateful: where === "inbox", cwd: params.cwd }, jobsOf(host).load(), s);
@@ -642,7 +667,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const view = ownerOf(host);
 			const nextRun = (j: ListedJob) => nextRunForTool(j, nowMs, view);
 			const heldBy = (j: ListedJob) => { const where = whereRuns(j, view); return where.kind === "terminal" ? where.pid : undefined; };
-			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: jobsOf(host).jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, proposed: j.proposed ? true : undefined, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: runningRunForTool(j, host), last_due_at: j.status.due, last_fired_at: j.status.fired, last_completed_at: j.status.completed, last_error: j.status.error ? previewRedacted(j.status.error, 120) : undefined, consecutive_failures: j.status.streak || undefined, skipped_overlap_count: j.status.collapsed, next_wake: j.status.wake, quiet_until: j.status.quiet && Date.parse(j.status.quiet.until) > nowMs ? j.status.quiet : undefined, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: whereRuns(j, view).kind === "asleep" || undefined, held_by_pid: heldBy(j), queued: queuedForTool(j, host, nowMs), created_at: j.createdAt })) } };
+			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: jobsOf(host).jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, proposed: j.proposed ? true : undefined, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: runningRunForTool(j, host), last_due_at: j.status.due, last_fired_at: j.status.fired, last_completed_at: j.status.completed, last_error: j.status.error ? previewRedacted(j.status.error, 120) : undefined, consecutive_failures: j.status.streak || undefined, skipped_overlap_count: j.status.collapsed, next_wake: j.status.wake, quiet_until: j.status.quiet && Date.parse(j.status.quiet.until) > nowMs ? j.status.quiet : undefined, gate: j.status.gate && { ...j.status.gate, command: gateShown(j.status.gate.command), ...(j.status.gate.failing !== undefined ? { failing: gateShown(j.status.gate.failing) } : {}) }, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: whereRuns(j, view).kind === "asleep" || undefined, held_by_pid: heldBy(j), queued: queuedForTool(j, host, nowMs), created_at: j.createdAt })) } };
 		},
 	});
 

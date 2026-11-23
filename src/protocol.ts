@@ -5,6 +5,7 @@
  */
 import * as path from "node:path";
 import { formatDuration } from "./schedule.ts";
+import { gateShown } from "./gate.ts";
 
 export const LOOP_STATE_MAX_CHARS = 2000;
 export const INBOX_TEXT_MAX_CHARS = 500;
@@ -35,6 +36,9 @@ export const ASKED_CLOSE = "[/asked]";
 /** The block before the notes that says why a run that is not a plain slot started: the notes of the loop's follow-ups (`Row.payload.woken`). */
 export const WOKEN_OPEN = "[woken]";
 export const WOKEN_CLOSE = "[/woken]";
+/** The block after `[asked]` that shows what the loop's gate read this time (design 3.2), from the event the row names. */
+export const GATE_OPEN = "[gate]";
+export const GATE_CLOSE = "[/gate]";
 /** The protocol's line about `wake_me`, the tool every loop run has (src/tools.ts `wakeMeTool`). */
 export const WAKE_ME_LINE = "- To be woken before your next scheduled run, or to skip scheduled runs until a time, call wake_me.";
 /**
@@ -47,6 +51,7 @@ const DATA_BLOCKS: ReadonlyArray<readonly [string, string]> = [
 	[ASKED_OPEN, ASKED_CLOSE],
 	["[dismissed]", "[/dismissed]"],
 	[WOKEN_OPEN, WOKEN_CLOSE],
+	[GATE_OPEN, GATE_CLOSE],
 ];
 
 /**
@@ -93,6 +98,29 @@ export interface LoopPromptMeta {
 	asked?: readonly string[];
 	/** The row's `woken`: one note per follow-up that started this run. */
 	woken?: readonly string[];
+	/** `gateLines` of the reading the row names (`payload.events`): what the loop's gate read this time. */
+	gate?: readonly string[];
+}
+
+/** What a gate read, as the event stores it (src/gate.ts `lookCommand`). */
+export interface GateReadingText {
+	command: string;
+	exit?: number | null;
+	stdout?: string;
+	why?: string;
+	refused?: string;
+}
+
+/**
+ * The `[gate]` block's lines: the command, its exit code and its output as it was read (at most
+ * 4000 characters, the gate's cap), or why the look failed, which is why the gate did not hold the run.
+ */
+export function gateLines(r: GateReadingText): string[] {
+	const command = `command: ${gateShown(r.command)}`;
+	const failed = r.refused !== undefined ? `refused: ${r.refused}` : r.why;
+	if (failed !== undefined) return [command, `the gate failed (${failed}), so it did not hold this run; look for yourself what changed`];
+	const out = r.stdout ?? "";
+	return [command, `exit code: ${r.exit ?? "none"}`, out.trim() ? "output:" : "output: (none)", ...(out.trim() ? out.replace(/\n$/, "").split("\n") : [])];
 }
 
 export function composeLoopPrompt(action: string, previousState: string | undefined, meta?: LoopPromptMeta): string {
@@ -108,6 +136,7 @@ export function composeLoopPrompt(action: string, previousState: string | undefi
 	const reported = dataBlock(REPORTED_OPEN, REPORTED_CLOSE, "what this loop already told a person, and what they did with it; do not report these again unless what they describe has changed", meta?.reported);
 	const asked = dataBlock(ASKED_OPEN, ASKED_CLOSE, "questions of yours that wait for a person; do not ask them again", meta?.asked);
 	const woken = dataBlock(WOKEN_OPEN, WOKEN_CLOSE, "why this run started", meta?.woken?.map((note) => `you asked to be woken: ${note}`));
+	const gate = dataBlock(GATE_OPEN, GATE_CLOSE, "the output of this loop's gate, which changed since your last run", meta?.gate);
 	const header = meta?.name ? `You are running the recurring loop "${meta.name}"` : "You are running a recurring loop";
 	/**
 	 * The run time, and how to write one.
@@ -133,6 +162,7 @@ export function composeLoopPrompt(action: string, previousState: string | undefi
 		...files,
 		...reported,
 		...asked,
+		...gate,
 		action.trim(),
 		"",
 		OUTPUT_PROTOCOL_HEADING,

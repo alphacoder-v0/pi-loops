@@ -19,7 +19,7 @@ import type { Inbox } from "./inbox.ts";
 import { type LaneId, parseLane } from "./lane.ts";
 import { failurePause, FAILING_AFTER } from "./backoff.ts";
 import { stamp } from "./schedule.ts";
-import { type PathState, PathLooks, gateDecision, gateOf, pathReading } from "./gate.ts";
+import { type CommandGate, GATE_LOOK_EVERY_MS, type GatePolicy, type PathGate, type PathState, PathLooks, gateDecision, gateOf, lookCommand, pathReading } from "./gate.ts";
 import type { GateClocks } from "./clock.ts";
 import { EventLog } from "./events.ts";
 import { clockStore } from "./stores.ts";
@@ -123,6 +123,8 @@ export interface TriggerRuntimeOptions {
 	events?: Pick<EventLog, "append">;
 	/** Where a rule's gate readings are counted; omitted, `clock.json` beside the rules. */
 	clock?: GateClocks;
+	/** What a rule's command gate is judged by; omitted, the loops directory beside the rules with no allowlist. */
+	gatePolicy?: () => GatePolicy;
 }
 
 export const DEFAULT_MAX_CONCURRENT_CHECKS = 3;
@@ -131,6 +133,16 @@ export const DEFAULT_MAX_CONCURRENT_CHECKS = 3;
 export interface GateLet {
 	prechecked?: string[];
 	events?: string[];
+	/** The command readings that opened it: each rule's `seen` once the check ends without a failure. */
+	seen?: { rule: string; digest: string; at: string }[];
+}
+
+/** One gated rule's look this poll: whether it opens the check, the event that stored it, and what `seen` becomes when the check does not fail. */
+interface RuleLook {
+	decision: "wake" | "hold";
+	state?: PathState;
+	event?: string;
+	seen?: { rule: string; digest: string; at: string };
 }
 
 /** The ticker's interval, which `tick` here runs on (src/ticker.ts, 30 s): no poll comes sooner. */
@@ -283,6 +295,12 @@ export class TriggerRuntime {
 	private readonly events: Pick<EventLog, "append">;
 	/** Each gated rule's last reading and its look count (`clock.json`): the audit row is written on a change only. */
 	private readonly clock: GateClocks;
+	private readonly gatePolicy: () => GatePolicy;
+	/**
+	 * When this process last looked at each rule's command gate. `clock.json` holds the same time,
+	 * but a read or a write of it can fail; the minute is kept whatever the file says (design 3.3).
+	 */
+	private readonly commandLooks = new Map<string, number>();
 
 	constructor(opts: TriggerRuntimeOptions) {
 		this.store = opts.store;
@@ -302,6 +320,7 @@ export class TriggerRuntime {
 		this.looks = new PathLooks({ stat: opts.stat });
 		this.events = opts.events ?? new EventLog(this.store.dir, "window");
 		this.clock = opts.clock ?? clockStore(this.store.dir);
+		this.gatePolicy = opts.gatePolicy ?? (() => ({ loopsDir: this.store.dir }));
 		// Audit writes are best-effort — a failed write never fails a trigger; say so once per distinct error.
 		let lastReported: string | undefined;
 		this.store.onPersistenceError ??= (message) => {
@@ -416,9 +435,10 @@ export class TriggerRuntime {
 			if (!due.length) continue;
 			const prechecked = claimed.filter((_, i) => gated[i]?.decision === "wake" && gated[i]?.state === "present").map((r) => r.id);
 			const events = gated.flatMap((g) => (g?.event ? [g.event] : []));
+			const seen = gated.flatMap((g) => (g?.seen ? [g.seen] : []));
 			// `handle` is documented not to reject; the catch is what makes that true rather than
 			// merely intended, since nothing above this would survive one.
-			void this.handle(buildPeriodicCheckTrigger(cwd, due.length, new Date(now), String(process.pid)), "sub_agent", due, { ...(prechecked.length ? { prechecked } : {}), ...(events.length ? { events } : {}) }).catch((err: any) =>
+			void this.handle(buildPeriodicCheckTrigger(cwd, due.length, new Date(now), String(process.pid)), "sub_agent", due, { ...(prechecked.length ? { prechecked } : {}), ...(events.length ? { events } : {}), ...(seen.length ? { seen } : {}) }).catch((err: any) =>
 				this.log(`check failed: ${err?.message ?? err}`),
 			);
 		}
@@ -435,9 +455,51 @@ export class TriggerRuntime {
 	 * away, `appeared` when it comes back. A rule whose path stays absent writes nothing more, which
 	 * is the point: no `running` row and no model call either.
 	 */
-	private async lookGate(cwd: string, rule: DynamicTriggerRule, now: number): Promise<{ state: PathState; decision: "wake" | "hold"; event?: string } | undefined> {
+	private async lookGate(cwd: string, rule: DynamicTriggerRule, now: number): Promise<RuleLook | undefined> {
 		const gate = gateOf(rule);
 		if (!gate) return undefined;
+		return gate.kind === "command" ? this.lookCommandGate(rule, gate, now) : this.lookPathGate(cwd, rule, gate, now);
+	}
+
+	/**
+	 * A rule's command gate (from a proposal the person said yes to): run in the rule's project, at
+	 * most once a minute, the policy first. A reading the last check that did not fail saw holds the
+	 * rule; any other reading, and a look that failed, opens the check, stored first. A poll inside the
+	 * minute holds the rule without a look and counts nothing.
+	 */
+	private async lookCommandGate(rule: DynamicTriggerRule, gate: CommandGate, now: number): Promise<RuleLook> {
+		let before: ReturnType<GateClocks["readGate"]>;
+		try {
+			before = this.clock.readGate(rule.id);
+		} catch (err: any) {
+			this.log(`rule ${rule.id}: its gate state was not read: ${err?.message ?? err}`);
+		}
+		const last = Math.max(before?.last ? Date.parse(before.last.at) : -Infinity, this.commandLooks.get(rule.id) ?? -Infinity);
+		if (now - last < GATE_LOOK_EVERY_MS) return { decision: "hold" };
+		// Before the look, so no failure after it (the event, the look time) lets the next poll look again.
+		this.commandLooks.set(rule.id, now);
+		const reading = await lookCommand(gate.command, { cwd: rule.cwd, policy: this.gatePolicy() });
+		const decision = gateDecision(before?.seen?.digest, reading.look);
+		let event: { id: string; received_at: string } | undefined;
+		if (decision === "wake") {
+			try {
+				event = this.events.append(`gate:${rule.id}`, reading.raw);
+			} catch (err: any) {
+				this.log(`rule ${rule.id}: its gate reading was not stored, so it is not checked this poll: ${err?.message ?? err}`);
+				return { decision: "hold" };
+			}
+		}
+		const at = stamp(now);
+		try {
+			this.clock.noteGate(rule.id, reading.look.kind === "command" ? { at, digest: reading.look.digest } : { at, failed: reading.look.kind === "failed" ? reading.look.why : "not a command reading" }, decision === "hold");
+		} catch (err: any) {
+			this.log(`rule ${rule.id}: its gate reading was not counted: ${err?.message ?? err}`);
+		}
+		if (reading.look.kind === "failed") this.log(`rule ${rule.id}: gate failing: ${reading.look.why}; the model checks the rule until it works`);
+		return { decision, ...(event ? { event: event.id } : {}), ...(event && reading.look.kind === "command" ? { seen: { rule: rule.id, digest: reading.look.digest, at: event.received_at } } : {}) };
+	}
+
+	private async lookPathGate(cwd: string, rule: DynamicTriggerRule, gate: PathGate, now: number): Promise<RuleLook> {
 		const state = await this.looks.look(rule.id, gate);
 		const reading = pathReading(gate, state);
 		const decision = gateDecision(undefined, reading.look);
@@ -469,7 +531,7 @@ export class TriggerRuntime {
 	 */
 	ruleLook(ruleId: string): { look: PathState; nextAt: number } | undefined {
 		const last = this.clock.readGate(ruleId)?.last;
-		return last && { look: last.state, nextAt: Date.parse(last.at) + Math.max(this.pollIntervalSecs * 1000, POLL_TICK_MS) };
+		return last?.state && { look: last.state, nextAt: Date.parse(last.at) + Math.max(this.pollIntervalSecs * 1000, POLL_TICK_MS) };
 	}
 
 	/**
@@ -792,6 +854,16 @@ export class TriggerRuntime {
 		// An abort is the user's decision about this run, not evidence that the rule's check is broken,
 		// so it neither counts against the rule nor clears what earlier failures recorded.
 		if (!ctrl.signal.aborted) await this.recordCheckOutcome(rules, result.ok, cwd);
+		// A command gate's reading is `seen` only after a check that did not fail: a failed one leaves
+		// it, so the same change opens the next check again.
+		if (result.ok && !ctrl.signal.aborted)
+			for (const seen of gates?.seen ?? []) {
+				try {
+					this.clock.seeGate(seen.rule, { digest: seen.digest, at: seen.at });
+				} catch (err: any) {
+					this.log(`rule ${seen.rule}: its gate's seen reading was not written: ${err?.message ?? err}`);
+				}
+			}
 
 		let promoted = false;
 		const promoteRules = matchedRules.filter((r) => r.promoteToChat);
