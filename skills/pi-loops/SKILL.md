@@ -40,6 +40,23 @@ The loop runs in a fresh sub-agent whose only memory is its own notes. Tell it w
 what counts as a finding, e.g. "check the GitHub issues of this repo; keep the ids you have already
 reported in your notes; report only new or newly closed issues". Findings should be one line each.
 
+## When a loop should call `wake_me`
+
+Inside a loop's run, `wake_me` is the one way to change when the loop runs next. Call it when the
+run knows of a time that matters to what it watches:
+
+- Something is about to change, and the next scheduled run is too late: "CI on #12 finishes in
+  about 20 minutes" is `wake_me({ when: "in 20m", note: "check CI on #12" })`.
+- Nothing can change for a while, and the scheduled runs before then cost money for nothing:
+  "nothing before Monday" is `wake_me({ when: "at <Monday 09:00 with its offset>", note: "...",
+  quiet: true })`.
+
+Do not call it to run more often in general: change the schedule for that (the user runs `/cron set
+<ref> --schedule`). A loop has one wake, and a second call replaces the first. A wake is 60 seconds to
+7 days ahead, and at most 24 runs in 24 hours start from wakes. The run a wake starts is a new
+session: put what it needs in the note, which it reads under `[woken]`, and in the notes. Outside a
+loop's run, `wake_me` is not offered: use `cron_create` for a new job.
+
 ## Triage
 
 `/inbox` lists findings; `/inbox claim <n>` is the user's yes: the loop's run that reported the

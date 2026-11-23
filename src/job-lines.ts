@@ -15,7 +15,7 @@ import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal, signalSummary } from ".
 import { plural } from "./plural.ts";
 import { previewRedacted } from "./redact.ts";
 import type { ClaimedRow, Row } from "./requests.ts";
-import type { JobClock } from "./clock.ts";
+import { type JobClock, dayTime } from "./clock.ts";
 import { type ListedJob, listedJob, runHistory } from "./job-status.ts";
 import { loopLane } from "./lane.ts";
 import { computeNext, formatLocal, formatSchedule, stamp } from "./schedule.ts";
@@ -221,6 +221,32 @@ export function statusField(word: StatusWord, now: number): string {
 	return `last_error: ${previewRedacted(word.text, 120)}`;
 }
 
+/**
+ * What a loop set for itself with `wake_me` (design 6.6), as `/cron` says it under the loop: its
+ * next wake, and its quiet while that is ahead, with the command that wakes it now.
+ */
+export function wakeLines(job: ListedJob, now: number): string[] {
+	const { wake, quiet } = job.status;
+	const lines: string[] = [];
+	if (wake) lines.push(`    next wake ${dayTime(Date.parse(wake.at), now)}, asked by the loop: "${previewRedacted(wake.note, 100)}"`);
+	if (quiet && Date.parse(quiet.until) > now) lines.push(`    quiet until ${dayTime(Date.parse(quiet.until), now)}, asked by the loop: "${previewRedacted(quiet.why, 100)}" (/cron run ${job.name ?? job.id} wakes it now)`);
+	return lines;
+}
+
+/** The `cron_list` fields of the same facts, with stamps. */
+export function wakeFields(job: ListedJob, now: number): string[] {
+	const { wake, quiet } = job.status;
+	return [
+		...(wake ? [`next_wake: ${wake.at}, asked by the loop: "${previewRedacted(wake.note, 120)}"`] : []),
+		...(quiet && Date.parse(quiet.until) > now ? [`quiet_until: ${quiet.until}, asked by the loop: "${previewRedacted(quiet.why, 120)}" (/cron run ${job.name ?? job.id} wakes it now)`] : []),
+	];
+}
+
+/** What `/cron runs` adds to a run that a follow-up started (design 6.6), or "". */
+export function wokeWords(r: RunRecord & { woken?: readonly string[] }): string {
+	return r.woken?.length ? `, woke itself: ${r.woken.map((note) => `"${previewRedacted(note, 80)}"`).join(", ")}` : "";
+}
+
 /** A catch-up setting that differs from the default (loops catch up, plain jobs do not), in the flag's own spelling. */
 function catchUpMark(job: Pick<LoopJob, "stateful" | "catchUp">): string | undefined {
 	if (job.stateful) return job.catchUp ? undefined : "[no-catchup]";
@@ -277,7 +303,7 @@ export function jobLines(stored: LoopJob[], opts: JobLinesInput): string[] {
 			const err = word ? statusLine(word, now) : job.status.fired ? `    last fired: ${formatLocal(Date.parse(job.status.fired))}` : undefined;
 			const ref = job.name ?? job.id;
 			const answer = job.proposed ? `    /cron enable ${ref} asks again · /cron remove ${ref} cancels it` : undefined;
-			return [head, action, meta, answer, err].filter((l): l is string => !!l);
+			return [head, action, meta, answer, err, ...wakeLines(job, now)].filter((l): l is string => !!l);
 		})
 		.flat();
 }

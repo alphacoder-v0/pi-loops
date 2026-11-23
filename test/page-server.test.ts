@@ -13,6 +13,7 @@ import { openFileDir } from "../src/open-file.ts";
 import { answerStep, answerRowId, besideId } from "../src/ask.ts";
 import { personAnswers } from "../src/answers.ts";
 import { JobStore } from "../src/store.ts";
+import { clockStore } from "../src/stores.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { Inbox } from "../src/inbox.ts";
 import { stamp } from "../src/schedule.ts";
@@ -2536,6 +2537,39 @@ test("GET /inbox draws a question's card from its ask: the command whole in its 
 		assert.equal(got.status, 200);
 		const [card] = got.body.cards;
 		assert.deepEqual([card.kind, card.headline, card.question, card.waits, card.ifNot], ["decision", "nightly asks to run a command", { tool: "bash", command, reason: "git push --force on main/master" }, "nightly went on without it", "it stays undone"]);
+	} finally {
+		await page.stop();
+	}
+});
+
+test("[wake-me] a loop row carries what the loop set for itself; POST /loops/wake {jobId} does what /cron set --wake - does, behind the token, and changes nothing else", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-wake-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [loopJob(dir)] }));
+		convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
+		const clock = clockStore(page.loops);
+		const at = stamp(Date.now() + 3_600_000);
+		clock.setFollowup("cron-aaaaaaaa", { at, note: "nothing before then", set_by: "run-a" }, true, Date.now());
+		const jobsBefore = fs.readFileSync(path.join(page.loops, "jobs.json"), "utf8");
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const row = (await page.get("c/s1/state")).body.automation.jobs.find((j: any) => j.id === "cron-aaaaaaaa");
+		assert.deepEqual([row.wake, row.quiet], [{ at, note: "nothing before then" }, { until: at, why: "nothing before then" }]);
+		const send = (headers: Record<string, string>, b: unknown) => fetch(`${page.url}loops/wake`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(b) });
+		assert.equal((await send({}, { jobId: "cron-aaaaaaaa" })).status, 401, "no token");
+		assert.equal((await send({ "x-pi-web-token": TEST_TOKEN, origin: "https://evil.example" }, { jobId: "cron-aaaaaaaa" })).status, 403, "another origin");
+		assert.equal((await page.post("loops/wake", { jobId: "../jobs" })).status, 400);
+		assert.deepEqual(await page.post("loops/wake", { jobId: "cron-aaaaaaaa", at: "x" }), { status: 400, body: { error: 'unknown field "at"' } });
+		assert.deepEqual(await page.post("loops/wake", { jobId: "cron-bbbbbbbb" }), { status: 404, body: { error: "no such loop" } });
+		assert.equal(clock.read().jobs["cron-aaaaaaaa"].followup?.at, at, "nothing refused removed it");
+		assert.deepEqual(await page.post("loops/wake", { jobId: "cron-aaaaaaaa" }), { status: 200, body: { ok: true, removed: true } });
+		const entry = clock.read().jobs["cron-aaaaaaaa"];
+		assert.deepEqual([entry.followup, entry.quietUntil, entry.quietWhy], [undefined, undefined, undefined]);
+		assert.deepEqual(await page.post("loops/wake", { jobId: "cron-aaaaaaaa" }), { status: 200, body: { ok: true, removed: false } });
+		assert.equal(fs.readFileSync(path.join(page.loops, "jobs.json"), "utf8"), jobsBefore, "jobs.json is not written");
+		const after = (await page.get("c/s1/state")).body.automation.jobs.find((j: any) => j.id === "cron-aaaaaaaa");
+		assert.deepEqual([after.wake, after.quiet], [undefined, undefined]);
 	} finally {
 		await page.stop();
 	}

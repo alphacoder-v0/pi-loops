@@ -24,6 +24,8 @@ export interface JobEdit {
 	tools?: string[] | null;
 	prompt?: string;
 	schedule?: Schedule;
+	/** `--wake -`: remove what the loop set for itself (its follow-up and its quiet). */
+	wake?: null;
 }
 
 /** When the job runs next, for the confirmation. `due` means the next tick will fire it. */
@@ -36,6 +38,8 @@ export interface AppliedJobEdit {
 	slot?: string;
 	/** One line per field a person would not otherwise be able to recover, for the log. */
 	changed: string[];
+	/** The loop's wake goes from `clock.json` (`ClockStore.clearWake`): a write beside the patch, since jobs.json does not hold it. */
+	clearWake?: true;
 	nextRun: NextRun;
 }
 
@@ -61,6 +65,7 @@ export function applyJobEdit(job: LoopJob, clock: JobClock | undefined, edit: Jo
 	// A one-shot is spent by running, and the scheduler deletes it afterwards — which would take the
 	// loop's notes with it. That is the opposite of why editing in place exists.
 	if (edit.schedule?.kind === "once") throw new Error("a job cannot be changed to a one-shot schedule; /cron run <id> runs it now instead");
+	if (edit.wake === null && !job.stateful) throw new Error("--wake is for a loop: only a loop sets a wake for itself");
 
 	const patch: Partial<LoopJob> = {};
 	let slot: string | undefined;
@@ -103,7 +108,11 @@ export function applyJobEdit(job: LoopJob, clock: JobClock | undefined, edit: Jo
 
 	const merged = { ...job, ...patch };
 	const cursor = slot === undefined ? clock : { ...(clock ?? { runs: 0 }), slot };
-	return { patch, ...(slot === undefined ? {} : { slot }), changed, nextRun: nextRunOf(merged, cursor, ctx.now) };
+	if (edit.wake === null) {
+		const wake = clock?.followup;
+		if (wake || clock?.quietUntil !== undefined) changed.push(`wake removed${wake ? ` (it was ${wake.at}: ${JSON.stringify(wake.note)})` : ""}${clock?.quietUntil !== undefined ? ` (quiet until ${clock.quietUntil})` : ""}`);
+	}
+	return { patch, ...(slot === undefined ? {} : { slot }), changed, ...(edit.wake === null ? { clearWake: true as const } : {}), nextRun: nextRunOf(merged, cursor, ctx.now) };
 }
 
 /** Read the job back exactly as the scheduler will, so the confirmation cannot promise a fiction. */

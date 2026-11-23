@@ -7,7 +7,7 @@ import { tmp } from "./tmp.ts";
 import { fakeRunner } from "./fake-runner.ts";
 import { ownerViewOf } from "../src/job-owner.ts";
 import { openStores } from "../src/stores.ts";
-import { type ConfirmTurn, type ToolHost, automationTools, confirmControlPlane, controlTarget, createLoopJob } from "../src/tools.ts";
+import { type ConfirmTurn, type ToolHost, automationTools, confirmControlPlane, controlTarget, createLoopJob, wakeMeTool } from "../src/tools.ts";
 import { TriggerRuntime } from "../src/trigger-runtime.ts";
 import { parseSchedule } from "../src/schedule.ts";
 
@@ -138,4 +138,30 @@ test("[M5b.9] controlTarget: what a control-plane call would change, resolved as
 	assert.notEqual(controlTarget(host, "remove_trigger", { all: true }, mine), all, "a rule added later changes the target");
 	assert.equal(controlTarget(host, "remove_trigger", { all: true }, path.join(dir, "empty")), "0 rules");
 	assert.equal(controlTarget(host, "cron_list", {}, mine), undefined);
+});
+
+test("[wake-me] wake_me writes its own loop's follow-up and no other's; a refusal writes nothing; cron_list gives the model the wake and the quiet", async () => {
+	const t = tools();
+	const cwd = t.stores.dir;
+	const job = (id: string, name: string) => t.stores.jobs.add({ id, name, schedule: parseSchedule("every 1h"), stateful: true, prompt: "look", cwd: path.join(cwd, "mine"), enabled: true, catchUp: true, createdAt: new Date().toISOString() });
+	const a = await job("cron-aaaaaaaa", "ci");
+	await job("cron-bbbbbbbb", "other");
+	const tool = wakeMeTool({ jobId: a.id, runId: "run-a", job: () => t.stores.jobs.load().find((j) => j.id === a.id), clock: t.stores.clock, runs: () => t.stores.jobs.allRuns() });
+	const call = (args: Record<string, unknown>) => tool.execute("i", args, undefined, undefined, {} as any);
+	const refused = await call({ when: "in 30s", note: "x" });
+	assert.equal(refused.isError, true);
+	assert.match(String(refused.content[0].text), /^not set: a wake is at least 60 seconds and at most 7 days ahead\. Its next scheduled run is .+\.$/);
+	assert.deepEqual(t.stores.clock.read().jobs, {}, "a refusal writes nothing");
+	const set = await call({ when: "in 2h", note: "nothing before then", quiet: true, job: "cron-bbbbbbbb" });
+	assert.equal(set.isError, undefined);
+	const jobs = t.stores.clock.read().jobs;
+	assert.equal(jobs[a.id]?.followup?.note, "nothing before then");
+	assert.equal(jobs[a.id]?.quietUntil, jobs[a.id]?.followup?.at);
+	assert.equal(jobs["cron-bbbbbbbb"], undefined, "the run's own loop only: the input names no job");
+	const list = await t.call("cron_list", {});
+	const text = String(list.content[0].text);
+	assert.match(text, new RegExp(`\\n  next_wake: ${jobs[a.id]!.followup!.at.replace(/[.+]/g, "\\$&")}, asked by the loop: "nothing before then"`));
+	assert.match(text, /\n  quiet_until: .+, asked by the loop: "nothing before then" \(\/cron run ci wakes it now\)/);
+	const listed = list.details.jobs.find((j: any) => j.id === a.id);
+	assert.deepEqual([listed.next_wake, listed.quiet_until], [{ at: jobs[a.id]!.followup!.at, note: "nothing before then" }, { until: jobs[a.id]!.quietUntil, why: "nothing before then" }]);
 });

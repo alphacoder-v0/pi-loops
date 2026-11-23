@@ -50,7 +50,7 @@ import { type OwnerView, type PlainJobLeases, type SessionSnapshot, openWhere, o
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, closedConversation, holderAlive, holderDelivers, openWindowPids, procStart } from "./lease.ts";
 import { parseLane } from "./lane.ts";
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, newTriggerRow, promotionTarget, promotionView, proofOf, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, sessionFileEntries, stopRow, waitingLine } from "./engine.ts";
-import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, proposalsNotice, queueLines, toolsCapNotice } from "./job-lines.ts";
+import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, proposalsNotice, queueLines, toolsCapNotice, wokeWords } from "./job-lines.ts";
 import { type Proposal, askProposal } from "./watch-plan.ts";
 import { type SettleState, offerAtSettle, oneRunAtATime, settleOffers, settleReady } from "./settle-offer.ts";
 import type { Row, UnclaimedRow } from "./requests.ts";
@@ -1606,6 +1606,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						// The patch carries only the edited fields: `update` re-reads under a lock, and a tick
 						// that started a run in between has already set `running` on the copy it hands back.
 						if (applied.slot !== undefined) stores.clock.reset(job.id, applied.slot);
+						const woke = applied.clearWake ? stores.clock.clearWake(job.id) : undefined;
 						const updated = await stores.jobs.update(job.id, (j) => Object.assign(j, applied.patch));
 						if (!updated) return;
 						// The row the page writes for a schedule change, in the shared audit; nothing for an edit
@@ -1631,6 +1632,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							`  thinking: ${updated.thinking ?? "(the running session's current level)"}`,
 							`  timeout: ${updated.timeoutMs ? `${Math.round(updated.timeoutMs / 1000)}s` : "default"}`,
 							`  tools: ${updated.tools?.length ? updated.tools.join(", ") : updated.stateful ? "(this chat's built-in tools)" : "(none: its turns run uncapped, as your own do)"}`,
+							...(woke === undefined ? [] : [`  wake: ${woke ? "removed what the loop set; it runs on its schedule" : "(the loop had set none)"}`]),
 						]);
 						return;
 					}
@@ -1660,7 +1662,7 @@ export default function piLoops(pi: ExtensionAPI) {
 								const who = job ? "" : `${r.jobName ?? r.jobId} `;
 								const cost = r.usage?.cost ? ` $${r.usage.cost.toFixed(3)}` : "";
 								const chk = r.checker ? (r.checker.ok ? `, checker kept ${r.checker.kept}/${r.checker.kept + r.checker.dropped.length + r.checker.unreviewed}` : ", checker FAILED") : "";
-								const tail = r.ok ? `${plural(r.findings, "finding")}${chk}${r.stateUpdated ? ", state updated" : ""}${notesCutWords(r)}` : r.stoppedBy === "person" ? `stopped by you ${r.stoppedFrom === "page" ? "from the page" : "from a terminal"}` : r.aborted ? "stopped" : `FAILED: ${previewRedacted(r.error ?? "?", 80)}`;
+								const tail = r.ok ? `${plural(r.findings, "finding")}${chk}${r.stateUpdated ? ", state updated" : ""}${notesCutWords(r)}${wokeWords(r)}` : r.stoppedBy === "person" ? `stopped by you ${r.stoppedFrom === "page" ? "from the page" : "from a terminal"}` : r.aborted ? "stopped" : `FAILED: ${previewRedacted(r.error ?? "?", 80)}`;
 								return `${String(i + 1).padStart(2)}. ${formatLocal(Date.parse(r.startedAt))} ${who}${secs}s${cost} · ${tail}${r.sessionFile ? "" : " (no transcript)"}`;
 							}),
 							job ? `transcript: /cron trace ${job.name ?? job.id} <k>` : "transcript: /cron trace <job> <k>",

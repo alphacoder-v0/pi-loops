@@ -4,7 +4,7 @@ import { tmp, track } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { budgetStopReason, capTools, collect, createInFlightCosts, createInProcessRunner, disposeSubSession, isInsideDir, resolveRunModel, sharedSubSessionResources, subSessionResources, subSessionTools, keepBuiltins, unwrapModelRuntime, usageSince, heldSubSessionResources, releaseHeldResources, releaseSharedResources, HELD_IDLE_MS } from "../src/sdk-runner.ts";
+import { budgetStopReason, capTools, collect, createInFlightCosts, createInProcessRunner, disposeSubSession, isInsideDir, resolveRunModel, sharedSubSessionResources, subSessionResources, subSessionTools, keepBuiltins, unwrapModelRuntime, usageSince, heldSubSessionResources, releaseHeldResources, releaseSharedResources, HELD_IDLE_MS, loopRunTools, withOwnTools } from "../src/sdk-runner.ts";
 import { GUARD_PATH, GuardSeats, subagentGuardExtension } from "../src/guard.ts";
 import { resolveCap } from "../src/ask.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -409,4 +409,18 @@ test("[M5b.9] a run that carries a grant for one of pi-loops' own tools is offer
 	assert.deepEqual(capTools({ guard: seed({ grant: grant("read") }) }).tools, ["read"], "a declared tool is not named twice");
 	const within = { ...cap, tools: { within: ["read"] } } as any;
 	assert.deepEqual(capTools({ guard: seed({ cap: within, grant: grant("set_trigger_state") }) }).keep(["read", "set_trigger_state", "cron_list"]), ["read", "set_trigger_state"], "a cut keeps the granted tool too, and no other");
+});
+
+test("[wake-me] wake_me is a loop run's own tool: only a loop's run with its job and run has it, and a cap's list or cut never takes it away", () => {
+	const dir = tmp("pi-loops-wake-tools-");
+	assert.deepEqual(loopRunTools({ kind: "loop", jobId: "cron-a", runId: "run-a" }, dir).map((t) => t.name), ["wake_me"]);
+	for (const req of [{ kind: "checker" as const, jobId: "cron-a", runId: "run-a" }, { kind: "trigger" as const, runId: "r" }, { kind: "held" as const, jobId: "cron-a", runId: "r" }, { kind: "loop" as const, runId: "r" }]) assert.deepEqual(loopRunTools(req, dir), [], `${req.kind}${req.jobId ? "" : " with no job"}: none`);
+	assert.deepEqual(fs.readdirSync(dir), [], "offering it writes nothing");
+	const capped = withOwnTools({ tools: ["read"], keep: (active) => active.filter((t) => t === "read") }, ["wake_me"]);
+	assert.deepEqual(capped.tools, ["read", "wake_me"], "added to a declared list");
+	assert.deepEqual(capped.keep(["read", "bash", "wake_me"]), ["read", "wake_me"], "and kept by its cut");
+	assert.deepEqual(subSessionTools({ tools: capped.tools }, ["read", "bash"], [{ name: "wake_me" }]), ["read", "wake_me"]);
+	const open = { keep: (active: readonly string[]) => [...active] };
+	assert.equal(withOwnTools(open, ["wake_me"]).tools, undefined, "no list: the session's tools, the custom ones among them");
+	assert.equal(withOwnTools(open, []), open, "a run with no own tools is unchanged");
 });

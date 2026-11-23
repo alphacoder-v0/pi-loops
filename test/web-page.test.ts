@@ -4737,6 +4737,29 @@ test("a loop row shows its 30-day signal and one suggestion; Keep and the sugges
 	}
 });
 
+test("[wake-me] a loop row shows its next wake and its quiet, as the loop asked; each ✕ posts only the job to /loops/wake, as /cron set --wake - does", { timeout: 20_000 }, async () => {
+	const at = new Date(Date.now() + 20 * 60_000).toISOString();
+	const quietUntil = new Date(Date.now() + 2 * 86_400_000).toISOString();
+	const state: any = loopState({ wake: { at, note: "check CI on #12" }, quiet: { until: quietUntil, why: "nothing changes over the weekend" } });
+	const dom = await startPage(state, { "/loops/wake": { ok: true, removed: true } });
+	try {
+		assert.match(textOf(loopSlot()), /next wake .+, asked by the loop: "check CI on #12"/);
+		assert.match(textOf(loopSlot()), /quiet until .+, asked by the loop: "nothing changes over the weekend"/);
+		const xs = allUnder(loopSlot()).filter((e: any) => e.tag === "button" && e._text === "✕");
+		assert.equal(xs.length, 2, "a ✕ on each line");
+		assert.equal(dom.calls.filter((c) => c.url === "/loops/wake").length, 0, "drawing them sends nothing");
+		press(xs[1]);
+		await settled();
+		assert.deepEqual(dom.calls.filter((c) => c.url === "/loops/wake").map((c) => [c.url, c.body, c.headers?.["x-pi-web-token"]]), [["/loops/wake", { jobId: "cron-aaaaaaaa" }, "test-token"]], "not under /c/<session>/: it starts no pi");
+		await until(() => /Removed\. It runs on its schedule\./.test(textOf(loopSlot())), "the row says what the ✕ did");
+		state.automation.jobs[0] = { ...state.automation.jobs[0], wake: undefined, quiet: undefined };
+		await dom.poll();
+		assert.doesNotMatch(textOf(loopSlot()), /next wake|quiet until|Removed/, "the next draw shows the loop as it is now");
+	} finally {
+		dom.dispose();
+	}
+});
+
 test("a loop row is its name, schedule and run on one line; the 30-day line only when it is not zero", { timeout: 20_000 }, async () => {
 	const zero = { signal: { findings30d: 0, claimed30d: 0, dismissed30d: 0, quietStreak: 0 }, runs: 0 };
 	const dom = await startPage(loopState({ ...zero, name: undefined, label: "cron-5f1c0a2b" }), {});

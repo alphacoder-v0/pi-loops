@@ -8,8 +8,8 @@ import type { Row } from "../src/requests.ts";
 type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
 import { plainRunId } from "../src/engine.ts";
 import { withFileLockSync, writeFileAtomic } from "../src/lock.ts";
-import { stamp } from "../src/schedule.ts";
-import { advanceClock, applyTick, ClockNewer, ClockStore, cursorMove, decideTick, decideRunNow, firedOf, tickClock, wanted, validEntry, type ClockFile, type Mine, type TickInput, type TickStores, writeSlot, commitSlot } from "../src/clock.ts";
+import { formatLocal, formatLocalZoned, stamp } from "../src/schedule.ts";
+import { advanceClock, applyTick, decideWake, followupId, nextScheduled, wakeSetText, ClockNewer, ClockStore, cursorMove, decideTick, decideRunNow, firedOf, tickClock, wanted, validEntry, type ClockFile, type Mine, type TickInput, type TickStores, writeSlot, commitSlot } from "../src/clock.ts";
 import { JobStore, type LoopJob } from "../src/store.ts";
 
 const now = Date.parse("2026-01-02T03:04:05.000Z");
@@ -347,4 +347,155 @@ test("[proposed] A proposal is passed over by the tick, named by no `wanted`, an
 	assert.equal(wanted({ jobs: [proposed], clock: file(), now, mine: new Set([proposed.id]) }).size, 0);
 	const plain = job({ stateful: false, sessionId: "s", name: "pr-watch", enabled: false, proposed: { at: stamp(now), session: "s" } });
 	assert.equal(decideRunNow(plain, undefined, [], { kind: "window", self, view: { sessionId: "s", holdsOwn: true }, epoch: 4 }, now).refused, "is proposed and waits for your yes: /cron enable pr-watch asks again");
+});
+
+/* ------------------------------------------------ wake_me: a loop's follow-up (design 3.3, 6.6) */
+
+const clockAt = (dir: string) => new ClockStore({ file: path.join(dir, "clock.json"), lock: path.join(dir, "clock.lock") }, { locked: withFileLockSync, write: writeFileAtomic });
+const hhmm = (ms: number) => formatLocal(ms).slice(11);
+const wakeRun = (startedAt: number, cause?: "wake") => ({ jobId: "cron-job", startedAt: stamp(startedAt), ...(cause ? { cause } : {}) });
+const loopTick = (clock: ClockFile, rows: CountedRow[] = [], spent: string[] = [], at = now) => ({ jobs: [job()], clock, view: { ...input([job()]).view, now: at, read: new Map([["cron-job", { rows, history: spent.length ? { ordinal: 1, streak: 0, interrupted: [], spent: new Set(spent) } : undefined, cwdMissing: false }]]) } });
+
+test("[wake-me] wake_me's write: the job's follow-up in clock.json under clock.lock, the cursor kept, and design 6.6's words", () => {
+	const dir = tmp();
+	const clock = clockAt(dir);
+	clock.seed({ "cron-job": { slot: stamp(now - 60_000), fired: stamp(now - 60_000), runs: 4 } });
+	const answer = decideWake({ when: "in 20m", note: "check CI on #12" }, { job: job(), clock: clock.read().jobs["cron-job"], runs: [], now });
+	assert.deepEqual(answer, { at: stamp(now + 20 * 60_000), note: "check CI on #12", quiet: false });
+	if ("refused" in answer) return;
+	assert.equal(clock.setFollowup("cron-job", { ...answer, set_by: "run-a" }, answer.quiet, now), undefined, "nothing was replaced");
+	const entry = clock.read().jobs["cron-job"];
+	assert.deepEqual(entry.followup, { id: followupId("cron-job", "run-a", answer.at), at: answer.at, note: "check CI on #12", set_by: "run-a", created_at: stamp(now) });
+	assert.deepEqual([entry.slot, entry.fired, entry.runs], [stamp(now - 60_000), stamp(now - 60_000), 4], "the cursor is the tick's");
+	assert.equal(entry.quietUntil, undefined);
+	assert.equal(wakeSetText(job(), entry, answer, undefined, now), `set: this loop wakes at ${formatLocalZoned(now + 20 * 60_000)} ("check CI on #12"). Its next scheduled run is ${hhmm(now + 60_000)}.`);
+	assert.match(followupId("cron-job", "run-a", answer.at), /^fu-[0-9a-f]{32}$/);
+	assert.deepEqual(decideWake({ when: "at 2026-01-02T03:30:00Z", note: "x" }, { job: job(), clock: undefined, runs: [], now }), { at: stamp(Date.parse("2026-01-02T03:30:00Z")), note: "x", quiet: false }, "an ISO time with its offset");
+});
+
+test("[wake-me] a follow-up that came due writes its row (source wake:, woken = [note]), then goes from clock.json", () => {
+	const dir = tmp();
+	const { requests, clock, deps } = stores(dir);
+	clock.seed({ "cron-job": { slot: stamp(now), fired: stamp(now), runs: 1 } });
+	clock.setFollowup("cron-job", { at: stamp(now - 1_000), note: "look at #12", set_by: "run-a" }, false, now - 600_000);
+	const read = clock.read();
+	assert.deepEqual([...wanted({ jobs: [job()], clock: read, now, mine: new Set(["cron-job"]) })], [["cron-job", "@cron-job"]], "a due follow-up is read though no slot is due");
+	const decisions = decideTick(loopTick(read));
+	assert.deepEqual(decisions.map((d) => d.do), ["pass", "followup"]);
+	const woke = decisions[1];
+	assert.equal(woke.do === "followup" && woke.write, "row");
+	if (woke.do !== "followup" || woke.write !== "row") return;
+	assert.deepEqual([woke.row.id, woke.row.source, woke.row.lane, woke.row.mode, woke.row.collapse_key, woke.row.payload?.woken], [read.jobs["cron-job"].followup!.id, "wake:cron-job", "@cron-job", "unattended", "cron:cron-job", ["look at #12"]]);
+	const [, outcome] = applyTick(decisions, deps, now);
+	assert.deepEqual(outcome, { job: "cron-job", followup: woke.followup.id, t2: "wrote", t3: "moved" });
+	assert.deepEqual(requests.list("@cron-job").map((r) => r.id), [woke.followup.id]);
+	assert.equal(clock.read().jobs["cron-job"].followup, undefined);
+	assert.equal(clock.read().jobs["cron-job"].slot, stamp(now), "the cursor is untouched");
+	assert.deepEqual(decideTick(loopTick(clock.read(), requests.list("@cron-job") as CountedRow[])).map((d) => d.do), ["pass"], "and the next tick has nothing more to do");
+});
+
+test("[wake-bounds] when: at least 60 seconds ahead", () => {
+	const refused = decideWake({ when: "in 59s", note: "x" }, { job: job(), clock: undefined, runs: [], now });
+	assert.deepEqual(refused, { refused: `not set: a wake is at least 60 seconds and at most 7 days ahead. Its next scheduled run is ${hhmm(now + 60_000)}.` });
+	assert.equal("at" in decideWake({ when: "in 1m", note: "x" }, { job: job(), clock: undefined, runs: [], now }), true, "60 seconds is allowed");
+});
+
+test("[wake-bounds] when: at most 7 days ahead", () => {
+	assert.deepEqual(decideWake({ when: "in 7d1m", note: "x" }, { job: job(), clock: undefined, runs: [], now }), { refused: `not set: a wake is at least 60 seconds and at most 7 days ahead. Its next scheduled run is ${hhmm(now + 60_000)}.` });
+	assert.equal("at" in decideWake({ when: `at ${new Date(now + 7 * 86_400_000).toISOString()}`, note: "x" }, { job: job(), clock: undefined, runs: [], now }), true, "7 days is allowed");
+});
+
+test("[wake-bounds] at most 24 runs started by follow-ups in 24 hours, counted from the run log", () => {
+	const runs = Array.from({ length: 24 }, (_, i) => wakeRun(now - 3_600_000 * i - 1_000, "wake"));
+	assert.deepEqual(decideWake({ when: "in 20m", note: "x" }, { job: job(), clock: undefined, runs, now }), { refused: `not set: this loop has woken itself 24 times in the last 24 hours. Its next scheduled run is ${hhmm(now + 60_000)}.` });
+	assert.equal("at" in decideWake({ when: "in 20m", note: "x" }, { job: job(), clock: undefined, runs: runs.slice(1), now }), true, "23 follow-up runs: one more is allowed");
+	const older = [...runs.slice(1), wakeRun(now - 86_400_000 - 1_000, "wake")];
+	assert.equal("at" in decideWake({ when: "in 20m", note: "x" }, { job: job(), clock: undefined, runs: older, now }), true, "a follow-up run older than 24 hours does not count");
+	const slots = [...runs.slice(1), wakeRun(now - 1_000)];
+	assert.equal("at" in decideWake({ when: "in 20m", note: "x" }, { job: job(), clock: undefined, runs: slots, now }), true, "a scheduled run does not count");
+});
+
+test("[wake-bounds] note: at most 500 characters", () => {
+	assert.deepEqual(decideWake({ when: "in 20m", note: "n".repeat(501) }, { job: job(), clock: undefined, runs: [], now }), { refused: `not set: a note is at most 500 characters, and this one has 501. Its next scheduled run is ${hhmm(now + 60_000)}.` });
+	assert.equal("at" in decideWake({ when: "in 20m", note: "n".repeat(500) }, { job: job(), clock: undefined, runs: [], now }), true);
+});
+
+test("[wake-replace] a second wake_me replaces everything the first set: the follow-up, and the quiet with it", () => {
+	const dir = tmp();
+	const clock = clockAt(dir);
+	const first = { at: stamp(now + 3_600_000), note: "nothing before then", set_by: "run-a" };
+	clock.setFollowup("cron-job", first, true, now);
+	assert.deepEqual([clock.read().jobs["cron-job"].quietUntil, clock.read().jobs["cron-job"].quietWhy], [first.at, "nothing before then"]);
+	const second = decideWake({ when: "in 20m", note: "check CI on #12" }, { job: job(), clock: clock.read().jobs["cron-job"], runs: [], now });
+	if ("refused" in second) return assert.fail(second.refused);
+	const replaced = clock.setFollowup("cron-job", { ...second, set_by: "run-b" }, second.quiet, now);
+	assert.equal(replaced?.at, first.at);
+	const entry = clock.read().jobs["cron-job"];
+	assert.equal(entry.followup?.note, "check CI on #12");
+	assert.equal(entry.followup?.id, followupId("cron-job", "run-b", second.at));
+	assert.deepEqual([entry.quietUntil, entry.quietWhy], [undefined, undefined], "a call with no quiet clears the quiet the first set");
+	assert.equal(wakeSetText(job(), entry, second, replaced, now), `set: this loop wakes at ${formatLocalZoned(now + 20 * 60_000)} ("check CI on #12"). This replaces the wake you set for ${hhmm(now + 3_600_000)}. Its next scheduled run is ${hhmm(now + 60_000)}.`);
+	assert.equal(clock.clearWake("cron-job"), true, "/cron set --wake - takes it all");
+	assert.deepEqual(Object.keys(clock.read().jobs["cron-job"]), ["runs"]);
+	assert.equal(clock.clearWake("cron-job"), false);
+});
+
+test("[wake-quiet] a slot before quietUntil is skipped with the loop's words; the cursor moves and no row is written; the first slot after runs", () => {
+	const dir = tmp();
+	const { requests, clock, deps } = stores(dir);
+	const until = now + 30 * 60_000;
+	clock.setFollowup("cron-job", { at: stamp(until), note: "nothing changes over the weekend", set_by: "run-a" }, true, now - 60_000);
+	const [skip] = decideTick(loopTick(clock.read()));
+	assert.equal(skip.do, "skip");
+	if (skip.do !== "skip") return;
+	assert.equal(skip.note, `quiet until ${formatLocal(until)}, asked by the loop: "nothing changes over the weekend"`);
+	assert.equal(commitSlot(writeSlot(skip, deps), deps).t3, "moved");
+	assert.equal(clock.read().jobs["cron-job"].slot, skip.slot);
+	assert.deepEqual(requests.list("@cron-job"), []);
+	assert.equal(nextScheduled(job(), clock.read().jobs["cron-job"], now, clock.read().jobs["cron-job"].quietUntil)! >= until, true, "the next scheduled run the model is told is the first after the quiet");
+	const later = decideTick(loopTick(clock.read(), [], [], until + 60_000));
+	assert.deepEqual(later.map((d) => [d.do, d.do === "followup" ? d.write : undefined]), [["row", undefined], ["followup", "onto"]], "after the quiet the slot runs, and the follow-up joins its row");
+});
+
+test("[wake-collapse] a follow-up that comes due while a slot's row is queued adds its note to that row: one run with both reasons", () => {
+	const dir = tmp();
+	const { requests, clock, deps } = stores(dir);
+	const queued = { ...row(plainRunId("cron-job", stamp(now - 60_000)), "@cron-job"), payload: { text: "go", cwd: "/" } } as CountedRow;
+	requests.appendIfAbsent(queued as never);
+	clock.seed({ "cron-job": { slot: stamp(now), fired: stamp(now - 60_000), runs: 1 } });
+	clock.setFollowup("cron-job", { at: stamp(now - 1_000), note: "look at #12", set_by: "run-a" }, false, now - 600_000);
+	const decisions = decideTick(loopTick(clock.read(), requests.list("@cron-job") as CountedRow[]));
+	assert.deepEqual(decisions.map((d) => d.do === "followup" ? `followup ${d.write}` : d.do), ["pass", "followup onto"]);
+	applyTick(decisions, deps, now);
+	assert.deepEqual(requests.list("@cron-job").map((r) => [r.id, r.payload?.woken]), [[queued.id, ["look at #12"]]]);
+	assert.equal(clock.read().jobs["cron-job"].followup, undefined);
+	// The same tick decides a slot's row and the follow-up: the note goes on the slot's row.
+	const fresh = stores(tmp());
+	fresh.clock.setFollowup("cron-job", { at: stamp(now - 1_000), note: "both", set_by: "run-a" }, false, now - 600_000);
+	const both = decideTick(loopTick(fresh.clock.read()));
+	applyTick(both, fresh.deps, now);
+	assert.deepEqual(fresh.requests.list("@cron-job").map((r) => [r.source, r.payload?.woken]), [["cron:cron-job", ["both"]]], "one row, with both reasons");
+});
+
+test("[wake-collapse] a slot that comes due while the follow-up's row is queued collapses onto it", () => {
+	const dir = tmp();
+	const { requests, clock, deps } = stores(dir);
+	clock.setFollowup("cron-job", { at: stamp(now - 1_000), note: "look at #12", set_by: "run-a" }, false, now - 600_000);
+	clock.seed({ "cron-job": { ...clock.read().jobs["cron-job"], slot: stamp(now), fired: stamp(now) } });
+	applyTick(decideTick(loopTick(clock.read())), deps, now);
+	const [woke] = requests.list("@cron-job");
+	assert.equal(woke.source, "wake:cron-job");
+	const [slot] = decideTick(loopTick(clock.read(), requests.list("@cron-job") as CountedRow[], [], now + 60_000));
+	assert.equal(slot.do, "collapse");
+	if (slot.do !== "collapse") return;
+	assert.equal(slot.onto, woke.id);
+	assert.equal(commitSlot(writeSlot(slot, deps), deps).t3, "moved");
+	assert.deepEqual(requests.list("@cron-job").map((r) => [r.id, (r as CountedRow).collapsed, r.payload?.woken]), [[woke.id, 1, ["look at #12"]]]);
+});
+
+test("[wake-me] a disabled or proposed loop's follow-up waits, and a wake the file holds in a shape this build does not write is dropped with the cursor kept", () => {
+	const due = { v: 1 as const, jobs: { "cron-job": { runs: 0, followup: { id: "fu-1", at: stamp(now - 1_000), note: "x", set_by: "r", created_at: stamp(now - 9_000) } } } };
+	assert.deepEqual(decideTick({ ...loopTick(due), jobs: [job({ enabled: false })] }).map((d) => d.do), ["pass"]);
+	assert.deepEqual(decideTick({ ...loopTick(due), jobs: [job({ enabled: false, proposed: { at: stamp(now), session: "s" } })] }).map((d) => d.do), ["pass"]);
+	assert.deepEqual(validEntry({ slot: stamp(now), runs: 2, followup: { at: "never" }, quietUntil: stamp(now) }), { slot: stamp(now), runs: 2 });
 });

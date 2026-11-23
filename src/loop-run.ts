@@ -29,7 +29,15 @@ export type RunRecordM4b = RunRecord & {
 	stop?: ProcessStop;
 	/** Findings the run reported that the repeat rule did not file again: a `new` finding of the loop has the same text. Absent when there were none. */
 	repeats?: number;
+	/** The notes of the follow-ups that started this run (`cause: "wake"`): `/cron runs` says the first, and `wake_me` counts these runs. */
+	woken?: string[];
 };
+
+/** The job a loop lane's row names: the clock's slot, a person's `/cron run`, or the loop's follow-up. */
+export function rowJob(source: Row["source"]): string {
+	for (const prefix of ["cron-run:", "wake:", "cron:"]) if (source.startsWith(prefix)) return source.slice(prefix.length);
+	return source;
+}
 export type { ProcessStop } from "./store.ts";
 
 export interface LoopRunDeps {
@@ -82,6 +90,7 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 			notesFiles,
 			reported,
 			asked,
+			woken: payload?.woken,
 			timeoutMs,
 			runAt: `${formatLocalZoned(started)}${payload?.catch_up ? " (catching up a missed tick)" : ""}`,
 		});
@@ -167,6 +176,7 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 			sessionId: result.sessionId, sessionFile: result.sessionFile, checker,
 			forSession: job.createdBy?.sessionId, ordinal: nextOrdinal(job.id, deps),
 			...(payload?.requested_by ? { requestedBy: { sessionId: payload.requested_by } } : {}),
+			...(payload?.woken?.length ? { cause: "wake" as const, woken: payload.woken } : {}),
 			...(aborted ? { aborted: true as const } : {}),
 			...(byPerson ? { stoppedBy: "person" as const, stoppedFrom: running?.stoppedFrom ?? "cli" } : {}),
 		};
@@ -253,10 +263,11 @@ export function ensureRecord(row: ClaimedRow, deps: Pick<LoopRunDeps, "stores" |
 		existing = records.find((record) => record.runId === row.run.id && Date.parse(record.startedAt) >= Date.parse(row.run.started_at)) as RunRecordM4b | undefined;
 		if (existing) return undefined;
 		return ended ?? {
-			runId: row.run.id, row: row.id, jobId: row.source.startsWith("cron-run:") ? row.source.slice("cron-run:".length) : row.source.slice("cron:".length),
+			runId: row.run.id, row: row.id, jobId: rowJob(row.source),
 			jobName: undefined, stateful: true, cwd: row.payload?.cwd ?? "", pid: row.run.pid,
 			startedAt: row.run.started_at, finishedAt: stamp(now), ok: false, error: INTERRUPTED,
 			findings: 0, droppedFindings: 0, stateUpdated: false, interrupted: true,
+			...(row.payload?.woken?.length ? { cause: "wake" as const, woken: row.payload.woken } : {}),
 			...(own ? {} : { stop: stoppedTogether(row.run, claims, records as RunRecordM4b[]) }),
 		};
 	});
@@ -348,7 +359,7 @@ export async function closeLoopRun(row: ClaimedRow, deps: Pick<LoopRunDeps, "sto
 		catch (error) { fail("jobs read", error); }
 		if (current) {
 			const history = deps.stores.history().get(jobId) ?? { ordinal: 0, streak: 0, spent: new Set<string>() };
-			const queued = deps.stores.requests.list(row.lane).some((candidate) => candidate.source === `cron:${jobId}` || candidate.source === `cron-run:${jobId}`);
+			const queued = deps.stores.requests.list(row.lane).some((candidate) => candidate.source === `cron:${jobId}` || candidate.source === `cron-run:${jobId}` || candidate.source === `wake:${jobId}`);
 			if (oneShotDoneV3(current, { running: undefined, queued: queued || undefined, runs: history.ordinal, ...(history.streak ? { error: { streak: history.streak } } : {}) })) {
 				await deps.stores.jobs.remove(jobId);
 				deps.sinks.retired?.(current, history.streak >= 2 ? "one-shot failed twice" : "one-shot finished");

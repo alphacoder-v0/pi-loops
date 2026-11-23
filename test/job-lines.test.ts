@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { personRow, plainJobRow, queuedPrompt, recipeRow } from "../src/engine.ts";
 import type { InboxEntry } from "../src/inbox.ts";
-import { heldJobsNotice, jobLines, leftConversationLine, panelLines, pickQueued, proposalsNotice, queueLines, statusField, statusWord, toolsCapNotice, loopLabel } from "../src/job-lines.ts";
+import { heldJobsNotice, jobLines, leftConversationLine, panelLines, pickQueued, proposalsNotice, queueLines, statusField, statusWord, toolsCapNotice, loopLabel, wokeWords } from "../src/job-lines.ts";
 import { formatLocal } from "../src/schedule.ts";
 import { capWords } from "../src/guard.ts";
 import { parseSchedule, stamp } from "../src/schedule.ts";
@@ -329,4 +329,22 @@ test("/cron lists a proposal where it lists a disabled job, with the two command
 	const rule = { id: "dyn-1", condition: "c", action: "a", enabled: false, fireOnce: true, promoteToChat: true, createdAt: "", cwd: "/", proposed: { at: "", session: SESSION } };
 	assert.equal(proposalsNotice([proposed], [rule], SESSION), "[cron] 2 watches wait for your yes: /cron enable pr-watch · /triggers enable dyn-1 ask again");
 	assert.equal(panelLines({ rules: [rule], jobs: [], runs: [], runText: () => "", sources: [], hookEvents: [] })[1].text, "c → a  [proposed]");
+});
+
+test("[wake-me] /cron under a loop: its next wake and its quiet, as the loop asked (design 6.6); /cron runs says a run woke itself", () => {
+	const loop = job();
+	const definition = fromV2(loop).job;
+	const wakeAt = NOW + 80 * 60_000;
+	const monday = NOW + 3 * DAY;
+	const weekday = new Date(monday).toLocaleDateString("en-US", { weekday: "short" });
+	const clock = { ...fromV2(loop).clock!, followup: { id: "fu-1", at: stamp(wakeAt), note: "check CI on #12", set_by: "run-a", created_at: stamp(NOW) }, quietUntil: stamp(monday), quietWhy: "nothing changes over the weekend" };
+	const lines = linesFor([loop], { clock: { [loop.id]: clock } });
+	assert.ok(lines.includes(`    next wake ${formatLocal(wakeAt).slice(11)}, asked by the loop: "check CI on #12"`), lines.join("\n"));
+	assert.ok(lines.includes(`    quiet until ${weekday} ${formatLocal(monday).slice(11)}, asked by the loop: "nothing changes over the weekend" (/cron run pr-watch wakes it now)`), lines.join("\n"));
+	const after = linesFor([loop], { clock: { [loop.id]: { ...clock, followup: undefined } }, now: monday + 60_000 });
+	assert.equal(after.some((l) => /next wake|quiet until/.test(l)), false, "a quiet that has passed and a wake that is gone say nothing");
+	assert.equal(listedJob(definition, clock, [], undefined).status.wake?.note, "check CI on #12");
+	const record = { runId: "fu-1", jobId: loop.id, stateful: true, cwd: loop.cwd, pid: 1, startedAt: stamp(NOW), finishedAt: stamp(NOW + 5_000), ok: true, findings: 0, droppedFindings: 0, stateUpdated: true };
+	assert.equal(wokeWords({ ...record, woken: ["check CI on #12"] } as RunRecord), `, woke itself: "check CI on #12"`);
+	assert.equal(wokeWords(record as RunRecord), "", "a scheduled run says nothing more");
 });

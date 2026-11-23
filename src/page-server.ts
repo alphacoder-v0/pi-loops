@@ -1268,6 +1268,9 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			lastEnd: lastEndOf(j.id),
 			// A loop's worth, and at most one suggestion that never applies itself (src/job-tune.ts).
 			...loopWorth(j, now),
+			// What the loop set for itself with wake_me (design 6.6): its next wake, and its quiet while that is ahead.
+			wake: j.stateful && j.status.wake ? { at: j.status.wake.at, note: maskSecrets(j.status.wake.note) } : undefined,
+			quiet: j.stateful && j.status.quiet && Date.parse(j.status.quiet.until) > now ? { until: j.status.quiet.until, why: maskSecrets(j.status.quiet.why) } : undefined,
 			// The open body of a card shows these, which the terminal's `/cron` line has and the panel
 			// did not; they leave the store as they were written, no reshaping.
 			cwd: j.cwd,
@@ -2016,6 +2019,26 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	}
 
 	/**
+	 * `POST /loops/wake {jobId}`: the ✕ on a loop row's wake line, which does what `/cron set <loop>
+	 * --wake -` does: the follow-up and the quiet the loop set for itself go. Only a loop of a project
+	 * the page lists. Answers whether there was anything to remove.
+	 */
+	function clearLoopWake(b: Record<string, unknown>): { status: number; body: Record<string, unknown> } {
+		const refused = exactly(b, ["jobId"]);
+		if (refused) return refused;
+		const jobId = b.jobId as string;
+		if (!JOB_ID.test(jobId)) return { status: 400, body: { error: "bad job id" } };
+		try {
+			const job = jobStore.load().find((j) => j.id === jobId);
+			if (!job || !job.stateful || typeof job.cwd !== "string" || !job.cwd || !knownProject(job.cwd)) return { status: 404, body: { error: "no such loop" } };
+			return { status: 200, body: { ok: true, removed: clock.clearWake(job.id) } };
+		} catch (err: any) {
+			opts.log(`pi-loops web: wake ${jobId}: ${err?.stack ?? err?.message ?? err}`);
+			return { status: 500, body: { error: "could not change the loop" } };
+		}
+	}
+
+	/**
 	 * `POST /loops/tune {jobId, key, choice}`: a loop row's suggestion, applied or kept. The body names
 	 * the suggestion only by its key; the server computes it again from the store and refuses a key
 	 * it would not suggest now (409), so a page cannot ask for any other change. Both writes are one
@@ -2636,10 +2659,10 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				}
 				// A loop row's Stop this run and its suggestion: behind the token like the inbox's actions,
 				// and like them they never start this page's pi.
-				if (!prefixed && (url.pathname === "/loops/stop" || url.pathname === "/loops/tune") && req.method === "POST") {
+				if (!prefixed && (url.pathname === "/loops/stop" || url.pathname === "/loops/tune" || url.pathname === "/loops/wake") && req.method === "POST") {
 					const b = await inboxBody(req, LOOPS_BODY_MAX);
 					if (!("ok" in b)) return void json(res, { error: b.error }, b.status);
-					const done = url.pathname === "/loops/stop" ? stopLoopRun(b.ok) : await tuneLoop(b.ok);
+					const done = url.pathname === "/loops/stop" ? stopLoopRun(b.ok) : url.pathname === "/loops/wake" ? clearLoopWake(b.ok) : await tuneLoop(b.ok);
 					return void json(res, done.body, done.status);
 				}
 				if (!prefixed && url.pathname === "/inbox/seen" && req.method === "POST") {

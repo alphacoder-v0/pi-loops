@@ -41,6 +41,7 @@ export type RequestMode = "attended" | "unattended" | "none";
 export type RequestSource =
 	| `cron:${string}` // a plain job: the clock
 	| `cron-run:${string}` // `/cron run`, typed in the job's own conversation
+	| `wake:${string}` // the follow-up a loop set for itself (`wake_me`)
 	| `rule:${string}`
 	| `push:${string}`
 	| "goal"
@@ -81,6 +82,8 @@ interface RowBase {
 		requested_by?: string;
 		/** An `answer` row only: the finding it answers. */
 		finding?: string;
+		/** Why this run starts: the notes of the loop's follow-ups, one per follow-up, merged on collapse. */
+		woken?: string[];
 	};
 	/** stop, cancel. Never "whatever runs next". */
 	target?: { id: string } | { current: true; started_before: string };
@@ -184,6 +187,8 @@ function readLine(line: string): { row: Row; version: 2 | 3 } | undefined {
 	if (typeof row.created_at !== "string" || (row.handed_at !== undefined && typeof row.handed_at !== "string")) return undefined;
 	const requires = row.payload?.requires;
 	if (requires !== undefined && (!Array.isArray(requires) || !requires.every((s) => typeof s === "string"))) return undefined;
+	const woken = row.payload?.woken as unknown;
+	if (woken !== undefined && (!Array.isArray(woken) || !woken.every((s) => typeof s === "string"))) return undefined;
 	const target = row.target as unknown;
 	if (target !== undefined && !(target && typeof target === "object" && (typeof (target as { id?: unknown }).id === "string" || ((target as { current?: unknown }).current === true && typeof (target as { started_before?: unknown }).started_before === "string")))) return undefined;
 	// A claim of the wrong shape is not a free row: the line is kept, unread, as a newer one is. Only
@@ -368,6 +373,26 @@ export class RequestStore {
 			}
 			result = "counted";
 			return { raw: rowLine({ ...row, collapsed: (row.collapsed ?? 0) + 1, collapsed_slot: slot, ...(overlap && row.run ? { skipped: (row.skipped ?? 0) + 1 } : {}) }, version), row };
+		}), lock);
+		return result;
+	}
+
+	/**
+	 * Add a follow-up's note to queued row `id`'s `woken`, under the lane lock: `added`, `there` when
+	 * the note is in the list already (a tick that crashed before it removed the follow-up), or
+	 * `missing` when no unclaimed input row `id` is queued.
+	 */
+	addWoken(lane: LaneId, id: string, note: string, lock?: LockOptions): "added" | "there" | "missing" {
+		let result: "added" | "there" | "missing" = "missing";
+		this.rewrite(lane, (lines) => lines.map(({ raw, row, version }) => {
+			if (!row || row.id !== id || row.run || row.kind !== "input" || !row.payload) return { raw, row };
+			const woken = row.payload.woken ?? [];
+			if (woken.includes(note)) {
+				result = "there";
+				return { raw, row };
+			}
+			result = "added";
+			return { raw: rowLine({ ...row, payload: { ...row.payload, woken: [...woken, note] } }, version), row };
 		}), lock);
 		return result;
 	}

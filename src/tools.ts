@@ -8,7 +8,7 @@
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal } from "./job-signal.ts";
 import { formatWait, queuedPrompt, type QueuedPrompt, runningRun } from "./engine.ts";
 import { type ListedJob, listedJobs } from "./job-status.ts";
-import { statusField, statusWord } from "./job-lines.ts";
+import { statusField, statusWord, wakeFields } from "./job-lines.ts";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
 import * as os from "node:os";
@@ -20,7 +20,7 @@ import type { SessionSnapshot } from "./job-owner.ts";
 import { removeJob } from "./stores.ts";
 import type { Stores } from "./stores.ts";
 import type { RunList } from "./run-list.ts";
-import { DISABLED_BY_PERSON, MAX_PROMPT_BYTES, type JobStore, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
+import { DISABLED_BY_PERSON, MAX_PROMPT_BYTES, type JobStore, type LoopJob, type RunRecord, newId, owningSessionId, resolveJobRef } from "./store.ts";
 import type { RequestStore } from "./requests.ts";
 import type { Inbox } from "./inbox.ts";
 import { jobNameFrom } from "./job-name.ts";
@@ -33,6 +33,7 @@ import { type TriggerStore, auditRule, cleanCondition, controlPlanePreflight, lo
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { capWords } from "./guard.ts";
 import { WATCH_ASK_HEAD } from "./watch-plan.ts";
+import { type ClockStore, WAKE_NOTE_MAX, WAKE_RUNS_PER_DAY, decideWake, wakeSetText } from "./clock.ts";
 
 export interface ControlPlaneRequest {
 	/** What is being approved, value-free. */
@@ -368,6 +369,7 @@ function renderCronJobsForTool(jobs: readonly ListedJob[], host: Pick<ToolHost, 
 		if (word) lines.push(`  ${statusField(word, now)}`);
 		if (job.status.streak) lines.push(`  consecutive_failures: ${job.status.streak}`);
 		if (job.status.collapsed) lines.push(`  skipped_overlap_count: ${job.status.collapsed}`);
+		for (const field of wakeFields(job, now)) lines.push(`  ${field}`);
 		if (job.stateful) {
 			// The same two facts `/cron` shows, so the model can say "this loop's findings are all
 			// dismissed" or "it has found nothing in 12 runs" when the user asks about their automation.
@@ -640,7 +642,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const view = ownerOf(host);
 			const nextRun = (j: ListedJob) => nextRunForTool(j, nowMs, view);
 			const heldBy = (j: ListedJob) => { const where = whereRuns(j, view); return where.kind === "terminal" ? where.pid : undefined; };
-			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: jobsOf(host).jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, proposed: j.proposed ? true : undefined, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: runningRunForTool(j, host), last_due_at: j.status.due, last_fired_at: j.status.fired, last_completed_at: j.status.completed, last_error: j.status.error ? previewRedacted(j.status.error, 120) : undefined, consecutive_failures: j.status.streak || undefined, skipped_overlap_count: j.status.collapsed, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: whereRuns(j, view).kind === "asleep" || undefined, held_by_pid: heldBy(j), queued: queuedForTool(j, host, nowMs), created_at: j.createdAt })) } };
+			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: jobsOf(host).jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, proposed: j.proposed ? true : undefined, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: runningRunForTool(j, host), last_due_at: j.status.due, last_fired_at: j.status.fired, last_completed_at: j.status.completed, last_error: j.status.error ? previewRedacted(j.status.error, 120) : undefined, consecutive_failures: j.status.streak || undefined, skipped_overlap_count: j.status.collapsed, next_wake: j.status.wake, quiet_until: j.status.quiet && Date.parse(j.status.quiet.until) > nowMs ? j.status.quiet : undefined, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: whereRuns(j, view).kind === "asleep" || undefined, held_by_pid: heldBy(j), queued: queuedForTool(j, host, nowMs), created_at: j.createdAt })) } };
 		},
 	});
 
@@ -705,4 +707,45 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		},
 	});
 	return scope.hop === 0 ? defs : defs.filter((d) => !HOP0_ONLY.has(d.name));
+}
+
+/** What `wake_me` reads and writes: the job whose run calls it, and nothing else. */
+export interface WakeMeHost {
+	/** The job whose run this is, from the runner's request: never from the model's input. */
+	readonly jobId: string;
+	readonly runId: string;
+	job(): LoopJob | undefined;
+	readonly clock: Pick<ClockStore, "read" | "setFollowup">;
+	/** The run log, for the follow-ups of the last 24 hours. */
+	runs(): readonly RunRecord[];
+	now?(): number;
+}
+
+/**
+ * `wake_me` (design 3.3): a loop sets one follow-up for itself. Offered in a loop's run only, whatever
+ * the job's `--tools` say (src/sdk-runner.ts adds it); it writes `clock.json` and only for its job.
+ */
+export function wakeMeTool(host: WakeMeHost): ToolDefinition<any, any> {
+	const definition: ToolDefinition<TSchema, { set: boolean; at?: string; quiet?: boolean }> = {
+		name: "wake_me",
+		label: "Wake this loop",
+		description: `Run this loop once more at a time you choose, with a note of what to look at then. when: "in 20m", or "at 2026-11-16T09:00+08:00" (an ISO time with its offset); at least 60 seconds and at most 7 days ahead. note: at most ${WAKE_NOTE_MAX} characters; the run it starts reads it under [woken]. quiet: also skip this loop's scheduled runs before that time ("nothing before Monday"). One wake per loop: a second call replaces everything the first set. At most ${WAKE_RUNS_PER_DAY} runs in 24 hours start from wakes. A wake starts a new session: put what it needs in the note and your notes.`,
+		parameters: Type.Object({
+			when: Type.String({ description: '"in <duration>" (in 20m, in 2h) or "at <ISO time with its offset>"' }),
+			note: Type.String({ description: `What to look at then, at most ${WAKE_NOTE_MAX} characters.` }),
+			quiet: Type.Optional(Type.Boolean({ description: "Also skip this loop's scheduled runs before that time." })),
+		}),
+		async execute(_id, params) {
+			const now = host.now?.() ?? Date.now();
+			const job = host.job();
+			if (!job || !job.stateful) return { content: [{ type: "text", text: "not set: this loop is no longer in the store." }], isError: true, details: { set: false } };
+			const p = params as { when: string; note: string; quiet?: boolean };
+			const clock = host.clock.read().jobs[job.id];
+			const answer = decideWake({ when: String(p.when ?? ""), note: String(p.note ?? ""), quiet: p.quiet === true }, { job, clock, runs: host.runs(), now });
+			if ("refused" in answer) return { content: [{ type: "text", text: answer.refused }], isError: true, details: { set: false } };
+			const replaced = host.clock.setFollowup(job.id, { at: answer.at, note: answer.note, set_by: host.runId }, answer.quiet, now);
+			return { content: [{ type: "text", text: wakeSetText(job, clock, answer, replaced, now) }], details: { set: true, at: answer.at, quiet: answer.quiet } };
+		},
+	};
+	return definition as ToolDefinition<any, any>;
 }

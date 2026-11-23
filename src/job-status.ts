@@ -186,6 +186,18 @@ export interface ListedStatus {
 	readonly errorIs?: { readonly kind: "failed"; readonly at: string } | { readonly kind: "note" } | { readonly kind: "waiting"; readonly since: string };
 	/** The run going now. */
 	readonly run?: RunningMarker;
+	/** The follow-up the loop set for itself (`wake_me`): when, and its note. */
+	readonly wake?: { readonly at: string; readonly note: string };
+	/** The loop asked for no scheduled run before this (`wake_me` with quiet), and why. Shown while it is ahead. */
+	readonly quiet?: { readonly until: string; readonly why: string };
+}
+
+/** What the loop set for itself, as the lists show it: from its clock entry, for a loop only. */
+function wakeStatus(clock: JobClock | undefined): Pick<ListedStatus, "wake" | "quiet"> {
+	return {
+		...(clock?.followup ? { wake: { at: clock.followup.at, note: clock.followup.note } } : {}),
+		...(clock?.quietUntil !== undefined ? { quiet: { until: clock.quietUntil, why: clock.quietWhy ?? "" } } : {}),
+	};
 }
 
 /** A job as every list shows it: the definition, and its status from its clock, its rows and its run log. */
@@ -243,6 +255,7 @@ export function listedJob(job: LoopJob, clock: JobClock | undefined, rows: reado
 			...counts,
 			...error,
 			...(claim ? { run: { runId: claim.run.id, pid: claim.run.pid, startedAt: claim.run.started_at } } : {}),
+			...wakeStatus(clock),
 		},
 	};
 }

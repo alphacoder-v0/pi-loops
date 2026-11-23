@@ -87,6 +87,18 @@ All notable changes to pi-loops are documented here. The format follows
   field when it writes the file. 0.24.2 ignores a gate that is not a path: such a rule costs it one
   model call each poll, as a rule with no gate does.
 
+### Added
+
+- **A loop sets one wake for itself with `wake_me`.** Every run of a loop has the tool, whatever the
+  job's `--tools` say. `wake_me({ when, note, quiet })` runs the loop once more at `when` (`in 20m`,
+  or `at <ISO time with its offset>`), and the run reads `note` in a new `[woken]` block of its
+  prompt. With `quiet`, the loop's scheduled runs before that time are skipped. A wake is 60 seconds
+  to 7 days ahead; a second call replaces the first; at most 24 runs in 24 hours start from wakes.
+  A wake that comes due while a scheduled run waits joins that run. `/cron` and the page's loop row
+  show `next wake …` and `quiet until …`; `/cron set <ref> --wake -` and the row's ✕ remove them;
+  `/cron runs` says `woke itself: "<note>"`. The loop prompt's output protocol has one more line,
+  about `wake_me`. See docs/loops.md, "A loop wakes itself".
+
 ### Changed
 
 - **A rule that waits for a path keeps its last look in `clock.json`.** How many looks found the

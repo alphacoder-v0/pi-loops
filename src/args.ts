@@ -150,6 +150,8 @@ export interface SetArgs {
 	prompt?: string;
 	/** Jobs only: already parsed, so a typo is rejected before it can be stored. */
 	schedule?: Schedule;
+	/** Jobs only: `--wake -` removes what a loop set for itself with `wake_me` (its follow-up and its quiet). */
+	wake?: null;
 }
 
 export interface SetOptions {
@@ -163,7 +165,7 @@ export interface SetOptions {
  * `--model -` (or `current`) removes the pin.
  */
 export function parseSetArgs(input: string, opts: SetOptions = {}): SetArgs {
-	const usage = `usage: /cron|/triggers set <id> [--model <provider/id>|-] [--thinking <level>|-] [--timeout <dur>|-] [--name <n>|-]${opts.job ? ' [--tools a,b|-] [--prompt "<text>"] [--schedule "<expr>"]' : ""}`;
+	const usage = `usage: /cron|/triggers set <id> [--model <provider/id>|-] [--thinking <level>|-] [--timeout <dur>|-] [--name <n>|-]${opts.job ? ' [--tools a,b|-] [--prompt "<text>"] [--schedule "<expr>"] [--wake -]' : ""}`;
 	const tokens = tokenize(input);
 	const out: SetArgs = { ref: "" };
 	let touched = 0;
@@ -189,6 +191,11 @@ export function parseSetArgs(input: string, opts: SetOptions = {}): SetArgs {
 		// A plain job's `--tools` was inert in 0.22 and caps its turns since 0.23: `-` is how such a job
 		// is uncapped without remove-and-re-add. A rule has no tools of its own.
 		else if (opts.job && t === "--tools") out.tools = clear ? null : val.split(",").map((s) => s.trim()).filter(Boolean);
+		// A wake is the loop's to set (`wake_me`); a person can only take it away.
+		else if (opts.job && t === "--wake") {
+			if (val !== "-") throw new Error("--wake takes - : it removes the wake a loop set for itself (a loop sets one with wake_me)");
+			out.wake = null;
+		}
 		// Rewording a loop or moving it to another hour used to mean remove-and-re-add, which mints a
 		// new id — and the notes a stateful loop has been accumulating live at `state/<id>.md`.
 		else if (opts.job && (t === "--prompt" || t === "--schedule")) {

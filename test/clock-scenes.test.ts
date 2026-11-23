@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { proofOf, landed, plainRunId } from "../src/engine.ts";
-import { ClockStore, decideTick, writeSlot, commitSlot, type ClockFile, type Mine } from "../src/clock.ts";
+import { ClockStore, applyFollowup, decideTick, writeSlot, commitSlot, type ClockFile, type Mine } from "../src/clock.ts";
 import { withFileLockSync, writeFileAtomic } from "../src/lock.ts";
 import { RequestStore, type Row } from "../src/requests.ts";
 import { stamp } from "../src/schedule.ts";
@@ -117,4 +117,31 @@ test("[scene-skip-leaves-fired] A late ticker skips a missed slot and commits it
 	assert.equal(clock.read().jobs[job.id].fired, initial.jobs[job.id].fired);
 	assert.equal(clock.read().jobs[job.id].runs, initial.jobs[job.id].runs);
 	assert.deepEqual(requests.list(decision.lane), []);
+});
+
+test("[scene-followup-T2] A tick writes a follow-up's row and dies before it takes the follow-up: the next tick writes no second row, whether the row waits or already ran.", () => {
+	for (const ran of [false, true]) {
+		const { requests, clock } = fixture();
+		clock.seed({ [job.id]: { slot: stamp(base), fired: stamp(base), runs: 1 } });
+		clock.setFollowup(job.id, { at: stamp(base - 1_000), note: "check CI on #12", set_by: "run-a" }, false, base - 600_000);
+		const tick = decideTick({ jobs: [job], clock: clock.read(), view: { now: base, startedAt: base, tickMs: 30_000, catchUp: true, budgetOver: false, kind: "background", self, mine: new Map<string, Mine>([[job.id, { kind: "loop" }]]), read: new Map([[job.id, { rows: [], cwdMissing: false, history: undefined }]]) } });
+		const woke = tick.find((d) => d.do === "followup");
+		assert.ok(woke && woke.do === "followup" && woke.write === "row", "the first tick writes the follow-up's row");
+		if (!woke || woke.do !== "followup" || woke.write !== "row") return;
+		// T2, then the process dies: the follow-up is still in clock.json.
+		assert.equal(requests.appendIfAbsent(woke.row), true);
+		assert.equal(clock.read().jobs[job.id].followup?.id, woke.followup.id);
+		let spent: Set<string> | undefined;
+		if (ran) {
+			assert.equal(requests.claim(woke.lane, woke.row.id, { id: woke.row.id, pid: self.pid, started_at: stamp(base + 1_000) } as never), true);
+			requests.remove(woke.lane, [woke.row.id]);
+			spent = new Set([woke.row.id]);
+		}
+		const again = decideTick({ jobs: [job], clock: clock.read(), view: { now: base + 30_000, startedAt: base + 30_000, tickMs: 30_000, catchUp: true, budgetOver: false, kind: "background", self, mine: new Map<string, Mine>([[job.id, { kind: "loop" }]]), read: new Map([[job.id, { rows: requests.list(woke.lane), cwdMissing: false, history: spent ? { ordinal: 1, streak: 0, interrupted: [], spent } : undefined }]]) } }).find((d) => d.do === "followup");
+		assert.deepEqual(again && again.do === "followup" ? [again.write, again.write === "none" ? again.why : undefined] : undefined, ["none", ran ? "spent" : "own-row"]);
+		if (!again || again.do !== "followup") return;
+		assert.deepEqual(applyFollowup(again, { requests, clock }, base + 30_000), { job: job.id, followup: woke.followup.id, t2: "nothing", t3: "moved" });
+		assert.deepEqual(requests.list(woke.lane).map((row) => row.id), ran ? [] : [woke.row.id], "one row, never two");
+		assert.equal(clock.read().jobs[job.id].followup, undefined);
+	}
 });
