@@ -4,6 +4,7 @@ import { personRow, plainJobRow, queuedPrompt, recipeRow } from "../src/engine.t
 import type { InboxEntry } from "../src/inbox.ts";
 import { heldJobsNotice, jobLines, leftConversationLine, panelLines, pickQueued, proposalsNotice, queueLines, statusField, statusWord, toolsCapNotice, loopLabel } from "../src/job-lines.ts";
 import { formatLocal } from "../src/schedule.ts";
+import { capWords } from "../src/guard.ts";
 import { parseSchedule, stamp } from "../src/schedule.ts";
 import type { RunRecord } from "../src/store.ts";
 import { fromV2, type V2Job } from "../src/convert-v2.ts";
@@ -214,9 +215,10 @@ test("the one-time start lines: every conversation's plain jobs, the ones --tool
 	assert.equal(heldJobsNotice([a, b, c, loop, asleep, disabled]), "[cron] 3 plain jobs in 2 conversations run in the background while their conversation is closed (once it has been opened in this pi-loops), and each run is a model turn — /cron all lists them", "every conversation's, not only the ones a lease is known for");
 	assert.equal(heldJobsNotice([a, loop]), "[cron] 1 plain job in 1 conversation runs in the background while its conversation is closed (once it has been opened in this pi-loops), and each run is a model turn — /cron all lists them", "one: singular, never (s)");
 	assert.equal(heldJobsNotice([loop, asleep, disabled]), undefined);
-	assert.equal(toolsCapNotice([a, b, c, loop, disabled]), "[cron] 2 plain jobs have --tools, which now limit their turns (a command outside the list is not run: pi-loops asks you, in the conversation and in /inbox; another tool outside it is refused): remind-b, cron-c — /cron set <ref> --tools - clears it");
-	assert.equal(toolsCapNotice([b, loop]), "[cron] 1 plain job has --tools, which now limit its turns (a command outside the list is not run: pi-loops asks you, in the conversation and in /inbox; another tool outside it is refused): remind-b — /cron set <ref> --tools - clears it");
-	assert.equal(toolsCapNotice([a, loop]), undefined, "a loop's tools are its own; a plain job without any is uncapped");
+	assert.equal(toolsCapNotice([a, b, c, loop, disabled], capWords), `[cron] 2 plain jobs have --tools, which now limit their turns: remind-b, cron-c — /cron set <ref> --tools - clears it. ${capWords({ tools: [] }).person}`, "what the turns do is the guard's own words");
+	assert.ok(toolsCapNotice([b], capWords)!.endsWith(" — /cron set <ref> --tools - clears it. A dangerous command, or a command outside the job's tools, is not run: pi-loops asks you, in the conversation and in the inbox, and the turn goes on without it. A call of cron_remove, set_cron_job_state, remove_trigger or set_trigger_state is asked about the same way. Another built-in tool outside them is refused, and so is a tool of another extension or an MCP server. pi-loops' other tools run."), "which say a command outside the list is asked about and a tool of an MCP server is refused");
+	assert.equal(toolsCapNotice([b, loop], capWords), `[cron] 1 plain job has --tools, which now limit its turns: remind-b — /cron set <ref> --tools - clears it. ${capWords({ tools: [] }).person}`);
+	assert.equal(toolsCapNotice([a, loop], capWords), undefined, "a loop's tools are its own; a plain job without any is uncapped");
 	assert.equal(leftConversationLine("01a09fef-2222-7abc", 2, true), "[cron] the conversation you left (01a09fef-2222) has 2 plain jobs that run in the background now, each run a model turn — /cron all lists them, /cron disable <ref> stops one");
 	assert.match(leftConversationLine("01a09fef-2222", 1, false)!, /has 1 plain job that runs in the background while a pi window is open \(\[host\] auto = false\)/);
 	assert.equal(leftConversationLine("01a09fef-2222", 0, true), undefined);

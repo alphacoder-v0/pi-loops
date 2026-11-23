@@ -50,10 +50,19 @@ All notable changes to pi-loops are documented here. The format follows
   the rule. In a pi with no UI (`pi -p`) nothing changed: `cron_create` creates the job at once,
   and `new_trigger` is refused because nobody can confirm it.
 - **A scheduled turn in an open window no longer opens the 60-second dialog for a dangerous
-  command.** The call is blocked, the question goes to the inbox (and to pi's selector when the
-  turn settles), and a yes runs the call in a later turn, not in the same one. A tool that is not a
-  command and that the job did not declare is refused, and nobody is asked, since a card cannot
-  show what it would do. Before, the dialog let you allow it.
+  command.** The call is blocked, the question goes to the inbox (and to pi's selector when the turn
+  settles), and a yes runs the call in a later turn, not in the same one. A job made with `--tools`
+  keeps that list. A dangerous command, or a command outside the job's tools, is not run: pi-loops
+  asks you, in the conversation and in the inbox, and the turn goes on without it. A call of
+  cron_remove, set_cron_job_state, remove_trigger or set_trigger_state is asked about the same way.
+  Another built-in tool outside them is refused, and so is a tool of another extension or an MCP
+  server. pi-loops' other tools run. A job made without it keeps the chat's built-in tools. A
+  dangerous command, or a command outside the job's built-in tools, is not run: pi-loops asks you,
+  in the conversation and in the inbox, and the turn goes on without it. A call of cron_remove,
+  set_cron_job_state, remove_trigger or set_trigger_state is asked about the same way. Another
+  built-in tool outside them is refused. pi-loops' other tools, and a tool of another extension or
+  an MCP server, run. Nobody is asked about a tool that is refused, since a card cannot show what it
+  would do. Before, the dialog let you allow it.
 - **Close every pi-loops 0.22 window before you upgrade.** This version no longer holds such a
   window back, and a window no longer warns you that an older one has the same conversation open.
   Windows of 0.23 and later are not affected. While a 0.22 window stays open:

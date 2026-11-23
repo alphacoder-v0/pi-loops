@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type AskOrigin, type Call, type DeclaredCap, type Grant, type ResolvedCap, askFindingId, askId, callKey, inputHash, questionFinding, recordedCap, resolveCap } from "../src/ask.ts";
-import { type CallVerdict, type GuardDeps, type GuardPolicy, type GuardSeed, type GuardTurn, type Question, type ToolCallFacts, CONTROL_PLANE_TOOLS, GuardSeats, READ_ONLY_AUTOMATION_TOOLS, SELF_GATED_AUTOMATION_TOOLS, guardCall, guardTurn, judgeCall, subagentGuardExtension, unhandledAsk } from "../src/guard.ts";
+import { type CallVerdict, type GuardDeps, type GuardPolicy, type GuardSeed, type GuardTurn, type Question, type ToolCallFacts, CONTROL_PLANE_TOOLS, GuardSeats, READ_ONLY_AUTOMATION_TOOLS, SELF_GATED_AUTOMATION_TOOLS, capWords, guardCall, guardTurn, judgeCall, subagentGuardExtension, unhandledAsk } from "../src/guard.ts";
 import { Inbox, type InboxEntry, type InboxEntry as Finding, type NewFinding } from "../src/inbox.ts";
 import { dangerousCommandReason } from "../src/danger.ts";
 import { decideDrain, goalRow, modeOf, personRow, plainJobRow, plainRunId, recipeRow, requestFingerprint, ringProduced } from "../src/engine.ts";
@@ -1208,4 +1208,89 @@ test("[M5b.9] a window's guard seats a scheduled turn in the seats it is given, 
 	u.clockFired();
 	assert.equal((await u.call({ toolName: "cron_remove", input: { ref: "x" } }))?.block, true);
 	assert.equal(unsaved.of(u.ctx.sessionManager), undefined);
+});
+
+/**
+ * The words every surface shows of a job's cap (`capWords`), held to `judgeCall`: for each class of
+ * call and each cap shape, the verdict `judgeCall` gives decides what every sentence that names the
+ * class must say. A class no sentence names must run.
+ */
+test("[R2-2] capWords says, for each class of call and each cap, what judgeCall does with it", () => {
+	const conversation = "0199aaaa-0000-7000-8000-0000000000a1" as GuardTurn["lane"];
+	const VERBS = { asked: /\bask(s|ed)?\b/, refused: /\brefused\b/, runs: /\bruns?\.$/ } as const;
+	const verdictOf = (v: CallVerdict): keyof typeof VERBS => (v.kind === "question" ? "asked" : v.kind === "refuse" ? "refused" : v.kind === "allow" ? "runs" : assert.fail(`no words for ${v.kind}`));
+	const classes: { name: string; names: string | undefined; call: { toolName: string; input?: unknown }; bash: boolean }[] = [
+		{ name: "a safe command outside the cap", names: "a command outside", call: { toolName: "bash", input: { command: "ls -la" } }, bash: false },
+		{ name: "a dangerous command", names: "a dangerous command", call: { toolName: "bash", input: { command: PUSH } }, bash: true },
+		{ name: "a built-in tool outside the cap", names: "another built-in tool", call: { toolName: "write", input: { path: "notes.md", content: "x" } }, bash: false },
+		{ name: "a control-plane tool", names: CONTROL_PLANE_TOOLS[0], call: { toolName: "cron_remove", input: { ref: "x" } }, bash: false },
+		{ name: "an MCP tool", names: "an MCP server", call: { toolName: "mcp__github__create_issue", input: { title: "x" } }, bash: false },
+		{ name: "another extension's tool", names: "another extension", call: { toolName: "web_search", input: { q: "x" } }, bash: false },
+		{ name: "pi-loops' other tools", names: "pi-loops' other tools", call: { toolName: READ_ONLY_AUTOMATION_TOOLS[0], input: {} }, bash: false },
+		{ name: "a declared tool", names: undefined, call: { toolName: "read", input: { path: "notes.md" } }, bash: false },
+	];
+	const shapes = [
+		(list: string[]) => ({ tools: list }),
+		(list: string[]) => ({ builtinTools: list }),
+		() => undefined,
+	];
+	const rows: string[] = [];
+	for (const shape of shapes) {
+		const words = capWords(shape(["read"]));
+		assert.equal(words.model, words.person.replaceAll("asks you,", "asks the person,"), "the model reads what a person reads, of the person");
+		const sentences = words.person.split(/(?<=\.)\s+/);
+		for (const c of classes) {
+			const declared = shape(c.bash ? ["read", "bash"] : ["read"]);
+			const verdict = verdictOf(judgeCall({ ...c.call, toolCallId: "c1" }, turn({ lane: conversation, conversationTurn: true, ...(declared ? { declared } : {}) }), cfg));
+			const naming = c.names === undefined ? [] : sentences.filter((s) => s.toLowerCase().includes(c.names!.toLowerCase()));
+			const shown = JSON.stringify(declared ?? "none");
+			rows.push(`${shown} ${c.name}: ${verdict}`);
+			if (!naming.length) {
+				assert.equal(verdict, "runs", `${shown}: the words name no ${c.name}, so judgeCall must let it run`);
+				continue;
+			}
+			for (const s of naming) {
+				const said = (Object.keys(VERBS) as (keyof typeof VERBS)[]).filter((k) => VERBS[k].test(s));
+				assert.deepEqual(said, [verdict], `${shown}: judgeCall's verdict on ${c.name}: ${verdict}; the words say "${s}"`);
+			}
+		}
+	}
+	assert.deepEqual(rows, [
+		'{"tools":["read"]} a safe command outside the cap: asked',
+		'{"tools":["read","bash"]} a dangerous command: asked',
+		'{"tools":["read"]} a built-in tool outside the cap: refused',
+		'{"tools":["read"]} a control-plane tool: asked',
+		'{"tools":["read"]} an MCP tool: refused',
+		'{"tools":["read"]} another extension\'s tool: refused',
+		'{"tools":["read"]} pi-loops\' other tools: runs',
+		'{"tools":["read"]} a declared tool: runs',
+		'{"builtinTools":["read"]} a safe command outside the cap: asked',
+		'{"builtinTools":["read","bash"]} a dangerous command: asked',
+		'{"builtinTools":["read"]} a built-in tool outside the cap: refused',
+		'{"builtinTools":["read"]} a control-plane tool: asked',
+		'{"builtinTools":["read"]} an MCP tool: runs',
+		'{"builtinTools":["read"]} another extension\'s tool: runs',
+		'{"builtinTools":["read"]} pi-loops\' other tools: runs',
+		'{"builtinTools":["read"]} a declared tool: runs',
+		'"none" a safe command outside the cap: runs',
+		'"none" a dangerous command: asked',
+		'"none" a built-in tool outside the cap: runs',
+		'"none" a control-plane tool: asked',
+		'"none" an MCP tool: runs',
+		'"none" another extension\'s tool: runs',
+		'"none" pi-loops\' other tools: runs',
+		'"none" a declared tool: runs',
+	], "every class under every cap was judged");
+});
+
+test("[R2-2] the skill, docs/loops.md and the changelog carry capWords' sentences as they are", () => {
+	const read = (file: string) => fs.readFileSync(path.join(process.cwd(), file), "utf8").replace(/\s+/g, " ");
+	const tools = capWords({ tools: [] });
+	const builtins = capWords({ builtinTools: [] });
+	assert.ok(read("skills/pi-loops/SKILL.md").includes(`under the dangerous-command guard. ${builtins.model} In the background`), "SKILL.md: a plain job keeps the chat's built-in tools");
+	for (const file of ["docs/loops.md", "CHANGELOG.md"]) {
+		const text = read(file);
+		assert.ok(text.includes(`A job made with \`--tools\` keeps that list. ${tools.person}`), `${file}: a job with --tools`);
+		assert.ok(text.includes(`A job made without it keeps the chat's built-in tools. ${builtins.person}`), `${file}: a job with the chat's built-in tools`);
+	}
 });

@@ -273,14 +273,16 @@ test("[M5b.3] a question from a scheduled prompt in a conversation: the card's w
 	assert.deepEqual([loopCard.headline, loopCard.waits], ["deploy-check asks to run a command", "deploy-check went on without it"], "a loop is no scheduled prompt in a conversation");
 });
 
-test("[6.4] a yes from the page to a question a conversation's turn asked says it runs in that conversation after the current turn", () => {
+test("[6.4] a yes from the page to a question a conversation's turn asked says it runs in that conversation after the current turn, only while a window has the conversation open", () => {
 	const conversation = "0199aaaa-0000-7000-8000-0000000000a1";
 	const asked = entry({ status: "claimed", answered_by: "page", answer: { state: "pending", at: AT }, ask: { ...QUESTION, lane: conversation } });
-	assert.equal(yesPageLine({ said: "Y1", finding: asked }, "deploy-check", true), "Approved. It runs in this conversation after the current turn.");
-	assert.equal(yesPageLine({ said: "Y1", finding: { ...asked, ask: QUESTION } }, "nightly", true), "Waiting to run", "a loop's question shows its state");
-	assert.equal(answerLine(asked), "Approved. It runs in this conversation after the current turn.", "the card's line after the yes says the same, not Waiting to run");
-	assert.equal(answerLine(asked, { waiting: "the job is disabled" } as Row), "Waiting to run: the job is disabled", "a row that says why it waits still says why");
-	assert.equal(answerLine({ ...asked, ask: QUESTION }), "Waiting to run", "a loop's pending yes");
+	assert.equal(yesPageLine({ said: "Y1", finding: asked }, "deploy-check", true, true), "Approved. It runs in this conversation after the current turn.");
+	assert.equal(yesPageLine({ said: "Y1", finding: asked }, "deploy-check", true, false), "Waiting to run", "a closed conversation has no current turn: the plain pending line");
+	assert.equal(yesPageLine({ said: "Y1", finding: { ...asked, ask: QUESTION } }, "nightly", true, true), "Waiting to run", "a loop's question shows its state");
+	assert.equal(answerLine(asked, undefined, undefined, true), "Approved. It runs in this conversation after the current turn.", "the card's line after the yes says the same, not Waiting to run");
+	assert.equal(answerLine(asked), "Waiting to run", "and, while no window has the conversation open, the plain pending line");
+	assert.equal(answerLine(asked, { waiting: "the job is disabled" } as Row, undefined, true), "Waiting to run: the job is disabled", "a row that says why it waits still says why");
+	assert.equal(answerLine({ ...asked, ask: QUESTION }, undefined, undefined, true), "Waiting to run", "a loop's pending yes");
 });
 
 test("[6.4] /inbox claim on a question of this window's own conversation says it runs here after the current turn, with no card", () => {

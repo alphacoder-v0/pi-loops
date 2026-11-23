@@ -26,7 +26,7 @@ import { failingJobs } from "./job-health.ts";
 import { type JobHistory, type ListedJob, listedJob, runHistory } from "./job-status.ts";
 import type { ClockFile } from "./clock.ts";
 import { clockStore } from "./stores.ts";
-import { loopLane } from "./lane.ts";
+import { loopLane, parseLane } from "./lane.ts";
 import { loopSignal, type LoopSignal, SIGNAL_WINDOW_MS } from "./job-signal.ts";
 import { applyTune, rowSignal, scheduleAudit, suggestTune } from "./job-tune.ts";
 import { HELD_READ_MAX_BYTES } from "./held-read.ts";
@@ -1798,6 +1798,14 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		}
 	}
 
+	/** Whether a window has the conversation of `e`'s question open and runs its turns: where a yes to it runs after the current turn. */
+	function questionWindowOpen(e: InboxEntry): boolean {
+		const lane = e.ask?.lane;
+		if (lane === undefined || parseLane(lane)?.kind !== "conversation") return false;
+		const holder = leaseOf(lane)?.holder;
+		return holder?.kind === "terminal" && holderAlive(holder) && holderDelivers(holder);
+	}
+
 	/**
 	 * The conversation `sessionId` names, when it is still there: open in the page, or a session file
 	 * a lease or pi's own sessions directory names. A finding's `session_id` is data from a file, so it
@@ -1904,7 +1912,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			.slice(0, INBOX_CARDS_MAX)
 			.map((c) => {
 				const e = byId.get(c.id)!;
-				const line = answerLine(e, answerRowOf(e), runSummary(e));
+				const line = answerLine(e, answerRowOf(e), runSummary(e), questionWindowOpen(e));
 				return { ...c, ...(line ? { line } : {}), ...(e.answer?.state === "pending" ? { cancel: true as const } : {}) };
 			});
 		// What happened in the project while nobody looked: the terminal's session-start line counts the same (src/seen.ts).
@@ -2111,7 +2119,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const lane = said.said === "Y1" ? said.lane : entry.lane;
 		const kept = !!entry.transcript && fs.existsSync(entry.transcript);
 		audit.appendAudit({ cwd: entry.cwd, type: "request", traceId: entry.id, state: "claimed", sourceLabel: entry.source, eventLabel: lane, details: { finding: entry.id, from: "page", said: said.said, ...(said.said === "Y1" && !said.queued ? { queued: false } : {}) } });
-		return { status: 200, body: { ok: true, id: entry.id, said: said.said, ...(lane ? { lane } : {}), line: yesPageLine(said, whoOf(entry, lane), kept) } };
+		return { status: 200, body: { ok: true, id: entry.id, said: said.said, ...(lane ? { lane } : {}), line: yesPageLine(said, whoOf(entry, lane), kept, questionWindowOpen(entry)) } };
 	}
 
 	/** `POST /inbox/dismiss`: a person's no. A reason (a chip's words, or typed, at most 500 characters) goes to the loop's next run; none is a silent dismiss. */

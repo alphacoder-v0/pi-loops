@@ -65,14 +65,21 @@ pi-loops loads a conversation's extensions once for its turns and releases them 
 one. Something whose result should not land in a conversation (a nightly
 digest, a watch) is a loop: `--stateful`, with the inbox as its outlet.
 
-A plain job's turn is a scheduled turn wherever it runs, and it runs under the job's own `--tools`
-and the dangerous-command policy (below) in an open window as in the background. So does the turn an
-MCP server's `inject_and_run` push starts ([mcp.md](mcp.md)), with no declared tools: the
-dangerous-command policy alone. A dangerous command, or a command outside the job's tools, is not
-run: pi-loops asks you, in the conversation and in the inbox, and the turn goes on without it
-(below). This is the same in an open window and in the background. A tool outside the job's tools
-that is not a command is refused, since a card cannot show what it would do. A message you send
-into that turn makes the rest of it yours and nothing asks again. Your own turns, a `/goal`
+A plain job's turn is a scheduled turn wherever it runs, and it runs under the job's tools and the
+dangerous-command policy (below) in an open window as in the background. So does the turn an MCP
+server's `inject_and_run` push starts ([mcp.md](mcp.md)), with no declared tools: the
+dangerous-command policy alone. A job made with `--tools` keeps that list. A dangerous command, or a
+command outside the job's tools, is not run: pi-loops asks you, in the conversation and in the
+inbox, and the turn goes on without it. A call of cron_remove, set_cron_job_state, remove_trigger or
+set_trigger_state is asked about the same way. Another built-in tool outside them is refused, and so
+is a tool of another extension or an MCP server. pi-loops' other tools run. A job made without it
+keeps the chat's built-in tools. A dangerous command, or a command outside the job's built-in tools,
+is not run: pi-loops asks you, in the conversation and in the inbox, and the turn goes on without
+it. A call of cron_remove, set_cron_job_state, remove_trigger or set_trigger_state is asked about
+the same way. Another built-in tool outside them is refused. pi-loops' other tools, and a tool of
+another extension or an MCP server, run. This is the same in an open window and in the background. A
+tool that is refused is not asked about, since a card cannot show what it would do. A message you
+send into that turn makes the rest of it yours and nothing asks again. Your own turns, a `/goal`
 continuation, a recipe hand-off, `/new-trigger` and `/cron run` never ask.
 pi-loops' own create tools are not asked about: `cron_create` in such a turn makes a job capped to
 the turn's tools, as a job a background run makes is capped to that run's, and `new_trigger`

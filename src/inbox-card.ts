@@ -335,8 +335,10 @@ const MAY_HAVE_RUN = "The command may or may not have run.";
  * there is nothing to say: a finding that is not claimed, or an answer this version cannot read.
  * `row` is the answer's `ans-` row, for why a pending one waits; `summary` is the run's summary
  * while the run log has its record. What came from a run is redacted and screened.
+ * `conversationOpen`: a window has the question's conversation open now and runs its turns, which
+ * only the caller can see (its lease).
  */
-export function answerLine(finding: InboxEntry, row?: Row, summary?: string): string | undefined {
+export function answerLine(finding: InboxEntry, row?: Row, summary?: string, conversationOpen = false): string | undefined {
 	if (finding.status === "claimed" && finding.answer === undefined && finding.answered_by === undefined) return "Claimed before the upgrade.";
 	const status = answerStatus(finding, row);
 	if (!status) return undefined;
@@ -344,8 +346,8 @@ export function answerLine(finding: InboxEntry, row?: Row, summary?: string): st
 	switch (status.status) {
 		case "pending":
 			if (why) return `Waiting to run: ${why}`;
-			// A conversation's question runs there, as a turn after the current one (design 6.4).
-			return finding.ask && parseLane(finding.ask.lane)?.kind === "conversation" ? CONVERSATION_YES : "Waiting to run";
+			// A conversation's question runs in the window that has it open, as a turn after the current one (design 6.4).
+			return conversationOpen && finding.ask && parseLane(finding.ask.lane)?.kind === "conversation" ? CONVERSATION_YES : "Waiting to run";
 		case "started":
 			return "Running";
 		case "done": {
@@ -400,11 +402,11 @@ export function clearLeftTail(questions: number): string {
  * What a card says after a yes from the page (design 6.1, 6.2). A question shows its state at once;
  * any other finding says that it runs in the background, and from what when its transcript is gone.
  * `queued` is false when the yes was written and its row was not: nothing runs until the next tick
- * puts the row back (H1), and the card says that.
+ * puts the row back (H1), and the card says that. `conversationOpen` is `answerLine`'s.
  */
-export function yesPageLine(said: { said: "Y1"; finding: InboxEntry; queued?: boolean } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, transcriptKept: boolean): string {
+export function yesPageLine(said: { said: "Y1"; finding: InboxEntry; queued?: boolean } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, transcriptKept: boolean, conversationOpen = false): string {
 	if (said.said === "Y2") return `Not run (${said.why})`;
-	if (said.finding.ask) return answerLine(said.finding) ?? "Waiting to run";
+	if (said.finding.ask) return answerLine(said.finding, undefined, undefined, conversationOpen) ?? "Waiting to run";
 	if (said.queued === false) return "Your yes is saved, but its run could not be queued. pi-loops queues it again on its next tick.";
 	return transcriptKept ? "Running in the background, in the run that reported it." : `Running in the background. The run's transcript is gone, so ${who} starts from the finding's text.`;
 }

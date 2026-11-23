@@ -11,6 +11,7 @@ import { TriggerRuntime } from "../src/trigger-runtime.ts";
 import { plainJobRow } from "../src/engine.ts";
 import { parseSchedule } from "../src/schedule.ts";
 import { type ToolHost, automationTools, checkJobInput, createLoopJob, toolsDropped } from "../src/tools.ts";
+import { capWords } from "../src/guard.ts";
 import { fakeRunner } from "./fake-runner.ts";
 
 const ctx = { hasUI: false } as any;
@@ -434,7 +435,7 @@ test("cron_create says so while nothing runs in the background, as cron_list doe
 	}
 });
 
-test("cron_create tells the model a plain job's turns are capped, and that a command outside the cap is asked about and another tool refused (design 6.9)", async () => {
+test("cron_create tells the model a plain job's turns are capped, in the guard's own words: a command outside the cap is asked about, another built-in tool refused, an MCP server's tool runs (design 6.9)", async () => {
 	// The agent said "it will run at 9" without knowing that the run will stop and ask, or refuse,
 	// before a dangerous command or a tool outside the chat's built-ins.
 	const f = fixture();
@@ -443,10 +444,12 @@ test("cron_create tells the model a plain job's turns are capped, and that a com
 		// A scheduled turn creates at once; a person's own turn proposes (test/proposal.test.ts).
 		const host: ToolHost = { ...f.host, session: () => session, createJob: (input, scope) => createLoopJob(host, input, scope), scheduledTurn: () => true };
 		const plain = await automationTools({ hop: 0, actor: "tool" }, host).find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 5m", action: "ping" }, undefined, undefined, ctx);
-		assert.match(String(plain.content[0].text), /Its turns run with this chat's built-in tools \(read, bash\) under the dangerous-command guard: a dangerous command, or a command outside them, is not run: pi-loops asks the person, in the conversation and in the inbox, and the turn goes on without it\. Another tool outside them is refused\. In the background they also run without this window's -e extensions or flags\./);
+		const words = capWords({ builtinTools: ["read", "bash"] }).model;
+		assert.ok(String(plain.content[0].text).includes(`Its turns run with this chat's built-in tools (read, bash) under the dangerous-command guard. ${words} In the background they also run without this window's -e extensions or flags.`), "the guard's own words, for a cap of built-in tools");
+		assert.ok(words.includes("Another built-in tool outside them is refused. pi-loops' other tools, and a tool of another extension or an MCP server, run."), "a tool of an MCP server is not limited by built-in tools");
 		// The skill is what the model reads before it ever calls the tool: the same sentence, with no list.
 		const skill = fs.readFileSync(path.join(process.cwd(), "skills", "pi-loops", "SKILL.md"), "utf8");
-		assert.ok(skill.includes("Its turns run with the chat's built-in tools under the dangerous-command guard: a dangerous command, or a command outside them, is not run: pi-loops asks the person, in the conversation and in the inbox, and the turn goes on without it. Another tool outside them is refused. In the background they also run without this window's -e extensions or flags"), "SKILL.md says the same");
+		assert.ok(skill.includes(`Its turns run with the chat's built-in tools under the dangerous-command guard. ${words} In the background they also run without this window's -e extensions or flags`), "SKILL.md says the same");
 	} finally {
 	}
 });

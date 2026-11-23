@@ -20,6 +20,7 @@ import { type ListedJob, listedJob, runHistory } from "./job-status.ts";
 import { loopLane } from "./lane.ts";
 import { computeNext, formatLocal, formatSchedule, stamp } from "./schedule.ts";
 import { failurePause } from "./backoff.ts";
+import type { CapWords } from "./guard.ts";
 import type { LoopJob, RunRecord } from "./store.ts";
 import type { DynamicTriggerRule } from "./triggers.ts";
 
@@ -115,15 +116,16 @@ export function pickQueued(rows: readonly Row[], ref: string): Row | undefined {
 
 /**
  * The one-time line a session start says when plain jobs carry `--tools`: 0.22.8 stored the list
- * and never used it; now a command outside it is not run, and pi-loops asks the person; another tool outside it is refused. Undefined when
- * no enabled plain job has one. `names` are what `/cron set` takes.
+ * and never used it; now it limits their turns, as `words` says: src/guard.ts `capWords`, passed in
+ * so that this module, which the CLI loads, does not load pi's SDK with the guard. Undefined when no
+ * enabled plain job has one. `names` are what `/cron set` takes.
  */
-export function toolsCapNotice(jobs: readonly LoopJob[]): string | undefined {
+export function toolsCapNotice(jobs: readonly LoopJob[], words: (declared: { tools: readonly string[] }) => CapWords): string | undefined {
 	const capped = jobs.filter((j) => j.enabled && !j.stateful && j.tools?.length);
 	if (!capped.length) return undefined;
 	const names = capped.map((j) => j.name ?? j.id);
 	const one = capped.length === 1;
-	return `[cron] ${plural(capped.length, "plain job")} ${one ? "has" : "have"} --tools, which now limit ${one ? "its" : "their"} turns (a command outside the list is not run: pi-loops asks you, in the conversation and in /inbox; another tool outside it is refused): ${names.join(", ")} — /cron set <ref> --tools - clears it`;
+	return `[cron] ${plural(capped.length, "plain job")} ${one ? "has" : "have"} --tools, which now limit ${one ? "its" : "their"} turns: ${names.join(", ")} — /cron set <ref> --tools - clears it. ${words({ tools: capped[0].tools! }).person}`;
 }
 
 /**

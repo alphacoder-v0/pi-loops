@@ -1823,6 +1823,32 @@ test("GET /inbox lists the project's answers with design 6.1's line, and Cancel 
 		await page.stop();
 	}
 });
+
+test("GET /inbox says a yes to a conversation's question runs after the current turn only while a window has that conversation open", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		const at = stamp();
+		const call = { tool: "bash", tool_call_id: "c1", command: "git push --force origin main", input_sha256: "a".repeat(64), reason: "git push --force on main/master" };
+		const asked = (n: number, conversation: string) => finding({ id: `inb-${hex(n)}`, cwd: project, lane: conversation, status: "claimed", answered_by: "page", kind: "checkpoint", text: "Run it?", answer: { state: "pending", at }, ask: { kind: "call", id: `ask-${String(n).repeat(32)}`, lane: conversation, session_id: conversation, title: "nightly asks to run a command", call, created_at: at } });
+		writeInbox(page.loops, [asked(1, "conv-open"), asked(2, "conv-closed"), asked(3, "conv-aside")]);
+		const leases = new LeaseStore(page.loops);
+		const window = { kind: "terminal" as const, pid: process.pid, instance: "w", acquiredAt: new Date().toISOString(), mode: "tui" as const, pushServers: [] };
+		assert.ok("lease" in leases.acquire("conv-open", window, { cwd: project }));
+		assert.ok("lease" in leases.acquire("conv-aside", { ...window, instance: "w2" }, { cwd: project }));
+		assert.equal(leases.setAside("conv-aside", { ...window, instance: "w2" }, 1), true);
+		const listed = await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=s1`);
+		assert.deepEqual(new Map(listed.body.handled.map((c: any) => [c.id, c.line])), new Map([
+			[`inb-${hex(1)}`, "Approved. It runs in this conversation after the current turn."],
+			[`inb-${hex(2)}`, "Waiting to run"],
+			[`inb-${hex(3)}`, "Waiting to run"],
+		]), "a window holds the first; nobody holds the second; the third's window stands aside and runs nothing");
+	} finally {
+		await page.stop();
+	}
+});
 test("a no to a question from a conversation dismisses it with its reason, tells the conversation by its row, and says so", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-inbox-");
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));

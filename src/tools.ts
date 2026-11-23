@@ -31,6 +31,7 @@ import type { TriggerRuntime } from "./trigger-runtime.ts";
 import { sameProject, withinProject } from "./paths.ts";
 import { type TriggerStore, auditRule, cleanCondition, controlPlanePreflight, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
+import { capWords } from "./guard.ts";
 import { WATCH_ASK_HEAD } from "./watch-plan.ts";
 
 export interface ControlPlaneRequest {
@@ -410,7 +411,7 @@ async function createCron(host: ToolHost, scope: ToolScope, input: CreateJobInpu
 	const tools = job.tools ? `the tools ${job.tools.join(", ")}` : job.builtinTools ? `this chat's built-in tools (${job.builtinTools.join(", ") || "none"})` : "pi's default tools";
 	const where = job.stateful
 		? `Findings will appear in /inbox${job.verify ? " after an independent checker reviews them" : ""}. It runs in the background with ${tools}, not this window's -e extensions or flags.`
-		: `Its result will appear in this chat. While this chat is closed it still runs, in the background, and each run is a model turn. Its turns run with ${tools} under the dangerous-command guard: a dangerous command, or a command outside them, is not run: pi-loops asks the person, in the conversation and in the inbox, and the turn goes on without it. Another tool outside them is refused. In the background they also run without this window's -e extensions or flags.`;
+		: `Its result will appear in this chat. While this chat is closed it still runs, in the background, and each run is a model turn. Its turns run with ${tools} under the dangerous-command guard. ${capWords(job).model} In the background they also run without this window's -e extensions or flags.`;
 	const runsAt = whereRuns(job, ownerOf(host));
 	// Three lines — what was created, when it runs, what it will do — then where its output goes.
 	return {

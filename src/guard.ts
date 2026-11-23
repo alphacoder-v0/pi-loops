@@ -195,6 +195,29 @@ export function judgeCall(call: ToolCallFacts, turn: GuardTurn, cfg: GuardPolicy
 	return { kind: "question", ask: { kind: "call", call: { tool: call.toolName, tool_call_id: call.toolCallId, command, input_sha256: hash, reason } } };
 }
 
+/** What `capWords` says to each reader: the model is told of "the person", a person reads "you". */
+export interface CapWords {
+	readonly model: string;
+	readonly person: string;
+}
+
+/**
+ * What a conversation's unattended turn does with a call, in the words every surface shows, for a
+ * job's declared tools as `policyNeed` reads them (`tools` before `builtinTools`). The words follow
+ * `judgeCall`, and test/guard.test.ts holds them to its verdicts, one class of call at a time.
+ */
+export function capWords(declared: GuardTurn["declared"]): CapWords {
+	const control = CONTROL_PLANE_TOOLS.slice(0, -1).join(", ") + ` or ${CONTROL_PLANE_TOOLS[CONTROL_PLANE_TOOLS.length - 1]}`;
+	const say = (who: string): string => {
+		const asks = `is not run: pi-loops asks ${who}, in the conversation and in the inbox, and the turn goes on without it.`;
+		const controlAsks = `A call of ${control} is asked about the same way.`;
+		if (declared?.tools) return [`A dangerous command, or a command outside the job's tools, ${asks}`, controlAsks, "Another built-in tool outside them is refused, and so is a tool of another extension or an MCP server.", "pi-loops' other tools run."].join(" ");
+		if (declared?.builtinTools) return [`A dangerous command, or a command outside the job's built-in tools, ${asks}`, controlAsks, "Another built-in tool outside them is refused.", "pi-loops' other tools, and a tool of another extension or an MCP server, run."].join(" ");
+		return [`A dangerous command ${asks}`, controlAsks].join(" ");
+	};
+	return { model: say("the person"), person: say("you") };
+}
+
 /**
  * Step 5 of `judgeCall`, as the reason it fails, or undefined when the call can be asked about.
  * `shown` is what the card shows: a shell command, or a control-plane call in a conversation's turn.

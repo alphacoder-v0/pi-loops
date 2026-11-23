@@ -47,7 +47,8 @@ import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
 import { plural } from "./plural.ts";
 import { type OwnerView, type PlainJobLeases, type SessionSnapshot, openWhere, ownerViewOf, runsHere } from "./job-owner.ts";
-import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, closedConversation, openWindowPids, procStart } from "./lease.ts";
+import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, closedConversation, holderAlive, holderDelivers, openWindowPids, procStart } from "./lease.ts";
+import { parseLane } from "./lane.ts";
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, newTriggerRow, promotionTarget, promotionView, proofOf, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, sessionFileEntries, stopRow, waitingLine } from "./engine.ts";
 import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, proposalsNotice, queueLines, toolsCapNotice } from "./job-lines.ts";
 import { type Proposal, askProposal } from "./watch-plan.ts";
@@ -65,7 +66,7 @@ import { TURN_TYPE } from "./mark.ts";
 import { renderTurn } from "./turn-render.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
-import { GuardSeats } from "./guard.ts";
+import { GuardSeats, capWords } from "./guard.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
 import { SubagentSlots } from "./slots.ts";
 import { askHost, noticesToShow, renderHostSnapshot, ringHost, type HostSnapshot } from "./host-control-channel.ts";
@@ -1855,7 +1856,20 @@ export default function piLoops(pi: ExtensionAPI) {
 		}
 		const runId = e.answer?.state === "done" ? e.answer.run.id : undefined;
 		const summary = runId === undefined ? undefined : stores.jobs.allRuns().find((r) => r.runId === runId)?.summary;
-		return answerLine(e, row, summary);
+		return answerLine(e, row, summary, questionWindowOpen(e));
+	}
+
+	/** Whether a window has the conversation of `e`'s question open and runs its turns: where a yes to it runs after the current turn. */
+	function questionWindowOpen(e: InboxEntry): boolean {
+		const lane = e.ask?.lane;
+		if (lane === undefined || parseLane(lane)?.kind !== "conversation") return false;
+		let holder;
+		try {
+			holder = answerLeases.read(lane)?.holder;
+		} catch {
+			return false; // a lane the store refuses has no lease, so no window holds it
+		}
+		return holder?.kind === "terminal" && holderAlive(holder) && holderDelivers(holder);
 	}
 
 	/** Who picks up a yes to `e`, by the loop's name in jobs.json. */
@@ -3496,7 +3510,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			}
 			if (ctx.hasUI && readUiPrefs(dir).toolsCapNotice !== "shown") {
 				// A 0.22 plain job's `--tools` was never used; now it caps the job's turns (docs/loops.md).
-				const line = toolsCapNotice(stores.jobs.load());
+				const line = toolsCapNotice(stores.jobs.load(), capWords);
 				if (line) {
 					sayInfo(line);
 					startShown.push(() => writeUiPref(dir, "toolsCapNotice", "shown"));
