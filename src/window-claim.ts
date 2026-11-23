@@ -1,4 +1,5 @@
-/** Pure decisions about the window's slots: whose a user message is, and what a settled run leaves. */
+/** Pure decisions about the window's slots: whose a user message is, whose an input is, what a settled run leaves, and what became of an answer's turn. */
+import type { InputSource } from "@earendil-works/pi-coding-agent";
 import { type Gone, stripImageNotes } from "./engine.ts";
 import type { RowMark } from "./mark.ts";
 import type { RowCap } from "./window-executor.ts";
@@ -39,6 +40,20 @@ export interface TurnSlot {
 	at: "unstarted" | "held" | "started";
 	/** The cap the window gave the row as it sent it, or the one a ring for the row vouched for since. Its message's details say it too, and are not read for it: any extension can send a message of that type. */
 	cap: RowCap;
+	/**
+	 * What the window handed pi, as `canonicalJson` of the message's content. A message that names the
+	 * row is this slot's only with this very content too: the mark is in the request file, so a message
+	 * that copies the mark alone takes neither this slot nor its cap. One that copies the mark and the
+	 * content is not told apart; another extension in this pi is inside the same-user boundary.
+	 */
+	handed: string;
+	/**
+	 * The turn of an answer (src/window-executor.ts `answerTurn`): it leaves by its own message only,
+	 * the one that started from this slot. A copied mark in the conversation is not its message.
+	 */
+	answer?: true;
+	/** A person row: the page's message for a conversation a terminal holds. Its message is a person's input (`personInput`). */
+	person?: true;
 	/** A stop named the row while pi held it: its run is aborted as its message starts, and when it goes unwritten it is `stopped`. */
 	stop?: true;
 	/** Its row left the queue file. No exit is owed for it, so it never goes into `gone`: the same row may be queued again. */
@@ -81,6 +96,19 @@ export interface PersonClaim {
 /** The slot that owns a user message, if any. It decides a mark, and, as it takes a waiting input out of the list, whether that input still keeps a cap. */
 export type Claim = PersonClaim | { by: "other"; slot: OtherSlot } | { by: "nobody" };
 
+/**
+ * What became of an answer's turn when pi settled. `ran`: its message, known by its mark, started in
+ * the run that settled, so that run was its turn. `waits`: pi still holds it and has not started it.
+ * `unwritten`: pi has it no more and never started it (a stop dropped it, or pi lost it).
+ */
+export type AnswerTurnEnd = "ran" | "waits" | "unwritten";
+
+/** Pure. `started`: the turn's message started in the run that settled. `held`: its slot is still in flight. */
+export function answerTurnEnd(started: boolean, held: boolean): AnswerTurnEnd {
+	if (started) return "ran";
+	return held ? "waits" : "unwritten";
+}
+
 /** The slots left after a run ends, and the rows that went unwritten. */
 export interface Settled {
 	slots: Slot[];
@@ -114,6 +142,18 @@ export function claimOf(text: string, slots: readonly Slot[]): Claim {
 }
 
 /**
+ * Whether what pi takes in is a person's input: typed in a terminal (`interactive`) or sent over rpc
+ * (`rpc`), or, from the extension, a person row the window handed (`handed`, the slot the window
+ * took it for): the echo of its send in the page's pi, or its turn message in a terminal. Any other
+ * input of an extension is not a person's, and neither is any other turn row's message: a scheduled
+ * turn, an answer's turn or a goal's continuation.
+ */
+export function personInput(source: InputSource, handed: Slot | undefined): boolean {
+	if (source !== "extension") return true;
+	return handed?.whose === "person" || (handed?.whose === "turn" && handed.person === true);
+}
+
+/**
  * Settle slots in their original order, at the end of a run (`how`: whether a stop ended it, and in a terminal).
  * - A slot whose mark landed leaves. Not a turn slot whose row left the file and whose message has
  *   not started: the mark is then another hand-over's, and pi may still write this one.
@@ -142,7 +182,7 @@ export function settleSlots(slots: readonly Slot[], how: { aborted: boolean; ter
 		const gone = slot.whose !== "append" && slot.left ? new Map<string, Gone>() : goneOf;
 		const unwritten = slot.stop ? "stopped" : how.aborted ? "dropped" : "lost";
 		if (slot.whose === "turn") {
-			if ((slot.at === "started" || !slot.left) && landed(slot.mark)) continue;
+			if ((slot.at === "started" || (!slot.left && !slot.answer)) && landed(slot.mark)) continue;
 			if (slot.at === "unstarted" || (slot.at === "held" && keeps)) kept.push(slot);
 			else gone.set(slot.mark.id, slot.at === "started" && !slot.stop ? "lost" : unwritten);
 			continue;

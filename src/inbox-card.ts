@@ -11,7 +11,7 @@
 import * as path from "node:path";
 import { deadLetterParts } from "./engine.ts";
 import { loopLabel } from "./job-lines.ts";
-import { type StepRefusal, answerStatus } from "./ask.ts";
+import { type StepRefusal, answerStatus, fromScheduledPrompt, scheduledPromptWords } from "./ask.ts";
 import type { InboxEntry, InboxStatus } from "./inbox.ts";
 import { type LaneId, parseLane } from "./lane.ts";
 import { INBOX_TEXT_MAX_CHARS, capChars } from "./protocol.ts";
@@ -57,6 +57,8 @@ export interface InboxCard {
 	hasTranscript: boolean;
 	/** `sessionId` is the conversation the card is shown in. */
 	fromThisConversation: boolean;
+	/** The root of the card's thread (`InboxEntry.re`): the page draws the card under the root's card while that is listed. */
+	re?: string;
 }
 
 export interface CardContext {
@@ -128,10 +130,12 @@ export function questionHeadline(ask: NonNullable<InboxEntry["ask"]>): string {
 
 function questionParts(entry: InboxEntry, ask: NonNullable<InboxEntry["ask"]>, ctx: CardContext): Pick<InboxCard, "headline" | "waits" | "ifNot" | "question"> {
 	const { tool, command, reason } = ask.call;
+	const who = answerWho(entry, ask.lane, ctx.loopName);
 	return {
 		headline: questionHeadline(ask),
 		question: { tool: cardText(tool), ...(command !== undefined ? { command: cardText(command) } : {}), reason: cardText(reason) },
-		waits: `${answerWho(entry, ask.lane, ctx.loopName)} went on without it`,
+		// A scheduled prompt's question says whose prompt went on (design 6.4), as `questionFinding` wrote it.
+		waits: `${fromScheduledPrompt(ask.lane, entry.job_id) ? scheduledPromptWords(who) : who} went on without it`,
 		ifNot: "it stays undone",
 	};
 }
@@ -169,6 +173,7 @@ export function inboxCard(entry: InboxEntry, ctx: CardContext): InboxCard | unde
 		...(entry.session_id ? { sessionId: entry.session_id } : {}),
 		hasTranscript: origin !== "rule" && !!entry.transcript,
 		fromThisConversation: !!entry.session_id && entry.session_id === ctx.here,
+		...(entry.re === undefined ? {} : { re: entry.re }),
 	};
 }
 
@@ -197,10 +202,72 @@ export function cardLines(card: InboxCard, head: string, meta: string): string[]
 	const title = card.body === undefined ? card.headline : `${card.headline}${/[。！？]$/.test(card.headline) ? "" : " "}${card.body}`;
 	const lines = [`${head}${mark}${title}${meta}`];
 	if (card.question?.command !== undefined) lines.push(`${CLAUSE_INDENT}command: ${card.question.command}`);
-	if (card.question) lines.push(`${CLAUSE_INDENT}reason: ${card.question.reason}`);
+	if (card.question) lines.push(`${CLAUSE_INDENT}why it asks: ${card.question.reason}`);
 	if (card.waits !== undefined) lines.push(`${CLAUSE_INDENT}waiting on: ${card.waits}`);
 	if (card.ifNot !== undefined) lines.push(`${CLAUSE_INDENT}if you don't: ${card.ifNot}`);
 	return lines;
+}
+
+/** The last line `/inbox` gives a new question (design 6.1): the two commands that answer it, by the number on screen. */
+export function questionActions(n: number): string {
+	return `${CLAUSE_INDENT}/inbox claim ${n} runs it once · /inbox dismiss ${n} [reason] says no`;
+}
+
+/** One row of a threaded list. `reply`: drawn under its root. `listed`: one of the list's own entries; a root that is not is shown, unnumbered, only to head its replies. */
+export interface ThreadRow<T> {
+	entry: T;
+	reply: boolean;
+	listed: boolean;
+}
+
+/**
+ * `listed` as threads: each reply (a finding with `re`) right after its root, in list order. A root
+ * that is not listed but is in `all` (a question already answered, under its news) heads its
+ * replies where the first of them is. A reply whose root is in neither, or whose root is itself a
+ * reply, is a row of its own in its place.
+ */
+export function threads<T extends { id: string; re?: string }>(listed: readonly T[], all: readonly T[] = []): ThreadRow<T>[] {
+	const ids = new Set(listed.map((e) => e.id));
+	const known = new Map([...all, ...listed].map((e) => [e.id, e]));
+	const rootOf = (e: T): string | undefined => {
+		const root = e.re === undefined || e.re === e.id ? undefined : known.get(e.re);
+		return root && root.re === undefined ? root.id : undefined;
+	};
+	const replies = new Map<string, T[]>();
+	for (const e of listed) {
+		const root = rootOf(e);
+		if (root) replies.set(root, [...(replies.get(root) ?? []), e]);
+	}
+	const rows: ThreadRow<T>[] = [];
+	const shown = new Set<string>();
+	const thread = (root: T, listedRoot: boolean): void => {
+		shown.add(root.id);
+		rows.push({ entry: root, reply: false, listed: listedRoot });
+		for (const reply of replies.get(root.id) ?? []) rows.push({ entry: reply, reply: true, listed: true });
+	};
+	for (const e of listed) {
+		const root = rootOf(e);
+		if (root === undefined) thread(e, true);
+		else if (!ids.has(root) && !shown.has(root)) thread(known.get(root)!, false);
+	}
+	return rows;
+}
+
+/** The listed entries in the order `threads` shows them: what a number on screen resolves to. */
+export function threadOrder<T extends { id: string; re?: string }>(listed: readonly T[], all: readonly T[] = []): T[] {
+	return threads(listed, all).flatMap((row) => (row.listed ? [row.entry] : []));
+}
+
+/** How far a reply's lines are set in under its root's. */
+const REPLY_INDENT = "    ";
+
+/** Terminal lines of threaded rows: `line` draws one entry, with its number when it is listed; a reply's lines are set in. */
+export function threadedLines<T>(rows: readonly ThreadRow<T>[], line: (entry: T, n: number | undefined) => string[]): string[] {
+	let n = 0;
+	return rows.flatMap((row) => {
+		const lines = line(row.entry, row.listed ? ++n : undefined);
+		return row.reply ? lines.map((l) => `${REPLY_INDENT}${l}`) : lines;
+	});
 }
 
 /**
@@ -245,30 +312,6 @@ export function dismissLine(outcome: DismissOutcome): string {
 }
 
 /**
- * Where a claim from the page runs, as the page server finds the conversation that created the
- * loop: open in the page (rung, so it runs as the person's turn), a terminal that answers what is
- * queued, a terminal that does not (`pi -p`, a window behind the file), pi-loops in the middle of a
- * scheduled turn there, nobody (the page starts it), no free page slot (or pi could not be started),
- * pi stopping too often there to be started again on its own, a pi there without pi-loops (nothing
- * would drain the row), or a conversation whose file is gone.
- */
-export type ClaimDelivery = "page" | "terminal" | "terminal-quiet" | "background" | "started" | "full" | "stopped" | "no-pi-loops" | "gone";
-
-/** What a card says once its claim is queued; `title` names the conversation it runs in. */
-export function claimLine(delivery: ClaimDelivery, title?: string): string {
-	const where = title ? `"${title}"` : "its conversation";
-	if (delivery === "page") return `Running in ${where}.`;
-	if (delivery === "started") return `Starting ${where}…`;
-	if (delivery === "terminal") return "Queued for your terminal.";
-	if (delivery === "terminal-quiet") return "Queued; the terminal that has this conversation is not taking messages (/resume there).";
-	if (delivery === "background") return "Queued; runs after pi-loops finishes its scheduled run there.";
-	if (delivery === "full") return "Queued; it opens when another conversation in the page closes.";
-	if (delivery === "no-pi-loops") return "Queued; the pi of that conversation has no pi-loops, so nothing runs it here. Open it in a terminal with pi-loops.";
-	if (delivery === "stopped") return "Queued; pi stopped too often in that conversation to be started again on its own.";
-	return "Queued; its conversation is gone.";
-}
-
-/**
  * Who picks up a yes to a finding, as a person reads it: the loop the lane names, by its name; the
  * check of the finding's project; for a conversation's finding, the job that filed it, else the
  * conversation. `loopName` reads jobs.json; a name is screened, since it is drawn in a terminal.
@@ -281,6 +324,9 @@ export function answerWho(finding: Pick<InboxEntry, "cwd" | "job_id">, lane: Lan
 	return "its conversation";
 }
 
+/** What a card says of a yes to a conversation's question that waits (design 6.4). */
+const CONVERSATION_YES = "Approved. It runs in this conversation after the current turn.";
+
 /** The sentence a question's unfinished answer ends with when it names none: the cautious one (C3). */
 const MAY_HAVE_RUN = "The command may or may not have run.";
 
@@ -289,15 +335,19 @@ const MAY_HAVE_RUN = "The command may or may not have run.";
  * there is nothing to say: a finding that is not claimed, or an answer this version cannot read.
  * `row` is the answer's `ans-` row, for why a pending one waits; `summary` is the run's summary
  * while the run log has its record. What came from a run is redacted and screened.
+ * `conversationOpen`: a window has the question's conversation open now and runs its turns, which
+ * only the caller can see (its lease).
  */
-export function answerLine(finding: InboxEntry, row?: Row, summary?: string): string | undefined {
+export function answerLine(finding: InboxEntry, row?: Row, summary?: string, conversationOpen = false): string | undefined {
 	if (finding.status === "claimed" && finding.answer === undefined && finding.answered_by === undefined) return "Claimed before the upgrade.";
 	const status = answerStatus(finding, row);
 	if (!status) return undefined;
 	const why = cardText(status.why ?? "");
 	switch (status.status) {
 		case "pending":
-			return why ? `Waiting to run: ${why}` : "Waiting to run";
+			if (why) return `Waiting to run: ${why}`;
+			// A conversation's question runs in the window that has it open, as a turn after the current one (design 6.4).
+			return conversationOpen && finding.ask && parseLane(finding.ask.lane)?.kind === "conversation" ? CONVERSATION_YES : "Waiting to run";
 		case "started":
 			return "Running";
 		case "done": {
@@ -331,10 +381,12 @@ export const YES_WAITS_FOR_BACKGROUND = "It runs when pi-loops runs in the backg
  * What a terminal prints after a yes (design 6.1, 6.2). Y1 on a question: the run that asked
  * resumes with the one call allowed. Y1 on any other finding: the run that reported it picks it up.
  * Y2: why nothing runs. `background`: pi-loops runs in the background now; when it does not, a Y1
- * says that the yes runs once it does.
+ * says that the yes runs once it does. `here`: the conversation this window holds, whose own
+ * questions it runs as a turn after the current one (design 6.4), with no card.
  */
-export function yesTerminalLine(said: { said: "Y1"; finding: InboxEntry } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, background: boolean): string {
+export function yesTerminalLine(said: { said: "Y1"; finding: InboxEntry } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, background: boolean, here?: string): string {
 	if (said.said === "Y2") return `${said.why}; nothing runs`;
+	if (said.finding.ask && here !== undefined && said.finding.ask.lane === here && parseLane(here)?.kind === "conversation") return "approved: it runs in this conversation after the current turn, with this one command allowed.";
 	const waits = background ? "" : ` ${YES_WAITS_FOR_BACKGROUND}`;
 	if (said.finding.ask) return `approved: ${who} resumes the run that asked, with this one command allowed.${waits} A card comes here when it ends.`;
 	return `claimed: ${who} picks this up in the run that reported it, in the background.${waits} A card comes here when it ends.`;
@@ -350,18 +402,58 @@ export function clearLeftTail(questions: number): string {
  * What a card says after a yes from the page (design 6.1, 6.2). A question shows its state at once;
  * any other finding says that it runs in the background, and from what when its transcript is gone.
  * `queued` is false when the yes was written and its row was not: nothing runs until the next tick
- * puts the row back (H1), and the card says that.
+ * puts the row back (H1), and the card says that. `conversationOpen` is `answerLine`'s.
  */
-export function yesPageLine(said: { said: "Y1"; finding: InboxEntry; queued?: boolean } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, transcriptKept: boolean): string {
+export function yesPageLine(said: { said: "Y1"; finding: InboxEntry; queued?: boolean } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, transcriptKept: boolean, conversationOpen = false): string {
 	if (said.said === "Y2") return `Not run (${said.why})`;
-	if (said.finding.ask) return answerLine(said.finding) ?? "Waiting to run";
+	if (said.finding.ask) return answerLine(said.finding, undefined, undefined, conversationOpen) ?? "Waiting to run";
 	if (said.queued === false) return "Your yes is saved, but its run could not be queued. pi-loops queues it again on its next tick.";
 	return transcriptKept ? "Running in the background, in the run that reported it." : `Running in the background. The run's transcript is gone, so ${who} starts from the finding's text.`;
 }
 
 /** What a no to a question says (design 6.1): the run that asked is told, and the call is refused for 14 days. */
-export function noQuestionLine(surface: "terminal" | "page", who: string): string {
+export function noQuestionLine(surface: "terminal" | "page", who: string, lane?: LaneId): string {
+	// A conversation's question (design 6.4): the no is a message in that conversation, not a loop's next run.
+	if (lane !== undefined && parseLane(lane)?.kind === "conversation") return surface === "terminal" ? `said no: ${who} is told in this conversation; the same command is refused for 14 days` : `You said no. ${who} is told in this conversation, and the same command is refused for 14 days.`;
 	return surface === "terminal" ? `said no: ${who} is told why on its next run; the same command is refused for 14 days` : `You said no. ${who} is told on its next run, and the same command is refused for 14 days.`;
+}
+
+/** A terminal's selector at the end of a turn on a question of its conversation (design 6.4): the refusing answer first. */
+export const SETTLE_NO = "No, do not run it";
+export const SETTLE_YES = "Yes, run it once";
+
+/**
+ * Who a question of a conversation names on its selector and in the lines after it: a scheduled
+ * prompt by its job's name in quotes, else `answerWho`'s words.
+ */
+function settleAsker(entry: Pick<InboxEntry, "cwd" | "job_id">, lane: LaneId, loopName: (jobId: string) => string | undefined): string {
+	const who = answerWho(entry, lane, loopName);
+	return fromScheduledPrompt(lane, entry.job_id) ? `"${cardText(who)}"` : cardText(who);
+}
+
+/**
+ * The selector a terminal opens on a question when a turn settles (design 6.4): `Allow this once?`,
+ * who asked for which tool and why, the command, and what Yes and Esc do. Drawn from the ask's
+ * fields as `questionParts` draws a card, redacted and on one line each.
+ */
+export function settleQuestion(entry: InboxEntry & { ask: NonNullable<InboxEntry["ask"]> }, loopName: (jobId: string) => string | undefined): { title: string; options: [string, string] } {
+	const { tool, command, reason } = entry.ask.call;
+	const asker = settleAsker(entry, entry.ask.lane, loopName);
+	const who = fromScheduledPrompt(entry.ask.lane, entry.job_id) ? `The scheduled prompt ${asker}` : asker.charAt(0).toUpperCase() + asker.slice(1);
+	const lines = ["Allow this once?", `${who} asked to run ${cardText(tool)}: ${cardText(reason).replace(/\.$/, "")}.`];
+	if (command !== undefined) lines.push(cardText(command));
+	lines.push("It went on without it. Yes runs it once in a new turn. Esc leaves the question open (/inbox).");
+	return { title: lines.join("\n"), options: [SETTLE_NO, SETTLE_YES] };
+}
+
+/** What a terminal prints after the selector's Yes (design 6.4): the yes is a row of this conversation, run after the current turn. */
+export function settleYesLine(entry: Pick<InboxEntry, "cwd" | "job_id">, lane: LaneId, loopName: (jobId: string) => string | undefined): string {
+	return `queued: your yes to ${settleAsker(entry, lane, loopName)} runs after the current turn`;
+}
+
+/** What a terminal prints after the selector's No (design 6.4). */
+export function settleNoLine(entry: Pick<InboxEntry, "cwd" | "job_id">, lane: LaneId, loopName: (jobId: string) => string | undefined): string {
+	return `said no: ${settleAsker(entry, lane, loopName)} is told in this conversation`;
 }
 
 /** Why the CLI refuses a claim of a question (design 6.1): a claim from a shell allows no command, so the question stays open for a person to answer where a yes can run it. */

@@ -38,9 +38,9 @@ export async function run(ctx) {
 	ctx.browser("click", "#watchFor");
 	ctx.browser("fill", "#watchText", "When ~/build.done appears, tell me it is there");
 	ctx.browser("click", "#watchRead");
-	await ctx.waitFor("the rule card", () => page(`[...document.querySelectorAll("#watchCards .plan")].length === 1`), 30000);
-	ctx.browser("click", "#watchCards .plan button.primary");
-	const rule = await ctx.waitFor("the rule", () => ({ ok: rules().length === 1, last: rules(), value: rules()[0] }), 30000);
+	await ctx.waitFor("the rule card", () => page(`[...document.querySelectorAll("#watchCards .proposal")].length === 1`), 30000);
+	ctx.browser("click", "#watchCards .proposal button.primary");
+	const rule = await ctx.waitFor("the rule, set up from its proposal", () => ({ ok: rules().length === 1 && rules()[0].enabled === true && !rules()[0].proposed, last: rules(), value: rules()[0] }), 30000);
 	// A settled card closes the box and gives the composer back, so the next message sends.
 	await ctx.waitFor("the box closed and the composer focused", () => { const s = page(`({ open: document.getElementById("watch").open, focus: document.activeElement && document.activeElement.id })`); return { ok: s.open === false && s.focus === "input", last: s }; }, 10000);
 

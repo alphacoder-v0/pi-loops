@@ -8,7 +8,9 @@
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal } from "./job-signal.ts";
 import { formatWait, queuedPrompt, type QueuedPrompt, runningRun } from "./engine.ts";
 import { type ListedJob, listedJobs } from "./job-status.ts";
+import { statusField, statusWord } from "./job-lines.ts";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createHash } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Type, type TSchema } from "typebox";
@@ -27,9 +29,10 @@ import { inProject } from "./inbox.ts";
 import { plural } from "./plural.ts";
 import type { TriggerRuntime } from "./trigger-runtime.ts";
 import { sameProject, withinProject } from "./paths.ts";
-import { type TriggerStore, cleanCondition, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
+import { type TriggerStore, auditRule, cleanCondition, controlPlanePreflight, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
-import { WATCH_ASK_MS, type WatchChoice, type WatchPlan, askTitle, planCard, watchChoice, watchOptions } from "./watch-plan.ts";
+import { capWords } from "./guard.ts";
+import { WATCH_ASK_HEAD } from "./watch-plan.ts";
 
 export interface ControlPlaneRequest {
 	/** What is being approved, value-free. */
@@ -58,11 +61,73 @@ export interface ToolHost {
 	/** Make sure the host is up now that there is a loop or a rule for it. Absent in the host itself. */
 	ensureHost?(): void;
 	/**
-	 * A turn pi-loops started in an open window for a scheduled job or a delivery: nobody may be
-	 * there, so `cron_create` and `new_trigger` do not wait on a person and keep the window guard's
-	 * gate (docs/design.md decision 24). Absent where no such turn runs.
+	 * A turn pi-loops started for a scheduled job or a delivery, in an open window or held in a closed
+	 * conversation: nobody may be there, so `cron_create` creates at once and refuses a gate, and
+	 * `new_trigger` proposes (design 2.5). Absent where no such turn runs.
 	 */
 	scheduledTurn?(): boolean;
+}
+
+/**
+ * Whose turn a window's control-plane call is in. A scheduled turn is `seated` when the window's
+ * guard has a seat for it (src/window-executor.ts `windowGuard`): the guard judged the call there.
+ */
+export type ConfirmTurn = { kind: "person" } | { kind: "scheduled"; seated: boolean };
+
+/**
+ * The window's `confirmTool`: the person's yes to a control-plane call at hop 0 (design 4, item 26).
+ * In a scheduled turn with a guard seat, the guard asked a person in /inbox before the call could
+ * run (src/guard.ts `CONTROL_PLANE_TOOLS`), so a call that reaches here carries their yes and nothing
+ * more is asked. With no seat nobody was asked, and the call is refused in the words of a scheduled
+ * turn nobody answered. In the person's own turn it is pi's confirm: the person is at the keyboard.
+ * Before all of these, `controlPlanePreflight` refuses at hop 1 and, in the person's turn, with no
+ * UI. undefined: approved; else what the tool tells the model.
+ */
+export async function confirmControlPlane(ctx: Pick<ExtensionContext, "hasUI" | "ui">, req: ControlPlaneRequest, atHop: number, turn: ConfirmTurn): Promise<string | undefined> {
+	const denied = controlPlanePreflight({ hop: atHop, hasUI: ctx.hasUI || turn.kind === "scheduled" }, req.label);
+	if (denied) return denied;
+	if (turn.kind === "scheduled") return turn.seated ? undefined : `nobody answered in time: ${req.label}`;
+	// The approval card: Action / Tool / Reason / Args hash / Preview, then a feed line per decision.
+	const argsHash = createHash("sha256").update(JSON.stringify(req.args ?? null)).digest("hex").slice(0, 12);
+	ctx.ui.notify(`approval required: ${req.label}`, "info");
+	const card = [`Action: ${req.label}`, `Tool: ${req.tool}`, `Reason: ${req.reason}`, `Args hash: ${argsHash}`, `Preview: ${previewRedacted(req.preview, 200)}`].join("\n");
+	const yes = await ctx.ui.confirm("Control-plane approval required", card);
+	ctx.ui.notify(yes ? `approved control-plane action: ${req.label}` : `denied control-plane action: ${req.label} (denied by user)`, "info");
+	return yes ? undefined : `user declined: ${req.label}`;
+}
+
+/** How many rule ids a `remove_trigger` target names before it names the rest by their digest. */
+const TARGET_IDS_SHOWN = 5;
+
+/**
+ * Pure over the stores. What a control-plane call would change now, resolved as the tool resolves
+ * it in the project of `cwd`, as one line: a job's id, name and schedule; a rule's id; for
+ * `remove_trigger` with `all`, the count and the sorted ids (past `TARGET_IDS_SHOWN`, a digest of
+ * them all). The guard folds it into the call's identity (src/guard.ts `ToolCallFacts.target`), so
+ * a yes runs only on the target the person saw. undefined for any other tool.
+ */
+export function controlTarget(host: Pick<ToolHost, "stores" | "triggers">, tool: string, input: unknown, cwd: string): string | undefined {
+	const params = (input ?? {}) as { ref?: unknown; id?: unknown; all?: unknown };
+	if (tool === "cron_remove" || tool === "set_cron_job_state") {
+		const job = typeof params.ref === "string" ? resolveJobRefScoped(jobsOf(host).load(), params.ref, cwd) : undefined;
+		if (!job) return "no job matches";
+		// The target is part of what a yes binds to, and the window and pi-loops in the background may
+		// run in different time zones. The job's id says which job it is; a one-shot's time, which reads
+		// differently in each zone, is left out.
+		const when = job.schedule.kind === "once" ? "once" : formatSchedule(job.schedule);
+		return `job ${job.id} "${job.name ?? job.id}" ${when}`;
+	}
+	if (tool === "remove_trigger" && params.all === true) {
+		const ids = host.triggers.store.load().filter((r) => sameProject(r.cwd, cwd)).map((r) => r.id).sort();
+		if (ids.length <= TARGET_IDS_SHOWN) return `${plural(ids.length, "rule")}${ids.length ? `: ${ids.join(", ")}` : ""}`;
+		const digest = createHash("sha256").update(ids.join("\n")).digest("hex").slice(0, 12);
+		return `${plural(ids.length, "rule")}: ${ids.slice(0, TARGET_IDS_SHOWN).join(", ")}, … (all ids sha256 ${digest})`;
+	}
+	if (tool === "remove_trigger" || tool === "set_trigger_state") {
+		const rule = typeof params.id === "string" ? resolveRuleRefScoped(host.triggers.store.load(), params.id, cwd) : undefined;
+		return rule ? `rule ${rule.id}` : "no rule matches";
+	}
+	return undefined;
 }
 
 type ToolStoresHost = Pick<ToolHost, "stores">;
@@ -87,6 +152,8 @@ export interface CreateJobInput {
 	checkerModel?: string;
 	/** Set by `/recipe add`: which recipe this job belongs to. */
 	recipe?: string;
+	/** A watch the person has not said yes to (design 2.5): written with `enabled: false`. */
+	proposed?: { at: string; session: string };
 }
 
 export interface JobScope {
@@ -191,7 +258,7 @@ export async function createLoopJob(host: ToolStoresHost & Pick<ToolHost, "sessi
 		tools: input.tools && host.session().builtinTools ? input.tools.filter((t) => !PI_BUILTIN_TOOL_NAMES.includes(t) || host.session().builtinTools!.includes(t)) : input.tools,
 		// The loop's declared tools: those of the chat it is made in, unless it names its own.
 		builtinTools: input.tools ? undefined : host.session().builtinTools,
-		enabled: true,
+		enabled: !input.proposed,
 		verify: input.stateful && input.verify ? true : undefined,
 		checkerModel: input.stateful && input.verify ? input.checkerModel : undefined,
 		catchUp: input.catchUp ?? input.stateful,
@@ -201,6 +268,7 @@ export async function createLoopJob(host: ToolStoresHost & Pick<ToolHost, "sessi
 		// A sub-agent schedules on behalf of the session that runs it.
 		...(scope?.projectOwned ? { owner: "project" as const } : { createdBy: { sessionId: scope?.parentSessionId ?? host.session().sessionId, cwd: scope?.parentCwd ?? host.session().cwd } }),
 		sessionId: owningSessionId(input.stateful, host.session().sessionId, scope?.parentSessionId),
+		...(input.proposed ? { proposed: input.proposed } : {}),
 	};
 	await jobsOf(host).add(job);
 	if (job.stateful) host.ensureHost?.();
@@ -213,31 +281,32 @@ const deny = (text: string) => ({ content: [{ type: "text" as const, text }], is
 /** `cron_create` says it at hop 0, where a person's message can arrive: the page's Watch box sends `Watch for: <sentence>` as a chat message, and only the question the create tools ask may answer it. Said once: both tools are in the same list. */
 const WATCH_SENTENCE = " A message that starts with `Watch for:` comes from the page's Watch box: answer it with one of these two tools (new_trigger or cron_create); if it names no time and nothing to wait for, call neither, do nothing, and say it reads like something to do now. Never do the action of a `Watch for:` message yourself.";
 
-/** The create tools ask first: hop 0, a person present, and the person's own turn, on every surface pi has a dialog. */
-function asking(scope: ToolScope, host: ToolHost, ctx: ExtensionContext): boolean {
-	return scope.hop === 0 && ctx.hasUI && !host.scheduledTurn?.();
-}
-
-/** What the tool says when the person did not set the watch up: nothing exists, and the model is told not to do it some other way. */
-function notSetUp(reason: "Cancel" | "aborted" | "timed out") {
-	return {
-		content: [{ type: "text" as const, text: `cancelled: the person did not set up this watch (${reason}). Nothing was created. Do not do the action now and do not call this tool again for it.` }],
-		details: { id: undefined as string | undefined },
-	};
-}
-
 /**
- * The question, through pi's own select: the card as its title, the fixed options, the tool's own
- * abort signal and the thirty-minute timeout. pi answers `undefined` for Esc, an abort and the
- * timeout alike; Esc is the person's Cancel. An answer that was not offered is a cancel too.
+ * Whose turn calls a create tool (design 2.5): the person's own at hop 0 with a UI; the person's own
+ * in a pi with no UI (`pi -p`), where nobody could answer a proposal; a scheduled or held turn, which
+ * pi-loops started and nobody may be watching; or a sub-agent's run at hop 1.
  */
-async function askWatch(ctx: ExtensionContext, signal: AbortSignal | undefined, host: ToolHost, plan: WatchPlan): Promise<Extract<WatchChoice, { verdict: "set" }> | ReturnType<typeof notSetUp>> {
-	const options = watchOptions(plan);
-	const asked = Date.now();
-	const answer = await ctx.ui.select(askTitle(planCard(plan, { now: asked, pollSecs: host.triggers.pollIntervalSecs })), options, { signal, timeout: WATCH_ASK_MS });
-	const choice = watchChoice(answer !== undefined && options.includes(answer) ? answer : undefined);
-	if (choice.verdict === "set") return choice;
-	return notSetUp(signal?.aborted ? "aborted" : answer === undefined && Date.now() - asked >= WATCH_ASK_MS ? "timed out" : "Cancel");
+type CreateTurn = "person" | "no-ui" | "unattended" | "sub-agent";
+function turnOf(scope: ToolScope, host: ToolHost, ctx: Pick<ExtensionContext, "hasUI"> | undefined): CreateTurn {
+	if (scope.hop > 0) return "sub-agent";
+	if (host.scheduledTurn?.()) return "unattended";
+	return ctx?.hasUI ? "person" : "no-ui";
+}
+
+/** Where a create tool makes a job at once, a gate is refused whole: only a person sets one (design 3.3). */
+export const GATE_NEEDS_PERSON = "a gate needs a person: set it with /cron set <name> --gate";
+
+/** A proposal waits in a conversation for its answer, and its receipt lands there: one pi has not saved has no lane for either. */
+const NO_CONVERSATION = "a watch is proposed in a saved conversation, and this one is not saved (--no-session): /cron add or /new-trigger in a saved one sets it up";
+
+/** What the model reads for a proposal (design 6.3): nothing runs, and a message here will say what the person chose. */
+function proposedText(what: string): string {
+	return `proposed ${what}: the person sees a card ("${WATCH_ASK_HEAD}"). Nothing runs until they say yes. Do not wait for the answer, do not do the action now, and do not call this tool again for it. A message here tells you what they chose.`;
+}
+
+/** What `set_cron_job_state` and `set_trigger_state` say of a proposal: only the person's answer sets it up. */
+function proposedRefusal(label: string, ask: string): string {
+	return `${label} is proposed and waits for the person's yes: only their answer sets it up (${ask} asks again)`;
 }
 
 /**
@@ -251,7 +320,7 @@ function pausedLine(reason: string | undefined): string {
 /** Trigger rules, rendered for a tool result. */
 function renderTriggerRulesForTool(rules: ReturnType<TriggerStore["load"]>, host: Pick<ToolHost, "session">): string {
 	if (!rules.length) return "dynamic trigger rules: none";
-	return [`dynamic trigger rules: ${rules.length}`, ...rules.map((r) => `- ${r.id} [${r.enabled ? "enabled" : "disabled"}, ${r.fireOnce ? "fire_once" : "repeat"}, ${r.promoteToChat ? "promote_to_chat" : "audit_only"}] created_at=${r.createdAt} condition: ${previewRedacted(r.condition, 200)} action: ${previewRedacted(r.action, 200)}${r.cwd !== host.session().cwd ? ` cwd: ${r.cwd}` : ""}`)].join("\n");
+	return [`dynamic trigger rules: ${rules.length}`, ...rules.map((r) => `- ${r.id} [${r.proposed ? "proposed" : r.enabled ? "enabled" : "disabled"}, ${r.fireOnce ? "fire_once" : "repeat"}, ${r.promoteToChat ? "promote_to_chat" : "audit_only"}] created_at=${r.createdAt} condition: ${previewRedacted(r.condition, 200)} action: ${previewRedacted(r.action, 200)}${r.cwd !== host.session().cwd ? ` cwd: ${r.cwd}` : ""}`)].join("\n");
 }
 
 /**
@@ -283,7 +352,7 @@ function renderCronJobsForTool(jobs: readonly ListedJob[], host: Pick<ToolHost, 
 	const runs = jobs.some((j) => j.stateful) ? jobsOf(host).allRuns() : [];
 	const inbox = jobs.some((j) => j.stateful) ? inboxOf(host).list() : [];
 	for (const job of jobs) {
-		lines.push(`- ${job.id}${job.name ? ` "${job.name}"` : ""} [${job.enabled ? "enabled" : "disabled"}${job.stateful ? ", stateful" : ""}${job.verify ? ", verify" : ""}] schedule: ${formatSchedule(job.schedule)} action: ${previewRedacted(job.prompt, 120)}${job.cwd !== host.session().cwd ? ` cwd: ${job.cwd}` : ""}`);
+		lines.push(`- ${job.id}${job.name ? ` "${job.name}"` : ""} [${job.proposed ? "proposed" : job.enabled ? "enabled" : "disabled"}${job.stateful ? ", stateful" : ""}${job.verify ? ", verify" : ""}] schedule: ${formatSchedule(job.schedule)} action: ${previewRedacted(job.prompt, 120)}${job.cwd !== host.session().cwd ? ` cwd: ${job.cwd}` : ""}`);
 		const view = ownerOf(host);
 		const asleep = asleepNote(job, view);
 		const kind = whereRuns(job, view).kind;
@@ -294,7 +363,9 @@ function renderCronJobsForTool(jobs: readonly ListedJob[], host: Pick<ToolHost, 
 		if (run) lines.push(`  running_run_id: ${run}`);
 		const queued = queuedForTool(job, host, now);
 		if (queued) lines.push(`  queued: ${formatWait(now - Date.parse(queued.since))} (since ${queued.since})${queued.reason ? ` — ${queued.reason}` : ""}`);
-		if (job.status.error) lines.push(`  last_error: ${previewRedacted(job.status.error, 120)}`);
+		// The fact `/cron` says under the job, as a field (design 6.8): last_error, note or queued.
+		const word = statusWord(job, now, next);
+		if (word) lines.push(`  ${statusField(word, now)}`);
 		if (job.status.streak) lines.push(`  consecutive_failures: ${job.status.streak}`);
 		if (job.status.collapsed) lines.push(`  skipped_overlap_count: ${job.status.collapsed}`);
 		if (job.stateful) {
@@ -308,7 +379,7 @@ function renderCronJobsForTool(jobs: readonly ListedJob[], host: Pick<ToolHost, 
 	return lines.join("\n");
 }
 
-/** The rule, made: the one write both ways to `new_trigger` end in, and the text the model reads on every surface. */
+/** A rule made at once, as `new_trigger` made one before proposals: the person's own turn with no UI, after `confirmTool`. */
 async function addRule(host: ToolHost, input: Parameters<TriggerStore["add"]>[0]) {
 	const rule = await host.triggers.store.add(input);
 	host.refreshBadge();
@@ -316,6 +387,17 @@ async function addRule(host: ToolHost, input: Parameters<TriggerStore["add"]>[0]
 	return {
 		content: [{ type: "text" as const, text: `created dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}\nfire_once: ${rule.fireOnce}\npromote_to_chat: ${rule.promoteToChat}\n(checked every ${host.triggers.pollIntervalSecs}s by a sub-agent in the background)${pausedLine(ownerOf(host).hostPaused)}` }],
 		details: { id: rule.id as string | undefined, condition: rule.condition, action: rule.action, enabled: rule.enabled, fire_once: rule.fireOnce, fired_at: rule.firedAt, promote_to_chat: rule.promoteToChat },
+	};
+}
+
+/** P1 for a rule (design 2.5): the proposal, one write under the store's lock, then the audit line `add`. `new_trigger` creates nothing else. */
+async function proposeRule(host: ToolHost, scope: ToolScope, input: Parameters<TriggerStore["add"]>[0]) {
+	const rule = await host.triggers.store.add(input);
+	auditRule(host.triggers.store, "add", scope.actor, rule);
+	host.refreshBadge();
+	return {
+		content: [{ type: "text" as const, text: proposedText(`dynamic trigger ${rule.id}`) }],
+		details: { id: rule.id as string | undefined, condition: rule.condition, action: rule.action, enabled: rule.enabled, proposed: true, fire_once: rule.fireOnce, fired_at: rule.firedAt, promote_to_chat: rule.promoteToChat },
 	};
 }
 
@@ -329,7 +411,7 @@ async function createCron(host: ToolHost, scope: ToolScope, input: CreateJobInpu
 	const tools = job.tools ? `the tools ${job.tools.join(", ")}` : job.builtinTools ? `this chat's built-in tools (${job.builtinTools.join(", ") || "none"})` : "pi's default tools";
 	const where = job.stateful
 		? `Findings will appear in /inbox${job.verify ? " after an independent checker reviews them" : ""}. It runs in the background with ${tools}, not this window's -e extensions or flags.`
-		: `Its result will appear in this chat. While this chat is closed it still runs, in the background, and each run is a model turn. Its turns run with ${tools} under the dangerous-command guard: in an open window a dangerous command or a tool outside them asks the user first, and in the background it is refused. In the background they also run without this window's -e extensions or flags.`;
+		: `Its result will appear in this chat. While this chat is closed it still runs, in the background, and each run is a model turn. Its turns run with ${tools} under the dangerous-command guard. ${capWords(job).model} In the background they also run without this window's -e extensions or flags.`;
 	const runsAt = whereRuns(job, ownerOf(host));
 	// Three lines — what was created, when it runs, what it will do — then where its output goes.
 	return {
@@ -375,7 +457,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			},
 			{ additionalProperties: false },
 		),
-		async execute(_id, params, signal, _onUpdate, ctx) {
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			let condition = cleanCondition(params.condition ?? "");
 			let action = params.action?.trim() ?? "";
 			const fromSpec = !condition || !action;
@@ -392,20 +474,22 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			// The condition alone is where a schedule request lives: an action that names a routine ("post the daily report") is never one.
 			if (!fromSpec && looksLikeFixedScheduleRequest(params.condition ?? "")) return deny("fixed scheduled jobs must use cron_create, not new_trigger");
 			const s = host.session();
-			const draft = { condition, action, cwd: s.cwd, sessionId: s.sessionId, model: s.model, thinking: s.thinking };
-			if (asking(scope, host, ctx)) {
-				// The question replaces the confirm, never adds to it: one question. Its defaults are the
-				// person's to change, not the model's: Result starts at this conversation whatever
-				// `promote_to_chat` said (its documented default is not a choice anyone made); Repeats
-				// follows `fire_once`, whose default is the rule's own.
-				const asked = await askWatch(ctx, signal, host, { kind: "rule", rule: draft, where: "chat", once: params.fire_once ?? true });
-				if (!("verdict" in asked)) return asked;
-				return addRule(host, { ...draft, fireOnce: asked.once, promoteToChat: asked.where === "chat" });
+			const turn = turnOf(scope, host, ctx);
+			if (turn === "no-ui") {
+				// Nobody could answer a proposal here: the rule is asked for as before proposals, with
+				// `confirmTool`, which a pi with no UI refuses.
+				const reason = fromSpec ? "create dynamic trigger from `spec` field" : "create dynamic trigger from `condition` + `action` fields";
+				const denied = await host.confirmTool(ctx, { label: "create dynamic trigger", tool: "new_trigger", reason, preview: `when ${previewRedacted(condition, 80)} -> ${previewRedacted(action, 80)}`, args: params }, scope.hop);
+				if (denied) return deny(denied);
+				return addRule(host, { condition, action, cwd: s.cwd, sessionId: s.sessionId, model: s.model, thinking: s.thinking, fireOnce: params.fire_once ?? true, promoteToChat: params.promote_to_chat ?? false });
 			}
-			const reason = fromSpec ? "create dynamic trigger from `spec` field" : "create dynamic trigger from `condition` + `action` fields";
-			const denied = await host.confirmTool(ctx, { label: "create dynamic trigger", tool: "new_trigger", reason, preview: `when ${previewRedacted(condition, 80)} -> ${previewRedacted(action, 80)}`, args: params }, scope.hop);
-			if (denied) return deny(denied);
-			return addRule(host, { ...draft, fireOnce: params.fire_once ?? true, promoteToChat: params.promote_to_chat ?? false });
+			if (!s.sessionId) return deny(NO_CONVERSATION);
+			// A proposal: in the person's own turn and in a scheduled or held one alike, a rule runs only
+			// after the person says yes. Its defaults are the question's first option: in the person's own
+			// turn Result starts at this conversation whatever `promote_to_chat` said (its documented
+			// default is not a choice anyone made); Repeats follows `fire_once`.
+			const promoteToChat = turn === "person" ? true : (params.promote_to_chat ?? false);
+			return proposeRule(host, scope, { condition, action, cwd: s.cwd, sessionId: s.sessionId, model: s.model, thinking: s.thinking, fireOnce: params.fire_once ?? true, promoteToChat, proposed: { at: stamp(), session: s.sessionId } });
 		},
 	});
 	register({
@@ -464,6 +548,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const ruleCwd = host.session().cwd;
 			const rule = resolveRuleRefScoped(host.triggers.store.load(), params.id, ruleCwd);
 			if (!rule) return deny(`no dynamic trigger rule with id '${params.id}'; list_triggers shows the ids`);
+			if (rule.proposed) return deny(proposedRefusal(`dynamic trigger ${rule.id}`, `/triggers enable ${rule.id}`));
 			// Re-enabling is gated; pausing another project's rule is just as much a surprise, so it
 			// is gated too (a sub-agent is refused outright, having nobody to ask).
 			if (params.enabled || rule.cwd !== ruleCwd) {
@@ -494,31 +579,43 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			cwd: Type.Optional(Type.String({ description: "Directory a stateful job's sub-agent runs in. Default: current project." })),
 			catch_up: Type.Optional(Type.Boolean({ description: "Run once for a missed tick (default: true for stateful jobs, false for plain jobs)." })),
 		}),
-		async execute(_id, params, signal, _onUpdate, ctx) {
+		async execute(_id, params, _signal, _onUpdate, ctx) {
 			let schedule: LoopJob["schedule"];
 			try {
 				schedule = parseSchedule(params.schedule);
 			} catch (err: any) {
 				return deny(err?.message ?? String(err));
 			}
-			if (asking(scope, host, ctx)) {
-				// A schedule's Result starts at the inbox (a loop) unless the model said plainly that it
-				// belongs in this chat. Checked now as a create would be, so the person is never asked
-				// about a job their yes cannot make.
+			const turn = turnOf(scope, host, ctx);
+			// Not in the schema until a gate is something a job can carry; a model that sends one anyway
+			// gets the refusal of design 6.3 where nobody can see the card, and creates nothing.
+			if ((params as { gate?: unknown }).gate !== undefined) return deny(turn === "person" ? "a gate is not something this version of pi-loops can set up: propose the watch without one" : GATE_NEEDS_PERSON);
+			if (turn === "person") {
+				// P1 (design 2.5): a proposal, which nothing runs until the person says yes. A schedule's
+				// Result starts at the inbox (a loop) unless the model said plainly that it belongs in this
+				// chat. Checked now as a create would be, so the person is never asked about a job their yes
+				// cannot make.
+				const s = host.session();
+				if (!s.sessionId) return deny(NO_CONVERSATION);
 				const where = params.stateful === false && !params.verify ? "chat" : "inbox";
 				const draft = { schedule, prompt: params.action, verify: params.verify ?? false, name: params.name, catchUp: params.catch_up };
 				let cwd: string;
 				try {
-					cwd = checkJobInput({ ...draft, stateful: where === "inbox", cwd: params.cwd }, jobsOf(host).load(), host.session());
+					cwd = checkJobInput({ ...draft, stateful: where === "inbox", cwd: params.cwd }, jobsOf(host).load(), s);
 				} catch (err: any) {
 					return deny(err?.message ?? String(err));
 				}
 				// The question is the consent, and it does not show a directory: a job it sets up runs in
 				// this project, so a `cwd` elsewhere (a prompt-injected one, say) is refused here.
-				if (!withinProject(host.session().cwd, cwd)) return deny(`a watch you are asked about runs in this project (${host.session().cwd}): cwd ${cwd} is outside it; /cron add --cwd sets one up elsewhere`);
-				const asked = await askWatch(ctx, signal, host, { kind: "schedule", job: { ...draft, cwd }, where });
-				if (!("verdict" in asked)) return asked;
-				return createCron(host, scope, { ...draft, cwd, stateful: asked.where === "inbox", verify: asked.where === "inbox" && asked.checks });
+				if (!withinProject(s.cwd, cwd)) return deny(`a watch you are asked about runs in this project (${s.cwd}): cwd ${cwd} is outside it; /cron add --cwd sets one up elsewhere`);
+				// The model and thinking are captured now whatever the first option: the answer may make it a loop, which runs in the background.
+				const job = await host.createJob({ ...draft, cwd, stateful: where === "inbox", model: s.model, thinking: s.thinking, proposed: { at: stamp(), session: s.sessionId } }, scope);
+				const auditEntryId = host.cronControlAudit("add", scope.actor, undefined, job);
+				host.refreshBadge();
+				return {
+					content: [{ type: "text" as const, text: proposedText(`cron job ${job.id}${job.name ? ` "${job.name}"` : ""}`) }],
+					details: { id: job.id as string | undefined, name: job.name, schedule: formatSchedule(job.schedule), action: job.prompt, enabled: false, proposed: true, stateful: job.stateful, verify: job.verify ?? false, audit_entry_id: auditEntryId },
+				};
 			}
 			// verify implies a loop: a checker only reviews loop findings (`args.ts` does the same for `--verify`)
 			return createCron(host, scope, { schedule, prompt: params.action, stateful: params.stateful ?? params.verify ?? false, verify: params.verify ?? false, name: params.name, cwd: params.cwd, catchUp: params.catch_up });
@@ -543,7 +640,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const view = ownerOf(host);
 			const nextRun = (j: ListedJob) => nextRunForTool(j, nowMs, view);
 			const heldBy = (j: ListedJob) => { const where = whereRuns(j, view); return where.kind === "terminal" ? where.pid : undefined; };
-			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: jobsOf(host).jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: runningRunForTool(j, host), last_due_at: j.status.due, last_fired_at: j.status.fired, last_completed_at: j.status.completed, last_error: j.status.error ? previewRedacted(j.status.error, 120) : undefined, consecutive_failures: j.status.streak || undefined, skipped_overlap_count: j.status.collapsed, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: whereRuns(j, view).kind === "asleep" || undefined, held_by_pid: heldBy(j), queued: queuedForTool(j, host, nowMs), created_at: j.createdAt })) } };
+			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: jobsOf(host).jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, proposed: j.proposed ? true : undefined, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: runningRunForTool(j, host), last_due_at: j.status.due, last_fired_at: j.status.fired, last_completed_at: j.status.completed, last_error: j.status.error ? previewRedacted(j.status.error, 120) : undefined, consecutive_failures: j.status.streak || undefined, skipped_overlap_count: j.status.collapsed, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: whereRuns(j, view).kind === "asleep" || undefined, held_by_pid: heldBy(j), queued: queuedForTool(j, host, nowMs), created_at: j.createdAt })) } };
 		},
 	});
 
@@ -592,6 +689,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const jobCwd = host.session().cwd;
 			const job = resolveJobRefScoped(jobsOf(host).load(), params.ref, jobCwd);
 			if (!job) return deny(`no cron job matching '${params.ref}' in this project; cron_list shows the ids and names`);
+			if (job.proposed) return deny(proposedRefusal(`cron job "${job.name ?? job.id}"`, `/cron enable ${job.name ?? job.id}`));
 			if (params.enabled || job.cwd !== jobCwd) {
 				const denied = await host.confirmTool(ctx, { label: `${params.enabled ? "enable" : "disable"} cron job ${job.name ?? job.id}`, tool: "set_cron_job_state", reason: params.enabled ? "enable a cron job from a model-facing tool (`enabled` = true)" : "disable a cron job of another project", preview: `${formatSchedule(job.schedule)}: ${previewRedacted(job.prompt, 120)}`, args: params }, scope.hop);
 				if (denied) return deny(denied);

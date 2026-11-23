@@ -1,4 +1,5 @@
 import { TURN_TYPE } from "./mark.ts";
+import { previewRedacted } from "./redact.ts";
 import { stamp } from "./schedule.ts";
 /**
  * `/goal`: a stop condition the agent is held to.
@@ -18,7 +19,7 @@ export const MAX_CONTINUATIONS = 8;
 /** How much of the transcript the evaluator is shown. */
 export const TRANSCRIPT_CHAR_LIMIT = 40_000;
 
-export type GoalStatus = "pursuing" | "paused" | "achieved" | "budget_limited" | "cleared";
+export type GoalStatus = "pursuing" | "waiting" | "paused" | "achieved" | "budget_limited" | "cleared";
 
 export interface GoalState {
 	condition: string;
@@ -30,7 +31,7 @@ export interface GoalState {
 
 /** A cleared or achieved goal no longer holds the session. */
 export function goalActive(state: GoalState): boolean {
-	return state.status === "pursuing" || state.status === "paused" || state.status === "budget_limited";
+	return state.status === "pursuing" || state.status === "waiting" || state.status === "paused" || state.status === "budget_limited";
 }
 
 /**
@@ -152,13 +153,22 @@ export function continuationPrompt(condition: string, reason: string): string {
 	return `The current /goal is not satisfied yet.\n\nGoal condition:\n${condition}\n\nGoal evaluator says what is missing or blocking completion:\n${reason}\n\nContinue working toward the goal. Do not claim completion until the transcript contains explicit evidence that satisfies the condition. If only a person can unblock it, ask them and stop.`;
 }
 
-export type GoalAction = { kind: "stop" } | { kind: "continue"; prompt: string } | { kind: "pause"; reason: string };
+/** What a terminal says when the goal starts to wait (design 6.5). A question keeps its own mark: no "?." */
+export function goalWaitingLine(reason: string): string {
+	const said = previewRedacted(reason, 200);
+	return `[goal] ${said}${/[.?!…]$/.test(said) ? "" : "."} Answer here and the goal goes on.`;
+}
 
-/** What a decision does to the state, and what happens next. */
+export type GoalAction = { kind: "stop" } | { kind: "continue"; prompt: string } | { kind: "pause"; reason: string } | { kind: "wait"; reason: string };
+
+/**
+ * What a decision does to the state, and what happens next. A goal that waits on a person sends
+ * nobody back to work, so it costs no continuation: the person's next input resumes it (`answeredGoal`).
+ */
 export function applyDecision(state: GoalState, decision: EvaluatorDecision, now = new Date()): { state: GoalState; action: GoalAction } {
+	if (decision.needsPerson) return { state: { ...state, status: "waiting", lastReason: decision.reason, updatedAt: stamp(now.getTime()) }, action: { kind: "wait", reason: `waiting on you: ${decision.reason}` } };
 	const next: GoalState = { ...state, iterations: state.iterations + 1, lastReason: decision.reason, updatedAt: stamp(now.getTime()) };
 	if (decision.ok) return { state: { ...next, status: "achieved" }, action: { kind: "stop" } };
-	if (decision.needsPerson) return { state: { ...next, status: "paused" }, action: { kind: "pause", reason: `waiting on you: ${decision.reason}` } };
 	if (next.iterations >= MAX_CONTINUATIONS) {
 		return { state: { ...next, status: "budget_limited" }, action: { kind: "pause", reason: `goal continuation limit reached (${MAX_CONTINUATIONS}); resume with /goal resume` } };
 	}
@@ -253,6 +263,37 @@ export function abortedTurn(state: GoalState, now = new Date()): { state: GoalSt
 export function resumeGoal(state: GoalState, now = new Date()): GoalState {
 	const spent = state.status === "budget_limited" || state.iterations >= MAX_CONTINUATIONS;
 	return { ...state, status: "pursuing", iterations: spent ? 0 : state.iterations, updatedAt: stamp(now.getTime()) };
+}
+
+/**
+ * A person's input in this conversation (src/window-claim.ts `personInput`) is the answer a waiting
+ * goal waits for: it is pursued again, and the turn that input starts is judged when it settles.
+ * Any other status is left alone: a paused or budget-limited goal still needs `/goal resume`.
+ */
+export function answeredGoal(state: GoalState, now = new Date()): GoalState | undefined {
+	return state.status === "waiting" ? resumeGoal(state, now) : undefined;
+}
+
+/**
+ * What an evaluation writes, given whether the session moved on while it ran (`moved`,
+ * `branchMovedSince`). A continuation or a wait belongs to the point the evaluation started from: when
+ * the session moved, neither applies, the goal stays pursued at its old count, and the turn now running
+ * settles into another evaluation. A wait is held too, since what moved the session can be the
+ * person's answer.
+ */
+export function heldOutcome(pursued: GoalState, outcome: { state: GoalState; action: GoalAction }, moved: boolean): { state: GoalState; held: boolean } {
+	const held = moved && (outcome.action.kind === "continue" || outcome.action.kind === "wait");
+	return { state: held ? { ...outcome.state, status: "pursuing", iterations: pursued.iterations } : outcome.state, held };
+}
+
+/** `/goal pause`, from any status, `waiting` included. */
+export function pauseGoal(state: GoalState, now = new Date()): GoalState {
+	return { ...state, status: "paused", updatedAt: stamp(now.getTime()) };
+}
+
+/** `/goal clear`, from any status, `waiting` included. */
+export function clearGoal(state: GoalState, now = new Date()): GoalState {
+	return { ...state, status: "cleared", updatedAt: stamp(now.getTime()) };
 }
 
 /**

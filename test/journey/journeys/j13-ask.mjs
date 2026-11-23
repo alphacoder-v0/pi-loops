@@ -11,12 +11,23 @@ const COMMAND = `echo ran >> ${MARKER} && git push --force origin main`;
 const RESUMED = "A person said yes to the call you asked about";
 const ASKED = "asked a person:";
 const NO_LINE = "You said no. release-fix is told on its next run, and the same command is refused for 14 days.";
+/** A plain job of the conversation the page holds open: its scheduled turn runs in that window, and asks. */
+const PLAIN = "cron-31313131313131313131313131313131";
+const WINDOW_PROMPT = "check the deploy window";
+const WINDOW_MARKER = "window.txt";
+const WINDOW_COMMAND = `echo ran >> ${WINDOW_MARKER} && git push --force origin main`;
+/** Long enough for the person to say yes while the scheduled turn still runs. */
+const HOLD = "sleep 60";
+const APPROVED = "Approved. It runs in this conversation after the current turn.";
+const WAITING = "Waiting to run";
 
 const textOf = (m) => (typeof m?.content === "string" ? m.content : (m?.content ?? []).map((c) => c?.text ?? "").join(""));
 
 /**
  * The stand-in's script. The loop's run makes the call once. The run a yes resumes makes it twice:
- * the call the person allowed, then the same call again. Everything else gets the reply.
+ * the call the person allowed, then the same call again. The window's scheduled turn makes its call,
+ * then holds the turn with a `sleep`; the window's answer turn makes the allowed call once. Everything
+ * else gets the reply.
  */
 export function seed() {
 	return {
@@ -26,6 +37,9 @@ export function seed() {
 			const text = textOf(messages[last]);
 			const results = messages.slice(last).filter((m) => m.role === "tool").length;
 			const call = { tool: "bash", args: { command: COMMAND } };
+			const windowCall = { tool: "bash", args: { command: WINDOW_COMMAND } };
+			if (text.includes(RESUMED) && text.includes(WINDOW_COMMAND)) return results < 1 ? windowCall : undefined;
+			if (text.includes(WINDOW_PROMPT)) return results === 0 ? windowCall : results === 1 ? { tool: "bash", args: { command: HOLD } } : undefined;
 			if (text.includes(RESUMED)) return results < 2 ? call : undefined;
 			if (text.includes(PROMPT)) return results < 1 ? call : undefined;
 			return undefined;
@@ -113,7 +127,65 @@ export async function run(ctx) {
 	if (ran() !== 1) throw new Error(`the command ran ${ran()} time(s) after the no`);
 	shot("no.png");
 
+	// 6. A conversation the page holds open: the person talks in it, so its window is the page's pi.
+	const sessionId = page(`location.pathname`).split("/")[2];
+	const lease = () => { try { return JSON.parse(fs.readFileSync(path.join(loops, "leases", `${sessionId}.json`), "utf8")); } catch { return undefined; /* being rewritten */ } };
+	ctx.browser("fill", "#input", "hello before the deploy check");
+	ctx.browser("press", "Enter");
+	await ctx.waitFor("the reply in the page", () => { const text = ctx.browser("get", "text", "body"); return { ok: text.includes(ctx.reply), last: text.slice(-400) }; }, 30000);
+	await ctx.waitFor("the page's pi holds the conversation", () => { const l = lease(); return { ok: l?.holder?.page === true && !!l.sessionFile && fs.existsSync(l.sessionFile), last: l }; }, 30000);
+	const sessionFile = lease().sessionFile;
+	const windowMarker = path.join(ctx.boot.project, WINDOW_MARKER);
+	const windowRan = () => (fs.existsSync(windowMarker) ? fs.readFileSync(windowMarker, "utf8").split("\n").filter(Boolean).length : 0);
+	const answerRecords = () => (fs.existsSync(path.join(loops, "runs.jsonl")) ? fs.readFileSync(path.join(loops, "runs.jsonl"), "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; /* a line still being written */ } }) : []).filter((r) => r.cause === "answer" && r.sessionId === sessionId);
+
+	// 7. A plain job of that conversation, due now, written as `/cron add` in it leaves it. Its scheduled
+	//    turn runs in the page's pi; the call is held for a person, under Needs you, and the turn goes on.
+	const plain = JSON.parse(fs.readFileSync(jobsFile, "utf8"));
+	plain.jobs.push({ id: PLAIN, name: "deploy-check", schedule: { kind: "every", ms: 24 * 60 * 60_000 }, stateful: false, sessionId, prompt: WINDOW_PROMPT, cwd: ctx.boot.project, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 24 * 60 * 60_000 - 60_000).toISOString() });
+	fs.writeFileSync(`${jobsFile}.journey`, JSON.stringify(plain));
+	fs.renameSync(`${jobsFile}.journey`, jobsFile);
+	const windowQuestion = await ctx.waitFor("the window's question under Needs you", () => {
+		const now = cards().filter((c) => c.text.includes(WINDOW_COMMAND));
+		return { ok: now.length === 1 && now[0].needs && now[0].acts.includes("claim"), last: cards(), value: now[0] };
+	}, 180000);
+	const filed = fs.readFileSync(path.join(loops, "inbox.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)).find((f) => f.id === windowQuestion.id);
+	if (filed?.lane !== sessionId || filed?.ask?.session_id !== sessionId) throw new Error(`the window's question is not the conversation's: ${JSON.stringify(filed)}`);
+	if (windowRan() !== 0) throw new Error(`the window's command ran before anyone said yes: ${windowRan()} time(s)`);
+	if (!requests().some((r) => lastUser(r).includes(WINDOW_PROMPT) && (r.messages ?? []).some((m) => m.role === "tool" && textOf(m).includes(ASKED)))) throw new Error("the scheduled turn was not told its call was asked about");
+
+	// 8. Yes on the page while the scheduled turn still runs: the card says it runs in this conversation after the current turn.
+	press(`[data-inb="${windowQuestion.id}"] [data-act="claim"]`);
+	// The click's answer says it; once the page draws the card again, it says the answer waits (with
+	// why, once the window has met its row). The order in the conversation below proves the rest.
+	const approved = await ctx.waitFor("the approved line on the window's question", () => {
+		const now = card(windowQuestion.id);
+		return { ok: !!now && (now.line === APPROVED || now.line.startsWith(WAITING)), last: now, value: now };
+	}, 15000);
+	shot("window-approved.png");
+
+	// 9. After the turn, the yes runs in that conversation, in the page's pi: the allowed call runs once,
+	//    the card ends Done, and the conversation was never handed to pi-loops in the background.
+	const windowDone = await ctx.waitFor("the window's question ends done", () => {
+		const now = card(windowQuestion.id);
+		return { ok: !!now && now.line.startsWith("Done"), last: now, value: now };
+	}, 120000);
+	shot("window-done.png");
+	if (windowRan() !== 1) throw new Error(`the allowed call ran ${windowRan()} time(s) in the window, not once`);
+	const [record, ...more] = answerRecords();
+	if (!record || more.length || record.ok !== true || record.grant_used !== true || record.resumed !== sessionFile) throw new Error(`expected one answer record of the conversation, ok, its grant used, in its own file: ${JSON.stringify(answerRecords())}`);
+	if (lease()?.holder?.page !== true) throw new Error(`the conversation is no longer the page's: ${JSON.stringify(lease())}`);
+	// After the current turn: in the conversation, the answer's turn starts after the scheduled turn's
+	// hold ended, and the call that ran is the answer's own.
+	const entries = fs.readFileSync(sessionFile, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+	const callOf = (e, command) => e.message?.role === "assistant" && (e.message.content ?? []).some((c) => c.type === "toolCall" && c.arguments?.command === command);
+	const holdCall = entries.find((e) => callOf(e, HOLD))?.message.content.find((c) => c.type === "toolCall").id;
+	const heldUntil = entries.findIndex((e) => e.message?.role === "toolResult" && e.message.toolCallId === holdCall);
+	const answerAt = entries.findIndex((e) => e.type === "custom_message" && e.customType === "pi-loops:turn" && typeof e.content === "string" && e.content.includes(RESUMED) && e.content.includes(WINDOW_COMMAND));
+	const ranAt = entries.findIndex((e, i) => i > answerAt && callOf(e, WINDOW_COMMAND));
+	if (heldUntil === -1 || answerAt <= heldUntil || ranAt <= answerAt) throw new Error(`the yes did not run after the current turn, in its own turn: hold ends at ${heldUntil}, the answer's turn at ${answerAt}, its call at ${ranAt}`);
+
 	const evidence = path.join(ctx.dir, "ask.txt");
-	fs.writeFileSync(evidence, [`the question: ${JSON.stringify(asked)}`, `the resumed request's last message:\n${lastUser(resumed)}`, `the tool results the resumed run saw: ${JSON.stringify(second)}`, `the answered card: ${JSON.stringify(done)}`, `the question asked again: ${JSON.stringify(again)}`, `${MARKER}: ${ran()} line(s)`].join("\n\n"));
+	fs.writeFileSync(evidence, [`the question: ${JSON.stringify(asked)}`, `the resumed request's last message:\n${lastUser(resumed)}`, `the tool results the resumed run saw: ${JSON.stringify(second)}`, `the answered card: ${JSON.stringify(done)}`, `the question asked again: ${JSON.stringify(again)}`, `${MARKER}: ${ran()} line(s)`, `the window's question: ${JSON.stringify(windowQuestion)}`, `the window's question after the yes: ${JSON.stringify(approved)}`, `the window's answered card: ${JSON.stringify(windowDone)}`, `the window's answer record: ${JSON.stringify(record)}`, `${WINDOW_MARKER}: ${windowRan()} line(s)`].join("\n\n"));
 	ctx.addEvidence(evidence);
 }

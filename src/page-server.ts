@@ -26,7 +26,7 @@ import { failingJobs } from "./job-health.ts";
 import { type JobHistory, type ListedJob, listedJob, runHistory } from "./job-status.ts";
 import type { ClockFile } from "./clock.ts";
 import { clockStore } from "./stores.ts";
-import { loopLane } from "./lane.ts";
+import { loopLane, parseLane } from "./lane.ts";
 import { loopSignal, type LoopSignal, SIGNAL_WINDOW_MS } from "./job-signal.ts";
 import { applyTune, rowSignal, scheduleAudit, suggestTune } from "./job-tune.ts";
 import { HELD_READ_MAX_BYTES } from "./held-read.ts";
@@ -65,7 +65,9 @@ import { realpathish, sameProject } from "./paths.ts";
 import { RequestStore, type Row } from "./requests.ts";
 import { awayIn, markProjectSeen, type SinceYouLooked } from "./seen.ts";
 import { listRecipes, type Starter, starters } from "./recipe.ts";
-import { newTraceId, TriggerStore } from "./triggers.ts";
+import { DEFAULT_TRIGGER_POLL_INTERVAL_SECS, newTraceId, TriggerStore } from "./triggers.ts";
+import { type Proposal, WATCH_CANCEL, answerProposal, planOf, proposalCard, watchChoice, watchOptions } from "./watch-plan.ts";
+import { loadConfig } from "./config.ts";
 import { writeUiPref } from "./ui-prefs.ts";
 import { DOOR, ICON, PAGE, readPage } from "./web.mjs";
 import { producerAlive } from "./window-executor.ts";
@@ -721,6 +723,8 @@ const LOOPS_BODY_MAX = 1024;
 const RUN_ID = /^run-[0-9a-f]{32}$/;
 /** A job's id: compared with the store's ids, never used as a path. */
 const JOB_ID = /^[A-Za-z0-9_-]{1,80}$/;
+/** A rule's id as `newRuleId` writes it. Matched whole. */
+const RULE_ID = /^dyn-[0-9a-f]{32}$/;
 /** A suggestion's key (src/job-tune.ts): kind, job id and the schedule's text. */
 const TUNE_KEY_MAX = 300;
 /** A finding's id as `Inbox.append` writes it (`newId("inb")`). Matched whole: never a prefix or a number. */
@@ -1247,6 +1251,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			schedule: j.schedule && typeof j.schedule === "object" ? (scheduleWords(j.schedule) ?? "?") : "?",
 			stateful: !!j.stateful,
 			enabled: !!j.enabled,
+			// A proposal is not a disabled job: it waits for a yes (design 2.5).
+			proposed: !!j.proposed,
 			prompt: maskSecrets(j.prompt),
 			runs: j.status.runs,
 			lastError: maskSecrets(j.status.error),
@@ -1284,7 +1290,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const allRules = readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? [];
 		const rules = allRules
 			.filter(inThisProject)
-			.map((r: any) => ({ id: r.id, condition: maskSecrets(r.condition), action: maskSecrets(r.action), enabled: !!r.enabled, fireOnce: !!r.fireOnce, firedAt: r.firedAt, ...ruleWait(r) }));
+			.map((r: any) => ({ id: r.id, condition: maskSecrets(r.condition), action: maskSecrets(r.action), enabled: !!r.enabled, proposed: !!r.proposed, fireOnce: !!r.fireOnce, firedAt: r.firedAt, ...ruleWait(r) }));
 		// Two counts, not one. They used to be added together, and `/cron` counts jobs only — so the
 		// panel's number disagreed with the command's whenever a rule lived somewhere else, and the line
 		// that exists to say "your job is not gone, it is elsewhere" pointed at `/cron all`, where a
@@ -1350,7 +1356,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const signed = (child: PageChild) => createdBy(child, VERSION);
 	/** pi's session files, read for the list and for a conversation no lease names. Nothing is read until asked. */
 	const index = new ConversationIndex(opts.sessionsRoot, undefined, () => leases.list().flatMap((l) => (l.sessionFile ? [l.sessionFile] : [])));
-	const needsYou = new NeedsYouCounts(path.join(LOOPS_DIR, "inbox.jsonl"));
+	const needsYou = new NeedsYouCounts(path.join(LOOPS_DIR, "inbox.jsonl"), { jobs: path.join(LOOPS_DIR, "jobs.json"), rules: path.join(LOOPS_DIR, "triggers.json") });
 
 	/**
 	 * `GET /conversations`: one project's conversations and the projects to switch to. `cwd` is only
@@ -1792,6 +1798,14 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		}
 	}
 
+	/** Whether a window has the conversation of `e`'s question open and runs its turns: where a yes to it runs after the current turn. */
+	function questionWindowOpen(e: InboxEntry): boolean {
+		const lane = e.ask?.lane;
+		if (lane === undefined || parseLane(lane)?.kind !== "conversation") return false;
+		const holder = leaseOf(lane)?.holder;
+		return holder?.kind === "terminal" && holderAlive(holder) && holderDelivers(holder);
+	}
+
 	/**
 	 * The conversation `sessionId` names, when it is still there: open in the page, or a session file
 	 * a lease or pi's own sessions directory names. A finding's `session_id` is data from a file, so it
@@ -1898,7 +1912,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			.slice(0, INBOX_CARDS_MAX)
 			.map((c) => {
 				const e = byId.get(c.id)!;
-				const line = answerLine(e, answerRowOf(e), runSummary(e));
+				const line = answerLine(e, answerRowOf(e), runSummary(e), questionWindowOpen(e));
 				return { ...c, ...(line ? { line } : {}), ...(e.answer?.state === "pending" ? { cancel: true as const } : {}) };
 			});
 		// What happened in the project while nobody looked: the terminal's session-start line counts the same (src/seen.ts).
@@ -2105,7 +2119,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const lane = said.said === "Y1" ? said.lane : entry.lane;
 		const kept = !!entry.transcript && fs.existsSync(entry.transcript);
 		audit.appendAudit({ cwd: entry.cwd, type: "request", traceId: entry.id, state: "claimed", sourceLabel: entry.source, eventLabel: lane, details: { finding: entry.id, from: "page", said: said.said, ...(said.said === "Y1" && !said.queued ? { queued: false } : {}) } });
-		return { status: 200, body: { ok: true, id: entry.id, said: said.said, ...(lane ? { lane } : {}), line: yesPageLine(said, whoOf(entry, lane), kept) } };
+		return { status: 200, body: { ok: true, id: entry.id, said: said.said, ...(lane ? { lane } : {}), line: yesPageLine(said, whoOf(entry, lane), kept, questionWindowOpen(entry)) } };
 	}
 
 	/** `POST /inbox/dismiss`: a person's no. A reason (a chip's words, or typed, at most 500 characters) goes to the loop's next run; none is a silent dismiss. */
@@ -2122,7 +2136,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const entry = said.finding;
 		const told = dismissOutcome(entry, entry.job_id ? jobNames().get(entry.job_id) : undefined, reason);
 		audit.appendAudit({ cwd: entry.cwd, type: "request", traceId: entry.id, state: "dismissed", sourceLabel: entry.source, eventLabel: entry.session_id, details: { finding: entry.id, from: "page", reason: reason ? redact(reason) : null, chip: (DISMISS_CHIPS as readonly string[]).includes(reason) } });
-		const line = entry.ask ? noQuestionLine("page", whoOf(entry, entry.ask.lane)) : dismissLine(told);
+		const line = entry.ask ? noQuestionLine("page", whoOf(entry, entry.ask.lane), entry.ask.lane) : dismissLine(told);
 		return { status: 200, body: { ok: true, id: entry.id, told, line } };
 	}
 
@@ -2136,6 +2150,53 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const out = await answers.cancel(b.id);
 		if ("refusal" in out) return out.refusal.refused === "missing" ? { status: 404, body: { error: "no such finding" } } : { status: 409, body: { error: cancelRefusal(out.refusal) } };
 		return { status: 200, body: { ok: true, id: out.cancelled.id, line: CANCELLED_LINE } };
+	}
+
+	/** The records in jobs.json and triggers.json that are still proposed. */
+	function proposals(): Proposal[] {
+		return [...jobStore.load().filter((j) => j.proposed).map((job): Proposal => ({ kind: "schedule", job })), ...audit.load().filter((r) => r.proposed).map((rule): Proposal => ({ kind: "rule", rule }))];
+	}
+
+	/** `GET /watch`: every proposal as its card (src/watch-plan.ts `proposalCard`). A file read: it starts no pi. */
+	function watchListing(): { status: number; body: Record<string, unknown> } {
+		const ctx = { now: Date.now(), pollSecs: loadConfig(LOOPS_DIR).triggerPollIntervalSecs ?? DEFAULT_TRIGGER_POLL_INTERVAL_SECS, home: process.env.HOME };
+		try {
+			return { status: 200, body: { proposals: proposals().flatMap((p) => proposalCard(p, ctx) ?? []) } };
+		} catch (err: any) {
+			// The store's own words stay in the log: they name paths on this machine.
+			opts.log(`pi-loops web: watch: ${err?.stack ?? err?.message ?? err}`);
+			return { status: 500, body: { error: "could not read the watches" } };
+		}
+	}
+
+	/**
+	 * `POST /watch/answer {kind, id, answer}`: Set it up with one of the proposal's options, or Cancel
+	 * (src/watch-plan.ts `answerProposal`, P2 and P3). While it is proposed, only its own options are
+	 * taken; once it is not, any option of the vocabulary is, and finds it already answered.
+	 */
+	async function answerWatch(b: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
+		const refused = exactly(b, ["kind", "id", "answer"]);
+		if (refused) return refused;
+		const { kind, id, answer } = b as { kind: string; id: string; answer: string };
+		if (kind !== "schedule" && kind !== "rule") return { status: 400, body: { error: "kind is schedule or rule" } };
+		if (!(kind === "schedule" ? JOB_ID : RULE_ID).test(id)) return { status: 400, body: { error: "bad id" } };
+		try {
+			const p = proposals().find((x) => (x.kind === "schedule" ? x.job.id : x.rule.id) === id && x.kind === kind);
+			const offered = p ? watchOptions(planOf(p)).includes(answer) : answer === WATCH_CANCEL || watchChoice(answer).verdict === "set";
+			if (!offered) return { status: 400, body: { error: "not one of the watch's options" } };
+			const done = await answerProposal({ jobs: jobStore, rules: audit, requests }, { kind, id }, watchChoice(answer), {
+				now: Date.now,
+				by: { pid: process.pid, instance: "page", procStart: procStart(process.pid), version: VERSION },
+				actor: "page",
+				auditJob: (op, before, after) => {
+					audit.appendAudit({ cwd: before.cwd, type: "cron_control_plane", traceId: newTraceId(), state: op, sourceLabel: "page", eventLabel: before.id, summary: `${before.name ?? before.id}: ${op === "enable" ? "set up" : "cancelled"}`, details: { before_enabled: before.enabled, after_enabled: after?.enabled, removed: !after } });
+				},
+			});
+			return { status: 200, body: done.outcome === "already" ? { outcome: done.outcome, was: done.was, line: done.line } : { outcome: done.outcome, line: done.line } };
+		} catch (err: any) {
+			opts.log(`pi-loops web: watch answer ${id}: ${err?.stack ?? err?.message ?? err}`);
+			return { status: 500, body: { error: "could not answer the watch" } };
+		}
 	}
 
 	/**
@@ -2556,6 +2617,18 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				if (!prefixed && url.pathname === "/activity" && req.method === "GET") {
 					const listed = activityListing(url.searchParams.get("cwd"), url.searchParams.get("session"));
 					return void json(res, listed.body, listed.status);
+				}
+				// A proposed watch (design 2.5): global like the inbox, since the page draws each card in the
+				// conversation it was proposed in, and answering one must not start this page's pi.
+				if (!prefixed && url.pathname === "/watch" && req.method === "GET") {
+					const listed = watchListing();
+					return void json(res, listed.body, listed.status);
+				}
+				if (!prefixed && url.pathname === "/watch/answer" && req.method === "POST") {
+					const b = await inboxBody(req);
+					if (!("ok" in b)) return void json(res, { error: b.error }, b.status);
+					const done = await answerWatch(b.ok);
+					return void json(res, done.body, done.status);
 				}
 				if (!prefixed && url.pathname === "/inbox/run" && req.method === "GET") {
 					const read = runTranscript(url.searchParams.get("id"));

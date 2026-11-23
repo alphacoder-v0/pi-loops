@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { questionFinding } from "../src/ask.ts";
 import { type InboxEntry } from "../src/inbox.ts";
-import { CANCELLED_LINE, DISMISS_CHIPS, answerLine, answerWho, cancelRefusal, clearLeftTail, cardLine, cardLines, cardOrigin, cardsOf, claimLine, dismissLine, dismissOutcome, dismissTail, inboxCard, noQuestionLine, shellClaimOfQuestion, splitFinding, yesPageLine, yesTerminalLine } from "../src/inbox-card.ts";
+import { CANCELLED_LINE, DISMISS_CHIPS, answerLine, answerWho, cancelRefusal, clearLeftTail, cardLine, cardLines, cardOrigin, cardsOf, dismissLine, dismissOutcome, dismissTail, inboxCard, noQuestionLine, questionActions, shellClaimOfQuestion, splitFinding, threadOrder, threadedLines, threads, yesPageLine, yesTerminalLine } from "../src/inbox-card.ts";
+import type { LaneId } from "../src/lane.ts";
 import type { Row } from "../src/requests.ts";
 import { screenText } from "../src/redact.ts";
 
@@ -105,18 +106,6 @@ test("a dismiss tells the loop's next run, nobody, or says nothing", () => {
 	assert.equal(dismissTail({ told: "nobody", why: "rule" }), " — a trigger reported it, and a trigger keeps no notes, so nobody is told");
 	assert.equal(dismissTail({ told: "silent" }), "");
 	assert.deepEqual([...DISMISS_CHIPS], ["Not a bug", "Already fixed", "Duplicate", "Too noisy", "Not now"]);
-});
-
-test("a queued claim says where it runs, in the page's words", () => {
-	assert.equal(claimLine("page", "release notes"), 'Running in "release notes".');
-	assert.equal(claimLine("started"), "Starting its conversation…");
-	assert.equal(claimLine("terminal"), "Queued for your terminal.");
-	assert.equal(claimLine("terminal-quiet"), "Queued; the terminal that has this conversation is not taking messages (/resume there).");
-	assert.equal(claimLine("background"), "Queued; runs after pi-loops finishes its scheduled run there.");
-	assert.equal(claimLine("full"), "Queued; it opens when another conversation in the page closes.");
-	assert.equal(claimLine("stopped"), "Queued; pi stopped too often in that conversation to be started again on its own.");
-	assert.equal(claimLine("no-pi-loops"), "Queued; the pi of that conversation has no pi-loops, so nothing runs it here. Open it in a terminal with pi-loops.");
-	assert.equal(claimLine("gone"), "Queued; its conversation is gone.");
 });
 
 test("one line per finding, for a shell: the clauses on the finding's line, in the page's words", () => {
@@ -249,6 +238,9 @@ test("a yes and a no say what design 6.1 and 6.2 say, on each surface", () => {
 	assert.equal(yesPageLine({ said: "Y2", finding: news, why: "the loop was removed" }, "nightly", true), "Not run (the loop was removed)");
 	assert.equal(noQuestionLine("terminal", "nightly"), "said no: nightly is told why on its next run; the same command is refused for 14 days");
 	assert.equal(noQuestionLine("page", "nightly"), "You said no. nightly is told on its next run, and the same command is refused for 14 days.");
+	assert.equal(noQuestionLine("page", "nightly", "@cron-nightly" as LaneId), "You said no. nightly is told on its next run, and the same command is refused for 14 days.", "a loop's lane: its next run");
+	assert.equal(noQuestionLine("page", '"deploy-check"', "0199aaaa-0000-7000-8000-000000000001" as LaneId), 'You said no. "deploy-check" is told in this conversation, and the same command is refused for 14 days.', "a conversation's question (design 6.4)");
+	assert.equal(noQuestionLine("terminal", '"deploy-check"', "0199aaaa-0000-7000-8000-000000000001" as LaneId), 'said no: "deploy-check" is told in this conversation; the same command is refused for 14 days');
 	assert.equal(shellClaimOfQuestion("inb-3f2a9c1d", "nightly"), "inbox entry inb-3f2a9c1d is a question from nightly, and a claim from a shell allows no command: answer it on the page or in pi with /inbox");
 });
 
@@ -263,6 +255,82 @@ test("[clear] /inbox clear says how many questions it left, and nothing when it 
 	assert.equal(clearLeftTail(0), "");
 	assert.equal(clearLeftTail(1), "; left 1 question for you to answer: /inbox claim <n> or /inbox dismiss <n>");
 	assert.equal(clearLeftTail(3), "; left 3 questions for you to answer: /inbox claim <n> or /inbox dismiss <n>");
+});
+
+test("[M5b.3] a question from a scheduled prompt in a conversation: the card's who-asks line and who waits name the prompt by its job's name; a loop's question names the loop", () => {
+	const conversation = "0199aaaa-0000-7000-8000-0000000000a1";
+	const command = "sudo systemctl restart api";
+	const call = { tool: "bash", tool_call_id: "c1", command, input_sha256: "a".repeat(64), reason: "sudo invocation" };
+	const cap = { cwd: "/home/u/acme-api", model: null, thinking: null, tools: "session", builtinTools: "session", timeoutMs: 1000 } as unknown as Parameters<typeof questionFinding>[1]["cap"];
+	const origin = { source: "cron:deploy-check", run_id: "run-1", cwd: "/home/u/acme-api", job_id: "cron-0123", session_id: conversation, who: "deploy-check" };
+	const made = questionFinding(call, { lane: conversation, sessionId: conversation, sessionFile: `/sessions/${conversation}.jsonl`, cap }, origin, "2026-11-20T00:00:00.000+00:00");
+	const names = { ...ctx, loopName: (id: string) => (id === "cron-0123" ? "deploy-check" : undefined) };
+	const card = inboxCard(entry({ ...made.entry, id: made.id, kind: "checkpoint" }), names)!;
+	assert.deepEqual([card.headline, card.waits], ['The scheduled prompt "deploy-check" asks to run a command', 'the scheduled prompt "deploy-check" went on without it']);
+	assert.deepEqual(cardLines(card, "  1. ", ""), ['  1. ⚑ The scheduled prompt "deploy-check" asks to run a command', `       command: ${command}`, "       why it asks: sudo invocation", '       waiting on: the scheduled prompt "deploy-check" went on without it', "       if you don't: it stays undone"]);
+	const loop = questionFinding(call, { lane: "@cron-0123", sessionId: "sid-1", sessionFile: "/runs/sid-1.jsonl", cap }, { ...origin, session_id: undefined }, "2026-11-20T00:00:00.000+00:00");
+	const loopCard = inboxCard(entry({ ...loop.entry, id: loop.id, kind: "checkpoint" }), names)!;
+	assert.deepEqual([loopCard.headline, loopCard.waits], ["deploy-check asks to run a command", "deploy-check went on without it"], "a loop is no scheduled prompt in a conversation");
+});
+
+test("[6.4] a yes from the page to a question a conversation's turn asked says it runs in that conversation after the current turn, only while a window has the conversation open", () => {
+	const conversation = "0199aaaa-0000-7000-8000-0000000000a1";
+	const asked = entry({ status: "claimed", answered_by: "page", answer: { state: "pending", at: AT }, ask: { ...QUESTION, lane: conversation } });
+	assert.equal(yesPageLine({ said: "Y1", finding: asked }, "deploy-check", true, true), "Approved. It runs in this conversation after the current turn.");
+	assert.equal(yesPageLine({ said: "Y1", finding: asked }, "deploy-check", true, false), "Waiting to run", "a closed conversation has no current turn: the plain pending line");
+	assert.equal(yesPageLine({ said: "Y1", finding: { ...asked, ask: QUESTION } }, "nightly", true, true), "Waiting to run", "a loop's question shows its state");
+	assert.equal(answerLine(asked, undefined, undefined, true), "Approved. It runs in this conversation after the current turn.", "the card's line after the yes says the same, not Waiting to run");
+	assert.equal(answerLine(asked), "Waiting to run", "and, while no window has the conversation open, the plain pending line");
+	assert.equal(answerLine(asked, { waiting: "the job is disabled" } as Row, undefined, true), "Waiting to run: the job is disabled", "a row that says why it waits still says why");
+	assert.equal(answerLine({ ...asked, ask: QUESTION }, undefined, undefined, true), "Waiting to run", "a loop's pending yes");
+});
+
+test("[6.4] /inbox claim on a question of this window's own conversation says it runs here after the current turn, with no card", () => {
+	const conversation = "0199aaaa-0000-7000-8000-0000000000a1";
+	const asked = entry({ status: "claimed", ask: { ...QUESTION, lane: conversation } });
+	for (const background of [true, false]) assert.equal(yesTerminalLine({ said: "Y1", finding: asked }, '"deploy-check"', background, conversation), "approved: it runs in this conversation after the current turn, with this one command allowed.", `background: ${background}`);
+	assert.equal(yesTerminalLine({ said: "Y1", finding: asked }, '"deploy-check"', true, "0199aaaa-0000-7000-8000-0000000000b2"), 'approved: "deploy-check" resumes the run that asked, with this one command allowed. A card comes here when it ends.', "another conversation's question");
+	assert.equal(yesTerminalLine({ said: "Y1", finding: entry({ status: "claimed", ask: QUESTION }) }, "nightly", true, conversation), "approved: nightly resumes the run that asked, with this one command allowed. A card comes here when it ends.", "a loop's question");
+});
+
+test("[6.1] /inbox ends a new question with the two commands that answer it, by its number", () => {
+	assert.equal(questionActions(1), "       /inbox claim 1 runs it once · /inbox dismiss 1 [reason] says no");
+	assert.equal(questionActions(12), "       /inbox claim 12 runs it once · /inbox dismiss 12 [reason] says no");
+});
+
+test("[thread] a reply is listed under its root, numbered in that order; a root only in the inbox heads its replies unnumbered; a reply whose root is gone stands alone", () => {
+	const id = (c: string) => `inb-${c.repeat(32)}`;
+	const root = entry({ id: id("1"), kind: "checkpoint", text: "Run `x`? · waits: nightly went on without it", status: "claimed" });
+	const listedRoot = entry({ id: id("2"), text: "Deploy failed. Logs attached." });
+	const replyOfListed = entry({ id: id("3"), text: "Your yes to \"Deploy failed.\" could not be started (it could not be started).", re: id("2") });
+	const replyOfClaimed = entry({ id: id("4"), text: "Your yes to `x` could not be started (the loop was removed). The command was not run.", re: id("1") });
+	const orphan = entry({ id: id("5"), text: "Your yes to `y` was started and did not finish (it was stopped).", re: id("9") });
+	const listed = [replyOfListed, replyOfClaimed, orphan, listedRoot];
+	const rows = threads(listed, [root, ...listed]);
+	assert.deepEqual(
+		rows.map((r) => [r.entry.id.slice(4, 5), r.reply, r.listed]),
+		[["1", false, false], ["4", true, true], ["5", false, true], ["2", false, true], ["3", true, true]],
+	);
+	assert.deepEqual(threadOrder(listed, [root, ...listed]).map((e) => e.id.slice(4, 5)), ["4", "5", "2", "3"], "the numbers /inbox claim resolves are the ones on screen");
+	const lines = threadedLines(rows, (e, n) => [`  ${n === undefined ? `[${e.status}]` : `${n}.`} ${e.text.slice(0, 12)}`, "       more"]);
+	assert.deepEqual(lines, [
+		"  [claimed] Run `x`? · w",
+		"       more",
+		"      1. Your yes to ",
+		"           more",
+		"  2. Your yes to ",
+		"       more",
+		"  3. Deploy faile",
+		"       more",
+		"      4. Your yes to ",
+		"           more",
+	]);
+	assert.deepEqual(threads([orphan], [orphan]).map((r) => [r.reply, r.listed]), [[false, true]], "a root that is gone: the reply is drawn on its own");
+	assert.equal(inboxCard(replyOfClaimed, ctx)!.re, id("1"), "the card carries re, for the page");
+	assert.equal("re" in inboxCard(root, ctx)!, false);
+	const loopA = entry({ id: id("6"), re: id("7") });
+	const loopB = entry({ id: id("7"), re: id("6") });
+	assert.deepEqual(threads([loopA, loopB], [loopA, loopB]).map((r) => r.entry.id), [loopA.id, loopB.id], "a root that is itself a reply is no root: each stands alone");
 });
 
 test("who picks up a yes: the loop by its name, the check of the project, the job of a conversation, else the conversation", () => {
@@ -287,7 +355,7 @@ test("a question's card is drawn from its ask: the command whole in its own fiel
 	assert.deepEqual(cardLines(card, "  1. ", "  (acme-api)"), [
 		"  1. ⚑ issue-triage asks to run a command  (acme-api)",
 		`       command: ${command}`,
-		"       reason: git push --force on main/master",
+		"       why it asks: git push --force on main/master",
 		"       waiting on: issue-triage went on without it",
 		"       if you don't: it stays undone",
 	]);

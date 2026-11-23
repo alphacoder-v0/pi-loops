@@ -1,19 +1,22 @@
 /**
- * A watch from one sentence, as a question: what `cron_create` and `new_trigger` ask the person
- * through pi's own `select` before they create anything, in the person's own turn on every surface
- * (docs/design.md decision 24). The plan, the card it is shown as, the dialog's title and options,
- * and the one place an answer becomes the stores' fields (`watchChoice`). Pure, beside tools.ts,
- * the job-edit.ts pattern: the tool asks, maps the answer and creates.
+ * A watch from one sentence, as a question: the plan, the card it is shown as, the dialog's title and
+ * options, and the one place an answer becomes the stores' fields (`watchChoice`). `cron_create` and
+ * `new_trigger` in a person's own turn write a proposal (design 2.5); every surface draws this
+ * question from the record (`planOf`), and `answerProposal` is the one way an answer lands: P2 sets
+ * it up, P3 removes it, each only while it is still proposed.
  */
+import { createHash } from "node:crypto";
 import { dangerousCommandReason } from "./danger.ts";
-import { redact } from "./redact.ts";
+import { previewRedacted, redact } from "./redact.ts";
+import type { RequestStore, Row, UnclaimedRow } from "./requests.ts";
 import { computeNext, formatDuration, formatLocal, formatSchedule, stamp } from "./schedule.ts";
-import type { LoopJob } from "./store.ts";
+import type { JobStore, LoopJob } from "./store.ts";
 import type { CreateJobInput } from "./tools.ts";
+import { type DynamicTriggerRule, type TriggerStore, auditRule } from "./triggers.ts";
 
 export type WatchWhere = "chat" | "inbox";
 /** What the person cannot change on the card. `stateful` and `verify` follow the answer, so nothing holds the same choice twice; `verify` here is only what the model asked for, the first option's default. */
-export type JobDraft = Omit<CreateJobInput, "stateful" | "recipe">;
+export type JobDraft = Omit<CreateJobInput, "stateful" | "recipe" | "proposed">;
 export interface RuleDraft {
 	condition: string;
 	action: string;
@@ -106,8 +109,6 @@ export function planCard(plan: WatchPlan, ctx: { now: number; pollSecs: number; 
 
 /** The dialog's first line: how the page tells a watch question from any other select. */
 export const WATCH_ASK_HEAD = "Set up this watch?";
-/** How long the question waits for the person before pi cancels it and the tool says so. */
-export const WATCH_ASK_MS = 30 * 60_000;
 export const WATCH_CANCEL = "Cancel";
 
 /** "every 10 minutes": how often the background looks, as the card says it. */
@@ -115,12 +116,8 @@ function looksWords(secs: number): string {
 	return secs >= 120 ? `every ${Math.round(secs / 60)} minutes` : secs === 60 ? "every minute" : `every ${secs} seconds`;
 }
 
-/**
- * The dialog's title: the head line, then the card's rows as `Label: value`, the same text a
- * terminal shows and the page draws its card from. A value's further lines are indented two spaces,
- * so a line inside an action never reads as a row of its own.
- */
-export function askTitle(card: WatchCard): string {
+/** The card's rows, as label and value: what a terminal's question and the page's card both show. */
+function cardRows(card: WatchCard): [string, string][] {
 	const rows: [string, string][] = [];
 	if (card.kind === "rule") {
 		rows.push(["Waits for", card.when], ["Looks", looksWords(card.looksEverySecs ?? 600)]);
@@ -128,14 +125,23 @@ export function askTitle(card: WatchCard): string {
 	} else {
 		rows.push(["Runs", `${card.when}${card.next ? ` · next ${card.next}` : ""}`], ["Does", card.does]);
 	}
-	if (card.danger) rows.push(["Careful", `When this runs nobody is asked: pi-loops refuses ${card.danger} and does the safe part.`]);
+	if (card.danger) rows.push(["Careful", `When this runs and reaches ${card.danger}, pi-loops does not run it: it asks you in the inbox and goes on without it.`]);
 	rows.push(["Command", card.command]);
-	return [WATCH_ASK_HEAD, ...rows.map(([label, value]) => `${label}: ${value.replace(/\r?\n/g, "\n  ")}`)].join("\n");
+	return rows;
+}
+
+/**
+ * The dialog's title: the head line, then the card's rows as `Label: value`, the same text a
+ * terminal shows. A value's further lines are indented two spaces, so a line inside an action never
+ * reads as a row of its own.
+ */
+export function askTitle(card: WatchCard): string {
+	return [WATCH_ASK_HEAD, ...cardRows(card).map(([label, value]) => `${label}: ${value.replace(/\r?\n/g, "\n  ")}`)].join("\n");
 }
 
 /** A yes, as the card's choices: where the result goes, whether a rule fires once, whether a loop's findings are checked. */
 export type WatchChoice = { verdict: "cancel" } | { verdict: "set"; where: WatchWhere; once: boolean; checks: boolean };
-type SetChoice = Extract<WatchChoice, { verdict: "set" }>;
+export type SetChoice = Extract<WatchChoice, { verdict: "set" }>;
 
 const WHERE_WORDS: Record<WatchWhere, string> = { chat: "this conversation", inbox: "inbox" };
 const SCHEDULE_CHOICES: SetChoice[] = [
@@ -170,4 +176,186 @@ export function watchOptions(plan: WatchPlan): string[] {
 /** The answer pi's select gave (`undefined` for Esc, an abort or the timeout), as the card's choices. Anything outside the vocabulary is a cancel. */
 export function watchChoice(answer: string | undefined): WatchChoice {
 	return (answer !== undefined && VOCABULARY.get(answer)) || { verdict: "cancel" };
+}
+
+/** A proposed job or rule: the record its question is drawn from. */
+export type Proposal = { kind: "schedule"; job: LoopJob } | { kind: "rule"; rule: DynamicTriggerRule };
+
+/** What the question names a proposal by: a job's name, else its id; a rule's id. */
+export function proposalLabel(p: Proposal): string {
+	return p.kind === "schedule" ? (p.job.name ?? p.job.id) : p.rule.id;
+}
+
+/** The question a proposal asks, from its record alone, so it is the same on every surface, after a reload and after a restart. */
+export function planOf(p: Proposal): WatchPlan {
+	if (p.kind === "rule") {
+		const r = p.rule;
+		return { kind: "rule", rule: { condition: r.condition, action: r.action, cwd: r.cwd, sessionId: r.createdBy?.sessionId, model: r.model, thinking: r.thinking }, where: r.promoteToChat ? "chat" : "inbox", once: r.fireOnce };
+	}
+	const j = p.job;
+	return { kind: "schedule", job: { schedule: j.schedule, prompt: j.prompt, name: j.name, cwd: j.cwd, verify: j.verify, catchUp: j.catchUp, model: j.model, thinking: j.thinking, tools: j.tools, timeoutMs: j.timeoutMs, checkerModel: j.checkerModel }, where: j.stateful ? "inbox" : "chat" };
+}
+
+/** A proposal as the page draws it (`GET /watch`): the terminal's rows without its Command line, and the options in the order the terminal offers them. */
+export interface ProposalCard {
+	kind: Proposal["kind"];
+	id: string;
+	/** The conversation it was proposed in, where its card is drawn and its receipt lands. */
+	session: string;
+	at: string;
+	label: string;
+	rows: [string, string][];
+	options: string[];
+}
+
+/** The card of a record that is still proposed; undefined for one that is not. Every text is redacted as `askTitle`'s. */
+export function proposalCard(p: Proposal, ctx: { now: number; pollSecs: number; home?: string }): ProposalCard | undefined {
+	const record = p.kind === "schedule" ? p.job : p.rule;
+	if (!record.proposed) return undefined;
+	const plan = planOf(p);
+	const rows = cardRows(planCard(plan, ctx)).filter(([label]) => label !== "Command");
+	return { kind: p.kind, id: record.id, session: record.proposed.session, at: record.proposed.at, label: redact(proposalLabel(p)), rows, options: watchOptions(plan) };
+}
+
+/**
+ * P2's one patch, applied to the record under its store's lock while `proposed` is set: the fields
+ * the choice names, `enabled`, and no `proposed`. A job that becomes a loop belongs to no
+ * conversation and keeps the model captured when it was proposed; one that becomes a plain job
+ * belongs to the conversation it was proposed in and runs on that conversation's model. A job's
+ * schedule counts from the answer, so a slot that passed while it waited is not owed.
+ */
+export function proposalPatch(p: Proposal, choice: SetChoice, now: number): void {
+	if (p.kind === "rule") {
+		p.rule.fireOnce = choice.once;
+		p.rule.promoteToChat = choice.where === "chat";
+		p.rule.enabled = true;
+		delete p.rule.proposed;
+		return;
+	}
+	const job = p.job;
+	const stateful = choice.where === "inbox";
+	if (stateful !== job.stateful) job.catchUp = stateful;
+	job.stateful = stateful;
+	if (stateful) delete job.sessionId;
+	else {
+		job.sessionId = job.proposed?.session;
+		delete job.model;
+		delete job.thinking;
+	}
+	if (stateful && choice.checks) job.verify = true;
+	else {
+		delete job.verify;
+		delete job.checkerModel;
+	}
+	job.createdAt = stamp(now);
+	job.enabled = true;
+	delete job.disabled;
+	delete job.proposed;
+}
+
+/** The receipt's id: one per proposal, so a second writer finds it there (`appendIfAbsent`). */
+export function receiptRowId(id: string): `rcp-${string}` {
+	return `rcp-${createHash("sha256").update(`proposal | ${id}`).digest("hex").slice(0, 32)}`;
+}
+
+/** What the model reads at its next turn in the conversation the watch was proposed in. */
+function receiptText(id: string, p: Proposal, choice: WatchChoice, now: number): string {
+	const head = `[Trigger ${id}] The person answered "${WATCH_ASK_HEAD}": `;
+	if (choice.verdict === "cancel") return `${head}${WATCH_CANCEL}.\nThe watch was removed and nothing runs. Do not do the action now.`;
+	const answered = `${head}${optionText(p.kind, choice)}.`;
+	if (p.kind === "rule") {
+		const r = p.rule;
+		return `${answered}\ndynamic trigger ${r.id} is set up: it waits for ${previewRedacted(r.condition, 200)}, ${r.fireOnce ? "once" : "every time"}. ${r.promoteToChat ? "Its result appears in this conversation." : "Results go to /inbox."}`;
+	}
+	const j = p.job;
+	const next = computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt) }, now);
+	const outlet = j.stateful ? `Findings go to /inbox${j.verify ? " after a checker reviews them" : ""}.` : "Its result appears in this conversation.";
+	return `${answered}\ncron job ${j.id}${j.name ? ` "${j.name}"` : ""} is set up: ${scheduleWords(j.schedule)}, next run ${next === undefined ? "—" : formatLocal(next)}. ${outlet}`;
+}
+
+/** The receipt row (design 2.5): an append to the proposal's conversation, with no finding and no turn. */
+export function receiptRow(p: Proposal, session: string, choice: WatchChoice, now: number, by: Row["created_by"]): UnclaimedRow {
+	const record = p.kind === "schedule" ? p.job : p.rule;
+	const id = receiptRowId(record.id);
+	return { v: 3, id, lane: session, kind: "input", source: "answer", mode: "none", wake: "append", payload: { text: receiptText(id, p, choice, now), cwd: record.cwd }, created_at: stamp(now), created_by: by, attempts: 0 };
+}
+
+export type WatchAnswered =
+	| { outcome: "set"; proposal: Proposal; line: string }
+	| { outcome: "cancelled"; proposal: Proposal; line: string }
+	| { outcome: "already"; was: "set up" | "cancelled"; line: string };
+
+export interface ProposalStores {
+	jobs: Pick<JobStore, "mutate">;
+	rules: Pick<TriggerStore, "mutate" | "appendAudit">;
+	requests: Pick<RequestStore, "appendIfAbsent">;
+}
+
+export interface AnswerContext {
+	now(): number;
+	by: Row["created_by"];
+	/** Who answered, for the audit: `slash` in a terminal, `page` on the page. */
+	actor: "slash" | "page";
+	/** A job's audit line where this process writes it (a window's session entry, the background's audit). */
+	auditJob(op: "enable" | "remove", before: LoopJob, after: LoopJob | undefined): void;
+}
+
+const ALREADY = (was: "set up" | "cancelled"): WatchAnswered => ({ outcome: "already", was, line: `already answered: ${was}` });
+
+/**
+ * P2 (a yes) or P3 (Cancel), in design 2.5's order: (a) the one write under the store's lock, which
+ * applies only while `proposed` is set, then the audit line; (b) the receipt, by this process only
+ * when its write applied. A second answer finds `proposed` gone (set up) or the record gone
+ * (cancelled), changes nothing and writes no receipt.
+ */
+export async function answerProposal(stores: ProposalStores, ref: { kind: Proposal["kind"]; id: string }, choice: WatchChoice, ctx: AnswerContext): Promise<WatchAnswered> {
+	const now = ctx.now();
+	type Applied = { before: Proposal; after?: Proposal } | "set up" | "cancelled";
+	const applied: Applied =
+		ref.kind === "schedule"
+			? await stores.jobs.mutate<Applied>((jobs) => {
+					const job = jobs.find((j) => j.id === ref.id);
+					if (!job) return { jobs, result: "cancelled" };
+					if (!job.proposed) return { jobs, result: "set up" };
+					const before: Proposal = { kind: "schedule", job: structuredClone(job) };
+					if (choice.verdict === "cancel") return { jobs: jobs.filter((j) => j !== job), result: { before } };
+					proposalPatch({ kind: "schedule", job }, choice, now);
+					return { jobs, result: { before, after: { kind: "schedule", job } } };
+				})
+			: await stores.rules.mutate((rules): Applied => {
+					const rule = rules.find((r) => r.id === ref.id);
+					if (!rule) return "cancelled";
+					if (!rule.proposed) return "set up";
+					const before: Proposal = { kind: "rule", rule: structuredClone(rule) };
+					if (choice.verdict === "cancel") {
+						rules.splice(rules.indexOf(rule), 1);
+						return { before };
+					}
+					proposalPatch({ kind: "rule", rule }, choice, now);
+					return { before, after: { kind: "rule", rule } };
+				});
+	if (typeof applied === "string") return ALREADY(applied);
+	const { before, after } = applied;
+	const op = after ? "enable" : "remove";
+	if (before.kind === "schedule") ctx.auditJob(op, before.job, after?.kind === "schedule" ? after.job : undefined);
+	else auditRule(stores.rules, op, ctx.actor, after?.kind === "rule" ? after.rule : before.rule);
+	const session = before.kind === "schedule" ? before.job.proposed!.session : before.rule.proposed!.session;
+	stores.requests.appendIfAbsent(receiptRow(after ?? before, session, choice, now, ctx.by));
+	const label = redact(proposalLabel(before));
+	if (!after || choice.verdict === "cancel") return { outcome: "cancelled", proposal: before, line: `cancelled: ${label} is removed and nothing ran` };
+	const when = after.kind === "schedule" ? scheduleWords(after.job.schedule) : `waits for ${previewRedacted(after.rule.condition, 60)}`;
+	return { outcome: "set", proposal: after, line: `set up: ${label} · ${when} · ${optionText(after.kind, choice).slice("Set it up · ".length)}` };
+}
+
+/**
+ * `/cron enable` and `/triggers enable` on a proposal: the same question, through pi's selector, and
+ * its answer. Esc, or an answer the question did not offer, leaves it proposed.
+ */
+export async function askProposal(p: Proposal, select: (title: string, options: string[]) => Promise<string | undefined>, stores: ProposalStores, ctx: AnswerContext & { pollSecs: number; home?: string }): Promise<WatchAnswered | { outcome: "still"; line: string }> {
+	const plan = planOf(p);
+	const options = watchOptions(plan);
+	const answer = await select(askTitle(planCard(plan, { now: ctx.now(), pollSecs: ctx.pollSecs, home: ctx.home })), options);
+	if (answer === undefined || !options.includes(answer)) return { outcome: "still", line: `${proposalLabel(p)} is still proposed` };
+	const ref = { kind: p.kind, id: p.kind === "schedule" ? p.job.id : p.rule.id };
+	return answerProposal(stores, ref, watchChoice(answer), ctx);
 }

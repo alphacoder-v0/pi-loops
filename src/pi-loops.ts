@@ -22,7 +22,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "./args.ts";
 import { envFlag, loadConfig } from "./config.ts";
-import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluationApplies, evaluatorPrompt, goalPursued, judgeCaughtUp, latestGoal, newGoal, parseDecision, pauseFor, resumeGoal, settledTurn, transcriptFromMessages } from "./goal.ts";
+import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, answeredGoal, applyDecision, branchMovedSince, clearGoal, continuationPrompt, evaluationApplies, evaluatorPrompt, goalPursued, heldOutcome, judgeCaughtUp, latestGoal, newGoal, parseDecision, pauseFor, pauseGoal, resumeGoal, goalWaitingLine, settledTurn, transcriptFromMessages } from "./goal.ts";
 import { sameProject } from "./paths.ts";
 import { isExactlyTrusted, projectNeedsTrust, sessionTrustCovers, windowTrusted } from "./trust.ts";
 import { HookRunner, type HookEventData, messageKind, messageSummary, resultSummary, truncateSummary } from "./hooks.ts";
@@ -33,8 +33,8 @@ import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxR
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { capRedacted, previewRedacted, redact, screenText } from "./redact.ts";
-import { CANCELLED_LINE, answerLine, answerWho, cancelRefusal, cardLines, cardOrigin, clearLeftTail, dismissOutcome, dismissTail, inboxCard, noQuestionLine, yesTerminalLine } from "./inbox-card.ts";
-import { type PersonAnswers, conversationFile, personAnswers } from "./answers.ts";
+import { CANCELLED_LINE, answerLine, answerWho, cancelRefusal, cardLines, cardOrigin, clearLeftTail, dismissOutcome, dismissTail, inboxCard, noQuestionLine, questionActions, threadOrder, threadedLines, threads, yesTerminalLine } from "./inbox-card.ts";
+import { type Answers, conversationFile, createAnswers } from "./answers.ts";
 import { type StepRefusal, answerOpen, answerRowId } from "./ask.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { FRESH_RUNS_READ, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardLines, runCardsHere, runLine } from "./run-card.ts";
@@ -42,20 +42,22 @@ import { type ShareMessage, renderShare, shareSummary, shareableMessages } from 
 import { UsageError, addLauncher, installLauncherWithConfirm, installedByPi, launcherAction, launcherSource, launcherState, launcherTarget, openPage, pageLaunchHost, refreshLauncher, slashDir, stopAndWait, stopService, uninstallLauncher, webPageRequest } from "./cli.ts";
 import { copyText, isRemoteTty } from "./browser-open.ts";
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
 import { plural } from "./plural.ts";
 import { type OwnerView, type PlainJobLeases, type SessionSnapshot, openWhere, ownerViewOf, runsHere } from "./job-owner.ts";
-import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, closedConversation, openWindowPids, procStart } from "./lease.ts";
-import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, newTriggerRow, promotionTarget, promotionView, proofOf, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
-import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
+import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, closedConversation, holderAlive, holderDelivers, openWindowPids, procStart } from "./lease.ts";
+import { parseLane } from "./lane.ts";
+import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, newTriggerRow, promotionTarget, promotionView, proofOf, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, sessionFileEntries, stopRow, waitingLine } from "./engine.ts";
+import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, proposalsNotice, queueLines, toolsCapNotice } from "./job-lines.ts";
+import { type Proposal, askProposal } from "./watch-plan.ts";
+import { type SettleState, offerAtSettle, oneRunAtATime, settleOffers, settleReady } from "./settle-offer.ts";
 import type { Row, UnclaimedRow } from "./requests.ts";
-import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
-import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
+import { WindowExecutor, createWindowAnswers, turnJob, unattendedTurn, windowGuard } from "./window-executor.ts";
+import { RunList } from "./run-list.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
-import { budgetState, jobCounts, type ListedJob, listedJobs } from "./job-status.ts";
+import { budgetState, jobCounts, type ListedJob, listedJobs, switchTargets } from "./job-status.ts";
 import { runClockTick, decideRunNow } from "./clock.ts";
 import { DISABLED_BY_PERSON } from "./store.ts";
 import { openStores, removeJob } from "./stores.ts";
@@ -64,16 +66,16 @@ import { TURN_TYPE } from "./mark.ts";
 import { renderTurn } from "./turn-render.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
-import { GuardSeats } from "./guard.ts";
+import { GuardSeats, capWords } from "./guard.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
 import { SubagentSlots } from "./slots.ts";
 import { askHost, noticesToShow, renderHostSnapshot, ringHost, type HostSnapshot } from "./host-control-channel.ts";
 import { HOST_LOG, crashPaused, crashPauseText, decideEviction, ensureHost, evictHost, heartbeatFresh, hostPushWork, hostServiceAlive, LEAVE_WAIT_MS, RESTART_WAIT_LINE, piPackageDir, readHostService, readSpawnLog, type HostServiceRecord } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
-import { TriggerRuntime, type TriggerOutcome, promotionToInbox, checkLane } from "./trigger-runtime.ts";
+import { TriggerRuntime, type TriggerOutcome, promotionToInbox, checkLane, checkSessionDir } from "./trigger-runtime.ts";
 import { scheduleAudit } from "./job-tune.ts";
-import { auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
-import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
+import { auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTrigger, resolveRuleRef } from "./triggers.ts";
+import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ConfirmTurn, type ToolHost, automationTools, checkJobName, confirmControlPlane, controlTarget, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
 import { claimPageChild } from "./page-children.ts";
 import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
 import { ALL_PROJECTS, awayIn, awayLine, markProjectSeen } from "./seen.ts";
@@ -135,6 +137,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** The engine's executor here: the pi this extension runs in (src/window-executor.ts). */
 	/** This process, as the rows it produces name it: the one that runs them while it is on the conversation. */
 	const self: Producer = { pid: process.pid, procStart: ownStart };
+	/** The answers' turns this window runs (src/window-executor.ts createWindowAnswers): a claim of this window is live while its run is here. */
+	const windowRuns = new RunList();
 	const executor = new WindowExecutor(
 		pi,
 		binding,
@@ -148,6 +152,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		(row) => requests.images(row),
 		() => stores.jobs.allRuns(),
 		{ resizeImage, formatDimensionNote },
+		(runId) => windowRuns.get(runId) !== undefined,
 	);
 	let requestWatch: fs.FSWatcher | undefined;
 	let storeWatch: fs.FSWatcher | undefined;
@@ -632,7 +637,9 @@ export default function piLoops(pi: ExtensionAPI) {
 		const sessionId = binding.here().sessionId;
 		if (!sessionId) return undefined;
 		const now = Date.now();
-		const result = await drain(sessionId, requests, executor, now, engineSinks(), opts);
+		// The window's one drain: a yes first (it runs after the current turn, before the next turn row,
+		// design 6.4), then the engine's, under one lock, so pi is handed one turn of ours at a time.
+		const result = await windowAnswers.drainWith(now, opts.tick === true, () => drain(sessionId, requests, executor, now, engineSinks(), opts));
 		if (result.retryAt !== undefined) armRetry(retryTimers, sessionId, result.retryAt - now + 50, () => void drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`)));
 		// The badge counts what waits in the file: a drain is when that changes.
 		if (result.delivered.length || result.removed.length || result.dead.length) refreshBadge();
@@ -651,9 +658,25 @@ export default function piLoops(pi: ExtensionAPI) {
 		return out;
 	}
 
-	/** A person's yes, no, clear and cancel typed here (src/answers.ts). The rows it appends are signed by this window. */
+	/** A person's yes, no, clear and cancel typed here, and the answers of the conversation this window holds (src/answers.ts). The rows it appends are signed by this window. */
 	const answerLeases = new LeaseStore(dir);
-	const answers: PersonAnswers = personAnswers({ inbox: stores.inbox, requests, jobs: stores.jobs, audit: stores.rules, sessionFile: conversationFile(answerLeases, new ConversationIndex(path.join(getAgentDir(), "sessions"))), self: createdBy, now: Date.now, log: (line) => log.info(line) });
+	const answers: Answers = createAnswers({
+		inbox: stores.inbox, requests, jobs: stores.jobs, audit: stores.rules,
+		sessionFile: conversationFile(answerLeases, new ConversationIndex(path.join(getAgentDir(), "sessions"))),
+		entries: (file) => (fs.existsSync(file) ? sessionFileEntries(file) : undefined),
+		checkSessionDir: (cwd) => checkSessionDir(stores.jobs, cwd), checkLaneOf: checkLane,
+		// A window meets only its own conversation's rows, and a conversation fires no run_end.
+		runEnd: (record, lane) => log.info(`answer ${record.runId.slice(0, 12)}: no run_end in a window for ${lane}`),
+		self: createdBy, now: Date.now, log: (line) => log.info(line),
+	});
+	/** The answers of the conversation this window holds: a yes runs here, after the current turn (design 6.4). */
+	const windowAnswers = createWindowAnswers({
+		answers, requests, runs: windowRuns, executor,
+		here: () => ({ sessionId: binding.here().sessionId, cwd: session.cwd, sessionFile: lastCtx?.sessionManager.getSessionFile() }),
+		jobs: () => stores.book().jobs,
+		holder: () => ({ pid: process.pid, procStart: ownStart }),
+		log: (line) => log.info(line),
+	});
 
 	function noteBinding(outcome: AcquireOutcome): void {
 		if (outcome.outcome === "acquired" && outcome.tookFromPid) log.info(`took session ${shortSessionId(outcome.lease.sessionId)} from dead pid ${outcome.tookFromPid}`);
@@ -718,6 +741,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (!sessionId) return;
 		const left = releaseLocalRows(requests, sessionId, self, (row) => executor.delivered(row));
 		if (left.length) log.info(`left ${left.length} queued request(s) of session ${shortSessionId(sessionId)} to its holder`);
+		windowAnswers.leave(Date.now()).catch((err: any) => log.info(`answers: ${err?.message ?? err}`));
 	}
 
 	/** A request written for this conversation lands without waiting for the tick; the tick drains as well, because fs.watch can miss events. */
@@ -1217,6 +1241,20 @@ export default function piLoops(pi: ExtensionAPI) {
 		return auditEntryId;
 	}
 
+	/**
+	 * `/cron enable` and `/triggers enable` on a proposal (design 2.5): the question again, through
+	 * pi's selector, and P2 or P3 for the answer. Esc leaves it proposed. The receipt lands in this
+	 * conversation now when it is the one the watch was proposed in.
+	 */
+	async function answerInTerminal(ctx: ExtensionCommandContext, p: Proposal): Promise<void> {
+		const select = (title: string, options: string[]) => (ctx.hasUI ? ctx.ui.select(title, options) : Promise.resolve(undefined));
+		const answered = await askProposal(p, select, { jobs: stores.jobs, rules: triggers.store, requests: stores.requests }, { now: Date.now, by: createdBy(), actor: "slash", auditJob: (op, before, after) => cronControlAudit(op, "slash", before, after), pollSecs: triggers.pollIntervalSecs, home: process.env.HOME });
+		ctx.ui.notify(answered.line, "info");
+		refreshBadge();
+		if (answered.outcome === "set") toolHost.ensureHost?.();
+		if (answered.outcome === "set" || answered.outcome === "cancelled") await drainRequests();
+	}
+
 	/* --------------------------------------------------------- commands */
 
 	const CRON_HELP = [
@@ -1384,6 +1422,10 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "run": {
 						const job = pick(rest);
 						if (!job) return;
+						if (job.proposed) {
+							ctx.ui.notify(`${job.name ?? job.id} is proposed and waits for your yes: /cron enable ${job.name ?? job.id} asks again`, "warning");
+							return;
+						}
 						// A loop runs in the host; a plain job only in the window holding its conversation.
 						let ran: true | string;
 						if (job.stateful) {
@@ -1422,7 +1464,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const scope = rest.trim();
 						if (scope === "--all" || scope === "--all-projects") {
 							const everywhere = scope === "--all-projects";
-							const targets = stores.jobs.load().filter((j) => (everywhere || sameProject(j.cwd, session.cwd)) && j.enabled !== enable);
+							const targets = switchTargets(stores.jobs.load(), enable, (j) => everywhere || sameProject(j.cwd, session.cwd));
 							for (const j of targets) {
 								const at = stamp();
 								const after = enable ? await stores.jobs.enable(j.id) : await stores.jobs.disable(j.id, { code: "person", why: DISABLED_BY_PERSON, at });
@@ -1435,6 +1477,10 @@ export default function piLoops(pi: ExtensionAPI) {
 						}
 						const job = pick(rest);
 						if (!job) return;
+						if (enable && job.proposed) {
+							await answerInTerminal(ctx, { kind: "schedule", job });
+							return;
+						}
 						const at = stamp();
 						const after = enable ? await stores.jobs.enable(job.id) : await stores.jobs.disable(job.id, { code: "person", why: DISABLED_BY_PERSON, at });
 						if (enable) stores.clock.clear(job.id, at);
@@ -1762,14 +1808,22 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * prefix, project, source, when it arrived. The numbers are positions in `entries`, which is what
 	 * `claim` and `dismiss` resolve a number against.
 	 */
-	function inboxLines(entries: InboxEntry[], numbered: boolean, answered = false): string[] {
+	function inboxLines(entries: InboxEntry[], numbered: boolean, answered = false, thread?: { all: InboxEntry[] }): string[] {
 		const names = new Map(stores.jobs.load().map((j) => [j.id, j.name]));
 		const ctx = { here: session.sessionId, loopName: (id: string) => names.get(id) };
-		return entries.flatMap((e, i) => {
-			const lines = entryLines(e, i);
+		// A reply under its root (src/inbox-card.ts threads); a list a number resolves against without threads keeps its own order.
+		const rows = thread ? threads(entries, thread.all) : entries.map((entry) => ({ entry, reply: false, listed: true }));
+		return threadedLines(rows, (e, n) => {
+			if (n === undefined) return contextLine(e);
+			const lines = entryLines(e, n - 1);
 			const said = answered ? answerLineOf(e) : undefined;
 			return said && lines.length ? [...lines, `       ${said}`] : lines;
 		});
+		/** A root that is not listed, heading its replies: its first line, and what became of it. */
+		function contextLine(e: InboxEntry): string[] {
+			const card = inboxCard(e, ctx);
+			return card ? cardLines(card, `  [${e.status}] `, `  (${screenText(projectOf(e.cwd))}, ${screenText(cardOrigin(card))})`).slice(0, 1) : [];
+		}
 		function entryLines(e: InboxEntry, i: number): string[] {
 			const card = inboxCard(e, ctx);
 			if (!card) return [];
@@ -1785,7 +1839,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			const why = e.dismiss_reason ? ` — dismissed: ${e.dismiss_reason}` : "";
 			const where = `${screenText(projectOf(e.cwd))}, ${screenText(cardOrigin(card))}`;
 			if (!numbered) return cardLines(card, `  [${e.status}] `, `${why}  (${where})`);
-			return cardLines(card, `  ${i + 1}. [${e.id.slice(0, 12)}] `, `  (${where}, ${when})`);
+			const lines = cardLines(card, `  ${i + 1}. [${e.id.slice(0, 12)}] `, `  (${where}, ${when})`);
+			return card.question && e.status === "new" ? [...lines, questionActions(i + 1)] : lines;
 		}
 	}
 
@@ -1801,7 +1856,20 @@ export default function piLoops(pi: ExtensionAPI) {
 		}
 		const runId = e.answer?.state === "done" ? e.answer.run.id : undefined;
 		const summary = runId === undefined ? undefined : stores.jobs.allRuns().find((r) => r.runId === runId)?.summary;
-		return answerLine(e, row, summary);
+		return answerLine(e, row, summary, questionWindowOpen(e));
+	}
+
+	/** Whether a window has the conversation of `e`'s question open and runs its turns: where a yes to it runs after the current turn. */
+	function questionWindowOpen(e: InboxEntry): boolean {
+		const lane = e.ask?.lane;
+		if (lane === undefined || parseLane(lane)?.kind !== "conversation") return false;
+		let holder;
+		try {
+			holder = answerLeases.read(lane)?.holder;
+		} catch {
+			return false; // a lane the store refuses has no lease, so no window holds it
+		}
+		return holder?.kind === "terminal" && holderAlive(holder) && holderDelivers(holder);
 	}
 
 	/** Who picks up a yes to `e`, by the loop's name in jobs.json. */
@@ -1907,12 +1975,12 @@ export default function piLoops(pi: ExtensionAPI) {
 					outcome = pauseFor(pursued, err?.message ?? String(err));
 				}
 			}
-			// A continuation belongs to the point the evaluation started from. If the session has moved
-			// on since — an unrelated prompt, a rewind — it is held rather than delivered on top of
-			// somebody else's turn; the turn now running settles into another evaluation, which judges
-			// the session as it then is. A continuation that was never sent does not cost budget either.
-			const held = outcome.action.kind === "continue" && branchMovedSince(ctx.sessionManager.getBranch(), evaluatedAt);
-			persistGoal(ctx, held ? { ...outcome.state, iterations: pursued.iterations } : outcome.state);
+			// A continuation or a wait belongs to the point the evaluation started from. If the session has
+			// moved on since — an unrelated prompt, a rewind, the person's answer — it is held rather than
+			// delivered on top of somebody else's turn; the turn now running settles into another
+			// evaluation, which judges the session as it then is (heldOutcome).
+			const { state: written, held } = heldOutcome(pursued, outcome, branchMovedSince(ctx.sessionManager.getBranch(), evaluatedAt));
+			persistGoal(ctx, written);
 			// The evaluator is a model call like any other: it belongs in the run log, or `/cron cost`
 			// would under-report every session that has a goal set.
 			stores.jobs.appendRun({
@@ -1940,8 +2008,11 @@ export default function piLoops(pi: ExtensionAPI) {
 			} else if (outcome.action.kind === "pause") {
 				notifyOrLog(ctx, `[goal] paused: ${previewRedacted(outcome.action.reason, 200)} — /goal resume to continue`, "warning");
 			} else if (held) {
-				log.info(`goal: continuation held, the session moved on while the evaluator ran (${previewRedacted(outcome.state.lastReason ?? "", 160)})`);
-				notifyOrLog(ctx, "[goal] not satisfied, but you sent something meanwhile — the continuation is held and re-evaluated when this turn settles", "info");
+				log.info(`goal: ${outcome.action.kind === "wait" ? "wait" : "continuation"} held, the session moved on while the evaluator ran (${previewRedacted(outcome.state.lastReason ?? "", 160)})`);
+				if (outcome.action.kind === "continue") notifyOrLog(ctx, "[goal] not satisfied, but you sent something meanwhile — the continuation is held and re-evaluated when this turn settles", "info");
+			} else if (outcome.action.kind === "wait") {
+				// A warning, so it stays after a redraw: the person is the one who moves the goal on now.
+				notifyOrLog(ctx, goalWaitingLine(outcome.action.reason), "warning");
 			} else {
 				notifyOrLog(ctx, `[goal] not satisfied (${outcome.state.iterations}/${MAX_CONTINUATIONS}): ${previewRedacted(outcome.state.lastReason ?? "", 160)}`, "info");
 				// The reason is model output derived from a transcript that can contain hostile file,
@@ -2015,12 +2086,12 @@ export default function piLoops(pi: ExtensionAPI) {
 				goalSkippedTurn = false;
 				if (sub === "clear") {
 					dropQueuedContinuations();
-					persistGoal(ctx, { ...goal, status: "cleared", updatedAt: stamp() });
+					persistGoal(ctx, clearGoal(goal));
 					return ctx.ui.notify("goal cleared", "info");
 				}
 				if (sub === "resume" && goal.status === "achieved") return ctx.ui.notify("this goal was achieved; set a new one with /goal <condition>", "warning");
 				// Resuming with the allowance spent starts it again (resumeGoal).
-				const next: GoalState = sub === "pause" ? { ...goal, status: "paused", updatedAt: stamp() } : resumeGoal(goal);
+				const next: GoalState = sub === "pause" ? pauseGoal(goal) : resumeGoal(goal);
 				persistGoal(ctx, next);
 				return ctx.ui.notify(`goal ${sub === "pause" ? "paused" : "resumed"}`, "info");
 			}
@@ -2061,7 +2132,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							markSeenIfShown(everywhere);
 							return;
 						}
-						const lines = inboxLines(entries, true);
+						const lines = inboxLines(entries, true, false, { all: stores.inbox.list() });
 						const elsewhere = all.length - entries.length;
 						if (elsewhere) lines.push(`+ ${plural(elsewhere, "finding")} in other projects — /inbox --all`);
 						const decisions = entries.filter((e) => e.kind === "checkpoint").length;
@@ -2071,7 +2142,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					}
 					case "all": {
 						const entries = scoped(stores.inbox.list());
-						show(ctx, `Inbox history (${where}, ${entries.length} total):`, entries.length ? inboxLines(entries, false, true) : ["(empty)"]);
+						show(ctx, `Inbox history (${where}, ${entries.length} total):`, entries.length ? inboxLines(entries, false, true, { all: entries }) : ["(empty)"]);
 						return;
 					}
 					case "help":
@@ -2103,7 +2174,8 @@ export default function piLoops(pi: ExtensionAPI) {
 						// Numbers are the numbers on screen — this project's list, as `/cron` does it; an id
 						// or a prefix still resolves machine-wide, so a finding can be claimed from anywhere.
 						const all = stores.inbox.listNew();
-						const entries = /^\d+$/.test(target) && !machineWide ? inProject(all, session.cwd, sameProject) : all;
+						// In the order `/inbox` draws them: a reply under its root (threadOrder).
+						const entries = threadOrder(/^\d+$/.test(target) && !machineWide ? inProject(all, session.cwd, sameProject) : all, stores.inbox.list());
 						const entry = resolveInboxRef(entries, target, { ordinals: true });
 						if (!entry) {
 							const n = Number(target);
@@ -2141,7 +2213,7 @@ export default function piLoops(pi: ExtensionAPI) {
 								return;
 							}
 							if (said.finding.ask) {
-								ctx.ui.notify(noQuestionLine("terminal", whoOf(said.finding, said.finding.ask.lane)), "info");
+								ctx.ui.notify(noQuestionLine("terminal", whoOf(said.finding, said.finding.ask.lane), said.finding.ask.lane), "info");
 								return;
 							}
 							const loop = stores.jobs.load().find((j) => j.id === entry.job_id);
@@ -2154,7 +2226,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							ctx.ui.notify(said.said === "nothing" ? refusedLine(target, said.refusal) : `inbox entry ${target}: a yes came to ${said.said}`, "warning");
 							return;
 						}
-						ctx.ui.notify(yesTerminalLine(said, whoOf(said.finding, said.said === "Y1" ? said.lane : said.finding.lane), !!liveHostRecord()), said.said === "Y1" ? "info" : "warning");
+						ctx.ui.notify(yesTerminalLine(said, whoOf(said.finding, said.said === "Y1" ? said.lane : said.finding.lane), !!liveHostRecord(), from.session), said.said === "Y1" ? "info" : "warning");
 						return;
 					}
 					case "cancel": {
@@ -2314,7 +2386,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const scope = rest.trim();
 						if (scope === "--all" || scope === "--all-projects") {
 							const everywhere = scope === "--all-projects";
-							const targets = store.load().filter((r) => (everywhere || sameProject(r.cwd, session.cwd)) && r.enabled !== enable);
+							const targets = switchTargets(store.load(), enable, (r) => everywhere || sameProject(r.cwd, session.cwd));
 							for (const r of targets) await store.setEnabled(r.id, enable);
 							refreshBadge();
 							ctx.ui.notify(`${enable ? "enabled" : "disabled"} ${plural(targets.length, "rule")}${everywhere ? " on this machine" : " in this project"}`, "info");
@@ -2322,6 +2394,10 @@ export default function piLoops(pi: ExtensionAPI) {
 						}
 						const rule = pickRule(rest);
 						if (!rule) return;
+						if (enable && rule.proposed) {
+							await answerInTerminal(ctx, { kind: "rule", rule });
+							return;
+						}
 						const updated = (await store.setEnabled(rule.id, enable)) ?? rule;
 						show(ctx, `${enable ? "enabled" : "disabled"} trigger ${updated.id}`, [
 							`  condition: ${previewRedacted(updated.condition, 120)}`,
@@ -3230,28 +3306,35 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 	/**
 	 * Trigger creation/removal and trigger/cron enable need a person's yes: pi has no permission
-	 * popups, so the tool asks itself, through `ctx.ui.confirm` in the person's own turn and through
-	 * the window guard's refuse-first `ctx.ui.select` in a scheduled one. A sub-agent has no UI, so
-	 * `controlPlanePreflight` denies fail-closed (`ToolCallEventResult`).
+	 * popups, so the tool asks itself (src/tools.ts `confirmControlPlane`). In a scheduled turn the
+	 * window guard already asked in /inbox; a sub-agent has no UI, so `controlPlanePreflight` denies
+	 * fail-closed.
 	 */
-	async function confirmTool(ctx: ExtensionContext, req: ControlPlaneRequest, atHop: number): Promise<string | undefined> {
-		const denied = controlPlanePreflight({ hop: atHop, hasUI: ctx.hasUI }, req.label);
-		if (denied) return denied;
-		// The approval card: Action / Tool / Reason / Args hash / Preview, then a feed line per decision.
-		const argsHash = createHash("sha256").update(JSON.stringify(req.args ?? null)).digest("hex").slice(0, 12);
-		ctx.ui.notify(`approval required: ${req.label}`, "info");
-		const card = [`Action: ${req.label}`, `Tool: ${req.tool}`, `Reason: ${req.reason}`, `Args hash: ${argsHash}`, `Preview: ${previewRedacted(req.preview, 200)}`].join("\n");
-		// In a scheduled turn the question is the window guard's (design §6.3): its minute and no more,
-		// since nobody may be there, and the refusing answer focused, so a reflexive Enter refuses.
-		const scheduled = unattendedTurn(executor.currentTurn());
-		const answer: GuardAnswer = scheduled ? await askRefusingFirst(ctx, "Control-plane approval required", card, WINDOW_GUARD_CONFIRM_MS) : (await ctx.ui.confirm("Control-plane approval required", card)) ? "yes" : "no";
-		ctx.ui.notify(answer === "yes" ? `approved control-plane action: ${req.label}` : `denied control-plane action: ${req.label} (${answer === "no" ? "denied by user" : "not answered in time"})`, "info");
-		return answer === "yes" ? undefined : answer === "no" ? `user declined: ${req.label}` : `nobody answered in time: ${req.label}`;
+	function confirmTool(ctx: ExtensionContext, req: ControlPlaneRequest, atHop: number): Promise<string | undefined> {
+		const turn: ConfirmTurn = unattendedTurn(executor.currentTurn()) ? { kind: "scheduled", seated: windowSeats.of(ctx.sessionManager) !== undefined } : { kind: "person" };
+		return confirmControlPlane(ctx, req, atHop, turn);
 	}
+	/** The seats of this window's guard: `confirmTool` passes a scheduled turn's call only where the guard judged it in one. */
+	const windowSeats = new GuardSeats();
 	for (const def of automationTools({ hop, actor: "tool" }, toolHost)) pi.registerTool(def);
-	// The cap on a scheduled turn's calls while this window runs it (src/window-guard.ts): the
-	// decision is there, this only hands it what pi is in and what config.toml says.
-	pi.on("tool_call", windowGuard({ current: () => executor.currentTurn(), config: () => ({ windowGuard: config.windowGuard, allowCommands: config.allowCommands }), log: (line) => log.info(line) }));
+	// The cap on a scheduled turn's calls while this window runs it (src/window-executor.ts
+	// `windowGuard`): the decision is there, this only hands it what pi is in, what config.toml says,
+	// the inbox a question is filed in, and where the turn's job is read.
+	pi.on(
+		"tool_call",
+		windowGuard({
+			current: () => executor.currentTurn(),
+			config: () => ({ allowCommands: config.allowCommands }),
+			log: (line) => log.info(line),
+			inbox: stores.inbox,
+			now: () => Date.now(),
+			jobOf: (rowId, sessionId) => turnJob(rowId, stores.jobs.load(), requests.list(sessionId), stores.clock.read().jobs),
+			answerTurn: (cap) => windowAnswers.seat(cap),
+			seats: windowSeats,
+			// Resolved in the project the tools resolve it in: this window's session, not the call's cwd.
+			controlTarget: (tool, input) => controlTarget(toolHost, tool, input, toolHost.session().cwd),
+		}),
+	);
 
 	/* -------------------------------------------------------- lifecycle */
 
@@ -3427,11 +3510,16 @@ export default function piLoops(pi: ExtensionAPI) {
 			}
 			if (ctx.hasUI && readUiPrefs(dir).toolsCapNotice !== "shown") {
 				// A 0.22 plain job's `--tools` was never used; now it caps the job's turns (docs/loops.md).
-				const line = toolsCapNotice(stores.jobs.load());
+				const line = toolsCapNotice(stores.jobs.load(), capWords);
 				if (line) {
 					sayInfo(line);
 					startShown.push(() => writeUiPref(dir, "toolsCapNotice", "shown"));
 				}
+			}
+			if (ctx.hasUI) {
+				// A watch proposed here waits for its answer on every start, and says which command asks again (design 6.3).
+				const line = proposalsNotice(loadOrNone(() => stores.jobs.load()), loadOrNone(() => triggers.store.load()), session.sessionId);
+				if (line) sayInfo(line);
 			}
 			if (leftLine) {
 				sayInfo(leftLine);
@@ -3478,14 +3566,23 @@ export default function piLoops(pi: ExtensionAPI) {
 	});
 	// Observed only: whose the next user messages are (the window tells the echo of a person row's
 	// send from the rest), and that pi is about to run something, so a person row handed over is not
-	// judged refused for a while yet. A turn row's custom message makes no input.
-	pi.on("input", async (e) => {
-		executor.inputSeen({ source: e.source, text: e.text, streamingBehavior: e.streamingBehavior }, Date.now());
+	// judged refused for a while yet. A turn row's custom message makes no input. A person's input
+	// answers a waiting goal.
+	pi.on("input", async (e, ctx) => {
+		if (executor.inputSeen({ source: e.source, text: e.text, streamingBehavior: e.streamingBehavior }, Date.now())) answerGoal(ctx);
 	});
+	/** A person's input is the answer a waiting goal waits for (answeredGoal): pursued again, and the turn it starts is judged when it settles. */
+	function answerGoal(ctx: ExtensionContext): void {
+		const resumed = goal && answeredGoal(goal);
+		if (!resumed) return;
+		persistGoal(ctx, resumed);
+		notifyOrLog(ctx, "[goal] your answer resumed the goal", "info");
+	}
 	pi.on("turn_start", async (_e, ctx) => fireHook({ event: "turn_start" }, ctx));
 	pi.on("turn_end", async (e, ctx) => fireHook({ event: "turn_end", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx));
 	pi.on("message_start", async (e, ctx) => {
-		executor.messageStarted(e.message, Date.now());
+		// The page's message for a conversation this terminal holds is a turn message, which makes no `input`.
+		if (executor.messageStarted(e.message, Date.now())) answerGoal(ctx);
 		await fireHook({ event: "message_start", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx);
 	});
 	pi.on("message_update", async (e, ctx) => fireHook({ event: "message_update", message_kind: messageKind(e.message), message_summary: messageSummary(e.message), assistant_event: (e.assistantMessageEvent as any)?.type }, ctx));
@@ -3554,6 +3651,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		markTurn("agent_settled");
 		// pi is idle now: what it no longer has is offered again by the drain below, unless a stop named it.
 		executor.settled(event.aborted);
+		// An answer's turn that ran closes now; a stop closes it unfinished.
+		await windowAnswers.settled(event.aborted, Date.now()).catch((err: any) => log.info(`answers: ${err?.message ?? err}`));
 		// The tracker description `/recipe add` was waiting for: written during this turn, so the
 		// wizard picks up where it stopped — in the same project, with the same words.
 		if (pendingRecipeAdd && sameProject(pendingRecipeAdd.project, session.cwd) && fs.existsSync(path.join(pendingRecipeAdd.project, TRACKER_FILE))) {
@@ -3582,6 +3681,41 @@ export default function piLoops(pi: ExtensionAPI) {
 			}
 		};
 		await settledTurn(sessionId ? requests.list(sessionId) : [], executor.handedRows, (row) => executor.delivered(row), evaluate, () => drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`)));
+		// Not awaited: a selector waits on the person, and the settle must not wait with it.
+		runSettleOffers(ctx)?.catch((err: any) => log.info(`settle offers: ${err?.message ?? err}`));
+	});
+
+	/** The questions and proposals a selector at settle has shown in this process (src/settle-offer.ts): each once. */
+	const settleOffered = new Set<string>();
+	function settleState(ctx: ExtensionContext): SettleState {
+		const { sessionId, holds } = binding.here();
+		const waiting = sessionId ? requests.list(sessionId).filter((row) => !executor.delivered(row)).length : 0;
+		return { sessionId, held: holds, idle: ctx.isIdle(), queued: waiting + executor.handedRows.length, mode: ctx.mode, hasUI: ctx.hasUI };
+	}
+	const runSettleOffers = oneRunAtATime(async (ctx: ExtensionContext) => {
+		const state = settleState(ctx);
+		if (!settleReady(state)) return;
+		const proposals: Proposal[] = [...stores.jobs.load().filter((job) => job.proposed).map((job): Proposal => ({ kind: "schedule", job })), ...triggers.store.load().filter((rule) => rule.proposed).map((rule): Proposal => ({ kind: "rule", rule }))];
+		const offers = settleOffers({ ...state, findings: stores.inbox.list(), proposals, offered: settleOffered });
+		if (!offers.length) return;
+		const from = { by: "terminal" as const, session: state.sessionId ?? "" };
+		const names = new Map(stores.jobs.load().map((job) => [job.id, job.name ?? job.id]));
+		const results = await offerAtSettle(offers, {
+			select: (title, options) => ctx.ui.select(title, options),
+			say: (id, word) => answers.say(id, word, from),
+			proposals: { stores: { jobs: stores.jobs, rules: triggers.store, requests: stores.requests }, ctx: { now: Date.now, by: createdBy(), actor: "slash", auditJob: (op, before, after) => cronControlAudit(op, "slash", before, after), pollSecs: triggers.pollIntervalSecs, home: process.env.HOME } },
+			loopName: (id) => names.get(id),
+			refused: (id, refusal) => refusedLine(id, refusal),
+			stillOk: () => {
+				const now = settleState(ctx);
+				return now.sessionId === state.sessionId && settleReady(now);
+			},
+			offered: settleOffered,
+			print: (line) => ctx.ui.notify(line, "warning"),
+		});
+		refreshBadge();
+		if (results.some((r) => r.kind === "proposal" && r.outcome === "set")) toolHost.ensureHost?.();
+		if (results.some((r) => (r.kind === "question" && r.said !== "esc") || (r.kind === "proposal" && (r.outcome === "set" || r.outcome === "cancelled")))) await drainRequests();
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {
@@ -3636,6 +3770,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		storeWatch = undefined;
 		clearTimeout(storeWatchTimer);
 		storeWatchTimer = undefined;
+		// An answer's turn this window runs closes before the lease goes back.
+		await windowAnswers.leave(Date.now()).catch((err: any) => log.info(`answers: ${err?.message ?? err}`));
 		try {
 			leaveSession();
 		} catch (err: any) {

@@ -11,7 +11,7 @@ The user's pi has pi-loops installed. Prefer its tools over ad-hoc `sleep` loops
 
 | The user wants… | Use |
 |---|---|
-| "every day at 9 / hourly / 每小时 …" and the result belongs in this chat (a reminder, a question to answer here) | `cron_create` with `stateful: false` — it belongs to this session; while the session is closed, it runs in the background in the conversation, so the answer is there when the user comes back. Each run is a model turn. Its turns run with the chat's built-in tools under the dangerous-command guard: in an open window a dangerous command or a tool outside them asks the user first, and in the background it is refused. In the background they also run without this window's -e extensions or flags |
+| "every day at 9 / hourly / 每小时 …" and the result belongs in this chat (a reminder, a question to answer here) | `cron_create` with `stateful: false` — it belongs to this session; while the session is closed, it runs in the background in the conversation, so the answer is there when the user comes back. Each run is a model turn. Its turns run with the chat's built-in tools under the dangerous-command guard. A dangerous command, or a command outside the job's built-in tools, is not run: pi-loops asks the person, in the conversation and in the inbox, and the turn goes on without it. A call of cron_remove, set_cron_job_state, remove_trigger or set_trigger_state is asked about the same way. Another built-in tool outside them is refused. pi-loops' other tools, and a tool of another extension or an MCP server, run. In the background they also run without this window's -e extensions or flags |
 | work whose result should not land in a conversation — a nightly digest, a report, a watch | `cron_create` with `stateful: true`, even when the user did not say "loop" |
 | recurring watch/triage: "check X and tell me what changed", "report new issues" | `cron_create` with `stateful: true` — the loop keeps notes between runs and reports findings to `/inbox` instead of interrupting the chat |
 | the findings must be double-checked before the user sees them | `cron_create` with `stateful: true, verify: true` (a second adversarial sub-agent reviews each finding) |
@@ -63,7 +63,12 @@ would need a person for.
 
 ## Confirmations
 
-With the user present, `cron_create` and `new_trigger` ask them first, in the same call, and
-return `created ...` or `cancelled: ...`. Removing a trigger, and re-enabling a job or trigger, asks
-the user to confirm. If the user cancels or declines, stop: do not retry with different arguments,
+In the user's own turn in a pi with a UI, `cron_create` and `new_trigger` do not set anything up: they return
+`proposed ...`, and the user sees a card ("Set up this watch?"). Nothing runs until they say yes.
+Do not wait for the answer, do not do the action now, and do not call the tool again for it: a
+message in the conversation tells you later what they chose (`[Trigger rcp-…] The person
+answered …`). `new_trigger` proposes in a scheduled turn too. In a pi with no UI (`pi -p`),
+`cron_create` creates the job at once and `new_trigger` is refused: nobody could answer a card. `cron_list` and `list_triggers` mark
+a proposal `[proposed]`, and `set_cron_job_state` and `set_trigger_state` refuse one.
+Removing a trigger, and re-enabling a job or trigger, asks the user to confirm. If the user cancels or declines, stop: do not retry with different arguments,
 do not set it up another way, and do not do the action now.

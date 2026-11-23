@@ -188,6 +188,19 @@ test("[C3] a run closes: done keeps the claim; unfinished keeps it, with why, th
 	assert.equal(plain.beside?.entry.text, 'Your yes to "CI is red on main" was started and did not finish (the process running it stopped).', "a finding that is no question has no ending");
 });
 
+test("[thread] the news not-run and outcome carry re: the id of the finding they are about, and of its root when that finding is itself a reply", () => {
+	const notRun = answerStep("Y2", question(), { to: "not_run", by: "terminal", claimed_by: CONV, why: WHY.loopRemoved }, ctx);
+	assert.ok(isWrite(notRun));
+	assert.equal(notRun.beside?.entry.re, ID, "not-run names its question");
+	const outcome = answerStep("C3", at("started"), { to: "unfinished", why: WHY.stopped }, ctx);
+	assert.ok(isWrite(outcome));
+	assert.equal(outcome.beside?.entry.re, ID, "outcome names its question");
+	const root = `inb-${"c".repeat(32)}`;
+	const reply = answerStep("C3", at("started", { ask: undefined, kind: "news", text: "Your yes to x could not be started", re: root }), { to: "unfinished", why: WHY.died }, ctx);
+	assert.ok(isWrite(reply));
+	assert.equal(reply.beside?.entry.re, root, "a yes to a reply stays in the root's thread: one level");
+});
+
 test("[V1] a cancel reopens the finding: new again, with what the yes wrote taken off, and nothing beside it", () => {
 	const write = holdsRow("V1", { to: "none" });
 	assert.deepEqual([write.id, write.set, write.unset, write.beside], [ID, { status: "new" }, ["answer", "answered_by", "claimed_by"], undefined]);
@@ -249,6 +262,18 @@ test("[Q1] the finding of a blocked call: derived id, the ask, and a checkpoint 
 	assert.equal(made.entry.lane, LOOP);
 	assert.deepEqual(made.entry.ask, { kind: "call", id: askId(SID, "call-1"), lane: LOOP, session_id: SID, title: "nightly asks to run a command", call: CALL, run: { cwd: "/proj", tools: ["bash"], timeout_ms: 900_000 }, created_at: AT }, "the session id the run's SessionManager gave, and no path");
 	assert.equal(questionFinding(CALL, { lane: LOOP, sessionId: SID, sessionFile: "/elsewhere/b.jsonl", cap: resolveCap({ cwd: "/proj" }, 900_000) }, { source: "s", run_id: "r2", cwd: "/proj", who: "x" }, LATER).id, made.id, "one blocked call, one finding, whatever its file is called");
+});
+
+test("[M5b.3] a question a plain job's turn files in its conversation names the scheduled prompt by its job's name; with no job it names none", () => {
+	const cap = resolveCap({ cwd: "/proj" }, 900_000);
+	const made = questionFinding(CALL, { lane: SID, sessionId: SID, sessionFile: "/s/a.jsonl", cap }, { source: "cron:deploy-check", run_id: "r1", cwd: "/proj", job_id: "cron-a1", session_id: SID, who: "deploy-check" }, AT);
+	assert.equal(made.entry.ask!.title, 'The scheduled prompt "deploy-check" asks to run a command');
+	assert.equal(made.entry.text, 'Run `git push --force origin main`? (git push --force on main/master) · waits: the scheduled prompt "deploy-check" went on without it · if not: it stays undone');
+	assert.equal(made.entry.kind, "checkpoint", "still a checkpoint");
+	const tool = questionFinding({ ...CALL, command: undefined, tool: "write" }, { lane: SID, sessionId: SID, sessionFile: "/s/a.jsonl", cap }, { source: "cron:deploy-check", run_id: "r1", cwd: "/proj", job_id: "cron-a1", session_id: SID, who: "deploy-check" }, AT);
+	assert.equal(tool.entry.ask!.title, 'The scheduled prompt "deploy-check" asks to use write');
+	const nameless = questionFinding(CALL, { lane: SID, sessionId: SID, sessionFile: "/s/a.jsonl", cap }, { source: "cron", run_id: "r1", cwd: "/proj", session_id: SID, who: "a scheduled prompt" }, AT);
+	assert.equal(nameless.entry.ask!.title, "a scheduled prompt asks to run a command", "a finding that names no job is not said to be any job's");
 });
 
 test("laneOf: a finding's lane, else its job's lane as jobs.json has it now, else none", () => {
@@ -406,6 +431,17 @@ test("answerRow and noRow: the payload names the finding, and a no tells only a 
 	const asked = question();
 	const told = noRow(question({ ask: { ...asked.ask!, lane: CONV } }), AT, SELF);
 	assert.ok(told && told.id === noRowId(ID) && told.lane === CONV && told.mode === "none" && told.wake === "append");
+});
+
+test("[6.4] the no a conversation reads names the command and the person's reason, as design 6.4 writes it", () => {
+	const asked = question();
+	const inConversation = question({ ask: { ...asked.ask!, lane: CONV } });
+	const said = decideSay(inConversation, "no", { by: "page", session: CONV }, { there: true, lane: CONV }, { at: LATER, self: SELF, reason: "not on a weekday" });
+	assert.ok(said.step === "N1" && said.row);
+	assert.equal(said.row.payload?.text, `[Trigger ${noRowId(ID)}] The person said no to \`git push --force origin main\`: not on a weekday\nDo not run it, and do not try another way to do the same thing.`);
+	const bare = decideSay(inConversation, "no", { by: "terminal", session: CONV }, { there: true, lane: CONV }, { at: LATER, self: SELF });
+	assert.ok(bare.step === "N1" && bare.row);
+	assert.equal(bare.row.payload?.text, `[Trigger ${noRowId(ID)}] The person said no to \`git push --force origin main\`.\nDo not run it, and do not try another way to do the same thing.`, "with no reason, the sentence ends at the command");
 });
 
 test("decideSay: a yes is Y1 with its row, Y2 with no lane, YC from the cli; a no is N1", () => {

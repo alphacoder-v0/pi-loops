@@ -74,7 +74,7 @@ export interface LoopJob {
 	tuneKept?: string;
 	/** Why it does not run, when pi-loops or a person turned it off. */
 	disabled?: Disabled;
-	/** A watch nobody has said yes to yet; `enabled` is false. */
+	/** A watch nobody has said yes to yet (design 2.5): `enabled` is false, nothing runs it, and only its answer sets it up. */
 	proposed?: { at: string; session: string };
 }
 
@@ -475,9 +475,10 @@ export class JobStore {
 		});
 	}
 
-	/** Turn a job on, and forget why it was off. */
+	/** Turn a job on, and forget why it was off. A proposal is left as it is: only its answer sets it up (src/watch-plan.ts `answerProposal`). */
 	async enable(id: string): Promise<LoopJob | undefined> {
 		return this.update(id, (job) => {
+			if (job.proposed) return;
 			job.enabled = true;
 			delete job.disabled;
 		});

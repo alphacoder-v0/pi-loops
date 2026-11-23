@@ -58,10 +58,22 @@ test("needs you counts the new decisions by the conversation that made the loop,
 	].map((e) => JSON.stringify(e)).join("\n") + '\n{"status":"new","kind":"checkp';
 	assert.deepEqual([...countNeedsYou(text)], [["a", 2], ["b", 1]]);
 	const dir = tmp("pi-loops-rows-");
-	const counts = new NeedsYouCounts(path.join(dir, "inbox.jsonl"));
+	const counts = new NeedsYouCounts(path.join(dir, "inbox.jsonl"), { jobs: path.join(dir, "jobs.json"), rules: path.join(dir, "triggers.json") });
 	assert.equal(counts.get().size, 0, "no inbox yet");
 	fs.writeFileSync(path.join(dir, "inbox.jsonl"), text);
 	assert.equal(counts.get().get("a"), 2);
+});
+
+test("needs you counts a conversation's proposed watches, in jobs.json and in triggers.json, with its decisions", () => {
+	const dir = tmp("pi-loops-rows-");
+	const counts = new NeedsYouCounts(path.join(dir, "inbox.jsonl"), { jobs: path.join(dir, "jobs.json"), rules: path.join(dir, "triggers.json") });
+	const proposed = (id: string, session: string) => ({ id, enabled: false, proposed: { at: "2026-11-21T10:00:00.000Z", session } });
+	fs.writeFileSync(path.join(dir, "inbox.jsonl"), `${JSON.stringify({ id: "inb-1", text: "x · waits: you", status: "new", kind: "checkpoint", session_id: "a" })}\n`);
+	fs.writeFileSync(path.join(dir, "jobs.json"), JSON.stringify({ version: 3, jobs: [proposed("cron-1", "a"), proposed("cron-2", "b"), { id: "cron-3", enabled: true }] }));
+	fs.writeFileSync(path.join(dir, "triggers.json"), JSON.stringify({ rules: [proposed("dyn-1", "a"), { id: "dyn-2", enabled: true, createdBy: { sessionId: "a" } }] }));
+	assert.deepEqual([...counts.get()].sort(), [["a", 3], ["b", 1]], "a decision and two proposals in a, one proposal in b; a watch that is set up asks nobody");
+	fs.writeFileSync(path.join(dir, "jobs.json"), '{"version":3,"jobs":[');
+	assert.deepEqual([...counts.get()].sort(), [["a", 2]], "a torn jobs.json counts none of its own, and the rest still count");
 });
 
 test("a project is keyed by the cwd in its newest header, labelled with ~ for home, and a lease's or a job's cwd is offered too", () => {

@@ -29,12 +29,14 @@ is told to answer `{"ok": false, "reason": "insufficient evidence in transcript"
 |---|---|
 | Continuations | At most 8, then the goal is `budget_limited` and pauses |
 | Evaluator failure | Pauses with the reason; it never loops on an evaluator that cannot decide |
-| Waiting on you | When the agent asked you for something it cannot get alone, the evaluator answers `needs_person` and the goal pauses with `waiting on you: …` instead of sending it back |
+| Waiting on you | When the agent asked you for something it cannot get alone, the evaluator answers `needs_person`. The goal does not send the agent back: it is `waiting`, and costs no continuation. The terminal says `[goal] waiting on you: <the question the agent asked>. Answer here and the goal goes on.` Your next message in the conversation is the answer: it says `[goal] your answer resumed the goal`, and the turn it starts is judged when it settles. A message you send from the page counts too. A scheduled prompt, an answer's turn and a continuation do not. You do not type `/goal resume` |
 | Transcript | 40 000 characters, truncated from the front so the newest evidence always survives |
 | Tools | None. The evaluator reads, it does not act |
 | Interruption | Esc on a turn pauses the goal — it stays paused across `--resume` until `/goal resume` — and Esc during an evaluation stops that evaluation the same way |
 | Its own timeout | 2 minutes; it is one read, not a piece of work |
 
+`/goal pause` and `/goal clear` work on a waiting goal as on any other. A goal that Esc or the
+continuation limit paused still needs `/goal resume`: your next message does not resume it.
 `/goal resume` after a budget limit starts the allowance again (also when you paused it in
 between), and after an Esc starts
 evaluating again: stopping a turn is taken as stopping the goal, since the next message you sent
@@ -64,8 +66,9 @@ up where it left off. A continuation is a request addressed to the session
 pursued, and a continuation on its way is not judged again, so it is charged once. Esc pauses the
 goal, and a continuation still queued for it is dropped with it; `/goal resume` judges the next turn
 afresh. The status line shows `goal: <status>`; the
-statuses are `pursuing`, `paused`, `achieved`, `budget_limited` and `cleared` (what `/goal clear`
-leaves behind).
+statuses are `pursuing`, `waiting`, `paused`, `achieved`, `budget_limited` and `cleared` (what
+`/goal clear` leaves behind). The browser page's goal box shows the status too. The conversation
+list does not mark a waiting goal.
 
 The evaluator runs as a sub-agent with the session's model, so it is billed like any other run and
 its transcript is kept with them.

@@ -366,7 +366,7 @@ weaker, and worth converting whenever one of them breaks.
       path says so on its row, with the next look from the process that checks rules*.
 - [x] The inbox as cards around the conversations: decisions above them under **Needs you**, each with
       **Waiting on** and **If you don't** when the loop said them, and news below them. A card names its loop
-      only when the list holds more than one loop's findings. **See the run** is there only when the finding has a run this page can read
+      only when the list holds more than one loop's findings. **Open the run** is there only when the finding has a run this page can read
       (`test/page-server.test.ts`: *See the run is offered only for a transcript the server would read*).
       Every card carries its finding's whole id; no button names a position. `test/web-page.test.ts`:
       *the inbox shows decisions before news, each row only with a value, and the loop only when
@@ -445,9 +445,9 @@ weaker, and worth converting whenever one of them breaks.
       post keeps the buttons*.
 - [x] A finding's text is shown as text: HTML in it makes no element. `test/web-page.test.ts`: *a
       finding's HTML is shown as text and creates no element*.
-- [x] **See the run** opens the run's transcript read-only, folded and redacted, and its close
+- [x] **Open the run** opens the run's transcript read-only, folded and redacted, and its close
       button closes it.
-      `test/web-page.test.ts`: *See the run opens the run's lines read-only, as text*.
+      `test/web-page.test.ts`: *Open the run opens the run's lines read-only, as text*.
       `test/page-server.test.ts`: *See the run reads a run's transcript under sessions/ and nothing
       else*.
 - [x] On a phone, inbox buttons are at least 32 px tall (40 px on a touch screen) and a card wraps
@@ -474,15 +474,29 @@ weaker, and worth converting whenever one of them breaks.
       page opens the question again; one that started or ended is refused in design 6.2's words*.
 - [x] **No…** on a question says that the run is told and the command is refused for 14 days ("You
       said no. <loop> is told on its next run, and the same command is refused for 14 days."), and a
-      question from a conversation is told by a row in it. `test/page-server.test.ts`: *a no to a
-      question from a conversation dismisses it with its reason, tells the conversation by its row,
-      and says so*.
+      question from a conversation is told by a row in it, which names the command and the reason the
+      person gave (design 6.4). `test/page-server.test.ts`: *a no to a question from a conversation
+      dismisses it with its reason, tells the conversation by its row, and says so*;
+      `test/ask-pure.test.ts`: *[6.4] the no a conversation reads names the command and the person's
+      reason, as design 6.4 writes it*.
+- [x] **Yes, run it once** on a question that a conversation's scheduled turn asked says "Approved.
+      It runs in this conversation after the current turn." (design 6.4); the card then follows the
+      server under **Handled**. `test/inbox-card.test.ts`: *[6.4] a yes from the page to a question a
+      conversation's turn asked says it runs in that conversation after the current turn*.
+- [x] A question, its answer and its news are one thread: a news finding with `re` (a `not-run` or
+      an `outcome`) is drawn right under its root's card, in the root's group, and not in **News**
+      too; one whose root is not listed is a card of its own. `test/web-page.test.ts`: *[thread] a
+      news finding with re is drawn right under its root's card, in the root's group, once; one whose
+      root is not listed is a card of its own*.
 - [x] A question's card is drawn from the question's own fields, never cut from its text: the
-      headline names who asks ("nightly asks to run a command"), **Command** shows the command whole
-      and as written in the page's monospace face, then **Reason**, **Waiting on** and **If you
-      don't**. A command that holds `· waits:` cannot make the headline another command.
-      `test/web-page.test.ts`: *a question's card shows its command whole, as written, in a field of
-      its own, and its headline names who asks*; `test/page-server.test.ts`: *GET /inbox draws a
+      headline names who asks ("nightly asks to run a command"), the command is under it, whole and
+      as written in the page's monospace face, in a field of its own with no label, then **Why it
+      asks**, **Waiting on** and **If you don't**, and the buttons **Yes, run it once**, **No…** and
+      **Open the run** (design 6.1). A command that holds `· waits:` cannot make the headline another
+      command. `test/web-page.test.ts`: *a question's card shows its command whole, as written, in a
+      field of its own, and its headline names who asks*; *[6.1] a question's card reads as design
+      6.1: who asks, the command under it with no label, Why it asks, and Yes, run it once, No… and
+      Open the run*; `test/page-server.test.ts`: *GET /inbox draws a
       question's card from its ask: the command whole in its own field, and the headline names who
       asks*; `test/inbox-card.test.ts`: *a question's card is drawn from its ask: the command whole in
       its own field and on its own line, and the headline names who asks*.
@@ -570,95 +584,101 @@ weaker, and worth converting whenever one of them breaks.
 
 - [x] **A watch from one sentence.** `+ Watch for…` beside `+ New` opens the box *Watch for…*: one
       sentence field, named for a screen reader, and three example sentences (English and Chinese);
-      an example fills the box. Once a plan card shows in the box, the examples hide and the card's
-      `Set it up` is the one primary button. `Read it` sends the
+      an example fills the box. Once a proposal's card shows in the box, the examples hide and the
+      card's first option is the one primary button. `Read it` sends the
       sentence as the ordinary chat message `Watch for: <sentence>`, queued and cancellable like
-      any other; `cron_create` and `new_trigger` answer it by asking the person, through pi's own
-      select, before they create anything.
+      any other; `cron_create` and `new_trigger` answer it with a proposal: the watch, written and
+      waiting for the person, which runs only after they set it up.
       `test/web-page.test.ts`: *the Watch for… box opens with three examples and no caption, and an
       example fills it*.
 - [x] A sentence with no time word and nothing to wait for gets the card "This reads like something
       to do now, not something to watch." from the page itself: nothing is sent and no model is
       called. `test/web-page.test.ts`: *a sentence with no time and nothing to wait for gets the now
       card, and nothing is sent*.
-- [x] The question is one live card: in the box while the box is open, else in the transcript. It
-      is drawn from the select's title rows and options alone: the kind (*On a schedule* / *When something happens*), when it runs or
-      waits for, how often the background looks for a rule, what it does, for a schedule whose
-      result goes to the inbox what it remembers and whether a checker reviews each finding, the
-      policy's reason when the action is one the unattended guard would refuse, and the choices:
-      Result (this conversation or the inbox; a rule's inbox chip reads *Put it in my inbox*, since
-      a matched rule's result reaches the inbox and the loop activity strip), for a rule Repeats
-      (once or every time), and for a schedule in the inbox Checks (none or each finding). The chips start on the first option, which is the model's own choice. A select that
-      is not a watch question stays a dialog. Nothing is written until the person answers.
-      `test/web-page.test.ts`: *a watch question draws the card from its title and options, in the
-      box while it is open, else in the transcript, and no dialog*, *a select that is not a watch question stays a
-      dialog*; `test/scoping.test.ts`: *with a person in their own turn, new_trigger asks through
-      pi's select and Set it up creates the rule in the same call*.
-- [x] `Set it up` answers the select with the one option the chips name, and `Cancel` with
-      *Cancel*, through `/ui-response` like any dialog; one answer per question. Cancel writes
-      nothing to `jobs.json` or `triggers.json`. Cancel comes first so Enter hits it.
-      `test/web-page.test.ts`: *the card's chips name the option Set it up sends, and Cancel sends
-      Cancel*; `test/page-server.test.ts`: *a watch question is a select like any dialog:
-      /ui-response carries the chosen option to pi, and the /watch route is gone*;
-      `test/scoping.test.ts`: *Cancel, Esc, a timeout and an abort all return cancelled in the same
-      call and leave jobs.json and triggers.json as they were*.
-- [x] The tool's result in the same turn turns every card of the question into a receipt (*Set up
-      ~/build.done appears · shows here · once*, *Not set up*, or *Not set up:* and why the create
-      failed), and the transcript has the receipt once the question settles. The receipt names a
-      rule by its condition and a loop by its name, else the first 13 characters of its id, as the
-      Loops pane does; a loop made without a name is named from the first words of its prompt. A
-      receipt shows the chosen Result, Repeats and Checks as text and has no buttons.
-      `test/web-page.test.ts`: *the tool's result in the same turn turns every card of the question
-      into a receipt*.
-- [x] A card in the box that is set up or cancelled closes the box, the way its close button does,
-      and gives the focus back to the composer; the transcript's card keeps the receipt. A create
-      that failed keeps the box open, with the sentence in it to change. A watch that is set up
-      refreshes the page's state and the inbox at once, so the starters and the inbox count do not
-      wait for the next timer. `test/web-page.test.ts`: *Set it up closes the Watch for… box, gives
-      the composer back and refreshes the state and the inbox; a failure keeps the box*.
+- [x] A proposal of this conversation is one card, drawn from its record (`GET /watch`): in the box
+      when it appeared while the box reads the sentence that made it, else in the transcript. A
+      proposal of another conversation is not drawn here. The card has the inbox question's
+      grammar: the ⚑ flag, the headline *Set up this watch?*, its age, and the rows the terminal
+      shows without its Command line: when it runs and its next run, or what it waits for and how
+      often the background looks; what it does; and the policy's reason when the action is one the
+      unattended guard would refuse. One primary button carries the first option, which is the
+      model's own choice (*Set it up · inbox*); *Other…* shows the other options; *Cancel* is last.
+      Every select, one titled like the terminal's watch question too, stays a dialog. Nothing runs
+      until the person answers.
+      `test/web-page.test.ts`: *a proposal of the open conversation is drawn in the transcript as
+      the question card*, *a select titled as the terminal's watch question is a dialog like any
+      other*; `test/page-server.test.ts`: *GET /watch lists each proposal with its rows and options,
+      and no job or rule that is set up*; `test/watch-plan.test.ts`: *proposalCard is the page's
+      card of a proposal*; `test/proposal.test.ts`: *[already-answered] the terminal's selector asks
+      the card's question*.
+- [x] Each button posts its option to `POST /watch/answer`, behind the token and the checks of the
+      inbox's actions, and the server takes only an option of that proposal or *Cancel*; one answer
+      per card. Set it up applies the option and turns the watch on; Cancel removes the proposal
+      from `jobs.json` or `triggers.json`, and nothing ran. Each writes one receipt into the
+      conversation, which the agent reads at its next turn. The first answer from any surface
+      lands; a later one changes nothing.
+      `test/web-page.test.ts`: *a click posts the option to /watch/answer once*;
+      `test/page-server.test.ts`: *POST /watch/answer takes the checks /inbox/claim takes*, */ui-response
+      carries a select's chosen option to pi, and no watch route is under /c/<session>/*;
+      `test/proposal.test.ts`: *[P3] Cancel removes the record only while proposed is set*.
+- [x] After an answer the card is its receipt: the rows as text, no buttons, and one status line:
+      *Set up · inbox* (the chosen option's words), *Cancelled. Nothing runs.*, or, when another
+      surface answered first, *already answered: set up* or *already answered: cancelled*. A card
+      that still waits and that another surface answered leaves the transcript; a receipt answered
+      here stays until the page is loaded again, and the record no longer shows a card then.
+      `test/web-page.test.ts`: *a click posts the option to /watch/answer once, and the receipt or
+      the already-answered line replaces the buttons*, *a proposal answered on another surface
+      leaves the transcript; a receipt answered here stays*; J8 in
+      `test/journey/journeys/j08-watch.mjs`.
+- [x] A card in the box that is answered closes the box, the way its close button does, and gives
+      the focus back to the composer; the card, now its receipt, goes into the transcript. An answer
+      that failed keeps the box open, with the reason on the card. A watch that is set up refreshes
+      the page's state and the inbox at once, so the starters and the inbox count do not wait for
+      the next timer. `test/web-page.test.ts`: *a proposal the turn wrote is drawn in the box while
+      it reads the sentence; Set it up closes the box, gives the composer back and refreshes the
+      state and the inbox*.
 - [x] The card shows the whole action and condition, redacted, never cut; an action's further lines
       stay in its own row. `test/watch-plan.test.ts`: *the card shows the whole action and
       condition, redacted, and says when a loop is checked*, *askTitle indents a value's further
       lines, so no line of an action can pass for a row of its own*.
 - [x] On a short screen the box's body scrolls, Read it stays in the box's own menu, a card's
-      Cancel and Set it up stick to the bottom of what is in view, and a card is scrolled to the top
-      of the box when it is drawn, with its status and buttons as one footer so the bar never
-      covers the status; the *pi needs more* card is scrolled the same way. Closing the box moves a
+      buttons stick to the bottom of what is in view, and a card is scrolled to the top of the box
+      when it is drawn; the *pi needs more* card is scrolled the same way. Closing the box moves a
       waiting card into the conversation, where it can still be answered, and the box reopens
       empty. `test/web-page.test.ts`: *closing the box moves a waiting card into the conversation,
       where it can still be answered*, *a turn that ends with no plan shows pi's reply and keeps
       the box*.
 - [x] The now-check knows weekdays (plural too), *nightly*, *noon*, *midnight*, *daily*, *weekly*,
       *at 9am*, *in an hour*, *twice a day*, *weeknights*, *later today* and the Chinese time
-      words, and a sentence queued behind a busy turn waits for its own turn's question.
+      words, and a sentence queued behind a busy turn waits for its own turn's plan.
       `test/web-page.test.ts`: *a sentence with no time and nothing to wait for gets the now card,
-      and nothing is sent*, *a sentence queued behind a busy turn waits for its own turn's question,
+      and nothing is sent*, *a sentence queued behind a busy turn waits for its own turn's plan,
       not the earlier turn's reply*.
-- [x] A question waits thirty minutes, then pi cancels it and the tool says so: the card says *Not
-      set up: nobody answered in time*. A question pi answered on its own (an abort, the turn's end)
-      says *Not set up* and sends nothing. One still waiting when a tab opens is drawn once, below
-      the conversation; one a tool asked whose run ended is not offered again, and one a slash
-      command opened during the run (`/session-share`) still is. `test/web-page.test.ts`: *a
-      question pi answered on its own is not left waiting: the turn's end, or the question's own
-      time, says it was not set up*, *a question still waiting when the page opens is drawn once,
-      after the transcript*; `test/page-children.test.ts`: *a dialog a tool asked is dropped
-      when the run ends: pi answered it already, and a later tab is not offered it*.
-- [x] A turn that ends with no question shows pi's reply in the box (a question of pi's own, for
+- [x] A proposal waits for its answer as long as it takes: the turn's end does not answer it, and it
+      has no timeout. One still waiting when a tab opens is drawn once, below the conversation; a
+      create tool's result read back from the transcript fetches nothing, and a card drawn before
+      is drawn again once. A dialog a tool asked whose run ended is not offered again, and one a
+      slash command opened during the run (`/session-share`) still is. `test/web-page.test.ts`: *a
+      proposal still waiting when the page opens is drawn once, after the transcript*, *a proposal
+      read back from the transcript fetches nothing*; `test/page-children.test.ts`: *a dialog a
+      tool asked is dropped when the run ends: pi answered it already, and a later tab is not
+      offered it*.
+- [x] A turn that ends with no proposal shows pi's reply in the box (a question of pi's own, for
       instance) and keeps the sentence for editing; ninety seconds with neither a card nor the end
       of the turn says pi did not answer. `test/web-page.test.ts`: *a turn that ends with no plan
       shows pi's reply and keeps the box*.
 - [x] A conversation a terminal holds is answered there (owner decision O2): both tools ask in that
       terminal before they set anything up, and the box says so.
       `test/web-page.test.ts`: *a terminal that holds the conversation answers the sentence there*.
-- [x] **The terminal asks the same question.** In a terminal, in the person's own turn, both tools
-      show pi's selector with the card's rows as its title and the same options, the model's choice
-      first; it replaces `new_trigger`'s confirm, so there is one question, never two. A scheduled
-      turn, a sub-agent and pi-loops in the background ask nobody. `test/scoping.test.ts`: *the answer
-      is promote_to_chat and fire_once for a rule, and stateful and verify for a schedule*, *a
-      sub-agent has no new_trigger; a scheduled turn and a pi with no dialog keep today's gate:
-      new_trigger asks the host's confirm once and cron_create creates*; J8 in `test/journey/journeys/j08-watch.mjs`
-      drives the selector through the journey terminal driver.
-- [x] At 390 px the box and the card fit: nothing scrolls sideways, the chips and buttons wrap, and
+- [x] **The terminal asks the same question.** In a terminal, `/cron enable <name>` and
+      `/triggers enable <id>` on a proposed watch show pi's selector with the card's rows as its
+      title and the same options, the model's choice first; `new_trigger` asks no confirm, so there
+      is one question, never two. Esc leaves the watch proposed. A sub-agent has no `new_trigger`,
+      and a scheduled turn's `cron_create` creates at once. `test/proposal.test.ts`: *[already-answered]
+      the terminal's selector asks the card's question*; `test/scoping.test.ts`: *a proposal's first
+      option is the model's*, *a sub-agent has no new_trigger; in a scheduled turn new_trigger
+      proposes and cron_create creates*.
+- [x] At 390 px the box and the card fit: nothing scrolls sideways, the buttons wrap, and
       every button is at least 32 px tall (J8 in `test/journey/journeys/j08-watch.mjs`).
 
 ## How it looks
@@ -699,7 +719,8 @@ weaker, and worth converting whenever one of them breaks.
 - [x] A confirmation shows what is about to happen apart from the reasoning about it, so it cannot
       be read as prose and waved through. `test/web-page.test.ts`: *a confirmation shows what is
       about to run*.
-- [x] A question with a countdown (the scheduled-turn guard, a control-plane confirm) closes when
+- [x] A question with a countdown (a dialog that pi or another extension asks with a timeout; pi-loops
+      asks none since 0.24.3: its questions are in the inbox) closes when
       its time is up and says `timed out with no answer: refused`, since pi refuses it then and tells
       the page nothing; an approve after that is neither sent nor reported as approved, and the next
       question gets the dialog. A browser that attaches later is not offered it, and one offered again
@@ -938,8 +959,8 @@ weaker, and worth converting whenever one of them breaks.
   first") and the "or describe a loop" link.** `reads only` was true of every starter; the cost is
   a chip by the name; the wizard asks for the tracker when it needs it; and `+ Watch for…` above the
   list is the one way to describe a loop.
-- **A dim `not said` under a decision, the meta line on every card, and a greyed See the run.** A row
-  shows only when the loop gave it a value, and See the run shows only when there is a run to see.
+- **A dim `not said` under a decision, the meta line on every card, and a greyed Open the run.** A row
+  shows only when the loop gave it a value, and Open the run shows only when there is a run to see.
   The yes's own answer says where it runs (*Yes posts the finding's id and this conversation,
   nothing else, and says it runs in the background*).
 - **Where a claim runs, on a card ("runs in your terminal", "starts its conversation", "its
@@ -980,9 +1001,22 @@ weaker, and worth converting whenever one of them breaks.
   card's "Not right?" line.** The title and the placeholder say what the box takes, the examples
   are examples, and *Read it* reads the edited sentence again. The project is the one the list
   shows above the button.
+- **The Watch card's chips (Result, Repeats, Checks), its kind heading (*On a schedule*, *When
+  something happens*) and its *Remembers what changed since the last run* row.** The card has the
+  inbox question's grammar (M5b.4 prototype, variant C): the first option is the one button,
+  *Other…* lists the rest, and each option says in its own words where the result goes, whether a
+  rule repeats and whether a checker reviews each finding. The headline is the question the
+  terminal asks, and the rows are the terminal's.
+- **The watch receipt's name of the watch (*Set up ~/build.done appears · shows here · once*), and
+  its *Not set up* and *Not set up: nobody answered in time* lines.** The receipt keeps the card's
+  rows, which say what the watch is; its line says what was chosen. A proposal is written before
+  the person is asked, so no create fails after the answer, and it waits without a timeout.
+- **The thirty-minute wait of a watch question, and its answer through `/ui-response`.** The
+  question is a record now (design 2.5), answered through `POST /watch/answer` whenever the person
+  comes to it, from the page or a terminal.
 
 - **`/inbox open` (start a new conversation from the run that filed a finding).** A fork writes a
-  conversation, and the page's **See the run** covers looking at the run. The terminal keeps it.
+  conversation, and the page's **Open the run** covers looking at the run. The terminal keeps it.
 
 - **"After Stop, nothing queued starts a turn until you send again", and the "send queued (n)"
   button.** Owner decision, 2026-11-02: Esc in the terminal and Stop in the browser end the current

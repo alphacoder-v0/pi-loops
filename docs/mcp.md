@@ -44,8 +44,8 @@ method name plus bounded, redacted metadata (`notifications/resources/updated ur
 
 Delivery per server: `inject_summary` (promotion only), `inject_and_run` (a user message and one turn, queued as a request and run once the agent is idle),
 or the default: evaluation against the dynamic rules by a sub-agent. An `inject_and_run` turn is a
-scheduled turn, as a plain job's is: in an open window a command the dangerous-command policy
-refuses asks you first, with a 60-second countdown, and in the background it is refused
+scheduled turn, as a plain job's is: a command the dangerous-command policy names is not run.
+pi-loops asks you, in the conversation and in the inbox, and the turn goes on without it
 ([loops.md](loops.md), [configuration.md](configuration.md)).
 
 ## Tools

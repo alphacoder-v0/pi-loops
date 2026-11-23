@@ -10,9 +10,17 @@ import { mapNotification } from "../src/mcp.ts";
 import { buildPeriodicCheckTrigger } from "../src/triggers.ts";
 import { fakeRunner } from "./fake-runner.ts";
 import { LeaseBinding, LeaseStore, procStart } from "../src/lease.ts";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
+import { spawn } from "node:child_process";
+import type { Answerer } from "../src/answers.ts";
+import { inputHash } from "../src/ask.ts";
+import { GuardSeats } from "../src/guard.ts";
+import { createInProcessRunner } from "../src/sdk-runner.ts";
+import type { LoopJob } from "../src/store.ts";
+import { openStores } from "../src/stores.ts";
+import { type RowCap, windowGuard } from "../src/window-executor.ts";
 import { RequestStore } from "../src/requests.ts";
-import { heldTurnFor, personRow, recipeRow, ruleResultRow, stopRow } from "../src/engine.ts";
+import { heldTurnFor, personRow, plainRunId, recipeRow, ruleResultRow, stopRow } from "../src/engine.ts";
 import { stopRunFrom } from "../src/host-control-channel.ts";
 import { RUNTIME_RIDERS, Ticker } from "../src/ticker.ts";
 
@@ -592,6 +600,7 @@ test("a held turn is the conversation's own: its model, its session for the tool
 		const made = host.stores.jobs.load().find((j) => j.prompt === "remind me again")!;
 		assert.equal(made.sessionId, sessionId, "and is bound to this conversation");
 		assert.equal(seen.listed.details.scope, "machine", "all_projects lists the machine, as in a window");
+		// This runner seats no run in a guard: nobody was asked, so the call is refused (design 4, item 26).
 		assert.equal(seen.denied.isError, true);
 		assert.match(seen.denied.content[0].text, /ran in the background with nobody to ask/, "the refusal names the cause, not a sub-agent");
 	} finally {
@@ -1032,5 +1041,172 @@ test("the background closes a claim whose process is gone, by what the run log a
 		assert.equal(host.stores.inbox.list().length, 0);
 	} finally {
 		await host.stop();
+	}
+});
+
+/* ------------------------------------------------------------------ a control-plane call in a held turn (design 4, item 26) */
+
+const FAKE_MODEL = path.join(path.dirname(new URL(import.meta.url).pathname), "downstream", "fake-model.mjs");
+const PERSON: Answerer = { by: "terminal", session: "0f0e0d0c-0b0a-4908-8706-050403020100" };
+const REMOVE = { ref: "old-watch" };
+const OLD_WATCH = "cron-0123456789abcdef0123456789abcdef";
+
+/**
+ * pi-loops in the background with the real runner and its guard, against the stand-in model:
+ * `script` picks each call. After a `cron_remove` that ran, an extension tells the model once to
+ * make it again, in the same run. The conversation is closed: its file ten minutes old, its lease
+ * with no holder. The project has a loop named old-watch, not due.
+ */
+async function heldWorld(script: Array<{ match: string; tool: string; args: unknown }>) {
+	const dir = tmp("pi-loops-hostrt-cp-");
+	const cwd = path.join(dir, "proj");
+	fs.mkdirSync(cwd, { recursive: true });
+	const stores = openStores(dir);
+	const portFile = path.join(dir, "port");
+	const fake = spawn(process.execPath, [FAKE_MODEL, portFile], { env: { ...process.env, FAKE_MODEL_REPLY: "done", FAKE_MODEL_TOOL_SCRIPT: JSON.stringify(script) }, stdio: "ignore" });
+	for (let i = 0; i < 200 && !(fs.existsSync(portFile) && fs.readFileSync(portFile, "utf8").trim()); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+	const agentDir = path.join(dir, "agent");
+	fs.mkdirSync(agentDir, { recursive: true });
+	fs.writeFileSync(path.join(agentDir, "models.json"), JSON.stringify({ providers: { fake: { baseUrl: `http://127.0.0.1:${fs.readFileSync(portFile, "utf8").trim()}/v1`, api: "openai-completions", apiKey: "fake", models: [{ id: "fake-model" }] } } }));
+	const modelRuntime = await ModelRuntime.create({ authPath: path.join(agentDir, "auth.json"), modelsPath: path.join(agentDir, "models.json") });
+	const model = modelRuntime.getModel("fake", "fake-model");
+	assert.ok(model, "the stand-in model is registered");
+	const again = path.join(dir, "again.ts");
+	fs.writeFileSync(again, `export default function (pi: any) { let sent = false; pi.on("tool_result", (event: any) => { if (event.toolName === "cron_remove" && !event.isError && !sent) { sent = true; pi.sendUserMessage("PROMPT-AGAIN remove it once more", { deliverAs: "steer" }); } }); }\n`);
+	let host: HostRuntime | undefined;
+	const seats = new GuardSeats();
+	const runner = createInProcessRunner({
+		agentDir,
+		parentFlags: { extensionPaths: [again], skillPaths: [], promptTemplatePaths: [], appendSystemPrompt: [], noSkills: true, noExtensions: false, noContextFiles: true, noPromptTemplates: true },
+		getParentModel: () => model,
+		getParentModelRuntime: () => modelRuntime,
+		getParentThinking: () => undefined,
+		customTools: (req) => host!.customTools(req),
+		isTrusted: () => false,
+		ownDir: tmp("pi-loops-own-"),
+		// Wired as src/host.ts wires it: one set of seats for the runner and the held turn's confirmTool, and the target resolver.
+		guard: { seats, deps: { inbox: stores.inbox, allowCommands: () => [], loopsDir: dir, now: Date.now, controlTarget: (tool, input, cwd) => host!.controlTarget(tool, input, cwd) } },
+	});
+	host = createHostRuntime({ dir, stores, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined, guardSeats: seats });
+	const sm = SessionManager.create(cwd, path.join(dir, "conversations"));
+	sm.appendModelChange("fake", "fake-model");
+	sm.appendMessage({ role: "user", content: "earlier", timestamp: Date.now() } as any);
+	const file = sm.getSessionFile()!;
+	const sessionId = sm.getSessionId();
+	const aged = () => fs.utimesSync(file, new Date(Date.now() - 10 * 60_000), new Date(Date.now() - 10 * 60_000));
+	aged();
+	fs.mkdirSync(path.join(dir, "leases"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "leases", `${sessionId}.json`), JSON.stringify({ v: 1, sessionId, sessionFile: file, cwd, epoch: 1, holder: null, updatedAt: new Date().toISOString() }));
+	await stores.jobs.add({ id: OLD_WATCH, name: "old-watch", schedule: { kind: "every", ms: 3_600_000 }, stateful: true, prompt: "look", cwd, enabled: true, catchUp: false, createdAt: stamp(Date.now()), runCount: 0, skippedOverlap: 0 } as LoopJob);
+	const plain = (over: Partial<LoopJob>): LoopJob => ({ id: "cron-fedcba9876543210fedcba9876543210", name: "tidy", schedule: { kind: "every", ms: 3_600_000 }, stateful: false, sessionId, prompt: "PROMPT-CP remove the old watch", cwd, enabled: true, catchUp: false, createdAt: stamp(Date.now()), runCount: 0, skippedOverlap: 0, ...over }) as LoopJob;
+	const oldWatch = () => stores.jobs.load().find((j) => j.name === "old-watch");
+	const questions = () => stores.inbox.list().filter((f) => f.ask);
+	/** The text of each cron_remove result in the conversation, in order. */
+	const removeResults = () => fs.readFileSync(file, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((e) => e.type === "message" && e.message.role === "toolResult" && e.message.toolName === "cron_remove").map((e) => JSON.stringify(e.message.content));
+	/**
+	 * The window's scheduled turn of `job` asks about `cron_remove` old-watch: the real guard of a window
+	 * over the conversation's file, as its pi writes the call, with the window's target resolver. Then
+	 * the window closes a while ago, and the person says yes. Returns the question.
+	 */
+	const windowAskedAndYes = async (job: LoopJob) => {
+		const cap: RowCap = { kind: "row", id: plainRunId(job.id, stamp(Date.now() - 60_000)), mode: "unattended", ...(job.tools ? { tools: job.tools } : {}) };
+		const guard = windowGuard({ current: () => cap, config: () => ({ allowCommands: [], loopsDir: dir }), log: () => undefined, inbox: stores.inbox, now: Date.now, jobOf: () => job, controlTarget: (tool, input) => host!.controlTarget(tool, input, cwd) });
+		sm.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "call-w1", name: "cron_remove", arguments: REMOVE }], api: "openai-completions", provider: "fake", model: "fake-model", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "toolUse", timestamp: Date.now() } as any);
+		const verdict = await guard({ toolName: "cron_remove", toolCallId: "call-w1", input: REMOVE }, { cwd, sessionManager: sm });
+		assert.match(verdict?.reason ?? "", /^asked a person/);
+		sm.appendMessage({ role: "toolResult", toolCallId: "call-w1", toolName: "cron_remove", content: [{ type: "text", text: verdict!.reason }], isError: true, timestamp: Date.now() } as any);
+		aged();
+		const [question] = stores.inbox.list().filter((f) => f.ask);
+		assert.equal((await host!.answers.say(question.id, "yes", PERSON)).said, "Y1");
+		return question;
+	};
+	return { dir, cwd, stores, host, fake, sm, file, sessionId, aged, plain, oldWatch, questions, removeResults, windowAskedAndYes };
+}
+
+test("[M5b.9] a held turn's control-plane call files a question in its conversation's lane, with the tool's name and input; it is not refused as a held turn with nobody to ask, and it does not run", { timeout: 60_000 }, async () => {
+	const w = await heldWorld([{ match: "PROMPT-CP", tool: "cron_remove", args: REMOVE }]);
+	try {
+		await w.stores.jobs.add(w.plain({ createdAt: stamp(Date.now() - 3_700_000) }));
+		await tickHost(w.host);
+		await w.host.drain(30_000);
+		const [question, ...more] = w.questions();
+		assert.ok(question, "the held turn asked about its call");
+		assert.deepEqual(more, []);
+		assert.deepEqual([question.lane, question.ask?.lane, question.ask?.call.tool, question.ask?.call.command, question.ask?.call.input_sha256, question.ask?.call.reason], [w.sessionId, w.sessionId, "cron_remove", undefined, inputHash(REMOVE), `changes what pi-loops runs: cron_remove {"ref":"old-watch"} (job ${OLD_WATCH} "old-watch" every 1h)`], "the card shows the job the call would remove");
+		const [result] = w.removeResults();
+		assert.match(result ?? "", /asked a person: changes what pi-loops runs: cron_remove/);
+		assert.doesNotMatch(result ?? "", /nobody to ask/);
+		assert.equal(w.oldWatch()?.enabled, true, "the call did not run");
+	} finally {
+		await w.host.stop();
+		w.fake.kill();
+	}
+});
+
+test("[M5b.9] a yes to a control-plane question a window asked, run in the background as a held turn after the window closed, runs that one call once; the same call again is asked again", { timeout: 60_000 }, async () => {
+	const w = await heldWorld([
+		{ match: "A person said yes to the call you asked about", tool: "cron_remove", args: REMOVE },
+		{ match: "PROMPT-AGAIN", tool: "cron_remove", args: REMOVE },
+	]);
+	try {
+		const job = w.plain({});
+		await w.stores.jobs.add(job);
+		const question = await w.windowAskedAndYes(job);
+
+		await tickHost(w.host);
+		await w.host.drain(30_000);
+		assert.equal(w.oldWatch(), undefined, "the granted call ran: the loop is removed");
+		assert.equal(w.removeResults().length, 3, "the window's call, the granted call, and the same call again");
+		assert.match(w.removeResults()[2], /asked a person: changes what pi-loops runs: cron_remove/, "the same call again is asked about");
+		assert.equal(w.stores.inbox.list().find((f) => f.id === question.id)?.answer?.state, "done");
+		const [, second, ...more] = w.questions();
+		assert.deepEqual(more, []);
+		assert.deepEqual([second?.status, second?.ask?.call.tool, second?.ask?.call.input_sha256], ["new", "cron_remove", inputHash(REMOVE)], "a second question, open for the person");
+		const [record] = w.stores.jobs.allRuns().filter((r) => r.cause === "answer");
+		assert.deepEqual([record?.ok, record?.grant_used], [true, true]);
+	} finally {
+		await w.host.stop();
+		w.fake.kill();
+	}
+});
+
+test("[M5b.9] the yes binds to the job the person saw: a different job under the same name after the question is asked about again and is not removed", { timeout: 60_000 }, async () => {
+	const w = await heldWorld([{ match: "A person said yes to the call you asked about", tool: "cron_remove", args: REMOVE }]);
+	try {
+		const job = w.plain({});
+		await w.stores.jobs.add(job);
+		const question = await w.windowAskedAndYes(job);
+		// After the question, old-watch is removed and another job takes its name.
+		await w.stores.jobs.remove(OLD_WATCH);
+		await w.stores.jobs.add({ id: "cron-1111111111111111111111111111aaaa", name: "old-watch", schedule: { kind: "every", ms: 600_000 }, stateful: true, prompt: "something else", cwd: w.cwd, enabled: true, catchUp: false, createdAt: stamp(Date.now()), runCount: 0, skippedOverlap: 0 } as LoopJob);
+		await tickHost(w.host);
+		await w.host.drain(30_000);
+		assert.equal(w.oldWatch()?.id, "cron-1111111111111111111111111111aaaa", "the new job is not removed");
+		assert.match(JSON.parse(w.removeResults()[1] ?? "[{}]")[0].text ?? "", /asked a person: changes what pi-loops runs: cron_remove \{"ref":"old-watch"\} \(job cron-1111111111111111111111111111aaaa "old-watch" every 10m\)/, "asked again, about the new job");
+		const [, second] = w.questions();
+		assert.deepEqual([second?.status, second?.ask?.call.reason], ["new", 'changes what pi-loops runs: cron_remove {"ref":"old-watch"} (job cron-1111111111111111111111111111aaaa "old-watch" every 10m)']);
+		const [record] = w.stores.jobs.allRuns().filter((r) => r.cause === "answer");
+		assert.equal(record?.grant_used, false, "the grant was not used");
+		assert.notEqual(w.stores.inbox.list().find((f) => f.id === question.id)?.answer?.state, "done");
+	} finally {
+		await w.host.stop();
+		w.fake.kill();
+	}
+});
+
+test("[M5b.9] a yes run in the background for a job that declares its tools is offered the granted pi-loops tool and runs that call once", { timeout: 60_000 }, async () => {
+	const w = await heldWorld([{ match: "A person said yes to the call you asked about", tool: "cron_remove", args: REMOVE }]);
+	try {
+		const job = w.plain({ tools: ["read"] });
+		await w.stores.jobs.add(job);
+		await w.windowAskedAndYes(job);
+		await tickHost(w.host);
+		await w.host.drain(30_000);
+		assert.equal(w.oldWatch(), undefined, "the granted call ran: the loop is removed");
+		const [record] = w.stores.jobs.allRuns().filter((r) => r.cause === "answer");
+		assert.deepEqual([record?.ok, record?.grant_used], [true, true]);
+	} finally {
+		await w.host.stop();
+		w.fake.kill();
 	}
 });

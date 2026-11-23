@@ -112,7 +112,7 @@ test("[listed-one-shot] A one-shot's first failure says it retries once, and its
 test("[listed-plain] A plain job's status comes from its cursor and its run log, as a loop's does; a claim on its row is not read here.", () => {
 	const plain = v2({ stateful: false, sessionId: "s", lastError: "kept", consecutiveFailures: 4, runCount: 7, lastFiredAt: T(3) });
 	const listed = shown(plain, [claimed(T(1))], [record({ error: "other" })]);
-	assert.deepEqual(listed.status, { fired: T(3), completed: at, runs: 7, collapsed: 0, streak: 1, error: "other" });
+	assert.deepEqual(listed.status, { fired: T(3), completed: at, runs: 7, collapsed: 0, streak: 1, error: "other", errorIs: { kind: "failed", at } });
 	assert.equal((listed as any).lastError, undefined, "the listing carries no field of the version 2 file");
 	const ok = shown(plain, [], [record({ error: "other" }), record({ runId: "r2", ok: true, finishedAt: T(5) })]);
 	assert.deepEqual([ok.status.error, ok.status.streak], [undefined, 0], "a success clears it, as the turn's closing did");

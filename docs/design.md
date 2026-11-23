@@ -367,13 +367,19 @@ machine. Everything here follows from that, and each one has a price.
     that says otherwise, and a window believes an attended source only on a row it wrote itself,
     so a line in the file cannot widen a turn. An unattended turn runs under
     the job's declared tools and the dangerous-command policy in a window exactly as in the
-    background; what differs is who answers. The background refuses; a window asks you, with a
-    60-second countdown, and refuses when nobody does, telling the model which of the two it was.
-    pi-loops' own tools get no question from the guard, because each carries its own: `cron_create`
-    makes a job capped to the turn's tools (the window's `toolHost` reads the current turn, as the
-    background scopes a run's), and the tools that confirm through `confirmTool` do so once, where
-    the background's preflight refuses. The cost is a dialog in the middle of a turn
-    you did not start, and `[engine] window_guard = false` buys the uncapped window back. The
+    background, and neither runs a call the policy names: pi-loops asks you, in the conversation
+    and in the inbox, and the turn goes on without it. A yes runs that call once, after the turn.
+    pi-loops' read-only tools and its two create tools get no question from the guard, since a
+    create tool carries its own rule: `cron_create` makes a job capped to the turn's tools (the
+    window's `toolHost` reads the current turn, as the background scopes a run's), and
+    `new_trigger` writes a proposal (decision 24). The control-plane tools (`cron_remove`,
+    `set_cron_job_state`, `remove_trigger`, `set_trigger_state`) are asked about at every call in a
+    conversation's unattended turn at hop 0 (a window's scheduled turn, or a turn pi-loops runs in a
+    closed conversation), with the tool's name and its input on the card, and `confirmTool` asks
+    nothing more there. In the person's own turn `confirmTool` asks with pi's confirm, and at hop 1 (a
+    loop's or a check's run) its preflight refuses. The cost is a question about a turn you did not start,
+    answered after it. Nothing turns the cap off in a window: `[engine] window_guard` is retired in
+    0.24.3, and a `config.toml` that still sets it gets one line at startup. The
     background process runs no attended row at all; one waits for a window, and a `/cron run` row
     left in a closed conversation does not hold the clock's slots, which run as if it were not there.
     `/cron run` is typed: its row goes before the clock's rows.
@@ -523,60 +529,35 @@ machine. Everything here follows from that, and each one has a price.
     cost is a second writer of the request file and a bell on every send; what it buys is a queue
     that Esc cannot clear and a message that outlives the process it was typed into.
 
-    A claim from the page's inbox (**Yes, do it**, **Look into it**) is not a `person` row: it is
-    the `inbox:<id>` row `/inbox claim` writes, with the same collapse key, so a page and a terminal
-    claiming one finding collapse on each other and the file lock settles which one wrote it. The
-    page server signs it and lives on, and a row its producer outlives would wait for it for ever,
-    so the row is born left (`created_by.left` set at birth, `pageClaimRow` in src/engine.ts): the
-    holder runs it, as it runs a terminal's claim after that window moved on, and nobody else does,
-    since a viewer runs only its own rows and a left row is nobody's, and pi-loops in the background
-    runs no attended row. Under the inbox's lock, once `Inbox.decide` has found the finding still
-    new, the server writes the row and then marks the finding claimed, so a claim that loses writes
-    nothing (a terminal's `/inbox claim` does the same in `handOver`); then it delivers: it
-    rings the page's pi that holds the conversation, leaves the row to a terminal that holds it, waits
-    out pi-loops' scheduled turn there, or starts the conversation's pi when nobody holds it, asking
-    for its command list first and never ringing, or starting again, a pi with no pi-loops in it. The
-    same step runs at start and every ten seconds, one at a time (a claim made while one runs says
-    where it will run and is delivered when that one ends), so a claim tapped on a phone and left there runs
-    when the conversation is free, and a claim cut short between the row and the status is finished
-    from the files. The cost is the one this decision already pays for a page's message: in a
-    terminal the claim's turn runs capped as unattended, since no ring reaches a terminal, and the
-    danger check asks in that terminal before a dangerous command.
+    A claim from the page's inbox, from `/inbox claim` and from the selector a terminal opens when
+    a turn settles is the same answer, and none of them is a turn of its own in a conversation. The
+    claim marks the finding's answer pending and appends an answer row to the lane the finding
+    names: a loop's, a project's checks' or the conversation's (src/answers.ts). The run that row
+    wakes resumes the transcript of the run that reported the finding, and for a question it admits
+    the one call the person saw, once. A conversation's answer runs in the window that holds the
+    conversation once pi is idle (`createWindowAnswers`), and in the background when nobody has it
+    open. The cost: a yes waits while its conversation is busy, and a yes to a finding whose
+    transcript is gone starts from the finding's text.
 
-24. **A watch is a question the tool asks.** With a person present, in the person's own turn
-    (hop 0, `ctx.hasUI`, not a scheduled turn), `cron_create` and `new_trigger` run every check a
-    create would, then ask through pi's own `ctx.ui.select` and wait for the answer in the same
-    call. The title is `Set up this watch?` and then the card's rows as `Label: value` lines
-    (`Runs` or `Waits for`, `Looks`, `Does` or `Then`, `Careful`, `Command`; a value's
-    further lines are indented two spaces). The options are a fixed vocabulary, one string per
-    combination of the card's choices, the plan's defaults first: for a schedule
-    `Set it up · inbox`, `Set it up · inbox · with checks`, `Set it up · this conversation`; for a
-    rule `Set it up · this conversation|inbox · once|every time`; and `Cancel`.
-    `watchChoice` in `src/watch-plan.ts` is the one place an answer becomes the stores' fields: a
-    schedule's `inbox` is `stateful` and `with checks` is `verify`; a rule's
-    `this conversation` is `promote_to_chat` and `once` is `fire_once`. An answer that was not
-    offered is a cancel. The tool returns `created cron job …` or `created dynamic trigger …`, or
-    `cancelled: the person did not set up this watch (Cancel|aborted|timed out). Nothing was
-    created.`, and the model reads that one rule on every surface. The question replaces
-    `new_trigger`'s confirm: one question, never two. A terminal shows pi's selector; the page draws
-    the same select as its card (chips are the axes of the options, Set it up sends the option they
-    name through `/ui-response`), and the tool result in the same turn turns the card into a
-    receipt. The page's child drops every dialog asked since the last `agent_start` when the run
-    ends, since pi has answered it by then and tells nobody: replayed, it would be a card whose
-    answer goes nowhere. A sub-agent, pi-loops in the background, a pi with no dialog and a
-    scheduled turn in an open window ask nobody and keep their gate: `cron_create` creates at once
-    and `new_trigger` asks the window guard's confirm or is refused. The sentence itself is an
-    ordinary chat message, `Watch for: <sentence>`; a sentence with no time and nothing to wait
-    for is answered by the page and reaches no model, and both tool descriptions say at hop 0 that
-    such a message is never acted on now. The question shows no directory, so a `cwd` outside the
-    project is refused before it is asked.
-    What it costs: the turn waits on the person, up to thirty minutes, and then the question is
-    cancelled and nothing is created; tool calls in a turn are sequential, so the turn's other work
-    waits too, and a plain job that comes due in that window queues behind it. The card lives in
-    the dialog, not in the transcript: a conversation read later shows the tool result and no card,
-    and a question still open when its pi stops is gone with it. A second identical call in one
-    turn is a second question; the result tells the model not to call again, and nothing enforces it.
-
+24. **A watch is a proposal, not a held turn.** In the person's own turn (hop 0, a UI, not a
+    scheduled turn), `cron_create` and `new_trigger` run every check a create would, then write the
+    job or the rule as proposed (`enabled: false`, `proposed: { at, session }`) and return at once.
+    `new_trigger` does the same in a scheduled turn and in a turn pi-loops holds in a closed
+    conversation. Nothing runs a proposal, and it does not expire. The model reads `proposed cron
+    job …` or `proposed dynamic trigger …`, and is told not to wait, not to do the action now and not
+    to call the tool again. The question is drawn from the record: `Set up this watch?`, the card's
+    rows, and the options `watchOptions` gives (`src/watch-plan.ts`), the model's own choice first.
+    `watchChoice` is the one place an answer becomes the stores' fields. The page draws it as a card
+    in the conversation; a terminal asks in pi's selector when a turn settles, and `/cron enable` or
+    `/triggers enable` asks it again. Set it up applies once, under the store's lock, while
+    `proposed` is still set, and writes a receipt row into the conversation the watch was proposed
+    in, which the model reads at its next turn. Cancel removes the record the same way. A sub-agent's
+    `cron_create`, `cron_create` in a scheduled or held turn, `/cron add` and a recipe still create
+    an enabled job. The question shows no directory, so a `cwd` outside the project is refused when
+    the tool is called. A proposal needs a saved conversation, for its receipt. What it costs: the
+    agent learns the answer only at a later turn, never in the call that proposed the watch, and a
+    second identical call is a second proposal; the result tells the model not to call again, and
+    nothing enforces it.
 
 25. **A run writes into the conversation only when there is something to see.** A loop's first three
     runs and every failed run are one compact card each, saved in the conversation that created the

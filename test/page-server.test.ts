@@ -1277,6 +1277,107 @@ test("the inbox's POST routes take the checks every POST takes, a 4 KB body, and
 	}
 });
 
+/** A proposed watch of conversation `session` (design 2.5): a job in jobs.json and a rule in triggers.json, as the create tools write them. */
+async function addProposals(loops: string, session: string, cwd: string) {
+	const proposed = { at: stamp(), session };
+	await new JobStore(loops).add({ id: "cron-pppppppp", name: "todo-watch", schedule: { kind: "cron", expr: "0 9 * * *" }, stateful: true, prompt: "read TODO.md and tell me about new unchecked items", cwd, enabled: false, catchUp: true, createdAt: stamp(), proposed });
+	await new JobStore(loops).add({ id: "cron-eeeeeeee", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "set up already", cwd, enabled: true, catchUp: true, createdAt: stamp() });
+	const rule = await new TriggerStore(loops).add({ condition: "~/build.done appears", action: "run cargo test and show me the result", cwd, sessionId: session, fireOnce: true, promoteToChat: true, proposed });
+	await new TriggerStore(loops).add({ condition: "a set-up rule", action: "tell me", cwd, sessionId: session });
+	return { jobId: "cron-pppppppp", ruleId: rule.id };
+}
+
+test("GET /watch lists each proposal with its rows and options, and no job or rule that is set up; it refuses as GET /inbox refuses", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-watch-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	let opens = 0;
+	const open = page.pool.open.bind(page.pool);
+	page.pool.open = (how) => (opens++, open(how));
+	try {
+		const { jobId, ruleId } = await addProposals(page.loops, "s1", dir);
+		const got = await page.get("watch");
+		assert.equal(got.status, 200);
+		const [job, rule] = got.body.proposals;
+		assert.equal(got.body.proposals.length, 2, "the two proposals, and neither watch that is set up");
+		assert.deepEqual([job.kind, job.id, job.session, job.label], ["schedule", jobId, "s1", "todo-watch"]);
+		assert.deepEqual(job.rows.map((r: string[]) => r[0]), ["Runs", "Does"], "the terminal's rows, without its Command line");
+		assert.match(job.rows[0][1], /^every day at 09:00 · next /);
+		assert.deepEqual(job.options, ["Set it up · inbox", "Set it up · inbox · with checks", "Set it up · this conversation", "Cancel"]);
+		assert.deepEqual([rule.kind, rule.id, rule.session], ["rule", ruleId, "s1"]);
+		assert.deepEqual(rule.rows, [["Waits for", "~/build.done appears"], ["Looks", "every 10 minutes"], ["Then", "run cargo test and show me the result"]]);
+		assert.equal(rule.options[0], "Set it up · this conversation · once");
+		for (const route of ["watch", "inbox"]) {
+			assert.equal((await fetch(`${page.url}${route}`)).status, 401, `${route}: no token`);
+			assert.equal((await fetch(`${page.url}${route}`, { headers: { "x-pi-web-token": TEST_TOKEN, origin: "https://evil.example" } })).status, 403, `${route}: another origin`);
+			assert.equal((await fetch(`${page.url}${route}`, { headers: { "x-pi-web-token": TEST_TOKEN, "sec-fetch-site": "cross-site" } })).status, 403, `${route}: another site`);
+		}
+		assert.equal((await page.get("c/s1/watch")).status, 404, "not a route of a conversation");
+		assert.equal(opens, 0, "a file read: no pi started");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("POST /watch/answer takes the checks /inbox/claim takes: a yes sets the job up with one receipt, a second answer finds it already set up, Cancel removes a rule", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-watch-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		const { jobId, ruleId } = await addProposals(page.loops, "s1", dir);
+		const stores = () => ["jobs.json", "triggers.json"].map((f) => fs.readFileSync(path.join(page.loops, f), "utf8")).join("\n");
+		const before = stores();
+		const json = { "content-type": "application/json" };
+		const ok = { ...json, "x-pi-web-token": TEST_TOKEN };
+		const send = (headers: Record<string, string>, b: unknown = { kind: "schedule", id: jobId, answer: "Set it up · inbox" }, at = "watch/answer") => fetch(`${page.url}${at}`, { method: "POST", headers, body: typeof b === "string" ? b : JSON.stringify(b) });
+		assert.equal((await send(json)).status, 401, "no token");
+		assert.equal((await send({ ...json, "x-pi-web-token": "b".repeat(32) })).status, 403, "a wrong token");
+		assert.equal((await send({ ...ok, "sec-fetch-site": "cross-site" })).status, 403, "another site");
+		assert.equal((await send({ ...ok, origin: "https://evil.example" })).status, 403, "another origin");
+		assert.equal((await send(json, undefined, `watch/answer?token=${TEST_TOKEN}`)).status, 403, "a token in the URL of a POST");
+		assert.equal((await send({ "content-type": "text/plain", "x-pi-web-token": TEST_TOKEN })).status, 415, "a form post");
+		assert.equal((await send(ok, JSON.stringify({ kind: "schedule", id: jobId, answer: "x".repeat(5000) }))).status, 413, "past 4 KB");
+		assert.equal((await send(ok, "{not json")).status, 400, "not JSON");
+		assert.equal((await send(ok, "[]")).status, 400, "not an object");
+		const refused = [
+			{ kind: "schedule", id: jobId },
+			{ kind: "schedule", id: jobId, answer: "Set it up · inbox", extra: 1 },
+			{ kind: "loop", id: jobId, answer: "Cancel" },
+			{ kind: "schedule", id: "../jobs", answer: "Cancel" },
+			{ kind: "rule", id: jobId, answer: "Cancel" },
+			{ kind: "schedule", id: jobId, answer: "Set it up · inbox · once" },
+			{ kind: "rule", id: ruleId, answer: "Set it up · inbox" },
+			{ kind: "schedule", id: jobId, answer: "yes" },
+			{ kind: "schedule", id: jobId, answer: 7 },
+		];
+		for (const b of refused) assert.equal((await send(ok, b)).status, 400, JSON.stringify(b));
+		assert.equal(stores(), before, "nothing refused changed a store");
+		assert.deepEqual(rowsOf(page.loops, "s1"), [], "and nothing was queued");
+
+		const yes = await page.post("watch/answer", { kind: "schedule", id: jobId, answer: "Set it up · inbox · with checks" });
+		assert.deepEqual([yes.status, yes.body], [200, { outcome: "set", line: "set up: todo-watch · every day at 09:00 · inbox · with checks" }]);
+		const job = new JobStore(page.loops).load().find((j) => j.id === jobId)!;
+		assert.deepEqual([job.enabled, job.proposed, job.stateful, job.verify], [true, undefined, true, true], "the option's fields, and no longer proposed");
+		const receipts = () => rowsOf(page.loops, "s1").filter((r) => r.source === "answer" && r.id.startsWith("rcp-"));
+		assert.equal(receipts().length, 1, "one receipt, in the conversation it was proposed in");
+		assert.match(receipts()[0].payload.text, /The person answered "Set up this watch\?": Set it up · inbox · with checks\./);
+		assert.deepEqual(audits(page.loops).filter((a) => a.type === "cron_control_plane").map((a) => [a.state, a.sourceLabel, a.eventLabel]), [["enable", "page", jobId]]);
+		const set = stores();
+		const again = await page.post("watch/answer", { kind: "schedule", id: jobId, answer: "Cancel" });
+		assert.deepEqual([again.status, again.body], [200, { outcome: "already", was: "set up", line: "already answered: set up" }]);
+		assert.equal(stores(), set, "a second answer writes nothing");
+		assert.equal(receipts().length, 1, "and no second receipt");
+
+		const cancel = await page.post("watch/answer", { kind: "rule", id: ruleId, answer: "Cancel" });
+		assert.deepEqual([cancel.status, cancel.body.outcome], [200, "cancelled"]);
+		assert.equal(new TriggerStore(page.loops).load().some((r) => r.id === ruleId), false, "Cancel removes the rule");
+		assert.equal(receipts().length, 2, "with its own receipt");
+		const never = await page.post("watch/answer", { kind: "schedule", id: "cron-nothere", answer: "Cancel" });
+		assert.deepEqual([never.status, never.body], [200, { outcome: "already", was: "cancelled", line: "already answered: cancelled" }], "an id that never was a proposal reads as answered");
+		assert.equal((await page.get("watch")).body.proposals.length, 0, "nothing is proposed any more");
+	} finally {
+		await page.stop();
+	}
+});
+
 /** A loop the answers can find a lane for: stateful, in jobs.json as this version writes it. */
 async function addLoop(loops: string, id: string, name: string, cwd: string) {
 	await new JobStore(loops).add({ id, name, schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd, enabled: true, catchUp: true, createdAt: stamp() });
@@ -1722,6 +1823,32 @@ test("GET /inbox lists the project's answers with design 6.1's line, and Cancel 
 		await page.stop();
 	}
 });
+
+test("GET /inbox says a yes to a conversation's question runs after the current turn only while a window has that conversation open", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		const at = stamp();
+		const call = { tool: "bash", tool_call_id: "c1", command: "git push --force origin main", input_sha256: "a".repeat(64), reason: "git push --force on main/master" };
+		const asked = (n: number, conversation: string) => finding({ id: `inb-${hex(n)}`, cwd: project, lane: conversation, status: "claimed", answered_by: "page", kind: "checkpoint", text: "Run it?", answer: { state: "pending", at }, ask: { kind: "call", id: `ask-${String(n).repeat(32)}`, lane: conversation, session_id: conversation, title: "nightly asks to run a command", call, created_at: at } });
+		writeInbox(page.loops, [asked(1, "conv-open"), asked(2, "conv-closed"), asked(3, "conv-aside")]);
+		const leases = new LeaseStore(page.loops);
+		const window = { kind: "terminal" as const, pid: process.pid, instance: "w", acquiredAt: new Date().toISOString(), mode: "tui" as const, pushServers: [] };
+		assert.ok("lease" in leases.acquire("conv-open", window, { cwd: project }));
+		assert.ok("lease" in leases.acquire("conv-aside", { ...window, instance: "w2" }, { cwd: project }));
+		assert.equal(leases.setAside("conv-aside", { ...window, instance: "w2" }, 1), true);
+		const listed = await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=s1`);
+		assert.deepEqual(new Map(listed.body.handled.map((c: any) => [c.id, c.line])), new Map([
+			[`inb-${hex(1)}`, "Approved. It runs in this conversation after the current turn."],
+			[`inb-${hex(2)}`, "Waiting to run"],
+			[`inb-${hex(3)}`, "Waiting to run"],
+		]), "a window holds the first; nobody holds the second; the third's window stands aside and runs nothing");
+	} finally {
+		await page.stop();
+	}
+});
 test("a no to a question from a conversation dismisses it with its reason, tells the conversation by its row, and says so", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-inbox-");
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
@@ -1730,7 +1857,7 @@ test("a no to a question from a conversation dismisses it with its reason, tells
 		const call = { tool: "bash", tool_call_id: "c1", command: "git push --force origin fix/login", input_sha256: "a".repeat(64), reason: "git push --force on main/master" };
 		writeInbox(page.loops, [finding({ job_id: "cron-9", lane: "conv-1", kind: "checkpoint", text: "Run it? · waits: nightly · if not: it stays undone", ask: { kind: "call", id: `ask-${"c".repeat(32)}`, lane: "conv-1", session_id: "conv-1", title: "nightly asks to run a command", call, created_at: stamp() } })]);
 		const no = await page.post("inbox/dismiss", { id: `inb-${hex(1)}`, reason: "Too risky" });
-		assert.deepEqual([no.status, no.body.line], [200, "You said no. nightly is told on its next run, and the same command is refused for 14 days."]);
+		assert.deepEqual([no.status, no.body.line], [200, "You said no. nightly is told in this conversation, and the same command is refused for 14 days."]);
 		const stored = inboxNow(page.loops)[0];
 		assert.deepEqual([stored.status, stored.answered_by, stored.dismiss_reason], ["dismissed", "page", "Too risky"]);
 		const told = rowsOf(page.loops, "conv-1");
@@ -1770,7 +1897,7 @@ test("See the run is offered only for a transcript the server would read", { tim
 	}
 });
 
-test("a watch question is a select like any dialog: /ui-response carries the chosen option to pi, and the /watch route is gone", { timeout: 30_000 }, async () => {
+test("/ui-response carries a select's chosen option to pi, and no watch route is under /c/<session>/", { timeout: 30_000 }, async () => {
 	const dir = tmp("pi-loops-page-watch-");
 	const log = path.join(dir, "child.log");
 	const ask = { type: "extension_ui_request", id: "ask-1", method: "select", title: "Set up this watch?\nWaits for: ~/build.done appears", options: ["Set it up · this conversation · once", "Cancel"], timeout: 60_000 };
@@ -1789,6 +1916,7 @@ test("a watch question is a select like any dialog: /ui-response carries the cho
 		assert.equal(page.pool.views().find((v) => v.sessionId === "s1")?.pendingAsks, 0, "answered: not offered again");
 		const gone = await page.post("c/s1/watch", { planId: "wp-0123456789abcdef", verdict: "set", where: "chat", once: true });
 		assert.equal(gone.status, 404);
+		assert.equal((await page.post("c/s1/watch/answer", { kind: "rule", id: `dyn-${"a".repeat(32)}`, answer: "Cancel" })).status, 404, "a proposal is answered at /watch/answer, for every conversation");
 	} finally {
 		await page.stop();
 	}

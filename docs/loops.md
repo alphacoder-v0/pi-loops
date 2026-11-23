@@ -65,31 +65,90 @@ pi-loops loads a conversation's extensions once for its turns and releases them 
 one. Something whose result should not land in a conversation (a nightly
 digest, a watch) is a loop: `--stateful`, with the inbox as its outlet.
 
-A plain job's turn is a scheduled turn wherever it runs, and it runs under the job's own `--tools`
-and the dangerous-command policy (below) in an open window as in the background. So does the turn an
-MCP server's `inject_and_run` push starts ([mcp.md](mcp.md)), with no declared tools: the
-dangerous-command policy alone. The difference is
-who answers. In the background a call outside the job's tools is refused, and a dangerous command
-asks you in the inbox, as a loop's does (below). In a window, while the job's turn
-runs, such a call asks you first: a question with a 60-second countdown and two answers, `No, refuse
-it` focused and `Yes, run it once` under it, so Enter refuses. The yes answer runs it this once;
-anything else, Escape or no answer refuses it and tells the model why, so it does the safe part and reports:
-your No is reported as your refusal, no answer as nobody being there. A
-message you send into that turn makes the rest of it yours and nothing asks again. Your own turns, a
-`/goal` continuation, a recipe hand-off, `/new-trigger` and `/cron run` never ask.
-pi-loops' own tools are not asked about a second time: `cron_create` in such a turn makes a job
-capped to the turn's tools, as a job a background run makes is capped to that run's, and
-`new_trigger`, the trigger tools, `cron_remove` and `set_cron_job_state` ask through their own
-confirm, once, where the background would refuse.
-With you present, in your own turn, `cron_create` asks you before it creates anything: pi's selector
-in a terminal, the same question drawn as a card in the browser page. The first answer is the
-model's own choice: *Put it in my inbox* (a loop, with its notes between runs, with or without a
-checker) or *Show it in this conversation* (a plain job of this conversation). The tool returns
-`created cron job …` or `cancelled: …` in the same call; Cancel, Esc and thirty minutes with no
-answer write nothing. The question shows no directory, so a `cwd` outside this project is refused
-before it is asked ([design.md](design.md), decision 24).
-`[engine] window_guard = false` in `config.toml` turns the cap off in windows
-([configuration.md](configuration.md)).
+A plain job's turn is a scheduled turn wherever it runs, and it runs under the job's tools and the
+dangerous-command policy (below) in an open window as in the background. So does the turn an MCP
+server's `inject_and_run` push starts ([mcp.md](mcp.md)), with no declared tools: the
+dangerous-command policy alone. A job made with `--tools` keeps that list. A dangerous command, or a
+command outside the job's tools, is not run: pi-loops asks you, in the conversation and in the
+inbox, and the turn goes on without it. A call of cron_remove, set_cron_job_state, remove_trigger or
+set_trigger_state is asked about the same way. Another built-in tool outside them is refused, and so
+is a tool of another extension or an MCP server. pi-loops' other tools run. A job made without it
+keeps the chat's built-in tools. A dangerous command, or a command outside the job's built-in tools,
+is not run: pi-loops asks you, in the conversation and in the inbox, and the turn goes on without
+it. A call of cron_remove, set_cron_job_state, remove_trigger or set_trigger_state is asked about
+the same way. Another built-in tool outside them is refused. pi-loops' other tools, and a tool of
+another extension or an MCP server, run. This is the same in an open window and in the background. A
+tool that is refused is not asked about, since a card cannot show what it would do. A message you
+send into that turn makes the rest of it yours and nothing asks again. Your own turns, a `/goal`
+continuation, a recipe hand-off, `/new-trigger` and `/cron run` never ask.
+pi-loops' own create tools are not asked about: `cron_create` in such a turn makes a job capped to
+the turn's tools, as a job a background run makes is capped to that run's, and `new_trigger`
+proposes its rule (below). `cron_remove`, `set_cron_job_state`, `remove_trigger` and
+`set_trigger_state` are asked about at every call in such a turn: the call is not run, and the
+question names the tool, its input and what it would change (the job, or the rules). A turn
+pi-loops runs in a closed conversation asks the same way. A yes runs that one call, in a window that
+has the conversation open or in the background, only while it would change what the question
+showed; otherwise the call is asked about again. In
+your own turn these tools ask with pi's confirm, and in a loop's or a check's run they are refused.
+
+### A proposed watch
+
+In your own turn in a pi with a UI, `cron_create` does not create a running job. It writes a **proposal**: the job,
+with every check a create makes, `enabled: false` and `proposed: { at, session }` in `jobs.json`.
+`new_trigger` does the same for a rule, in your own turn and in a scheduled or held turn. Nothing
+runs a proposal: the clock, the loop lanes and the rule checks pass over it, and it does not
+expire. The model reads `proposed cron job cron-… "pr-watch": the person sees a card …` and is told
+not to wait, not to do the action now and not to call the tool again. A sub-agent's `cron_create`
+(hop 1), `cron_create` in a scheduled or held turn, `/cron add` and a recipe still create an
+enabled job. A `gate` passed to `cron_create` where it creates at once is refused whole: `a gate
+needs a person: set it with /cron set <name> --gate`. A proposal needs a saved conversation: with
+`--no-session` the tools refuse it. In your own turn in a pi with no UI (`pi -p`) nobody could
+answer a proposal, so the tools do what 0.24.2 did: `cron_create` creates an enabled job, and
+`new_trigger` asks pi's confirm, which a pi with no UI refuses (`create dynamic trigger requires
+interactive confirmation; a person can do it with the slash command`).
+
+The question is drawn from the record, so it is the same after a reload and a restart: the card's
+rows, `Set up this watch?` and the options of the watch card. The first option is the model's own
+choice: *inbox* (a loop, with its notes between runs, with or without a checker) or *this
+conversation* (a plain job of the conversation the watch was proposed in). The question shows no
+directory, so a `cwd` outside this project is refused when the tool is called ([design.md](design.md),
+decision 24). `/cron enable <name>` on a proposal asks it again in pi's selector and prints the
+result: `set up: pr-watch · every 10m · inbox`, `cancelled: pr-watch is removed and nothing ran`, or
+after Esc `pr-watch is still proposed`. Esc is not Cancel. A proposal is answered once: when another
+surface answered first, the second prints `already answered: set up` or `already answered:
+cancelled` and changes nothing.
+
+When a turn settles in a terminal, the window asks you about what waits for you in its
+conversation, one selector at a time: first each open question of the conversation (see "When
+something looks wrong" below), oldest first, then each proposal of the conversation, oldest first. A
+proposal's selector is the one `/cron enable` opens, and it prints the same lines. Esc leaves the
+proposal and prints `the watch stays proposed: /cron enable pr-watch asks again` (for a rule,
+`/triggers enable <id>`). The window asks only while it holds the conversation, pi is idle and
+nothing is queued for the conversation, and it checks this again before each selector. It asks
+about each question and each proposal once per pi process, whatever the answer. The page's pi and
+a pi with no UI do not ask: the page draws its own cards. A question of a loop is not asked here:
+it is in the inbox.
+
+Set it up is one write under the store's lock, applied only while `proposed` is still set: the
+fields of the choice, `enabled: true`, `proposed` deleted, and the job's schedule counted from the
+answer. Then the audit line `enable`, then a receipt in the conversation the watch was proposed in:
+an `append` row (`source: "answer"`, `mode: "none"`, id `rcp-…`) that says what the person chose,
+which the model reads at its next turn. Cancel removes the job the same way, with the audit line
+`remove` and a receipt. `/cron remove` removes a proposal like any job, with no receipt. `/cron
+enable --all` passes over proposals, and `set_cron_job_state` refuses one.
+
+`/cron` lists a proposal where it lists a disabled job:
+
+```
+ 3. cron-5d1c…  "pr-watch"  proposed: waits for your yes  every 10m  [stateful]
+    action: report new or updated pull requests
+    next — · runs 0
+    /cron enable pr-watch asks again · /cron remove pr-watch cancels it
+```
+
+`cron_list` gives the model `[proposed]` where it gives `[disabled]`, and `/cron run` refuses a
+proposal. The panel above the editor counts a proposal as proposed: `Loops  2 · 1 proposed`. At session start a proposal of this conversation says `[cron] 1 watch waits for your yes:
+/cron enable pr-watch asks again`.
 
 Schedules are local time: 5-field cron (`*/n`, ranges, lists, `mon-fri`, `jan`), the aliases
 (`hourly` / `every hour` / `once an hour` → `0 * * * *`; `daily` / `every day` → `0 9 * * *`;
@@ -184,6 +243,14 @@ Global JSONL, shared by every session and project. Each line is one finding in t
                        "<n>. [<id prefix>] ⚑ <decision>  (<project>, <source>, <created_at>)"
                        "       waiting on: <what waits on it>"
                        "       if you don't: <what happens if nobody acts>"   (left out when the loop left it out)
+                       a question also has its command and why it asks, and the two answers:
+                       "<n>. [<id prefix>] ⚑ nightly asks to run a command  (<project>, <source>, <created_at>)"
+                       "       command: git push --force origin fix/login"
+                       "       why it asks: git push --force on main/master"
+                       "       waiting on: nightly went on without it"
+                       "       if you don't: it stays undone"
+                       "       /inbox claim <n> runs it once · /inbox dismiss <n> [reason] says no"
+                       a news finding about an answer (see "One thread" below) is set in under its question
 /inbox --all           the same, every project on this machine
 /inbox all [--all]     history including claimed and dismissed
 /inbox claim <n|id>    say yes: the run that reported the finding picks it up in the background
@@ -203,15 +270,18 @@ of the decision the finding recommends; on news, it asks the run to investigate 
 The finding's text is given to the run as a quote of what it reported, not as your words. When the
 run's transcript is gone, the run starts from the finding's text. A card comes to your
 conversation when the run ends. A yes does not run, and says why, when the loop was removed or the
-finding has nowhere to run (no loop and no lane). A yes to a finding of a conversation waits in that
-conversation's queue while a window or the page has the conversation open. When nobody has it open,
+finding has nowhere to run (no loop and no lane). A yes to a finding of a conversation runs in that
+conversation. While a window or the page has the conversation open, the yes runs there, as a turn
+after the current one (see "When something looks wrong" below). When nobody has it open,
 pi-loops in the background takes the conversation, as for its plain job's turn, and runs the yes as
 a turn in the conversation's own file, then gives the conversation back. A conversation written in
 the last two minutes is left for a later tick. A yes to a finding of a conversation that was deleted
 does not run, and says why. `/inbox cancel` takes back a yes while it waits; a yes that has
-started or ended cannot be cancelled. Only pi-loops in the background runs a yes: a yes that waits
-to run is work for it, so a window starts it, and while it is not running the line after `/inbox
-claim` adds "It runs when pi-loops runs in the background."
+started or ended cannot be cancelled. A yes to a loop's or a rule check's finding, and one of a
+closed conversation, is work for pi-loops in the background, so a window starts it, and while it is
+not running the line after `/inbox claim` adds "It runs when pi-loops runs in the background."
+`/inbox claim` on a question of the window's own conversation prints `approved: it runs in this
+conversation after the current turn, with this one command allowed.`
 
 A dismiss with words after the number — `/inbox dismiss 2 that file is generated, ignore it` — is
 the one way a person talks back to a loop. The reason is stored on the entry and put in front of
@@ -283,13 +353,26 @@ decision the finding recommends, and to carry it out rather than investigate it 
 are shown apart as **waiting on** and **if you don't**; a clause the loop left out is not shown.
 The stored line does not change. `pi-loops inbox list --json` prints the stored fields, unsplit.
 
+**One thread.** A question, its answer and the news about that answer are one thread. When a yes
+could not be started, or was started and did not finish, pi-loops files one news finding about it
+(`Your yes to … could not be started (…)`, `Your yes to … was started and did not finish (…)`). That
+news finding carries `re`, the id of the finding the yes was to. `/inbox` lists it under that
+finding, set in by four spaces: when the finding is not new any more, its first line heads the
+thread, unnumbered, with what became of it (`[claimed]`). The numbers on screen are the numbers
+`claim` and `dismiss` take, in the order of the threads. The page draws the news card right under
+its root's card, and `pi-loops inbox list --json` shows `re` after the ten fields
+([downstream.md](downstream.md)). A news finding whose root is gone is listed on its own.
+
 The browser page shows this project's findings as cards above its conversations, decisions first.
-**Yes, do it** (on news, **Look into it**) is the yes of `/inbox claim`: the run that reported the
-finding picks it up in the background, and the card says "Running in the background, in the run
-that reported it." While that yes waits, the card has **Cancel**, which is `/inbox cancel`.
+**Yes, do it** (on news, **Look into it**; on a question, **Yes, run it once**) is the yes of
+`/inbox claim`: the run that reported the finding picks it up in the background, and the card says
+"Running in the background, in the run that reported it." A question's card shows who asks, the
+command under it, **Why it asks**, **Waiting on** and **If you don't**. A yes to a question that a
+conversation's scheduled turn asked says "Approved. It runs in this conversation after the current
+turn." While that yes waits, the card has **Cancel**, which is `/inbox cancel`.
 **No…** (on news, **Dismiss…**) takes a reason
 chip or a typed reason of up to 500 characters, which goes to the loop's next run as the terminal's
-reason does; with none it is a silent dismiss. **See the run**, on a finding that names its run,
+reason does; with none it is a silent dismiss. **Open the run**, on a finding that names its run,
 shows the run's transcript, read-only. A card names its loop only when the list holds more than one
 loop's findings.
 
@@ -526,7 +609,19 @@ next scheduled time.
 
 A job that fails three times in a row is not retried at every due tick: it waits 1 minute after
 the third failure, then 5 minutes, 30 minutes, 2 hours, and 6 hours from the seventh failure on, and
-says so. One success clears the streak.
+says so. One success clears the streak. `/cron` says the last failure under the job, with the count
+and the next try while the wait holds it back:
+
+```text
+    last run failed: 401 Unauthorized (7 in a row; next try 16:10)
+```
+
+A time on another day has its date. Under a loop with a note of its clock, `/cron` says `note:
+<the note>` (`note: missed 2026-11-14 09:00 while pi-loops was not running (catch-up disabled)`),
+and under a loop whose next run waits, `queued since <time>: <why>` (`queued since 09:00: deferred:
+3 sub-agent(s) already in flight (max 3)`). Any other word is `last error: <the word>`.
+`cron_list` gives the model the same facts as `last_error` (with the count and the next try),
+`note` and `queued`, with full stamps.
 
 ## Was it worth running
 
@@ -601,11 +696,10 @@ device, `mkfs`, `chmod 777 /`, shutdown/reboot/halt/poweroff anywhere in the com
 `eval`, the fork bomb, `rm -r -f` aimed at `/`, an absolute path or `$HOME`, and `pi-loops abort`,
 `stop` or `restart` as a command (after `env`, `npx`, a path or `sh -c` too, and with a verb the shell
 expands, `pi-loops $V`; `git add -A && git commit -m "pi-loops: stop retrying"` only mentions it). The model is told
-why and can do the safe part. A plain job's turn in an open window meets the same corpus, and asks
-you instead of refusing outright (see "Plain cron jobs" above).
+why and can do the safe part.
 
-A loop's run, a rule check's run and a plain job's turn in a closed conversation ask you in the
-inbox instead. The call does
+A loop's run, a rule check's run and a plain job's turn, in an open window or a closed
+conversation, ask you in the inbox instead. The call does
 not run, and the inbox gets one question about it, with the command, the reason and **Yes** and
 **No**. The run is told `asked a person: <reason>`, and not to wait or to try another way: it
 finishes what does not need the call. The loop's next runs see the open questions of their lane in
@@ -621,6 +715,30 @@ it on the page or in pi with `/inbox`, and the question stays new.
 For a plain job's turn, the question is in its conversation's lane: a yes runs as a turn in that
 conversation, as described below for a yes to a finding of a conversation. The checker and a
 `/goal` continuation have nobody to ask, and refuse as before.
+
+While a window has a conversation open, a terminal asks each question of that conversation's lane
+in pi's selector when a turn settles (see "A proposed watch" above):
+
+```
+Allow this once?
+The scheduled prompt "deploy-check" asked to run bash: sudo invocation.
+sudo systemctl restart api
+It went on without it. Yes runs it once in a new turn. Esc leaves the question open (/inbox).
+  No, do not run it
+  Yes, run it once
+```
+
+Yes prints `queued: your yes to "deploy-check" runs after the current turn`, and the yes runs as a
+turn in that window. No prints `said no: "deploy-check" is told in this conversation`. The model
+reads the no as a message in the conversation, with the reason when you gave one:
+
+```
+[Trigger no-…] The person said no to `sudo systemctl restart api`: not during the release
+Do not run it, and do not try another way to do the same thing.
+```
+
+Esc leaves the question open for `/inbox` or the page. When another surface answered first, the line says so,
+for example `inbox entry inb-… was already dismissed`.
 
 A run cannot answer for a person, because a yes in the inbox lets a dangerous call through. In an
 unattended run, a built-in file tool (`read`, `write`, `edit`, `grep`, `find`, `ls`) whose path is
@@ -645,6 +763,12 @@ stop a run that sets out to make a yes another way. A run is a process of your u
 and process of pi-loops belongs to that user too, so such a run can reach them. Your own sandbox is
 the boundary for that. A path that the shell builds at run time, or a program that reaches the file or the page another
 way, is not caught.
+
+The same boundary holds inside pi: another extension that pi loads runs as you, and the guard
+defends you against the model, not against code beside it. As defence in depth, a yes that runs in
+an open conversation lets its call through only until the first message in that run that pi-loops
+did not hand to pi, such as another extension's message or what you type. After that message, the
+call is blocked.
 
 A search for one of the words shutdown, reboot, halt and poweroff is not refused, when the command
 is no more than a search: `grep -rn shutdown src/`, `rg -n "halt" src | wc -l`,

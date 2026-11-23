@@ -26,17 +26,24 @@ Tools: `new_trigger` (condition, action, spec, fire_once, promote_to_chat), `lis
 `remove_trigger` (id | all), `set_trigger_state`. Removing and re-enabling ask the user to
 confirm, with `ctx.ui.confirm`.
 
-With a person present, in their own turn, `new_trigger` asks one question before it creates
-anything, with pi's `ctx.ui.select`: a terminal shows pi's selector, and the browser page draws the
-same question as a card. Its answers are Result, `promote_to_chat` (*Show it in this conversation*,
-the default, or *Put it in my inbox*), and Repeats, `fire_once` (*Once, then turn itself off*, the
-default, or *Every time it happens*). The tool returns `created dynamic trigger …` or
-`cancelled: …` in the same call; Cancel, Esc, an abort and thirty minutes with no answer write
-nothing. The page's **Watch for…** box sends one sentence as the chat message
+`new_trigger` writes a **proposal**, in the person's own turn and in a scheduled or held turn
+alike (see "A proposed watch" in [loops.md](loops.md)). In the person's own turn in a pi with no UI
+(`pi -p`), where nobody could answer a proposal, it asks pi's confirm as 0.24.2 did, and a pi with
+no UI refuses it. The
+rule is in `triggers.json` with `enabled: false` and `proposed: { at, session }`; no check reads it,
+and it does not expire. The model reads `proposed dynamic trigger dyn-…: the person sees a card …`.
+The question's answers are Result, `promote_to_chat` (*this conversation*, the default in the
+person's own turn, or *inbox*), and Repeats, `fire_once` (*once*, the default, or *every time*).
+`/triggers enable <n|id>` on a proposal asks it in pi's selector; Set it up applies the answer only
+while the rule is still proposed, then writes the audit line `enable` and a receipt in the
+conversation; Cancel removes the rule, with the audit line `remove` and a receipt. A second answer
+prints `already answered: set up` or `already answered: cancelled`. `/triggers rules` marks a
+proposal `[proposed: waits for your yes]`, with `/triggers enable <n|id> asks again · /triggers
+remove <n|id> cancels it` under it; `list_triggers` gives `[proposed]`; `/triggers enable --all`
+passes over it and `set_trigger_state` refuses it. The page's **Watch for…** box sends one sentence as the chat message
 `Watch for: <sentence>`; a sentence with no time and nothing to wait for is answered by the page
-itself ("this reads like something to do now") and reaches no model. A sub-agent and a scheduled
-turn ask nobody: a scheduled turn in an open window asks the window guard's confirm, and a
-sub-agent is refused. See `docs/design.md`, decision 24.
+itself ("this reads like something to do now") and reaches no model. A sub-agent has no
+`new_trigger`. See `docs/design.md`, decision 24.
 
 The model-facing tools see the calling project only: `list_triggers` takes `all_projects: true`
 when the user asks about the rest, and `remove_trigger { all: true }` clears this project's rules,
@@ -180,6 +187,10 @@ schedule changed in place by `/cron set --schedule` or by a suggestion applied f
 writes none), `enable`, `disable`, `remove`. The page's and `/cron set`'s rows are in
 `triggers-audit.jsonl` (source `page` or `slash`); the others are also session entries.
 
+A proposed rule leaves `trigger` rows with the operation as the state too: `add` when the tool
+proposes it (source `tool`), `enable` when the person sets it up, and `remove` when the person
+cancels it (source `slash` or `page`).
+
 A 5-minute dedup window collapses repeated events with the same idempotency key (per project for
 rule evaluation, per window for injected pushes).
 
@@ -230,7 +241,7 @@ checker in registration order with a `Sources: N, M connected, K need attention`
 …`, `usage: /triggers remove <id>|--all`, `/new-trigger` parse messages). `/triggers remove --all`
 clears this project's rules; `--all-projects` is the explicit machine-wide sweep.
 
-Prompt-class tool calls (`new_trigger`, `remove_trigger`, re-enabling a trigger or a cron job)
+Prompt-class tool calls (`remove_trigger`, re-enabling a trigger or a cron job)
 show an approval card — Action, Tool, a value-free Reason, an args hash and a redacted
 Preview — and leave `approval required` / `approved` / `denied` lines in the feed. Promoted
 results and injected summaries are inserted as `[Trigger <trace>] <text>`, with no extra

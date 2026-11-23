@@ -320,3 +320,11 @@ test("decideRunNow refuses queued or foreign jobs and builds a plain run row wit
 	assert.equal(decideRunNow(plain, undefined, [row("queued", "s")], scope, now).refused, "already has its prompt queued in this conversation");
 	assert.equal(decideRunNow(plain, undefined, [], { ...scope, epoch: undefined }, now).refused, "has no chat to run in (pi-loops in the background has no session)");
 });
+
+test("[proposed] A proposal is passed over by the tick, named by no `wanted`, and refused by /cron run.", () => {
+	const proposed = job({ enabled: false, proposed: { at: stamp(now - 120_000), session: "s" } });
+	assert.deepEqual(decideTick(input([proposed]))[0], { do: "pass", job: proposed.id, why: "proposed" });
+	assert.equal(wanted({ jobs: [proposed], clock: file(), now, mine: new Set([proposed.id]) }).size, 0);
+	const plain = job({ stateful: false, sessionId: "s", name: "pr-watch", enabled: false, proposed: { at: stamp(now), session: "s" } });
+	assert.equal(decideRunNow(plain, undefined, [], { kind: "window", self, view: { sessionId: "s", holdsOwn: true }, epoch: 4 }, now).refused, "is proposed and waits for your yes: /cron enable pr-watch asks again");
+});

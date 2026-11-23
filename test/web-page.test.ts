@@ -4,7 +4,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { THINKING_LEVELS } from "../src/thinking.ts";
 import { DOOR, PAGE } from "../src/web.mjs";
-import { type WatchPlan, askTitle, planCard, watchOptions } from "../src/watch-plan.ts";
+import { type Proposal, type WatchPlan, askTitle, planCard, proposalCard, watchOptions } from "../src/watch-plan.ts";
+import type { LoopJob } from "../src/store.ts";
+import type { DynamicTriggerRule } from "../src/triggers.ts";
 
 /**
  * The page's own script, run against a DOM stub.
@@ -3419,9 +3421,9 @@ test("the inbox shows decisions before news, each row only with a value, and the
 	for (const label of ["Waiting on", "the release branch", "issue-triage"]) assert.ok(shown.includes(label), `${label} in ${shown}`);
 	for (const label of ["If you don't", "not said", "from this conversation", "runs in"]) assert.ok(!shown.includes(label), `no ${label}: a row only with a value, and no conversation a yes runs in: ${shown}`);
 	assert.ok(texts(news).includes("ci-watch"), "another loop's finding says which loop");
-	for (const label of ["Yes, do it", "No\u2026", "See the run"]) assert.ok(button(decision, label), label);
+	for (const label of ["Yes, do it", "No\u2026", "Open the run"]) assert.ok(button(decision, label), label);
 	for (const label of ["Look into it", "Dismiss\u2026"]) assert.ok(button(news, label), label);
-	assert.equal(button(news, "See the run"), undefined, "no transcript, no See the run");
+	assert.equal(button(news, "Open the run"), undefined, "no transcript, no Open the run");
 	assert.ok(dom.calls.some((c) => c.url.startsWith("/inbox?session=")), "asked of the global route, not this conversation's");
 	dom.dispose();
 	const one = await inboxPage({ "/inbox?": { ...INBOX, cards: [DECISION_CARD, { ...DECISION_CARD, id: "inb-" + "c".repeat(32), ifNot: "it stays open" }] } });
@@ -3442,10 +3444,40 @@ test("a question's card shows its command whole, as written, in a field of its o
 	assert.deepEqual([code.className, code._text], ["icmd", command], "whole, as written");
 	assert.equal(find(card, (e) => e.tag === "b")._text, "nightly asks to run a command", "the headline is who asks, not a command");
 	const shown = texts(card);
-	for (const label of ["Command", "Reason", "git push --force on main/master", "Waiting on", "nightly went on without it", "If you don't", "it stays undone"]) assert.ok(shown.includes(label), `${label} in ${shown.join("|")}`);
+	for (const label of ["Why it asks", "git push --force on main/master", "Waiting on", "nightly went on without it", "If you don't", "it stays undone"]) assert.ok(shown.includes(label), `${label} in ${shown.join("|")}`);
 	assert.ok(!shown.includes("your review"), "no clause cut from the command");
 	assert.match(PAGE, /\.icard \.icmd\{[^}]*font-family:var\(--font-mono\)/, "drawn in the page's monospace face");
 	dom.dispose();
+});
+
+test("[6.1] a question's card reads as design 6.1: who asks, the command under it with no label, Why it asks, and Yes, run it once, No… and Open the run", { timeout: 20_000 }, async () => {
+	const QUESTION_CARD = { ...DECISION_CARD, id: "inb-" + "d".repeat(32), headline: "nightly asks to run a command", question: { tool: "bash", command: "git push --force origin fix/login", reason: "git push --force on main/master" }, waits: "nightly went on without it", ifNot: "it stays undone", verified: false };
+	const { dom, cards, texts, button } = await inboxPage({ "/inbox?": { ...INBOX, cards: [QUESTION_CARD, DECISION_CARD] } });
+	const [question, decision] = cards();
+	const kids = question.children.filter((c: any) => c && typeof c === "object");
+	assert.deepEqual([kids.slice(0, 3).map((c: any) => c.tag), kids[0].className, kids[1].className], [["div", "div", "dl"], "ih", "iq"], "the headline, then the command, then the rows");
+	assert.equal(kids[1].children[0]._text, "git push --force origin fix/login");
+	const shown = texts(question);
+	assert.ok(shown.includes("Why it asks") && !shown.includes("Reason") && !shown.includes("Command"), shown.join("|"));
+	for (const label of ["Yes, run it once", "No…", "Open the run"]) assert.ok(button(question, label), label);
+	assert.equal(button(question, "Yes, do it"), undefined, "a question's yes runs the one command");
+	assert.ok(button(decision, "Yes, do it"), "a decision that is no question keeps Yes, do it (design 6.2)");
+	dom.dispose();
+});
+
+test("[thread] a news finding with re is drawn right under its root's card, in the root's group, once; one whose root is not listed is a card of its own", { timeout: 20_000 }, async () => {
+	const QUESTION = { ...DECISION_CARD, id: "inb-" + "e".repeat(32), status: "claimed", headline: "nightly asks to run a command", question: { tool: "bash", command: "git push --force origin main", reason: "git push --force on main/master" }, line: "Not run (the loop was removed)" };
+	const REPLY = { ...NEWS_CARD, id: "inb-" + "f".repeat(32), headline: "Your yes to `git push --force origin main` could not be started (the loop was removed).", body: "The command was not run.", re: QUESTION.id };
+	const ORPHAN = { ...NEWS_CARD, id: "inb-" + "9".repeat(32), headline: "Your yes to `ls` was started and did not finish (it was stopped).", body: undefined, re: "inb-" + "8".repeat(32) };
+	const { dom } = await inboxPage({ "/inbox?": { ...INBOX, cards: [DECISION_CARD, REPLY, ORPHAN], handled: [QUESTION] } });
+	const drawn = (slot: string) => (globalThis as any).document.getElementById(slot).children.filter((c: any) => c && c.tag === "article").map((c: any) => [c.dataset.inb, c.className]);
+	assert.deepEqual(drawn("needsSlot"), [[DECISION_CARD.id, "icard decision"]]);
+	assert.deepEqual(drawn("cardsSlot"), [[ORPHAN.id, "icard news"], [QUESTION.id, "icard decision"], [REPLY.id, "icard news reply"]], "the reply follows its root under Handled, and is not in News too");
+	dom.dispose();
+	const alone = await inboxPage({ "/inbox?": { ...INBOX, cards: [REPLY], handled: [] } });
+	assert.deepEqual(drawn("cardsSlot"), [[REPLY.id, "icard news"]], "a root that is gone: drawn on its own");
+	alone.dom.dispose();
+	assert.match(PAGE, /\.icard\.reply\{[^}]*margin-left:/, "a reply is set in under its root");
 });
 
 test("a finding's HTML is shown as text and creates no element", { timeout: 20_000 }, async () => {
@@ -3565,9 +3597,9 @@ test("a finding another page already handled says so; a failed post keeps the bu
 	down.dom.dispose();
 });
 
-test("See the run opens the run's lines read-only, as text", { timeout: 20_000 }, async () => {
+test("Open the run opens the run's lines read-only, as text", { timeout: 20_000 }, async () => {
 	const { dom, cards, click } = await inboxPage({ "/inbox/run": { id: DECISION_CARD.id, runId: "run-1", lines: [{ kind: "assistant", text: "found <script>x</script> in the log" }] } });
-	await click(cards()[0], "See the run");
+	await click(cards()[0], "Open the run");
 	assert.ok(dom.calls.some((c) => c.url === `/inbox/run?id=${DECISION_CARD.id}`));
 	const detail = (globalThis as any).document.getElementById("detail");
 	assert.equal(detail.open, true);
@@ -3883,60 +3915,66 @@ test("a starter the pi refuses says why; a terminal-held conversation shows the 
 /* ---------------- Watch for…: a watch from one sentence ---------------- */
 
 const WATCH_EXAMPLE = "When ~/build.done appears, run cargo test and show me the result";
-/**
- * The select cron_create and new_trigger ask with, built by the module the tools use: the page and
- * the tools agree on the title's rows and the option vocabulary by construction, not by a copy here.
- */
+/** A select titled as the terminal's watch question, built by the module the terminal uses. */
 function watchAsk(id: string, plan: WatchPlan, over: Record<string, unknown> = {}) {
 	const card = planCard(plan, { now: Date.parse("2026-11-05T10:00:00"), pollSecs: 600, home: "/home/me" });
-	// No timeout unless a test gives one: a thirty-minute timer would keep the test process alive.
 	return { type: "extension_ui_request", id, method: "select", title: askTitle(card), options: watchOptions(plan), ...over };
 }
 const RULE: WatchPlan = { kind: "rule", rule: { condition: "~/build.done appears", action: "run cargo test and show me the result", cwd: "/work/api" }, where: "chat", once: true };
-const DAILY: WatchPlan = { kind: "schedule", job: { schedule: { kind: "cron", expr: "0 9 * * *" }, prompt: "read TODO.md and tell me about new unchecked items", cwd: "/work/api" }, where: "inbox" };
+/** A proposal as the create tools write it, of the conversation the page under test shows unless `session` says otherwise. */
+function proposedRule(n: number, over: Partial<DynamicTriggerRule> = {}, session = SESSION_UNDER_TEST): Proposal {
+	const at = new Date(Date.now() - 2 * 60_000).toISOString();
+	return { kind: "rule", rule: { id: `dyn-${String(n).repeat(32).slice(0, 32)}`, condition: "~/build.done appears", action: "run cargo test and show me the result", cwd: "/work/api", enabled: false, fireOnce: true, promoteToChat: true, createdAt: at, proposed: { at, session }, ...over } as DynamicTriggerRule };
+}
+function proposedJob(n: number, over: Partial<LoopJob> = {}, session = SESSION_UNDER_TEST): Proposal {
+	const at = new Date(Date.now() - 2 * 60_000).toISOString();
+	return { kind: "schedule", job: { id: `cron-${String(n).repeat(8).slice(0, 8)}`, schedule: { kind: "cron", expr: "0 9 * * *" }, prompt: "read TODO.md and tell me about new unchecked items", cwd: "/work/api", stateful: true, enabled: false, catchUp: true, createdAt: at, proposed: { at, session }, ...over } };
+}
+/** The cards `GET /watch` answers with, drawn by the server's own helper: the page and the server agree by construction. */
+const listed = (...ps: Proposal[]) => ({ proposals: ps.map((p) => proposalCard(p, { now: Date.now(), pollSecs: 600, home: "/home/me" })!) });
 /** Every text node under an element, in order: what a person reads on the card. */
 function treeText(el: any): string {
 	return [el._text ?? "", ...(el.children ?? []).map(treeText)].filter(Boolean).join(" ");
 }
-/** The parts of a watch card the tests act on, found from the card element itself. */
+/** The parts of a proposal's card the tests act on, found from the card element itself. */
 function cardParts(card: any) {
 	const buttons = (el: any): any[] => (el.children ?? []).flatMap((c: any) => (c.tag === "button" ? [c, ...buttons(c)] : buttons(c)));
-	const all = buttons(card);
-	const chip = (key: string) => all.find((b) => b.dataset?.key === key);
-	const foot = card.children.find((c: any) => c.className === "foot");
-	const acts = foot?.children.find((c: any) => c.className === "acts");
-	assert.ok(foot, "the card ends in a footer that holds the status and, while it can be answered, the buttons");
-	assert.ok(!treeText(card).includes("Not right?"), "Read it says it: no hint under the card");
+	const acts = card.children.find((c: any) => c.className === "acts");
+	const others = card.children.find((c: any) => c.className === "acts others");
 	return {
 		text: treeText(card),
-		chip,
-		on: all.filter((b) => b.className === "on").map((b) => b._text),
-		buttons: all.length,
-		set: acts?.children.find((b: any) => b._text === "Set it up"),
-		cancel: acts?.children.find((b: any) => b._text === "Cancel"),
-		status: foot.children.find((c: any) => c.className === "cstat")?._text ?? "",
+		acts: (acts?.children ?? []).map((b: any) => b._text),
+		others,
+		button: (label: string) => buttons(card).find((b) => b._text === label),
+		buttons: buttons(card).length,
+		status: card.children.find((c: any) => c.className === "cstat")?._text ?? "",
 	};
 }
 async function watchPage(answers: Record<string, unknown> = {}, state: Record<string, unknown> = {}, history: unknown = { messages: [] }) {
-	const dom = stubDom({ ...STATE, cwd: "/work/api", ...state }, history, new Map(), answers);
+	// The answer route first: the stub answers a fetch with the first key its address contains.
+	const all: Record<string, unknown> = { "/watch/answer": { outcome: "set", line: "set up" }, "/watch": { proposals: [] }, ...answers };
+	const dom = stubDom({ ...STATE, cwd: "/work/api", ...state }, history, new Map(), all);
 	await new Function(pageScript())();
 	await dom.started();
+	await settled();
 	const doc = (globalThis as any).document;
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
-	const cards = (where: "modal" | "feed") => dom.made.filter((m: any) => m.className === "plan" && (where === "modal") === (m._parent === doc.getElementById("watchCards")));
+	const cards = (where: "modal" | "feed") => dom.made.filter((m: any) => m.className === "icard decision proposal" && (where === "modal" ? m._parent === doc.getElementById("watchCards") : m._parent?.className === "row proposal" && doc.getElementById("feed").children.includes(m._parent)));
 	const read = async (sentence: string) => {
 		doc.getElementById("watchText").value = sentence;
 		doc.getElementById("watchRead").onclick();
 		await settled();
 	};
-	const ask = (id: string, plan: WatchPlan, over: Record<string, unknown> = {}) => send(watchAsk(id, plan, over));
-	/** The tool's result in the same turn, as pi streams it. */
-	const result = (toolName: "new_trigger" | "cron_create", text: string, details: Record<string, unknown> = {}, isError?: boolean) => send({ type: "message_end", message: { role: "toolResult", toolName, toolCallId: "c1", content: [{ type: "text", text }], details, ...(isError ? { isError } : {}) } });
-	const answered = () => dom.calls.filter((c) => c.url.endsWith("/ui-response")).map((c) => c.body);
-	return { dom, doc, send, cards, read, ask, result, answered };
+	/** The create tool's result in the same turn, as pi streams it: the proposal it wrote is then listed. */
+	const proposedNow = async (toolName: "new_trigger" | "cron_create", ...ps: Proposal[]) => {
+		all["/watch"] = listed(...ps);
+		const p = ps.at(-1)!;
+		send({ type: "message_end", message: { role: "toolResult", toolName, toolCallId: "c1", content: [{ type: "text", text: `proposed ${p.kind === "rule" ? "dynamic trigger" : "cron job"}` }], details: { id: p.kind === "rule" ? p.rule.id : p.job.id, proposed: true } } });
+		await settled();
+	};
+	const answered = () => dom.calls.filter((c) => c.url.endsWith("/watch/answer")).map((c) => c.body);
+	return { dom, doc, send, cards, read, proposedNow, answered, all };
 }
-/** What new_trigger returns in its details (src/tools.ts addRule), the fields the receipt reads. */
-const CREATED_RULE = { id: `dyn-${"c".repeat(32)}`, condition: "~/build.done appears", promote_to_chat: true, fire_once: true };
 
 test("the Watch for… box opens with three examples and no caption, and an example fills it", { timeout: 20_000 }, async () => {
 	const { dom, doc } = await watchPage();
@@ -3991,203 +4029,6 @@ test("a sentence with no time and nothing to wait for gets the now card, and not
 	dom.dispose();
 });
 
-test("a watch question draws the card from its title and options, in the box while it is open, else in the transcript, and no dialog", { timeout: 20_000 }, async () => {
-	const { dom, doc, read, ask, cards } = await watchPage();
-	doc.getElementById("watchFor").onclick();
-	await read(WATCH_EXAMPLE);
-	assert.equal(doc.getElementById("watchStatus").textContent, "pi is reading it…");
-	ask("ask-1", RULE);
-	assert.equal(cards("modal").length, 1, "one card in the box");
-	assert.equal(cards("feed").length, 0, "and none in the transcript: one live copy of a question");
-	assert.notEqual(doc.getElementById("ask").open, true, "the question is the card, not the dialog over it");
-	const card = cardParts(cards("modal")[0]);
-	assert.match(card.text, /When something happens/);
-	assert.match(card.text, /Waits for ~\/build\.done appears/);
-	assert.match(card.text, /Looks every 10 minutes/);
-	assert.doesNotMatch(card.text, /Model/, "how the background checks is a cost detail the person does not choose");
-	assert.doesNotMatch(card.text, /while this is on|late/, "values, not sentences");
-	assert.match(card.text, /Then run cargo test and show me the result/);
-	assert.doesNotMatch(card.text, /\/new-trigger|Command/, "the rows are the plan; the terminal's question keeps the line");
-	assert.deepEqual(card.on, ["Show it in this conversation", "Once, then turn itself off"], "the first option: this conversation, once");
-	assert.match(card.text, /Put it in my inbox/);
-	assert.equal(doc.getElementById("watchStatus").hidden, true, "the reading line is gone");
-	assert.ok(card.cancel && card.set, "Cancel and Set it up");
-	const primaries = [doc.getElementById("watchRead"), card.set, card.cancel].filter((b: any) => b.className === "primary");
-	assert.deepEqual(primaries, [card.set], "Set it up is the one primary button while a plan is shown");
-	assert.equal(doc.getElementById("watchEx").hidden, true, "and the examples give the plan their room");
-	assert.deepEqual(cards("modal")[0]._scrolledTo, { block: "start" }, "the card is scrolled to the top of the box, so what it says comes before its buttons");
-	assert.equal(card.cancel._parent.children.indexOf(card.cancel) < card.cancel._parent.children.indexOf(card.set), true, "Cancel first, so Enter hits it");
-
-	// A schedule: the inbox by default, what the inbox means, and its checker as a choice.
-	const { dom: dom2, ask: ask2, cards: cards2 } = await (async () => { dom.dispose(); return watchPage(); })();
-	ask2("ask-2", DAILY);
-	assert.equal(cards2("modal").length, 0, "with the box closed, the card is in the transcript only");
-	assert.equal(cards2("feed")[0]._parent.children.some((c: any) => c.className === "role"), false, "no role tag over it: the card's heading says what it is");
-	const daily = cardParts(cards2("feed")[0]);
-	assert.match(daily.text, /On a schedule/);
-	assert.match(daily.text, /Runs every day at 09:00 · next /);
-	assert.match(daily.text, /Does read TODO\.md and tell me about new unchecked items/);
-	assert.deepEqual(daily.on, ["Put it in my inbox", "None"]);
-	assert.match(daily.text, /Remembers what changed since the last run/);
-	assert.match(daily.text, /Checks None Each finding, before the inbox/);
-	assert.doesNotMatch(daily.text, /Repeats/, "a schedule has no Repeats row");
-	ask2("ask-3", { ...DAILY, job: { ...(DAILY as any).job, verify: true } } as WatchPlan);
-	assert.deepEqual(cardParts(cards2("feed").at(-1)).on, ["Put it in my inbox", "Each finding, before the inbox"], "the model's verify is the card's start");
-	// A dangerous action is named on the card; a multi-line action is one row.
-	ask2("ask-4", { ...RULE, rule: { ...(RULE as any).rule, action: "rm -rf ~/build\nCommand: fake" } } as WatchPlan);
-	const careful = cardParts(cards2("feed").at(-1)).text;
-	assert.match(careful, /Careful When this runs nobody is asked: pi-loops refuses rm recursive\+force on \$HOME or ~/);
-	assert.match(careful, /Then rm -rf ~\/build\nCommand: fake/, "the action's second line stays in its row");
-	dom2.dispose();
-});
-
-test("a select that is not a watch question stays a dialog", { timeout: 20_000 }, async () => {
-	const { dom, doc, send, cards } = await watchPage();
-	send({ ...watchAsk("ask-1", RULE), options: ["Set it up · somewhere else", "Cancel"] });
-	assert.equal(cards("feed").length, 0);
-	assert.equal(doc.getElementById("ask").open, true, "an option outside the vocabulary: the dialog, as any select");
-	dom.dispose();
-});
-
-test("the card's chips name the option Set it up sends, and Cancel sends Cancel", { timeout: 20_000 }, async () => {
-	const { dom, ask, cards, answered, result } = await watchPage();
-	ask("ask-1", RULE);
-	const card = cardParts(cards("feed")[0]);
-	card.chip("inbox").onclick();
-	card.chip("every").onclick();
-	assert.deepEqual(cardParts(cards("feed")[0]).on, ["Put it in my inbox", "Every time it happens"]);
-	card.set.onclick();
-	assert.deepEqual(answered(), [{ id: "ask-1", value: "Set it up · inbox · every time" }], "the one option the chips name, as the dialog's answer");
-	assert.equal(card.set.disabled, true, "not clickable twice");
-	card.set.onclick();
-	assert.equal(answered().length, 1, "one answer");
-	assert.equal(cardParts(cards("feed")[0]).status, "setting it up…");
-	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}`, { ...CREATED_RULE, promote_to_chat: false, fire_once: false });
-
-	ask("ask-2", RULE);
-	cardParts(cards("feed").at(-1)).cancel.onclick();
-	assert.deepEqual(answered().at(-1), { id: "ask-2", value: "Cancel" });
-	result("new_trigger", "cancelled: the person did not set up this watch (Cancel). Nothing was created.");
-
-	ask("ask-3", DAILY);
-	const daily = cardParts(cards("feed").at(-1));
-	daily.chip("checks").onclick();
-	daily.set.onclick();
-	assert.deepEqual(answered().at(-1), { id: "ask-3", value: "Set it up · inbox · with checks" });
-	result("cron_create", `created cron job cron-${"d".repeat(32)}`, { id: `cron-${"d".repeat(32)}`, stateful: true });
-
-	ask("ask-4", DAILY);
-	const plain = cardParts(cards("feed").at(-1));
-	plain.chip("checks").onclick();
-	plain.chip("chat").onclick();
-	plain.set.onclick();
-	assert.deepEqual(answered().at(-1), { id: "ask-4", value: "Set it up · this conversation" }, "checks hold only for the inbox");
-	dom.dispose();
-});
-
-test("the tool's result in the same turn turns every card of the question into a receipt", { timeout: 20_000 }, async () => {
-	const { dom, doc, read, ask, result, cards } = await watchPage();
-	doc.getElementById("watchFor").onclick();
-	await read(WATCH_EXAMPLE);
-	ask("ask-1", RULE);
-	cardParts(cards("modal")[0]).set.onclick();
-	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}\ncondition: ~/build.done appears`, CREATED_RULE);
-	// The rule is named as the Loops pane names it: by what it waits for.
-	assert.equal(cardParts(cards("modal")[0]).status, "Set up ~/build.done appears · shows here · once");
-	assert.equal(cards("feed").length, 1, "the transcript gets the receipt once the question settles");
-	const receipt = cardParts(cards("feed")[0]);
-	assert.equal(receipt.status, "Set up ~/build.done appears · shows here · once");
-	assert.equal(receipt.buttons, 0, "a receipt has nothing to press");
-	assert.match(receipt.text, /Result Show it in this conversation Repeats Once, then turn itself off/, "what was chosen, as text");
-	// A loop is named as the Loops pane names it: its name, else the first 13 characters of its id.
-	ask("ask-2", DAILY);
-	result("cron_create", `created cron job cron-${"d".repeat(32)}`, { id: `cron-${"d".repeat(32)}`, stateful: true });
-	assert.equal(cardParts(cards("feed").at(-1)).status, "Set up cron-dddddddd · inbox");
-	ask("ask-2b", DAILY);
-	result("cron_create", `created cron job cron-${"f".repeat(32)} (nightly)`, { id: `cron-${"f".repeat(32)}`, name: "nightly", stateful: false });
-	assert.equal(cardParts(cards("feed").at(-1)).status, "Set up nightly · shows here");
-	ask("ask-3", RULE);
-	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}`, { ...CREATED_RULE, promote_to_chat: false, fire_once: false });
-	assert.equal(cardParts(cards("feed").at(-1)).status, "Set up ~/build.done appears · kept out of this conversation · every time");
-	ask("ask-4", RULE);
-	result("new_trigger", "cancelled: the person did not set up this watch (aborted). Nothing was created.", { id: undefined });
-	assert.equal(cardParts(cards("feed").at(-1)).status, "Not set up");
-	ask("ask-5", DAILY);
-	result("cron_create", 'a cron job named "nightly" already exists', {}, true);
-	assert.equal(cardParts(cards("feed").at(-1)).status, 'Not set up: a cron job named "nightly" already exists');
-	dom.dispose();
-});
-
-test("Set it up closes the Watch for… box, gives the composer back and refreshes the state and the inbox; a failure keeps the box", { timeout: 20_000 }, async () => {
-	const { dom, doc, read, ask, result, cards } = await watchPage();
-	const dlg = doc.getElementById("watch");
-	doc.getElementById("watchFor").onclick();
-	await read(WATCH_EXAMPLE);
-	ask("ask-1", RULE);
-	assert.equal(dlg.open, true);
-	cardParts(cards("modal")[0]).set.onclick();
-	assert.equal(dlg.open, true, "still open while it is being set up");
-	const before = dom.calls.length;
-	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}`, CREATED_RULE);
-	assert.equal(dlg.open, false, "closed once it is set up");
-	assert.equal(doc.activeElement, doc.getElementById("input"), "and the composer has the focus");
-	assert.equal(cardParts(cards("feed")[0]).status, "Set up ~/build.done appears · shows here · once", "the transcript's card keeps the receipt");
-	await settled();
-	const fetched = dom.calls.slice(before).map((c) => c.url);
-	assert.ok(fetched.some((u) => /\/state$/.test(u)), `the state was fetched: ${fetched.join(", ")}`);
-	assert.ok(fetched.some((u) => /\/inbox(\?|$)/.test(u)), `the inbox was fetched: ${fetched.join(", ")}`);
-	// Cancel closes it too; a create that failed keeps it, with the reason on the card.
-	doc.getElementById("watchFor").onclick();
-	await read(WATCH_EXAMPLE);
-	ask("ask-2", RULE);
-	cardParts(cards("modal").at(-1)).cancel.onclick();
-	result("new_trigger", "cancelled: the person did not set up this watch (Cancel). Nothing was created.");
-	assert.equal(dlg.open, false);
-	doc.getElementById("watchFor").onclick();
-	await read("Every morning at 9, read TODO.md and tell me about new unchecked items");
-	ask("ask-3", DAILY);
-	cardParts(cards("modal").at(-1)).set.onclick();
-	result("cron_create", 'a cron job named "nightly" already exists', {}, true);
-	assert.equal(dlg.open, true, "the box stays, with the sentence in it to change");
-	assert.equal(cardParts(cards("modal").at(-1)).status, 'Not set up: a cron job named "nightly" already exists');
-	assert.equal(cardParts(cards("feed").at(-1)).status, 'Not set up: a cron job named "nightly" already exists', "and the transcript has the receipt");
-	dom.dispose();
-});
-
-test("a question pi answered on its own is not left waiting: the turn's end, or the question's own time, says it was not set up", { timeout: 20_000 }, async () => {
-	const { dom, send, ask, cards, answered } = await watchPage();
-	ask("ask-1", RULE);
-	send({ type: "agent_end" });
-	const ended = cardParts(cards("feed")[0]);
-	assert.equal(ended.status, "Not set up");
-	assert.equal(ended.buttons, 0, "an answer to it would go nowhere: there is nothing to press");
-	assert.deepEqual(answered(), []);
-	ask("ask-2", RULE, { timeout: 30 });
-	await until(() => cardParts(cards("feed").at(-1)).status !== "", "the question's own time ran out");
-	assert.equal(cardParts(cards("feed").at(-1)).status, "Not set up: nobody answered in time");
-	dom.dispose();
-});
-
-test("a question still waiting when the page opens is drawn once, after the transcript", { timeout: 20_000 }, async () => {
-	const pending = watchAsk("ask-1", RULE);
-	const history = { messages: [{ role: "user", content: [{ type: "text", text: `Watch for: ${WATCH_EXAMPLE}` }] }] };
-	const { dom, doc, send, cards } = await watchPage({}, { pendingAsks: [pending] }, history);
-	try {
-		// The poll before the transcript drew nothing; the one the open stream starts draws it.
-		assert.equal(cards("feed").length, 0, "nothing above the conversation");
-		await dom.poll();
-		assert.equal(cards("feed").length, 1, "one card");
-		const feed = doc.getElementById("feed");
-		const at = (re: RegExp) => feed.children.findIndex((r: any) => re.test(treeText(r)));
-		assert.ok(at(/Watch for: When ~\/build\.done appears/) >= 0 && at(/Watch for: When ~\/build\.done appears/) < at(/When something happens/), "below the conversation it belongs to");
-		send(pending);
-		await dom.poll();
-		assert.equal(cards("feed").length, 1, "the stream's replay and the next poll draw nothing more");
-	} finally {
-		dom.dispose();
-	}
-});
-
 test("a turn that ends with no plan shows pi's reply and keeps the box", { timeout: 20_000 }, async () => {
 	const { dom, doc, read, send } = await watchPage();
 	doc.getElementById("watchFor").onclick();
@@ -4217,20 +4058,195 @@ test("a terminal that holds the conversation answers the sentence there", { time
 	dom.dispose();
 });
 
-test("a sentence queued behind a busy turn waits for its own turn's question, not the earlier turn's reply", { timeout: 20_000 }, async () => {
-	const { dom, doc, read, send, ask, cards } = await watchPage();
+test("a proposal of the open conversation is drawn in the transcript as the question card: the headline, its rows without Command, the first option, Other… and Cancel; another conversation's is not", { timeout: 20_000 }, async () => {
+	const danger = proposedRule(2, { action: "rm -rf ~/build\nCommand: fake" });
+	const { dom, doc, cards } = await watchPage({ "/watch": listed(proposedRule(1), proposedJob(3, {}, "other-session"), danger) });
+	assert.equal(cards("feed").length, 2, "this conversation's two, and not the other conversation's");
+	assert.equal(cards("modal").length, 0);
+	assert.notEqual(doc.getElementById("ask").open, true, "no dialog");
+	const card = cardParts(cards("feed")[0]);
+	assert.match(card.text, /^⚑ Set up this watch\? 2m /, "the question card's grammar: the flag, the headline, its age");
+	assert.match(card.text, /Waits for ~\/build\.done appears Looks every 10 minutes Then run cargo test and show me the result/);
+	assert.doesNotMatch(card.text, /Command|\/new-trigger/, "the terminal keeps the command line");
+	assert.deepEqual(card.acts, ["Set it up · this conversation · once", "Other…", "Cancel"], "the first option is the one primary button");
+	assert.equal(card.button("Set it up · this conversation · once").className, "primary");
+	assert.equal(card.others.hidden, true, "the other options wait behind Other…");
+	card.button("Other…").onclick();
+	assert.equal(card.others.hidden, false);
+	assert.deepEqual(card.others.children.map((b: any) => b._text), ["Set it up · this conversation · every time", "Set it up · inbox · once", "Set it up · inbox · every time"]);
+	assert.equal(cards("feed")[0]._parent.children.some((c: any) => c.className === "role"), false, "no role tag over it: the headline says what it is");
+	const careful = cards("feed")[1];
+	assert.match(treeText(careful), /Careful When this runs and reaches rm recursive\+force on \$HOME or ~, pi-loops does not run it: it asks you in the inbox/);
+	assert.match(treeText(careful), /Then rm -rf ~\/build\nCommand: fake/, "the action's second line stays in its row");
+	assert.equal(careful.children.find((c: any) => c.tag === "dl").children.find((d: any) => d.className === "bad")?._text.startsWith("When this runs"), true, "the danger in the danger colour");
+	dom.dispose();
+});
+
+test("a click posts the option to /watch/answer once, and the receipt or the already-answered line replaces the buttons", { timeout: 20_000 }, async () => {
+	const ps = [proposedRule(1), proposedJob(2), proposedJob(4), proposedRule(5)];
+	const { dom, cards, answered, all } = await watchPage({ "/watch": listed(...ps) });
+	const [rule, job, cancelled, refused] = cards("feed");
+	const first = cardParts(rule);
+	first.button("Set it up · this conversation · once").onclick();
+	first.button("Set it up · this conversation · once").onclick();
+	await settled();
+	assert.deepEqual(answered(), [{ kind: "rule", id: `dyn-${"1".repeat(32)}`, answer: "Set it up · this conversation · once" }], "one post, with the option's own words");
+	const receipt = cardParts(rule);
+	assert.equal(receipt.status, "Set up · this conversation · once");
+	assert.equal(receipt.buttons, 0, "a receipt has nothing to press");
+	assert.match(receipt.text, /Waits for ~\/build\.done appears/, "the rows stay, as text");
+
+	all["/watch/answer"] = { outcome: "already", was: "cancelled", line: "already answered: cancelled" };
+	cardParts(job).button("Other…").onclick();
+	cardParts(job).button("Set it up · inbox · with checks").onclick();
+	await settled();
+	assert.deepEqual(answered().at(-1), { kind: "schedule", id: "cron-22222222", answer: "Set it up · inbox · with checks" });
+	assert.equal(cardParts(job).status, "already answered: cancelled", "another surface answered first");
+	assert.equal(cardParts(job).buttons, 0);
+
+	all["/watch/answer"] = { outcome: "cancelled", line: "cancelled: cron-44444444 is removed and nothing ran" };
+	cardParts(cancelled).button("Cancel").onclick();
+	await settled();
+	assert.deepEqual(answered().at(-1), { kind: "schedule", id: "cron-44444444", answer: "Cancel" });
+	assert.equal(cardParts(cancelled).status, "Cancelled. Nothing runs.");
+
+	all["/watch/answer"] = { __status: 400, __body: { error: "not one of the watch's options" } };
+	cardParts(refused).button("Cancel").onclick();
+	await settled();
+	assert.equal(cardParts(refused).status, "Not answered: not one of the watch's options");
+	assert.equal(cardParts(refused).button("Cancel").disabled, false, "and it can be answered again");
+	dom.dispose();
+});
+
+test("a proposal answered on another surface leaves the transcript; a receipt answered here stays", { timeout: 20_000 }, async () => {
+	const { dom, cards, send, all } = await watchPage({ "/watch": listed(proposedRule(1), proposedJob(2)) });
+	cardParts(cards("feed")[0]).button("Set it up · this conversation · once").onclick();
+	await settled();
+	all["/watch"] = listed();
+	send({ type: "agent_end" });
+	await settled();
+	assert.deepEqual(cards("feed").map((c: any) => cardParts(c).status), ["Set up · this conversation · once"], "the card that waited is gone, answered elsewhere; the receipt drawn here stays");
+	dom.dispose();
+});
+
+test("the Loops panel says proposed of a proposed job or rule, from any conversation, and disabled of one a person turned off", { timeout: 20_000 }, async () => {
+	const job = proposedJob(3, {}, "other-session");
+	const rule = proposedRule(1);
+	const automation = {
+		installed: true, dir: "/loops", inboxNew: 0,
+		jobs: [{ id: job.kind === "schedule" ? job.job.id : "", name: "todo-watch", schedule: "every day at 09:00", stateful: true, enabled: false, prompt: "p" }, { id: "cron-99999999", name: "off-job", schedule: "every hour", stateful: true, enabled: false, prompt: "q" }],
+		rules: [{ id: rule.kind === "rule" ? rule.rule.id : "", condition: "~/build.done appears", action: "notify", enabled: false, fireOnce: true }, { id: "dyn-" + "9".repeat(32), condition: "off rule", action: "notify", enabled: false, fireOnce: false }],
+	};
+	const { dom, doc } = await watchPage({ "/watch": listed(rule, job) }, { automation });
+	const panel = String(doc.getElementById("auto").innerHTML);
+	assert.match(panel, /todo-watch<\/b><span class="m">every day at 09:00 · proposed</, "a proposed job, of another conversation");
+	assert.match(panel, /off-job<\/b><span class="m">every hour · disabled</, "a job a person turned off");
+	assert.match(panel, /~\/build\.done appears<\/b><span class="m">proposed · once</, "a proposed rule");
+	assert.match(panel, /off rule<\/b><span class="m">disabled · repeat</, "a rule a person turned off");
+	dom.dispose();
+});
+
+test("the Loops panel says proposed from the state's own field, before /watch has answered", { timeout: 20_000 }, async () => {
+	const automation = {
+		installed: true, dir: "/loops", inboxNew: 0,
+		jobs: [{ id: "cron-11111111", name: "todo-watch", schedule: "every day at 09:00", stateful: true, enabled: false, proposed: true, prompt: "p" }],
+		rules: [{ id: "dyn-" + "1".repeat(32), condition: "~/build.done appears", action: "notify", enabled: false, proposed: true, fireOnce: true }],
+	};
+	const { dom, doc } = await watchPage({ "/watch": { proposals: [] } }, { automation });
+	const panel = String(doc.getElementById("auto").innerHTML);
+	assert.match(panel, /todo-watch<\/b><span class="m">every day at 09:00 · proposed</, "a proposed job, with no proposal listed yet");
+	assert.match(panel, /~\/build\.done appears<\/b><span class="m">proposed · once</, "a proposed rule, with no proposal listed yet");
+	dom.dispose();
+});
+
+test("a page moved to another conversation draws that conversation's proposals, and none of the one it left", { timeout: 20_000 }, async () => {
+	const { dom, cards, send, all } = await watchPage({ "/watch": listed(proposedRule(1), proposedJob(2)) });
+	cardParts(cards("feed")[0]).button("Set it up · this conversation · once").onclick();
+	await settled();
+	all["/watch"] = listed(proposedJob(2), proposedJob(3, {}, "01b0-moved"));
+	send({ type: "page_moved", sessionId: "01b0-moved", seq: 1, epoch: "e1" });
+	send({ type: "reread", why: "read again", seq: 2, epoch: "e1" });
+	await settled();
+	await settled();
+	assert.deepEqual(cards("feed").map((c: any) => c.dataset.proposal), ["schedule:cron-33333333"], "the new conversation's proposal; the receipt and the card of the one left are gone");
+	dom.dispose();
+});
+
+test("a proposal the turn wrote is drawn in the box while it reads the sentence; Set it up closes the box, gives the composer back and refreshes the state and the inbox", { timeout: 20_000 }, async () => {
+	const before = proposedJob(9);
+	const { dom, doc, read, proposedNow, cards, all } = await watchPage({ "/watch": listed(before) });
+	const dlg = doc.getElementById("watch");
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	assert.equal(doc.getElementById("watchStatus").textContent, "pi is reading it…");
+	await proposedNow("new_trigger", before, proposedRule(1));
+	assert.equal(cards("modal").length, 1, "the new proposal, in the box");
+	assert.deepEqual(cards("feed").map((c: any) => c.dataset.proposal), ["schedule:cron-99999999"], "one that was there before the sentence stays in the transcript");
+	assert.equal(doc.getElementById("watchStatus").hidden, true, "the reading line is gone");
+	assert.equal(doc.getElementById("watchEx").hidden, true, "and the examples give the plan their room");
+	const card = cardParts(cards("modal")[0]);
+	const primaries = [doc.getElementById("watchRead"), ...cards("modal")[0].children.flatMap((c: any) => c.children ?? [])].filter((b: any) => b.className === "primary");
+	assert.deepEqual(primaries.map((b: any) => b._text), ["Set it up · this conversation · once"], "the first option is the one primary button while a plan is shown");
+	assert.deepEqual(cards("modal")[0]._scrolledTo, { block: "start" }, "the card is scrolled to the top of the box, so what it says comes before its buttons");
+	const calls = dom.calls.length;
+	card.button("Set it up · this conversation · once").onclick();
+	await settled();
+	assert.equal(dlg.open, false, "closed once it is set up");
+	assert.equal(doc.activeElement, doc.getElementById("input"), "and the composer has the focus");
+	assert.equal(cards("feed").length, 2, "the receipt is in the transcript, once");
+	assert.equal(cardParts(cards("feed")[1]).status, "Set up · this conversation · once");
+	await settled();
+	const fetched = dom.calls.slice(calls).map((c) => c.url);
+	assert.ok(fetched.some((u) => /\/state$/.test(u)), `the state was fetched: ${fetched.join(", ")}`);
+	assert.ok(fetched.some((u) => /\/inbox(\?|$)/.test(u)), `the inbox was fetched: ${fetched.join(", ")}`);
+	// Cancel closes it too; an answer that failed keeps it, with the reason on the card.
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	await proposedNow("new_trigger", proposedRule(2));
+	all["/watch/answer"] = { outcome: "cancelled", line: "cancelled" };
+	cardParts(cards("modal")[0]).button("Cancel").onclick();
+	await settled();
+	assert.equal(dlg.open, false);
+	doc.getElementById("watchFor").onclick();
+	await read("Every morning at 9, read TODO.md and tell me about new unchecked items");
+	await proposedNow("cron_create", proposedJob(3));
+	all["/watch/answer"] = { __status: 500, __body: { error: "could not answer the watch" } };
+	cardParts(cards("modal")[0]).button("Set it up · inbox").onclick();
+	await settled();
+	assert.equal(dlg.open, true, "the box stays");
+	assert.equal(cardParts(cards("modal")[0]).status, "Not answered: could not answer the watch");
+	dom.dispose();
+});
+
+test("a proposal still waiting when the page opens is drawn once, after the transcript", { timeout: 20_000 }, async () => {
+	const history = { messages: [{ role: "user", content: [{ type: "text", text: `Watch for: ${WATCH_EXAMPLE}` }] }] };
+	const { dom, doc, cards, send } = await watchPage({ "/watch": listed(proposedRule(1)) }, {}, history);
+	assert.equal(cards("feed").length, 1, "one card");
+	const feed = doc.getElementById("feed");
+	const at = (re: RegExp) => feed.children.findIndex((r: any) => re.test(treeText(r)));
+	assert.ok(at(/Watch for: When ~\/build\.done appears/) >= 0 && at(/Watch for: When ~\/build\.done appears/) < at(/Set up this watch\?/), "below the conversation it belongs to");
+	send({ type: "agent_end" });
+	await settled();
+	await dom.poll();
+	assert.equal(cards("feed").length, 1, "the next list draws nothing more");
+	dom.dispose();
+});
+
+test("a sentence queued behind a busy turn waits for its own turn's plan, not the earlier turn's reply", { timeout: 20_000 }, async () => {
+	const { dom, doc, read, send, proposedNow, cards } = await watchPage();
 	doc.getElementById("watchFor").onclick();
 	send({ type: "agent_start" });
 	await read(WATCH_EXAMPLE);
 	// The earlier turn ends first: its reply is not this sentence's answer.
 	send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done with the earlier thing" }] } });
 	send({ type: "agent_end" });
+	await settled();
 	assert.doesNotMatch(treeText(doc.getElementById("watchCards")), /pi needs more/, "no false 'needs more'");
 	assert.equal(doc.getElementById("watchStatus").textContent, "pi is reading it…", "still waiting");
-	// Then the sentence's own turn: pi echoes it, and the question lands in the box.
+	// Then the sentence's own turn: pi echoes it, and the proposal lands in the box.
 	send({ type: "agent_start" });
 	send({ type: "message_end", message: { role: "user", content: [{ type: "text", text: `Watch for: ${WATCH_EXAMPLE}` }] } });
-	ask("ask-1", RULE);
+	await proposedNow("new_trigger", proposedRule(1));
 	assert.equal(cards("modal").length, 1, "the card is in the box");
 	send({ type: "agent_end" });
 	assert.doesNotMatch(treeText(doc.getElementById("watchCards")), /pi needs more/);
@@ -4244,11 +4260,11 @@ test("closing the box moves a waiting card into the conversation, where it can s
 	assert.match(page, /#watch\{[^}]*max-height:90dvh;overflow:hidden\}/);
 	assert.match(page, /#watch\[open\]\{display:flex;flex-direction:column\}/, "a closed dialog stays closed: the flex layout applies only while it is open");
 	assert.match(page, /#watchBody\{overflow:auto;min-height:0;flex:1 1 auto\}/);
-	assert.match(page, /#watchCards \.plan \.foot\{position:sticky;bottom:0/, "the hint, the status and the buttons stick together, so the hint is never under the bar");
-	const { dom, doc, read, ask, result, cards, answered } = await watchPage();
+	assert.match(page, /#watchCards \.proposal>\.acts\{position:sticky;bottom:0/, "the buttons stick to the bottom of the box");
+	const { dom, doc, read, proposedNow, cards, answered } = await watchPage();
 	doc.getElementById("watchFor").onclick();
 	await read(WATCH_EXAMPLE);
-	ask("ask-1", RULE);
+	await proposedNow("new_trigger", proposedRule(1));
 	const dlg = doc.getElementById("watch");
 	const waiting = cards("modal")[0];
 	assert.equal(cards("feed").length, 0, "while the box is open, the card is only there");
@@ -4257,18 +4273,25 @@ test("closing the box moves a waiting card into the conversation, where it can s
 	doc.getElementById("watchClose").onclick();
 	assert.equal(dlg.open, false, "the box closes");
 	assert.deepEqual(cards("feed"), [waiting], "the waiting card is in the transcript, once");
-	assert.ok(!doc.getElementById("watchCards").children.includes(waiting), "and not in the box");
-	assert.ok(!cardParts(waiting).set.disabled, "and still clickable");
 	assert.equal(dlg._on.cancel, undefined, "nothing is designed around Escape");
 	doc.getElementById("watchFor").onclick();
-	assert.equal(doc.getElementById("watchCards").children.length, 0, "the box reopens empty: the question stays in the conversation");
+	assert.equal(doc.getElementById("watchCards").children.length, 0, "the box reopens empty: the card stays in the conversation");
 	assert.equal(doc.getElementById("watchEx").hidden, false, "with its examples");
 	assert.equal(doc.getElementById("watchRead").className, "primary", "and Read it as the button to press");
-	cardParts(waiting).set.onclick();
-	assert.deepEqual(answered(), [{ id: "ask-1", value: "Set it up · this conversation · once" }], "answered from the conversation");
-	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}`, CREATED_RULE);
-	assert.equal(cardParts(waiting).status, "Set up ~/build.done appears · shows here · once");
+	cardParts(waiting).button("Set it up · this conversation · once").onclick();
+	await settled();
+	assert.deepEqual(answered(), [{ kind: "rule", id: `dyn-${"1".repeat(32)}`, answer: "Set it up · this conversation · once" }], "answered from the conversation");
+	assert.equal(cardParts(waiting).status, "Set up · this conversation · once");
 	assert.equal(cards("feed").length, 1, "its receipt is the same card");
+	dom.dispose();
+});
+
+test("a select titled as the terminal's watch question is a dialog like any other: the page draws a watch only from GET /watch", { timeout: 20_000 }, async () => {
+	const { dom, doc, send, cards } = await watchPage();
+	send(watchAsk("ask-1", RULE));
+	await settled();
+	assert.equal(cards("feed").length, 0);
+	assert.equal(doc.getElementById("ask").open, true, "the dialog, as any select");
 	dom.dispose();
 });
 
@@ -4793,17 +4816,6 @@ test("the strip says a run a person stopped was stopped by you, and any other st
 	}
 });
 
-test("a one-minute poll reads as a minute on a rule's card", { timeout: 20_000 }, async () => {
-	const { dom, doc, read, ask, cards } = await watchPage();
-	doc.getElementById("watchFor").onclick();
-	await read(WATCH_EXAMPLE);
-	ask("ask-1", RULE, { title: askTitle(planCard(RULE, { now: Date.now(), pollSecs: 60 })) });
-	const card = cardParts(cards("modal")[0]);
-	assert.match(card.text, /Looks every minute Then /);
-	assert.doesNotMatch(card.text, /while this is on|late|Each look/, "values, not sentences");
-	dom.dispose();
-});
-
 test("a click anywhere outside the loop row closes its confirm and sends nothing; a running row says running once", { timeout: 20_000 }, async () => {
 	const state = loopState({ running: true, run: { runId: LOOP_RUN, since: new Date().toISOString() } });
 	const dom = await startPage(state, {});
@@ -4964,19 +4976,19 @@ test("a Loops row says each thing once: no prompt peek for a named loop, no quie
 	}
 });
 
-test("a created watch read back from the transcript settles nothing and fetches nothing: only one that lands live does", { timeout: 20_000 }, async () => {
-	// A reload while a watch question is waiting replays the conversation, receipts of earlier watches
-	// included. Read as live, the old receipt answered the open card and fetched the panel and inbox.
+test("a proposal read back from the transcript fetches nothing: only one that lands live does; a card drawn before is drawn again once", { timeout: 20_000 }, async () => {
+	// A reload of the conversation replays it, the create tools' results included. Read as live, each
+	// old result would fetch the watches again.
 	const history: any = { messages: [] };
-	const { dom, ask, send, cards } = await watchPage({}, {}, history);
-	ask("ask-1", DAILY);
-	assert.equal(cardParts(cards("feed")[0]).status, "", "the question waits");
-	history.messages = [{ role: "toolResult", toolName: "cron_create", toolCallId: "c0", content: [{ type: "text", text: `created cron job cron-${"e".repeat(32)}` }], details: { id: `cron-${"e".repeat(32)}`, stateful: true } }];
-	const before = dom.calls.filter((c) => c.url.includes("/inbox")).length;
+	const { dom, cards, send } = await watchPage({ "/watch": listed(proposedJob(1)) }, {}, history);
+	assert.equal(cards("feed").length, 1, "the proposal waits");
+	history.messages = [{ role: "toolResult", toolName: "cron_create", toolCallId: "c0", content: [{ type: "text", text: "proposed cron job cron-11111111" }], details: { id: "cron-11111111", proposed: true } }];
+	const before = dom.calls.filter((c) => c.url.endsWith("/watch")).length;
 	send({ type: "reread", why: "read again", seq: 99, epoch: "x" });
 	await settled();
-	assert.equal(dom.calls.filter((c) => c.url.includes("/inbox")).length, before, "no inbox fetch for a receipt read back");
-	assert.equal(cardParts(cards("feed").at(-1)).status, "", "and the waiting question is still waiting");
+	assert.equal(dom.calls.filter((c) => c.url.endsWith("/watch")).length, before, "no fetch for a result read back");
+	assert.equal(cards("feed").length, 1, "and the waiting card is in the transcript drawn again, once");
+	assert.equal(cardParts(cards("feed")[0]).status, "", "still waiting");
 	dom.dispose();
 });
 

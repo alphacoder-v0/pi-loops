@@ -4,7 +4,7 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 
 | File | Purpose |
 |---|---|
-| `config.toml` | `allow_project_hooks`, `[triggers] poll_interval_secs = 600` / `run_timeout_secs = 900`, `[cron] catch_up = true` / `max_concurrent_runs = 3`, `[hooks] mode = "sync"`, `[host] auto = true`, `[limits] daily_budget_usd = 0`, `[danger] allow = []`, `[engine] window_guard = true`, `[page] port = 4173` / `host = "127.0.0.1"` / `allow_host = []` |
+| `config.toml` | `allow_project_hooks`, `[triggers] poll_interval_secs = 600` / `run_timeout_secs = 900`, `[cron] catch_up = true` / `max_concurrent_runs = 3`, `[hooks] mode = "sync"`, `[host] auto = true`, `[limits] daily_budget_usd = 0`, `[danger] allow = []`, `[page] port = 4173` / `host = "127.0.0.1"` / `allow_host = []` |
 | `logs/pi-<pid>.log` | what each pi process diagnosed: jobs disabled, writes that failed, sub-agent warnings. Rotated at 2 MB, newest 5 processes kept |
 | `mcp.toml` | MCP servers — see [mcp.md](mcp.md) |
 | `hooks.toml` | lifecycle hooks — see [hooks.md](hooks.md) |
@@ -76,27 +76,29 @@ conversation open in the page, or a tab on one, keeps it running. pi-loops leave
 terminal window, page conversation and tab are gone. A `pi-loops start --foreground` run by a service manager, or a `pi-loops start` /
 `/pi-loops start` you typed, is yours to stop, and stays either way. An invalid value is reported at startup and leaves the default.
 
-## `[engine] window_guard`
+## The cap on a scheduled turn
 
 A plain job's prompt runs under the job's own `--tools` and the dangerous-command policy
 ([loops.md](loops.md)) wherever it runs, and so does the turn an MCP server's `inject_and_run` push
-starts, under the dangerous-command policy alone ([mcp.md](mcp.md)). In the background nobody can be asked, so a call outside
-them is refused. In an open window you can be: the same call shows a question with a 60-second
-countdown and two answers, `No, refuse it` focused and `Yes, run it once` under it, so Enter
-refuses. The yes answer runs it this once; anything else, Escape or no answer refuses it with the
-wording the background uses, so the model does the safe part and reports. `[danger] allow` applies in both places. The guard
-asks nothing about pi-loops' own tools: `cron_list` and `list_triggers` only read; `cron_create` in
-such a turn makes a job capped to the turn's tools, so it widens nothing; and `new_trigger`, the
-trigger tools, `cron_remove` and `set_cron_job_state` ask through their own confirm, once, the same
-question with the same minute, where the background would refuse. The cap holds until the turn settles, through pi's own retries and follow-ups. A row
+starts, under the dangerous-command policy alone ([mcp.md](mcp.md)). A dangerous command, or a
+command outside them, is not run: pi-loops asks you, in the conversation and in the inbox, and the
+turn goes on without it. A yes runs it once, after the current turn ([loops.md](loops.md)). A tool
+outside them that is not a command is refused, since a card cannot show what it would do. This is
+the same in an open window and in the background. `[danger] allow` applies in both places. The guard
+asks nothing about three of pi-loops' own tools: `cron_list` and `list_triggers` only read;
+`cron_create` in such a turn makes a job capped to the turn's tools, so it widens nothing; and
+`new_trigger` writes a proposal. `cron_remove`, `set_cron_job_state`, `remove_trigger` and
+`set_trigger_state` are asked about at every call in a scheduled turn, in a window or in a closed
+conversation, with the tool's name and its input on the card, and are refused in a loop's or a
+check's run. The cap holds until the turn settles, through pi's own retries and follow-ups. A row
 written into `requests/<session>.jsonl` by anything but this window, with a source that would make
 it yours, runs as a scheduled turn with no declared tools: the danger check asks you. Your own
 turns, a `/goal` continuation, a claimed finding, a recipe hand-off and `/new-trigger` never ask:
 they are yours, and a message you send into a scheduled turn makes the rest of it yours too.
 
-`window_guard = false` turns the cap off in windows (the background is unchanged): a scheduled
-prompt in an open window then runs as your own message would, as it did in pi-loops 0.22. An
-invalid value is reported at startup and leaves the guard on.
+Nothing turns the cap off. `[engine] window_guard` is no longer a setting in 0.24.3: a
+`config.toml` that still sets it is read, the key is ignored, and pi-loops reports one line at
+startup that asks you to remove it.
 
 ## Flags and environment
 

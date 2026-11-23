@@ -11,7 +11,7 @@ import { TriggerRuntime } from "../src/trigger-runtime.ts";
 import { plainJobRow } from "../src/engine.ts";
 import { parseSchedule } from "../src/schedule.ts";
 import { type ToolHost, automationTools, checkJobInput, createLoopJob, toolsDropped } from "../src/tools.ts";
-import { WATCH_ASK_MS } from "../src/watch-plan.ts";
+import { capWords } from "../src/guard.ts";
 import { fakeRunner } from "./fake-runner.ts";
 
 const ctx = { hasUI: false } as any;
@@ -414,7 +414,7 @@ test("a job keeps the chat's built-in tools as its declared tools, borrows no tr
 	}
 });
 
-test("cron_create and new_trigger say so while nothing runs in the background, as cron_list does", async () => {
+test("cron_create says so while nothing runs in the background, as cron_list does, where it creates at once", async () => {
 	// The model was told "next run … Findings will appear in /inbox" for a loop that a crash-pause
 	// would not run, and told the person it was set up.
 	const dir = tmp("pi-loops-scope-");
@@ -423,31 +423,33 @@ test("cron_create and new_trigger say so while nothing runs in the background, a
 	const reason = "pi-loops is stopped — /pi-loops start";
 	const stores = openStores(dir);
 	const triggers = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: stores.jobs, getSession: () => ({ sessionId: "s", cwd: mine }), runner: fakeRunner(), dedupFile: path.join(dir, "dedup.json") });
-	const host: ToolHost = { stores, owner: () => ownerViewOf({ sessionId: "s", cwd: mine }, { heldEpoch: () => 1, holderOf: () => process.pid, hostPaused: () => reason }), triggers, session: () => ({ sessionId: "s", cwd: mine }), createJob: (input, scope) => createLoopJob(host, input, scope), cronControlAudit: () => "audit-1", confirmTool: async () => undefined, refreshBadge: () => undefined };
+	// A scheduled turn: there `cron_create` creates at once (design 2.5); in a person's own turn it proposes, and a proposal runs nowhere until its yes.
+	const host: ToolHost = { stores, owner: () => ownerViewOf({ sessionId: "s", cwd: mine }, { heldEpoch: () => 1, holderOf: () => process.pid, hostPaused: () => reason }), triggers, session: () => ({ sessionId: "s", cwd: mine }), createJob: (input, scope) => createLoopJob(host, input, scope), cronControlAudit: () => "audit-1", confirmTool: async () => undefined, refreshBadge: () => undefined, scheduledTurn: () => true };
 	try {
 		const tools = automationTools({ hop: 0, actor: "tool" }, host);
 		const loop = await tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 5m", action: "watch", stateful: true }, undefined, undefined, ctx);
 		assert.match(String(loop.content[0].text), /PAUSED: pi-loops is stopped — \/pi-loops start\. Nothing runs in the background until pi-loops starts again/);
-		const rule = await tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "c", action: "a" }, undefined, undefined, ctx);
-		assert.match(String(rule.content[0].text), /PAUSED: /);
 		const plain = await tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 5m", action: "ping" }, undefined, undefined, ctx);
 		assert.doesNotMatch(String(plain.content[0].text), /PAUSED/, "this chat's own plain job runs in this window, paused or not");
 	} finally {
 	}
 });
 
-test("cron_create tells the model a plain job's turns are capped, ask in a window and are refused in the background", async () => {
+test("cron_create tells the model a plain job's turns are capped, in the guard's own words: a command outside the cap is asked about, another built-in tool refused, an MCP server's tool runs (design 6.9)", async () => {
 	// The agent said "it will run at 9" without knowing that the run will stop and ask, or refuse,
 	// before a dangerous command or a tool outside the chat's built-ins.
 	const f = fixture();
 	try {
 		const session = { sessionId: "s", cwd: f.mine, builtinTools: ["read", "bash"] };
-		const host: ToolHost = { ...f.host, session: () => session, createJob: (input, scope) => createLoopJob(host, input, scope) };
+		// A scheduled turn creates at once; a person's own turn proposes (test/proposal.test.ts).
+		const host: ToolHost = { ...f.host, session: () => session, createJob: (input, scope) => createLoopJob(host, input, scope), scheduledTurn: () => true };
 		const plain = await automationTools({ hop: 0, actor: "tool" }, host).find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 5m", action: "ping" }, undefined, undefined, ctx);
-		assert.match(String(plain.content[0].text), /Its turns run with this chat's built-in tools \(read, bash\) under the dangerous-command guard: in an open window a dangerous command or a tool outside them asks the user first, and in the background it is refused\. In the background they also run without this window's -e extensions or flags\./);
+		const words = capWords({ builtinTools: ["read", "bash"] }).model;
+		assert.ok(String(plain.content[0].text).includes(`Its turns run with this chat's built-in tools (read, bash) under the dangerous-command guard. ${words} In the background they also run without this window's -e extensions or flags.`), "the guard's own words, for a cap of built-in tools");
+		assert.ok(words.includes("Another built-in tool outside them is refused. pi-loops' other tools, and a tool of another extension or an MCP server, run."), "a tool of an MCP server is not limited by built-in tools");
 		// The skill is what the model reads before it ever calls the tool: the same sentence, with no list.
 		const skill = fs.readFileSync(path.join(process.cwd(), "skills", "pi-loops", "SKILL.md"), "utf8");
-		assert.ok(skill.includes("Its turns run with the chat's built-in tools under the dangerous-command guard: in an open window a dangerous command or a tool outside them asks the user first, and in the background it is refused. In the background they also run without this window's -e extensions or flags"), "SKILL.md says the same");
+		assert.ok(skill.includes(`Its turns run with the chat's built-in tools under the dangerous-command guard. ${words} In the background they also run without this window's -e extensions or flags`), "SKILL.md says the same");
 	} finally {
 	}
 });
@@ -496,25 +498,20 @@ function askFixture(answer: (options: string[]) => string | undefined = (o) => o
 	const bytes = () => [path.join(f.dir, "jobs.json"), path.join(f.dir, "triggers.json")].map((file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "absent"));
 	return { ...f, host, asked, selects, bytes, person: { hasUI: true, ui } as any, tools: automationTools({ hop: 0, actor: "tool" }, host) };
 }
-const cancelledText = (reason: string) => `cancelled: the person did not set up this watch (${reason}). Nothing was created. Do not do the action now and do not call this tool again for it.`;
 
-test("with a person in their own turn, new_trigger asks through pi's select and Set it up creates the rule in the same call", async () => {
+test("with a person in their own turn, new_trigger proposes the rule: nothing is asked in the call and nothing runs until the person's yes", async () => {
 	const f = askFixture();
 	try {
-		const signal = new AbortController().signal;
-		const out = await f.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "~/build.done appears", action: "run cargo test and show me the result", promote_to_chat: false }, signal, undefined, f.person);
-		assert.equal(f.selects.length, 1, "asked once");
-		const [ask] = f.selects;
-		assert.match(ask.title, /^Set up this watch\?\nWaits for: ~\/build\.done appears\nLooks: every \d+ (?:minutes|seconds)\n/);
-		assert.deepEqual(ask.options, ["Set it up · this conversation · once", "Set it up · this conversation · every time", "Set it up · inbox · once", "Set it up · inbox · every time", "Cancel"], "Result starts at this conversation whatever promote_to_chat said");
-		assert.equal(ask.opts.signal, signal, "the tool's own abort signal");
-		assert.equal(ask.opts.timeout, WATCH_ASK_MS);
-		assert.deepEqual(f.asked, [], "the question replaced the confirm: one question, never two");
-		assert.match(String(out.content[0].text), /^created dynamic trigger dyn-/);
+		const out = await f.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "~/build.done appears", action: "run cargo test and show me the result", promote_to_chat: false }, new AbortController().signal, undefined, f.person);
+		assert.equal(f.selects.length, 0, "the question is drawn from the record later, not asked in the call");
+		assert.deepEqual(f.asked, [], "and no confirm either");
+		assert.match(String(out.content[0].text), /^proposed dynamic trigger dyn-\w+: the person sees a card/);
 		const rules = f.triggers.store.load();
 		assert.equal(rules.length, 1);
 		assert.equal(out.details.id, rules[0].id);
-		assert.equal(rules[0].promoteToChat, true);
+		assert.equal(rules[0].enabled, false);
+		assert.equal(rules[0].proposed?.session, "s");
+		assert.equal(rules[0].promoteToChat, true, "Result starts at this conversation whatever promote_to_chat said");
 		assert.equal(rules[0].fireOnce, true);
 		assert.equal(rules[0].condition, "~/build.done appears");
 	} finally {
@@ -533,7 +530,6 @@ test("new_trigger stores a condition the model wrote as \"when …\" the way /ne
 			assert.equal(rules[0].condition, "the build finishes", label);
 			const [row] = ruleLines(rules, { numbered: true, cwd: f.mine, home: "/nowhere", sameProject: () => true });
 			assert.match(row, /^ 1\. dyn-\w+(?: \[[^\]]*\])? when the build finishes -> tell me the build is ready/, `${label}: ${row}`);
-			if (label === "the Watch card") assert.match(f.selects[0].title, /\nWaits for: the build finishes\n/, label);
 		} finally {
 		}
 	}
@@ -543,80 +539,22 @@ test("a condition that names a routine (the daily build, a cron file) stays a tr
 	const f = askFixture();
 	try {
 		const out = await f.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "when the daily build fails", action: "post the daily error report", promote_to_chat: false }, undefined, undefined, f.person);
-		assert.match(String(out.content[0].text), /^created dynamic trigger dyn-/, "a routine word in the condition and in the action no longer routes to cron_create");
+		assert.match(String(out.content[0].text), /^proposed dynamic trigger dyn-/, "a routine word in the condition and in the action no longer routes to cron_create");
 	} finally {
 	}
 });
 
-test("Cancel, Esc, a timeout and an abort all return cancelled in the same call and leave jobs.json and triggers.json as they were", async () => {
-	for (const [answer, reason, abort] of [["Cancel", "Cancel", false], [undefined, "Cancel", false], ["Set it up · nowhere", "Cancel", false], [undefined, "aborted", true]] as const) {
-		const f = askFixture(() => answer);
-		try {
-			await f.triggers.store.add({ condition: "older", action: "a", cwd: f.mine });
-			const before = f.bytes();
-			const ac = new AbortController();
-			if (abort) ac.abort();
-			for (const [name, args] of [["new_trigger", { condition: "c", action: "a" }], ["cron_create", { schedule: "every 30m", action: "look at CI" }]] as const) {
-				const out = await f.tools.find((t) => t.name === name)!.execute("i", args, ac.signal, undefined, f.person);
-				assert.equal(String(out.content[0].text), cancelledText(reason), `${name} ${String(answer)}`);
-				assert.equal(out.details.id, undefined);
-				assert.equal(out.isError, undefined, "a no is an answer, not an error");
-			}
-			assert.deepEqual(f.bytes(), before, "byte for byte");
-		} finally {
-		}
-	}
-});
-
-test("a question nobody answers for thirty minutes says it timed out", async (t) => {
-	t.mock.timers.enable({ apis: ["Date"], now: 0 });
-	const f = askFixture(() => {
-		t.mock.timers.tick(WATCH_ASK_MS);
-		return undefined;
-	});
-	try {
-		const out = await f.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "c", action: "a" }, undefined, undefined, f.person);
-		assert.equal(String(out.content[0].text), cancelledText("timed out"));
-		assert.deepEqual(f.triggers.store.load(), []);
-	} finally {
-	}
-});
-
-test("the answer is promote_to_chat and fire_once for a rule, and stateful and verify for a schedule", async () => {
-	const pick = (want: string) => (options: string[]) => { assert.ok(options.includes(want), `${want} is offered`); return want; };
-	const rule = askFixture(pick("Set it up · inbox · every time"));
-	try {
-		await rule.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "c", action: "a" }, undefined, undefined, rule.person);
-		const made = rule.triggers.store.load()[0];
-		assert.equal(made.promoteToChat, false);
-		assert.equal(made.fireOnce, false);
-	} finally {
-	}
+test("a proposal's first option is the model's: a schedule is a loop unless stateful is false, verify is kept, and the model is captured for the background", async () => {
 	const f = askFixture();
 	try {
 		const cron = f.tools.find((t) => t.name === "cron_create")!;
 		const loop = await cron.execute("i", { schedule: "0 9 * * *", action: "read TODO.md" }, undefined, undefined, f.person);
-		assert.match(f.selects[0].title, /\nRuns: every day at 09:00 · next /);
-		assert.equal(f.selects[0].options[0], "Set it up · inbox", "a schedule starts at the inbox when the model left stateful out");
-		assert.match(String(loop.content[0].text), /^created cron job cron-/);
-		const plain = await cron.execute("i", { schedule: "every 30m", action: "look at CI", stateful: false }, undefined, undefined, f.person);
-		assert.equal(f.selects[1].options[0], "Set it up · this conversation", "stateful: false said plainly is this conversation");
-		assert.match(String(plain.content[0].text), /^created cron job cron-/);
-		const checked = askFixture(pick("Set it up · inbox · with checks"));
-		try {
-			await checked.tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 1h", action: "look" }, undefined, undefined, checked.person);
-			assert.deepEqual(checked.stores.jobs.load().map((j) => [j.stateful, j.verify]), [[true, true]]);
-		} finally {
-		}
-		const unchecked = askFixture(pick("Set it up · inbox"));
-		try {
-			await unchecked.tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 1h", action: "look", verify: true }, undefined, undefined, unchecked.person);
-			assert.equal(unchecked.selects[0].options[0], "Set it up · inbox · with checks", "the model's verify is the first option");
-			assert.deepEqual(unchecked.stores.jobs.load().map((j) => [j.stateful, j.verify]), [[true, undefined]], "and the person can turn it off");
-		} finally {
-		}
+		assert.match(String(loop.content[0].text), /^proposed cron job cron-/);
+		await cron.execute("i", { schedule: "every 30m", action: "look at CI", stateful: false }, undefined, undefined, f.person);
+		await cron.execute("i", { schedule: "every 1h", action: "look", verify: true }, undefined, undefined, f.person);
 		const jobs = f.stores.jobs.load();
-		assert.deepEqual(jobs.map((j) => [j.stateful, j.sessionId]), [[true, undefined], [false, "s"]]);
+		assert.deepEqual(jobs.map((j) => [j.stateful, j.verify, j.sessionId, j.enabled, j.proposed?.session]), [[true, undefined, undefined, false, "s"], [false, undefined, "s", false, "s"], [true, true, undefined, false, "s"]]);
+		assert.equal(f.selects.length, 0, "nobody is asked in the call");
 	} finally {
 	}
 });
@@ -636,7 +574,7 @@ test("a schedule that cannot be parsed, or a job that would be refused, gives an
 	}
 });
 
-test("a sub-agent has no new_trigger; a scheduled turn and a pi with no dialog keep today's gate: new_trigger asks the host's confirm once and cron_create creates", async () => {
+test("a sub-agent has no new_trigger; in a scheduled turn new_trigger proposes and cron_create creates; with no dialog the person's own turn keeps 0.24.2's gate: new_trigger asks the host's confirm once and cron_create creates", async () => {
 	const sub = askFixture();
 	try {
 		// Hop 1: a call nobody can approve is not offered at all, so the agent does not try it first.
@@ -646,14 +584,14 @@ test("a sub-agent has no new_trigger; a scheduled turn and a pi with no dialog k
 		assert.equal(sub.selects.length, 0);
 	} finally {
 	}
-	for (const [label, f, ctxOf] of [
-		["a scheduled turn", askFixture(undefined, { scheduled: true }), (p: any) => p],
-		["no dialog", askFixture(), () => ctx],
+	for (const [label, f, ctxOf, proposes] of [
+		["a scheduled turn", askFixture(undefined, { scheduled: true }), (p: any) => p, true],
+		["no dialog", askFixture(), () => ctx, false],
 	] as const) {
 		try {
 			const rule = await f.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "c", action: "a" }, undefined, undefined, ctxOf(f.person));
-			assert.deepEqual(f.asked, ["create dynamic trigger"], label);
-			assert.match(String(rule.content[0].text), /^created dynamic trigger dyn-/, label);
+			assert.deepEqual(f.asked, proposes ? [] : ["create dynamic trigger"], `${label}: a proposal asks no confirm; with no dialog the host's confirm is asked once`);
+			assert.match(String(rule.content[0].text), proposes ? /^proposed dynamic trigger dyn-/ : /^created dynamic trigger dyn-/, label);
 			const job = await f.tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 5m", action: "a", stateful: true }, undefined, undefined, ctxOf(f.person));
 			assert.match(String(job.content[0].text), /^created cron job cron-/, label);
 			assert.equal(f.selects.length, 0, `${label}: nobody waited on`);
@@ -688,7 +626,7 @@ test("a watch the person is asked about runs in this project: a cwd outside it i
 		assert.equal(f.selects.length, 0);
 		fs.mkdirSync(path.join(f.mine, "sub"));
 		const inside = await cron.execute("i", { schedule: "every 5m", action: "a", cwd: "sub" }, undefined, undefined, f.person);
-		assert.match(String(inside.content[0].text), /^created cron job cron-/, "a subdirectory is this project");
+		assert.match(String(inside.content[0].text), /^proposed cron job cron-/, "a subdirectory is this project");
 		assert.equal(f.stores.jobs.load()[0].cwd, path.join(f.mine, "sub"));
 	} finally {
 	}

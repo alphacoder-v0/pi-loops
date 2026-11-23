@@ -26,7 +26,9 @@ Keep these invariants:
   processes: they share the MCP clients, extensions and model of the process that runs them (pi-loops,
   for loops and checks), get the automation tools at hop 1 as `customTools`, and never load a
   second copy of this extension. A held turn is the one that opens an existing conversation
-  instead of a new transcript, and it loads its own resources rather than the shared set.
+  instead of a new transcript, and it loads its own resources rather than the shared set. A
+  resumed run is the other: a yes resumes the run that asked, which opens its own transcript and
+  loads its own resources, as a held turn does.
 
 ## Layout
 
@@ -74,9 +76,7 @@ running a sub-agent
 src/runner.ts               SubagentRunner interface, result shape, the parent's inheritable flags
 src/sdk-runner.ts           the in-process runner on pi's SDK (createAgentSession per run)
 src/danger.ts               the dangerous-command policy for unattended runs
-src/window-guard.ts         the cap on a scheduled turn in an open window: declared tools and the dangerous-command policy
-src/subagent-guard.ts       the synthetic extension that applies it inside every sub-session
-src/guard.ts                the guard of a background run: which call needs a person, the question it files, and the one call a yes admits once (seats)
+src/guard.ts                the guard of every unattended turn: `judgeCall`, the one decision (declared tools, the dangerous-command policy, which call needs a person) for a background run and a window's scheduled turn; the question a background run files, the one call a yes admits once (seats), and the synthetic extension that applies it inside every sub-session
 src/transcript.ts           a sub-agent's session file, folded into readable lines
 
 running with no pi open
@@ -98,7 +98,7 @@ src/answer-lanes.ts         the answer rows of loop and check lanes: a yes resum
 src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid, or by a terminal from the page's pi (`page`) while no turn runs (`turnSince`)
 src/requests.ts             requests/<lane>.jsonl: what is addressed to a lane (a conversation's is its session id), kept until it is in it (the row, claimed or not, append, remove, claim)
 src/engine.ts               decideDrain, the pure decision for a lane's rows: classify, take the lane, start; drain, which applies it through an executor; the exits, attempts and dead letters
-src/window-executor.ts      the engine's executor in a window: a turn row as a `pi-loops:turn` custom message with its mark and cap, the person's page message as a user message, the list of what it gave pi, and the cap of each turn
+src/window-executor.ts      the engine's executor in a window: a turn row as a `pi-loops:turn` custom message with its mark and cap, the person's page message as a user message, the list of what it gave pi, and the cap of each turn; `windowGuard`, the `tool_call` handler that judges a scheduled turn's calls through `guardCall`
 src/window-claim.ts         the window's three decisions over that list: whose a message is, what a settle leaves, the editor without our prompts
 src/mark.ts                 the mark { lane, id } on the entry pi writes for a row: one writer, one reader; `TURN_TYPE` and the row a turn's message names
 src/turn-render.ts          how a terminal draws a `pi-loops:turn` message: as a message the person typed

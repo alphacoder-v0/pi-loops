@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { markFor } from "../src/mark.ts";
 import type { PersonSlot, Phase, Slot, TurnSlot } from "../src/window-claim.ts";
-import { claimOf, settleSlots } from "../src/window-claim.ts";
+import { claimOf, personInput, settleSlots } from "../src/window-claim.ts";
 
 function person(id: string, text: string, phase: Phase, opts: { stop?: true; left?: true } = {}): PersonSlot {
 	return { whose: "person", mark: markFor({ lane: "s1", id }), text, phase, ...(opts.stop ? { stop: true as const } : {}), ...(opts.left ? { left: true as const } : {}), echoed: false };
@@ -182,4 +182,17 @@ test("pi-loops.ts tells the window when pi compacts and when the compaction ends
 test("pi-loops.ts drains after a custom message ends as after a user message: a turn row's proof is in the conversation once the handler returns", () => {
 	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
 	assert.match(source, /if \(\(role === "user" \|\| role === "custom"\) && executor\.handedOver\.size\) setImmediate\(/);
+});
+
+test("an input is a person's when it is typed or sent over rpc, or is a person row the window handed (its echo or its turn message); no other input of an extension is", () => {
+	assert.equal(personInput("interactive", undefined), true, "typed in a terminal");
+	assert.equal(personInput("rpc", undefined), true, "sent over rpc");
+	assert.equal(personInput("extension", person("p1", "deploy main", { is: "pending", since: 0 })), true, "the page's message, handed as a person row");
+	assert.equal(personInput("extension", undefined), false, "another extension's input");
+	assert.equal(personInput("extension", { ...turn("req-1", "started"), person: true }), true, "the page's message in a terminal, handed as a person row's turn message");
+	assert.equal(personInput("extension", turn("cron-1", "started")), false, "a scheduled turn row");
+	assert.equal(personInput("extension", { ...turn("ans-1", "started"), answer: true }), false, "an answer's turn");
+	assert.equal(personInput("extension", turn("goal-1", "started")), false, "a goal's continuation");
+	assert.equal(personInput("extension", append("trig-1")), false, "an append row");
+	assert.equal(personInput("extension", other("hi", "extension")), false, "an input the window took for someone else's");
 });

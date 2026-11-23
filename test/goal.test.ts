@@ -8,7 +8,9 @@ import { TriggerStore } from "../src/triggers.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, drain, enqueue, goalRow } from "../src/engine.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
-import { GOAL_ENTRY, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPending, continuationPrompt, evaluationApplies, evaluatorPrompt, goalActive, goalPursued, judgeCaughtUp, settledTurn, latestGoal, newGoal, parseDecision, pauseFor, resumeGoal, transcriptFromMessages } from "../src/goal.ts";
+import { GOAL_ENTRY, MAX_CONTINUATIONS, abortedTurn, answeredGoal, applyDecision, branchMovedSince, clearGoal, continuationPending, continuationPrompt, evaluationApplies, evaluatorPrompt, goalActive, goalPursued, heldOutcome, judgeCaughtUp, settledTurn, latestGoal, newGoal, parseDecision, pauseFor, pauseGoal, resumeGoal, transcriptFromMessages, goalWaitingLine } from "../src/goal.ts";
+import { personRow, plainJobRow } from "../src/engine.ts";
+import type { Row } from "../src/requests.ts";
 
 test("the evaluator's decision drives the turn, with a budget and pause-on-failure", () => {
 	let state = newGoal("the test suite passes");
@@ -44,13 +46,17 @@ test("the evaluator's decision drives the turn, with a budget and pause-on-failu
 	assert.equal(goalActive(paused.state), true, "a paused goal is still the session's goal");
 });
 
-test("a goal waiting on a person pauses at once instead of sending the agent back", () => {
+test("[goal-waiting] a goal waiting on a person waits for them instead of sending the agent back, and is charged nothing", () => {
 	const decision = parseDecision('{"ok": false, "needs_person": true, "reason": "the agent asked which branch to deploy"}');
 	assert.deepEqual(decision, { ok: false, needsPerson: true, reason: "the agent asked which branch to deploy" });
-	const next = applyDecision(newGoal("the app is deployed"), decision);
-	assert.equal(next.state.status, "paused");
-	assert.equal(next.action.kind, "pause");
-	assert.match((next.action as any).reason, /waiting on you: the agent asked which branch to deploy/);
+	const before = { ...newGoal("the app is deployed"), iterations: 3 };
+	const next = applyDecision(before, decision);
+	assert.equal(next.state.status, "waiting");
+	assert.equal(next.state.iterations, 3, "a wait sends nobody back to work, so it costs no continuation");
+	assert.equal(next.state.lastReason, "the agent asked which branch to deploy");
+	assert.deepEqual(next.action, { kind: "wait", reason: "waiting on you: the agent asked which branch to deploy" });
+	assert.equal(goalActive(next.state), true, "a waiting goal is still the session's goal");
+	assert.equal(goalPursued(next.state), false, "and no continuation runs for it");
 	// The evaluator is told the shape, and the agent is told it may stop and ask.
 	assert.match(evaluatorPrompt("c", "t"), /"needs_person": true/);
 	assert.match(continuationPrompt("c", "r"), /only a person can unblock/);
@@ -346,4 +352,123 @@ test("the extension wires the goal decisions in: the settle judges skipped turns
 	assert.equal(source.match(/goalAbort\?\.abort\(\);[^\n]*\n\s*goalSkippedTurn = false;/g)?.length, 3, "/goal pause|resume|clear, /goal <condition> and Esc each forget a skipped turn");
 	assert.match(source, /if \(!evaluationApplies\(goal, pursued, ctrl\.signal\.aborted\)\) return false;/, "an aborted evaluation is discarded");
 	assert.match(source, /: resumeGoal\(goal\);/, "/goal resume goes through resumeGoal");
+});
+
+test("[goal-resume] [goal-pause-from-waiting] [goal-clear-from-waiting] a waiting goal: a person's input resumes it, /goal pause and /goal clear end it, and input leaves a paused or budget-limited goal alone", () => {
+	const now = new Date("2026-06-01T12:00:00Z");
+	const waiting = applyDecision({ ...newGoal("the app is deployed", now), iterations: 2 }, { ok: false, needsPerson: true, reason: "which branch?" }, now).state;
+	assert.equal(waiting.status, "waiting");
+
+	const resumed = answeredGoal(waiting, now);
+	assert.deepEqual([resumed?.status, resumed?.iterations], ["pursuing", 2], "the answer resumes it, with the allowance it had");
+	assert.equal(evaluationApplies(resumed, resumed!, false), true, "and the turn the answer starts is judged when it settles");
+
+	assert.equal(pauseGoal(waiting, now).status, "paused", "/goal pause from waiting");
+	assert.equal(clearGoal(waiting, now).status, "cleared", "/goal clear from waiting");
+	assert.equal(latestGoal([{ customType: GOAL_ENTRY, data: waiting }])?.status, "waiting", "a waiting goal is one session entry, and --resume finds it waiting");
+	assert.equal(latestGoal([{ customType: GOAL_ENTRY, data: waiting }, { customType: GOAL_ENTRY, data: clearGoal(waiting, now) }]), undefined);
+
+	const paused = pauseGoal(waiting, now);
+	assert.equal(answeredGoal(paused, now), undefined, "a paused goal still needs /goal resume");
+	assert.equal(answeredGoal(abortedTurn(newGoal("x", now), now)!.state, now), undefined, "Esc's pause too");
+	let limited = newGoal("never", now);
+	for (let i = 0; i < MAX_CONTINUATIONS; i++) limited = applyDecision(limited, { ok: false, reason: "no" }, now).state;
+	assert.equal(limited.status, "budget_limited");
+	assert.equal(answeredGoal(limited, now), undefined, "the continuation limit still needs /goal resume");
+	assert.equal(answeredGoal(newGoal("x", now), now), undefined, "a pursued goal has nothing to resume");
+	assert.equal(answeredGoal(applyDecision(newGoal("x", now), { ok: true, reason: "done" }, now).state, now), undefined, "an achieved goal stays achieved");
+});
+
+test("eight needs_person decisions in a row never reach the continuation limit", () => {
+	const now = new Date("2026-06-01T12:00:00Z");
+	let state = newGoal("the app is deployed", now);
+	for (let i = 0; i < MAX_CONTINUATIONS; i++) {
+		const judged = applyDecision(state, { ok: false, needsPerson: true, reason: `question ${i}` }, now);
+		assert.equal(judged.state.status, "waiting", `decision ${i + 1} waits`);
+		assert.equal(judged.action.kind, "wait");
+		state = answeredGoal(judged.state, now)!;
+	}
+	assert.deepEqual([state.status, state.iterations], ["pursuing", 0], "no wait was charged");
+	assert.equal(applyDecision(state, { ok: false, reason: "not yet" }, now).action.kind, "continue", "the next 'not satisfied' is a continuation, not the limit");
+});
+
+test("a wait the session moved on from while the evaluator ran is held, as a continuation is", () => {
+	const now = new Date("2026-06-01T12:00:00Z");
+	const pursued = { ...newGoal("the app is deployed", now), iterations: 2 };
+	const wait = applyDecision(pursued, { ok: false, needsPerson: true, reason: "which branch?" }, now);
+	assert.deepEqual(heldOutcome(pursued, wait, false), { state: wait.state, held: false }, "nothing moved: the goal waits");
+	const held = heldOutcome(pursued, wait, true);
+	assert.equal(held.held, true);
+	assert.deepEqual([held.state.status, held.state.iterations], ["pursuing", 2], "the person may have answered meanwhile: their turn is judged when it settles");
+	const go = applyDecision(pursued, { ok: false, reason: "3 fail" }, now);
+	assert.deepEqual([heldOutcome(pursued, go, true).state.iterations, heldOutcome(pursued, go, true).held], [2, true], "a held continuation costs nothing, as before");
+	const done = applyDecision(pursued, { ok: true, reason: "deployed" }, now);
+	assert.deepEqual(heldOutcome(pursued, done, true), { state: done.state, held: false }, "a verdict is not held");
+});
+
+test("the input decision: a person's input resumes a waiting goal, and the extension's own input does not, except a person row the window handed", () => {
+	const T0 = Date.parse("2026-06-01T12:00:00Z");
+	const by = { pid: 1, instance: "w", version: "0" };
+	/** A window over a fake pi in `mode`; pi emits `input` inside a user message's send, with the source `extension`. */
+	const win = (mode: "rpc" | "tui") => {
+		const queued = new Map<string, Row>();
+		const custom: Array<{ customType: string; content: string; details: unknown }> = [];
+		const echoes: boolean[] = [];
+		let ex!: WindowExecutor;
+		const pi = {
+			sendMessage: (m: any) => void custom.push(m),
+			sendUserMessage: (content: unknown) => void echoes.push(ex.inputSeen({ source: "extension", text: content as string }, T0)),
+		};
+		ex = new WindowExecutor(pi as any, { here: () => ({ sessionId: "s", holds: true }), hold: () => ({}) as any, letGo: () => undefined } as any, () => ({ hasUI: false, mode, isIdle: () => true, hasPendingMessages: () => false, sessionManager: { getEntries: () => [] }, abort: () => undefined }) as any, { pid: 1 }, () => true, () => [...queued.values()], () => [], () => []);
+		const hand = (row: Row) => {
+			queued.set(row.id, row);
+			ex.produced(row);
+			assert.equal(ex.turn(row as any, T0), "sent");
+		};
+		/** pi starts the turn message the window sent last: whether the window took it for a person's input. */
+		const starts = () => ex.messageStarted({ role: "custom", ...custom.at(-1)! }, T0);
+		return { ex, custom, echoes, hand, starts };
+	};
+	const waiting = applyDecision(newGoal("deployed"), { ok: false, needsPerson: true, reason: "which branch?" }).state;
+	const answer = (person: boolean) => (person ? answeredGoal(waiting)?.status : undefined) ?? waiting.status;
+	const page = personRow("req-1", "deploy main", undefined, { sessionId: "s", cwd: "/p", createdBy: by }, T0);
+
+	const rpc = win("rpc");
+	assert.equal(answer(rpc.ex.inputSeen({ source: "interactive", text: "main" }, T0)), "pursuing", "typed in a terminal");
+	assert.equal(answer(rpc.ex.inputSeen({ source: "rpc", text: "main" }, T0)), "pursuing", "sent over rpc");
+	assert.equal(answer(rpc.ex.inputSeen({ source: "extension", text: "another extension speaks" }, T0)), "waiting", "another extension's input");
+	// The page's message in the page's pi: a person row the window handed through sendUserMessage.
+	rpc.hand(page);
+	assert.equal(rpc.custom.length, 0, "it went as the person's own words");
+	assert.deepEqual(rpc.echoes, [true], "the echo of a person row's send is a person's input");
+	assert.equal(answer(rpc.echoes[0]), "pursuing");
+
+	// The page's message for a conversation a terminal holds: a turn message, which makes no input.
+	const tui = win("tui");
+	tui.hand(page);
+	assert.deepEqual(tui.echoes, [], "no user message, no input");
+	assert.equal(answer(tui.starts()), "pursuing", "its turn message is a person's input");
+	// A scheduled turn, a goal's continuation and an answer's turn are not.
+	tui.hand(plainJobRow({ id: "job-1", sessionId: "s", prompt: "tidy the cache", cwd: "/p" } as any, "cron-1", "cron:job-1", "", by, T0));
+	assert.equal(answer(tui.starts()), "waiting", "a scheduled turn");
+	tui.hand(goalRow("continue", newGoal("deployed"), { sessionId: "s", cwd: "/p", createdBy: by }, T0));
+	assert.equal(answer(tui.starts()), "waiting", "a goal's continuation");
+	assert.equal(tui.ex.answerTurn({ ...page, id: "ans-1", source: "answer", run: { id: "r", pid: 1, started_at: "" } } as any, "the answer", { kind: "row", id: "ans-1", mode: "unattended", tools: [] }, T0), "sent");
+	assert.equal(tui.custom.length, 4, "each went as a turn message");
+	assert.equal(answer(tui.starts()), "waiting", "an answer's turn");
+});
+
+test("the extension wires the waiting goal in: a person's input resumes it, the commands end it, and the words are design 6.5's", () => {
+	// src/pi-loops.ts has no harness (it is the default export); its source is the thing pinned.
+	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
+	assert.match(source, /if \(executor\.inputSeen\([^\n]*\)\) answerGoal\(ctx\);/, "a person's input, as the window decides it, answers the goal");
+	assert.match(source, /if \(executor\.messageStarted\(e\.message, Date\.now\(\)\)\) answerGoal\(ctx\);/, "so does a person row's turn message in a terminal, which makes no input");
+	assert.match(source, /const resumed = goal && answeredGoal\(goal\);\s*if \(!resumed\) return;\s*persistGoal\(ctx, resumed\);\s*notifyOrLog\(ctx, "\[goal\] your answer resumed the goal", "info"\);/);
+	assert.match(source, /notifyOrLog\(ctx, goalWaitingLine\(outcome\.action\.reason\), "warning"\);/, "entering waiting: a warning, so it stays after a redraw");
+	assert.equal(goalWaitingLine("waiting on you: which branch should I push to?"), "[goal] waiting on you: which branch should I push to? Answer here and the goal goes on.", "a question keeps its own mark");
+	assert.equal(goalWaitingLine("waiting on you: the deploy key"), "[goal] waiting on you: the deploy key. Answer here and the goal goes on.");
+	assert.match(source, /`goal: \$\{next\.status\}`/, "the status line reads goal: waiting");
+	assert.match(source, /heldOutcome\(pursued, outcome, branchMovedSince\(/, "a wait the session moved on from is held");
+	assert.match(source, /persistGoal\(ctx, clearGoal\(goal\)\);/, "/goal clear");
+	assert.match(source, /sub === "pause" \? pauseGoal\(goal\) : resumeGoal\(goal\);/, "/goal pause");
 });

@@ -526,3 +526,12 @@ test("[null-run-line] listRuns drops non-object JSON and budgetState still count
 	assert.deepEqual(store.listRuns(), [record]);
 	assert.deepEqual(budgetState(store, 0.5, Date.now()), { spent: 0.75, cap: 0.5, over: true });
 });
+
+test("a proposal is stored with enabled false and its conversation, and JobStore.enable leaves it for its answer", async () => {
+	const store = new JobStore(tmp("pi-loops-store-proposal-"));
+	const proposed = { at: new Date().toISOString(), session: "s" };
+	await store.add({ id: "cron-p", name: "pr-watch", schedule: { kind: "every", ms: 600_000 }, stateful: true, prompt: "look", cwd: "/", enabled: false, catchUp: true, createdAt: new Date().toISOString(), proposed });
+	assert.deepEqual(store.load()[0].proposed, proposed, "jobs.json keeps it");
+	const after = await store.enable("cron-p");
+	assert.deepEqual([after?.enabled, after?.proposed], [false, proposed]);
+});

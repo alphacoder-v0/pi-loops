@@ -584,8 +584,11 @@ asked. A question about a dangerous call is refused here: answer it on the page 
 the page while it waits, as `/inbox cancel` does: the finding is new again, under the same id. A yes
 that has started or ended cannot be cancelled. Without `--json`, every line is for a
 person: one per finding, the full id first, then the finding, with a decision's clauses on the same
-line as `· waiting on: …` and `· if you don't: …` (the words the page uses). A plain `claim` or
+line as `· waiting on: …` and `· if you don't: …` (the words the page uses). A question has its
+`· command: …` and `· why it asks: …` before them. A plain `claim` or
 `dismiss` prints that same line prefixed with `claimed` or `dismissed`, since the caller is the one
 who acts on it; once a finding is decided it leaves every CLI list, so that line is the only record
 the command line keeps of it. The JSON is fixed in [CONTRACT.md](../CONTRACT.md) §2.2 and shown in [downstream.md](downstream.md), which is
-the page a program should be written against.
+the page a program should be written against. A news finding about an answer (a yes that could not
+be started, or did not finish) has one more field after the ten, `re`: the id of the finding the yes
+was to, the root of its thread ([loops.md](loops.md#the-inbox)).

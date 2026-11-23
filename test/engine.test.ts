@@ -1506,7 +1506,7 @@ test("a person row waits for the page's ring, and goes capped once the wait is o
 	await drain("s", unrung.store, w2.executor, T0 + PERSON_RING_WAIT_MS - 1, unrung.sinks);
 	assert.deepEqual(w2.sent, []);
 	await drain("s", unrung.store, w2.executor, T0 + PERSON_RING_WAIT_MS, unrung.sinks);
-	assert.deepEqual(w2.sent.map((s) => s.text), ["hello"], "nobody rang: handed over anyway, capped (test/window-guard.test.ts)");
+	assert.deepEqual(w2.sent.map((s) => s.text), ["hello"], "nobody rang: handed over anyway, capped (test/guard.test.ts: a person row nobody rang for runs capped)");
 });
 
 test("a person row goes to pi as the person's message, images with it, and a person's rows take the lane first", async () => {

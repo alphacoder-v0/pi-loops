@@ -18,7 +18,9 @@ import type { ClaimedRow, Row } from "./requests.ts";
 import type { JobClock } from "./clock.ts";
 import { type ListedJob, listedJob, runHistory } from "./job-status.ts";
 import { loopLane } from "./lane.ts";
-import { computeNext, formatLocal, formatSchedule } from "./schedule.ts";
+import { computeNext, formatLocal, formatSchedule, stamp } from "./schedule.ts";
+import { failurePause } from "./backoff.ts";
+import type { CapWords } from "./guard.ts";
 import type { LoopJob, RunRecord } from "./store.ts";
 import type { DynamicTriggerRule } from "./triggers.ts";
 
@@ -114,15 +116,16 @@ export function pickQueued(rows: readonly Row[], ref: string): Row | undefined {
 
 /**
  * The one-time line a session start says when plain jobs carry `--tools`: 0.22.8 stored the list
- * and never used it, and since 0.23 a turn in a window asks before a tool outside it. Undefined when
- * no enabled plain job has one. `names` are what `/cron set` takes.
+ * and never used it; now it limits their turns, as `words` says: src/guard.ts `capWords`, passed in
+ * so that this module, which the CLI loads, does not load pi's SDK with the guard. Undefined when no
+ * enabled plain job has one. `names` are what `/cron set` takes.
  */
-export function toolsCapNotice(jobs: readonly LoopJob[]): string | undefined {
+export function toolsCapNotice(jobs: readonly LoopJob[], words: (declared: { tools: readonly string[] }) => CapWords): string | undefined {
 	const capped = jobs.filter((j) => j.enabled && !j.stateful && j.tools?.length);
 	if (!capped.length) return undefined;
 	const names = capped.map((j) => j.name ?? j.id);
 	const one = capped.length === 1;
-	return `[cron] ${plural(capped.length, "plain job")} ${one ? "has" : "have"} --tools, which now limit ${one ? "its" : "their"} turns (a tool outside the list asks you first in a window, and is refused in the background): ${names.join(", ")} — /cron set <ref> --tools - clears it`;
+	return `[cron] ${plural(capped.length, "plain job")} ${one ? "has" : "have"} --tools, which now limit ${one ? "its" : "their"} turns: ${names.join(", ")} — /cron set <ref> --tools - clears it. ${words({ tools: capped[0].tools! }).person}`;
 }
 
 /**
@@ -140,6 +143,18 @@ export function heldJobsNotice(jobs: readonly LoopJob[]): string | undefined {
 }
 
 /**
+ * The line a session start says while a watch proposed in this conversation waits for its answer
+ * (design 6.3), with the command that asks again. Undefined when none waits.
+ */
+export function proposalsNotice(jobs: readonly LoopJob[], rules: readonly DynamicTriggerRule[], sessionId: string | undefined): string | undefined {
+	if (!sessionId) return undefined;
+	const asks = [...jobs.filter((j) => j.proposed?.session === sessionId).map((j) => `/cron enable ${j.name ?? j.id}`), ...rules.filter((r) => r.proposed?.session === sessionId).map((r) => `/triggers enable ${r.id}`)];
+	if (!asks.length) return undefined;
+	const one = asks.length === 1;
+	return `[cron] ${plural(asks.length, "watch", "watches")} ${one ? "waits" : "wait"} for your yes: ${asks.join(" · ")} ${one ? "asks" : "ask"} again`;
+}
+
+/**
  * What a window says when it leaves a conversation (`/new`, `/resume`) that has plain jobs: in 0.22.8
  * that stopped them; now they run in the background, or, with `[host] auto = false`, stop with the
  * last window. Undefined when the conversation has none.
@@ -149,6 +164,61 @@ export function leftConversationLine(sessionId: string, plainJobs: number, hostA
 	const run = plainJobs === 1 ? "runs" : "run";
 	const where = hostAuto ? `${run} in the background now, each run a model turn` : `${run} in the background while a pi window is open ([host] auto = false), each run a model turn`;
 	return `[cron] the conversation you left (${shortSessionId(sessionId)}) has ${plural(plainJobs, "plain job")} that ${where} — /cron all lists them, /cron disable <ref> stops one`;
+}
+
+/**
+ * The fact a list says under a job (design 6.8), from `status.error` and what it is: the last run's
+ * failure with its count and, while a pause after it holds the loop back, its next try; the
+ * clock's note; why a queued run waits, since when; or another word, said as `last error`.
+ */
+export type StatusWord =
+	| { readonly kind: "failed"; readonly error: string; readonly streak: number; readonly nextTry?: number }
+	| { readonly kind: "note"; readonly text: string }
+	| { readonly kind: "waiting"; readonly since: number; readonly why: string }
+	| { readonly kind: "other"; readonly text: string };
+
+/** What `job`'s list line says of it, or undefined when its status has no word. `next` is its next slot, when it has one. */
+export function statusWord(job: ListedJob, now: number, next: number | undefined): StatusWord | undefined {
+	const { error, errorIs, streak } = job.status;
+	if (!error) return undefined;
+	if (errorIs?.kind === "failed") {
+		// The background holds a failing loop back after its last failure (src/backoff.ts): its next row waits until then.
+		const pause = job.stateful ? failurePause(streak) : 0;
+		const until = pause ? Date.parse(errorIs.at) + pause : undefined;
+		const nextTry = until !== undefined && until > now ? Math.max(until, next ?? until) : undefined;
+		return { kind: "failed", error, streak, ...(nextTry === undefined ? {} : { nextTry }) };
+	}
+	if (errorIs?.kind === "note") return { kind: "note", text: error };
+	if (errorIs?.kind === "waiting") return { kind: "waiting", since: Date.parse(errorIs.since), why: error };
+	return { kind: "other", text: error };
+}
+
+/** A time on a list line: the clock time on the day of `now`, else the local date and time. */
+function timeWords(at: number, now: number): string {
+	const [day, time] = [formatLocal(at), formatLocal(now)].map((s) => s.slice(0, 10));
+	return day === time ? formatLocal(at).slice(11) : formatLocal(at);
+}
+
+/** The `/cron` line of a word (design 6.8). */
+export function statusLine(word: StatusWord, now: number): string {
+	if (word.kind === "failed") {
+		const tail = [word.streak > 1 ? `${word.streak} in a row` : "", word.nextTry !== undefined ? `next try ${timeWords(word.nextTry, now)}` : ""].filter(Boolean).join("; ");
+		return `    last run failed: ${previewRedacted(word.error, 100)}${tail ? ` (${tail})` : ""}`;
+	}
+	if (word.kind === "note") return `    note: ${previewRedacted(word.text, 100)}`;
+	if (word.kind === "waiting") return `    queued since ${timeWords(word.since, now)}: ${previewRedacted(word.why, 100)}`;
+	return `    last error: ${previewRedacted(word.text, 100)}`;
+}
+
+/** The `cron_list` field of a word: `last_error`, `note` or `queued`, the same facts the `/cron` line says, with stamps. */
+export function statusField(word: StatusWord, now: number): string {
+	if (word.kind === "failed") {
+		const tail = [word.streak > 1 ? `${word.streak} in a row` : "", word.nextTry !== undefined ? `next try ${stamp(word.nextTry)}` : ""].filter(Boolean).join("; ");
+		return `last_error: ${previewRedacted(word.error, 120)}${tail ? ` (${tail})` : ""}`;
+	}
+	if (word.kind === "note") return `note: ${previewRedacted(word.text, 120)}`;
+	if (word.kind === "waiting") return `queued: ${formatWait(now - word.since)} (since ${stamp(word.since)}) — ${previewRedacted(word.why, 120)}`;
+	return `last_error: ${previewRedacted(word.text, 120)}`;
 }
 
 /** A catch-up setting that differs from the default (loops catch up, plain jobs do not), in the flag's own spelling. */
@@ -199,12 +269,15 @@ export function jobLines(stored: LoopJob[], opts: JobLinesInput): string[] {
 			const marks = [job.stateful ? "[stateful]" : undefined, job.verify ? "[verify]" : undefined, dormant, orphan, quiet, queued, run ? `running ${run}` : undefined, catchUpMark(job)]
 				.filter(Boolean)
 				.join("  ");
-			const head = `${String(i + 1).padStart(2)}. ${job.id}${job.name ? ` "${job.name}"` : ""}${job.enabled ? "" : "  disabled"}  ${formatSchedule(job.schedule)}${marks ? `  ${marks}` : ""}`;
+			const head = `${String(i + 1).padStart(2)}. ${job.id}${job.name ? ` "${job.name}"` : ""}${job.proposed ? "  proposed: waits for your yes" : job.enabled ? "" : "  disabled"}  ${formatSchedule(job.schedule)}${marks ? `  ${marks}` : ""}`;
 			const action = `    action: ${previewRedacted(job.prompt, 120)}`;
 			const worth = signal ? signalSummary(signal) : undefined;
 			const meta = `    next ${next ? formatLocal(next) : "—"} · runs ${job.status.runs}${job.status.collapsed ? ` · skipped overlaps ${job.status.collapsed}` : ""}${worth ? ` · 30d: ${worth}` : ""}${showCwd ? ` · ${projectLabel(job.cwd, home)}` : ""}`;
-			const err = job.status.error ? `    last error: ${previewRedacted(job.status.error, 100)}` : job.status.fired ? `    last fired: ${formatLocal(Date.parse(job.status.fired))}` : undefined;
-			return [head, action, meta, err].filter((l): l is string => !!l);
+			const word = statusWord(job, now, next);
+			const err = word ? statusLine(word, now) : job.status.fired ? `    last fired: ${formatLocal(Date.parse(job.status.fired))}` : undefined;
+			const ref = job.name ?? job.id;
+			const answer = job.proposed ? `    /cron enable ${ref} asks again · /cron remove ${ref} cancels it` : undefined;
+			return [head, action, meta, answer, err].filter((l): l is string => !!l);
 		})
 		.flat();
 }
@@ -218,7 +291,7 @@ export type PanelTone = "head" | "ok" | "dim" | "warn";
 
 /** What the widget shows for one project. The run line and a rule's failure mark come in made, as the run card and `/triggers` make them. */
 export interface PanelInput {
-	rules: (Pick<DynamicTriggerRule, "condition" | "action" | "enabled" | "fireOnce"> & { failureMark?: string })[];
+	rules: (Pick<DynamicTriggerRule, "condition" | "action" | "enabled" | "fireOnce" | "proposed"> & { failureMark?: string })[];
 	/** The last rule check here; only an outcome other than `no match` or `matched N` is shown. */
 	poll?: { at: string; outcome: string };
 	jobs: ListedJob[];
@@ -241,17 +314,19 @@ export function panelLines(i: PanelInput): { text: string; tone: PanelTone }[] {
 	if (i.rules.length) {
 		lines.push({ text: "Rules", tone: "head" });
 		for (const r of i.rules.slice(0, PANEL_ROW_LIMIT)) {
-			const marks = [r.enabled ? "" : "[disabled]", r.fireOnce ? "" : "[every time]", r.failureMark ?? ""].filter(Boolean);
+			const marks = [r.proposed ? "[proposed]" : r.enabled ? "" : "[disabled]", r.fireOnce ? "" : "[every time]", r.failureMark ?? ""].filter(Boolean);
 			lines.push({ text: `${clip(r.condition, 40)} → ${clip(r.action, 40)}${marks.map((m) => `  ${m}`).join("")}`, tone: r.failureMark ? "warn" : r.enabled ? "ok" : "dim" });
 		}
 		more(i.rules.length);
 	}
 	if (i.poll && i.poll.outcome !== "no match" && !/^matched \d+$/.test(i.poll.outcome)) lines.push({ text: `Last check  ${formatLocal(Date.parse(i.poll.at)).slice(11)} · ${i.poll.outcome}`, tone: "warn" });
 	if (i.jobs.length) {
-		const disabled = i.jobs.filter((j) => !j.enabled).length;
-		lines.push({ text: `Loops  ${i.jobs.length}${disabled ? ` · ${disabled} disabled` : ""}`, tone: "head" });
+		// A proposal waits for its yes (design 6.3): it is counted as proposed, not as disabled.
+		const proposed = i.jobs.filter((j) => j.proposed).length;
+		const disabled = i.jobs.filter((j) => !j.enabled && !j.proposed).length;
+		lines.push({ text: `Loops  ${i.jobs.length}${disabled ? ` · ${disabled} disabled` : ""}${proposed ? ` · ${proposed} proposed` : ""}`, tone: "head" });
 		for (const j of i.jobs.slice(0, PANEL_ROW_LIMIT))
-			lines.push({ text: `${loopLabel(j)}  ${formatSchedule(j.schedule)}  ${clip(j.prompt, 48)}${j.enabled ? "" : "  [disabled]"}${j.status.collapsed ? `  skipped overlaps ${j.status.collapsed}` : ""}`, tone: j.status.collapsed ? "warn" : j.enabled ? "ok" : "dim" });
+			lines.push({ text: `${loopLabel(j)}  ${formatSchedule(j.schedule)}  ${clip(j.prompt, 48)}${j.proposed ? "  [proposed]" : j.enabled ? "" : "  [disabled]"}${j.status.collapsed ? `  skipped overlaps ${j.status.collapsed}` : ""}`, tone: j.status.collapsed ? "warn" : j.enabled ? "ok" : "dim" });
 		more(i.jobs.length);
 	}
 	if (i.runs.length) {

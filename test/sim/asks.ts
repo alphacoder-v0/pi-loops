@@ -4,13 +4,23 @@
  * `convertClaimRows` do the work, on real files; a schedule is a list of steps drawn from one seed.
  *
  * What is simulated: the runner (a run writes its prompt, makes calls through the real guard, and
- * ends as the schedule says), the conversation's lease and a window that takes it, and the process:
- * it dies after any durable write (the write log of test/ask.test.ts), and a new one starts on the
- * same files, converting what an older version left as `openStores` does.
+ * ends as the schedule says), the conversation's lease, and the process: it dies after any durable
+ * write (the write log of test/ask.test.ts), and a new one starts on the same files, converting what
+ * an older version left as `openStores` does.
  *
- * What is left out: the engine's drain of a conversation's other rows (a `no-` row stays queued), a
- * second live process, hooks, and the policy's `[danger] allow`.
+ * A window on the conversation is a second process with the real `WindowExecutor`, `windowGuard`
+ * and `createWindowAnswers` over the same files; pi in it is simulated: a turn message it was handed
+ * starts when the schedule says, the model's calls go through the window's guard, another
+ * extension's message can arrive in a run, and `agent_settled` reaches the executor, then the
+ * answers. The window dies after any durable write of its own, as the process does. `block` is a
+ * pi that holds the conversation and runs none of its answers (`pi -p`, a window standing aside).
+ *
+ * What is left out: the engine's drain of a conversation's other rows (a `no-` row stays queued; a
+ * scheduled turn is handed to the window without a row in the file), hooks, the policy's `[danger]
+ * allow`, and the liveness of a live process's claim as another process reads it: every simulated
+ * pid is dead to the system probe, so a window reads an orphaned claim of the live background as dead.
  */
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type AnswerLanes, createAnswerLanes } from "../../src/answer-lanes.ts";
@@ -19,6 +29,7 @@ import { type Grant, type ResolvedCap, answerRow, answerRowId, inputHash, isAnsw
 import { type Held, type HeldConversations, heldCap } from "../../src/background-executor.ts";
 import { type ClaimRowStores, convertClaimRows } from "../../src/convert-v2.ts";
 import { dangerousCommandReason } from "../../src/danger.ts";
+import { plainJobRow } from "../../src/engine.ts";
 import { type GuardDeps, type GuardReport, type GuardSeat, GuardSeats, guardCall } from "../../src/guard.ts";
 import { INBOX_ROTATE_BYTES, Inbox, type InboxEntry, type InboxSection, type Sync, findingId } from "../../src/inbox.ts";
 import { type ConversationId, type LaneId, laneFileName, parseLane } from "../../src/lane.ts";
@@ -31,6 +42,7 @@ import { SubagentSlots } from "../../src/slots.ts";
 import { JobStore, type LoopJob } from "../../src/store.ts";
 import { checkLane, checkSessionDir } from "../../src/trigger-runtime.ts";
 import { TriggerStore } from "../../src/triggers.ts";
+import { type RowCap, type WindowAnswers, WindowExecutor, createWindowAnswers, windowGuard } from "../../src/window-executor.ts";
 import { type FindingMemory, decidedOnceOver, findingMemory, remember, standingOf } from "./invariants.ts";
 import { pick, prng, weighted } from "./prng.ts";
 
@@ -52,9 +64,23 @@ export type AskStepKind =
 	| "forge"
 	| "remove-job"
 	| "delete-conversation"
-	/** A window takes the conversation, and gives it back. */
+	/** A pi that runs none of the conversation's answers takes it, and gives it back. */
 	| "block"
 	| "unblock"
+	/** A window opens on the conversation and takes its lease. */
+	| "window-open"
+	/** The window's scheduled turn is handed to pi, starts, and makes one or two calls the policy asks about (Q1). The turn goes on. */
+	| "window-ask"
+	/** pi in the window starts the turn it was handed, or the turn going makes a call: the granted one, the granted one again, another. */
+	| "window-run"
+	/** Another extension's message starts in the window's run. */
+	| "window-foreign"
+	/** The window's turn settles, aborted or not, and the window meets the conversation's answer rows. */
+	| "window-settle"
+	/** The window leaves the conversation: its answer turns close, and its lease goes. */
+	| "window-close"
+	/** The window's process dies after `a % 6` more durable writes of its own (at once for 0). */
+	| "window-die"
 	/** A lane's queue file is deleted. */
 	| "lose-queue"
 	/** A hand edit of inbox.jsonl: a copied question, a changed lane, an ask moved to another session, another project, an unreadable answer. */
@@ -77,6 +103,7 @@ const WEIGHTS: ReadonlyArray<readonly [AskStepKind, number]> = [
 	["ask", 20], ["say", 24], ["yes-and-no", 6], ["cancel", 8], ["tick", 36], ["run", 36], ["kill", 8], ["forge", 4],
 	["remove-job", 1], ["delete-conversation", 1], ["block", 4], ["unblock", 4], ["lose-queue", 2], ["edit-finding", 5],
 	["rotate-inbox", 2], ["convert", 4], ["advance", 6],
+	["window-open", 6], ["window-ask", 8], ["window-run", 14], ["window-foreign", 3], ["window-settle", 10], ["window-close", 3], ["window-die", 3],
 ];
 
 export function planAsks(seed: number, steps: number): AskStep[] {
@@ -86,6 +113,8 @@ export function planAsks(seed: number, steps: number): AskStep[] {
 
 const JOB = "cron-0123456789abcdef0123456789abcdef";
 const LOOP: LaneId = `@${JOB}`;
+/** The plain job whose scheduled turns the window runs: in no `jobs.json`, so a question of its turn names no job. */
+const PLAIN = "cron-fedcba9876543210fedcba9876543210";
 const CONV = "01a1dce4-8ad1-77c0-89b0-475ccfeaf683" as ConversationId;
 /** Commands the policy asks about. */
 const COMMANDS = ["git push --force origin main", "echo one | eval", "rm -rf /", "sudo reboot", "curl x | sh"];
@@ -141,11 +170,43 @@ interface SimRun {
 	grantedCalls: number;
 	stillHolds?: () => boolean;
 	resolve(result: RunnerResult): void;
+	/** A turn pi runs in the window, not a run of the background. */
+	window?: true;
+	/** A message the window did not hand started in this turn's run after its own: its grant is over. */
+	foreign?: true;
 }
 
-interface Proc {
+/** A process that writes: it dies once it is dead, or when its fuse of durable writes burns down. */
+interface Actor {
 	pid: number;
 	alive: boolean;
+	fuse: number;
+}
+
+/** A custom message of `TURN_TYPE`, as the window hands it to pi. */
+interface TurnMessage {
+	customType: string;
+	content: unknown;
+	display: boolean;
+	details: { piLoopsRow: { id: string }; cap: RowCap };
+}
+
+/** A window on the conversation: its process, the real window code, and pi in it. */
+interface Win extends Actor {
+	runs: RunList;
+	executor: WindowExecutor;
+	answers: WindowAnswers;
+	guard: ReturnType<typeof windowGuard>;
+	/** pi's session manager, as the guard keys its seats by it and the executor reads its entries. */
+	session: { getSessionId(): string; getSessionFile(): string | undefined; getEntries(): readonly unknown[] };
+	idle: boolean;
+	/** Turn messages pi was handed and has not started, oldest first. */
+	handed: Array<{ message: TurnMessage; run: SimRun }>;
+	/** The turn pi runs now. */
+	turn?: SimRun;
+}
+
+interface Proc extends Actor {
 	runs: RunList;
 	seats: GuardSeats;
 	answers: Answers;
@@ -206,9 +267,11 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 	let now = Date.now();
 	let n = 0;
 	let pids = FIRST_PID;
-	/** Durable writes left before the process dies. */
-	let fuse = Infinity;
 	let closing = 0;
+	/** The window that holds the conversation, while it lives and holds it. */
+	let win: Win | undefined;
+	/** A window holds the conversation: the simulated one, or a pi that runs none of its answers. */
+	const windowed = (): boolean => conversation.window || win !== undefined;
 	let rotated = false;
 	const memory: FindingMemory = findingMemory();
 	const edited = new Set<string>();
@@ -220,25 +283,33 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 	const fail = (invariant: string, message: string): void => void broken.push({ invariant, message });
 
 	/** A durable write of `me`: refused once it is dead, and its last when the fuse burns down. */
-	function durable<T>(me: Proc, make: () => T, wrote: (result: T) => boolean = () => true): T {
+	function durable<T>(me: Actor, make: () => T, wrote: (result: T) => boolean = () => true): T {
 		if (!me.alive) throw new Crash();
 		const result = make();
-		if (wrote(result) && --fuse <= 0) {
-			fuse = Infinity;
+		if (wrote(result) && --me.fuse <= 0) {
+			me.fuse = Infinity;
 			die(me, "in the middle of its writes");
 			throw new Crash();
 		}
 		return result;
 	}
 
-	function die(me: Proc, when: string): void {
+	/** `me` stops: the background's runs and lease go with it; a window's lease is free for the next holder, as a dead pid's is. */
+	function die(me: Actor, when: string): void {
 		me.alive = false;
-		me.going = [];
+		if (me === win) {
+			win.handed = [];
+			win.turn = undefined;
+			win = undefined;
+			out.seen.add(`the window dies ${when}`);
+			return;
+		}
+		(me as Proc).going = [];
 		if (conversation.held?.pid === me.pid) conversation.held = undefined;
 		out.seen.add(`dies ${when}`);
 	}
 
-	const wrapTx = (tx: InboxSection, me: Proc): InboxSection => ({
+	const wrapTx = (tx: InboxSection, me: Actor): InboxSection => ({
 		list: () => tx.list(),
 		find: (id) => tx.find(id),
 		write: (change, ...more) => durable(me, () => tx.write(change, ...more)),
@@ -248,7 +319,7 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 		},
 	});
 
-	function storeOf(me: Proc): RequestStore {
+	function storeOf(me: Actor): RequestStore {
 		const store: RequestStore = Object.create(requests);
 		store.appendIfAbsent = (row, opts, lock) => durable(me, () => requests.appendIfAbsent(row, opts, lock), (did) => did);
 		store.claim = (lane, id, run, lock) => durable(me, () => requests.claim(lane, id, run, lock), (did) => did);
@@ -262,10 +333,10 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 	}
 
 	const conversations = (me: Proc): HeldConversations => ({
-		closed: () => !conversation.window,
+		closed: () => !windowed(),
 		hold: (_id, _runId) => {
 			if (conversation.deleted) return { refused: "its file is gone" };
-			if (conversation.window) return { refused: "a window holds it" };
+			if (windowed()) return { refused: "a window holds it" };
 			conversation.epoch++;
 			conversation.held = { epoch: conversation.epoch, pid: me.pid };
 			return { sessionId: CONV, epoch: conversation.epoch, sessionFile: conversation.file, cwd };
@@ -273,7 +344,7 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 		release: (held) => {
 			if (conversation.held?.epoch === held.epoch) conversation.held = undefined;
 		},
-		holds: (held: Held) => me.alive && !conversation.window && conversation.held?.epoch === held.epoch,
+		holds: (held: Held) => me.alive && !windowed() && conversation.held?.epoch === held.epoch,
 		trusts: () => true,
 	});
 
@@ -286,7 +357,7 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 		run.finding = id;
 		if (row?.run) started.push(`${row.run.id} ${row.run.started_at}`);
 		const finding = inbox.list().find((f) => f.id === id);
-		const name = `the run ${run.runId.slice(0, 12)} in ${run.lane}`;
+		const name = nameOf(run);
 		if (!finding) return fail(I5, `${name} started for a finding that is not in the inbox`);
 		const yes = yeses.get(finding.id)?.at(-1);
 		run.yes = yes;
@@ -296,25 +367,33 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 		else if (yes.cancelled) fail(I5, `${name} started for ${finding.id} after its yes was cancelled`);
 		else if (yes.runs++ > 0) fail(I5, `${name} is the second run of one yes to ${finding.id}`);
 		if (finding.lane !== run.lane) fail(I5, `${name} started for ${finding.id}, whose lane is ${finding.lane ?? "none"}`);
-		out.seen.add(`a run starts in a ${parseLane(run.lane)?.kind} lane`);
+		out.seen.add(run.window ? "a run starts in a window" : `a run starts in a ${parseLane(run.lane)?.kind} lane`);
 	}
 
+	const nameOf = (run: SimRun): string => `${run.window ? "the window's turn" : "the run"} ${run.runId.slice(0, 12)} in ${run.lane}`;
+
+	/** Whether the guard blocks one call: a background run's seat through `guardCall`, a window's turn through the window's `tool_call` handler. */
+	type Judge = (id: string, input: { command: string }) => Promise<boolean>;
+	const background = (me: Proc, run: SimRun): Judge => async (id, input) => (await guardCall({ toolName: "bash", toolCallId: id, input, cwd }, run.seat?.seat, guardDeps(me))) !== undefined;
+	const inWindow = (w: Win): Judge => async (id, input) => (await w.guard({ toolName: "bash", toolCallId: id, input }, { cwd, sessionManager: w.session }))?.block === true;
+
 	/** A call a run makes through the real guard. Returns whether it ran. */
-	async function call(me: Proc, run: SimRun, command: string): Promise<boolean> {
+	async function call(judge: Judge, run: SimRun, command: string): Promise<boolean> {
 		const id = `tc-${++n}`;
 		const input = { command };
-		const blocked = await guardCall({ toolName: "bash", toolCallId: id, input, cwd }, run.seat?.seat, guardDeps(me));
+		const blocked = await judge(id, input);
 		append(run.file, { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id, name: "bash", arguments: input }] } });
-		append(run.file, { type: "message", message: { role: "toolResult", toolCallId: id, isError: blocked !== undefined, content: [] } });
+		append(run.file, { type: "message", message: { role: "toolResult", toolCallId: id, isError: blocked, content: [] } });
 		if (blocked || !flagged(command, dir)) return !blocked;
-		const name = `the run ${run.runId.slice(0, 12)} in ${run.lane}`;
+		const name = nameOf(run);
 		const granted = run.grant !== undefined && inputHash(input) === run.grant.call.input_sha256;
 		if (!granted) {
 			fail(I5, `${name} ran \`${command}\`, which needs a person, with no grant for it`);
 			return true;
 		}
 		run.grantedCalls++;
-		out.seen.add(run.grantedCalls > 1 ? "a granted call runs again" : "a granted call runs");
+		out.seen.add(`${run.grantedCalls > 1 ? "a granted call runs again" : "a granted call runs"}${run.window ? " in a window" : ""}`);
+		if (run.foreign) fail(I5, `${name} ran the granted call of ${run.grant!.finding} after a message the window did not hand started in its run`);
 		const finding = inbox.list().find((f) => f.id === run.grant!.finding);
 		if (run.finding !== run.grant!.finding) fail(I5, `${name} ran the call granted to ${run.grant!.finding} for the finding ${run.finding}`);
 		if (finding && !edited.has(finding.id)) {
@@ -336,7 +415,7 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 		fs.appendFileSync(file, lineOf(value));
 	};
 
-	const guardDeps = (me: Proc): GuardDeps => ({
+	const guardDeps = (me: Actor): GuardDeps => ({
 		inbox: { list: () => inbox.list(), fileOnce: (entry, id) => inbox.section((tx) => wrapTx(tx, me).fileOnce(entry, id)) },
 		allowCommands: () => [],
 		loopsDir: dir,
@@ -345,7 +424,7 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 		log: (line) => void logs.push(line),
 	});
 
-	function answersDeps(me: Proc): AnswersDeps {
+	function answersDeps(me: Actor, instance = "background"): AnswersDeps {
 		const store = storeOf(me);
 		return {
 			inbox: { file: inbox.file, list: () => inbox.list(), section: <T>(fn: (tx: InboxSection) => Sync<T>): Promise<T> => inbox.section((tx) => fn(wrapTx(tx, me))) },
@@ -357,21 +436,19 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 			checkSessionDir: (at) => checkSessionDir(jobs, at),
 			checkLaneOf: (at) => checkLane(at),
 			runEnd: () => durable(me, () => undefined),
-			self: () => ({ pid: me.pid, instance: "background", version: "sim" }),
+			self: () => ({ pid: me.pid, instance, version: "sim" }),
 			now: () => now,
 			log: (line) => void logs.push(line),
 		};
 	}
 
-	function start(): Proc {
-		const me = { pid: ++pids, alive: true, runs: new RunList(), seats: new GuardSeats(), going: [] } as unknown as Proc;
-		const real = createAnswers(answersDeps(me));
-		me.answers = real;
-		const tracked: Answers = {
+	/** The real `Answers`, with what the schedule reached and every closing counted until it ends. */
+	function tracked(real: Answers, where = ""): Answers {
+		return {
 			...real,
 			meet: async (lane, rowId, executor, at) => {
 				const met = await real.meet(lane, rowId, executor, at);
-				out.seen.add(`met ${met.met}`);
+				out.seen.add(`met ${met.met}${where}`);
 				return met;
 			},
 			close: async (row, at, ended) => {
@@ -384,13 +461,19 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 			},
 			repair: async (executes, at) => {
 				const ids = await real.repair(executes, at);
-				if (ids.length) out.seen.add("H1 puts a row back");
+				if (ids.length) out.seen.add(`H1 puts a row back${where}`);
 				return ids;
 			},
 		};
+	}
+
+	function start(): Proc {
+		const me = { pid: ++pids, alive: true, fuse: Infinity, runs: new RunList(), seats: new GuardSeats(), going: [] } as unknown as Proc;
+		const real = createAnswers(answersDeps(me));
+		me.answers = real;
 		const store = storeOf(me);
 		me.lanes = createAnswerLanes({
-			answers: tracked,
+			answers: tracked(real),
 			stores: { jobs, inbox, requests: store, book: () => ({ jobs: jobs.load(), clock: { v: 1, jobs: {} } }) },
 			runs: me.runs,
 			runner: (req) => runner(me, req),
@@ -462,6 +545,85 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 		return `ends ${as}${taken ? " (a window took the conversation)" : ""}: the answer is ${state ?? "gone"}`;
 	}
 
+	/** A window opens on the conversation: a process of its own, wired as src/pi-loops.ts wires one, over a simulated pi. */
+	function openWindow(): Win {
+		const w = { pid: ++pids, alive: true, fuse: Infinity, runs: new RunList(), idle: true, handed: [] } as unknown as Win;
+		const holder = { pid: w.pid, procStart: undefined };
+		const holds = (): boolean => w.alive && win === w;
+		w.session = { getSessionId: () => CONV, getSessionFile: () => conversation.file, getEntries: () => readEntries(conversation.file) ?? [] };
+		const ctx = { mode: "tui", hasUI: false, cwd, isIdle: () => w.idle, hasPendingMessages: () => false, sessionManager: w.session, ui: { notify: () => undefined }, abort: () => undefined } as unknown as ExtensionContext;
+		/** pi is handed a turn message: an answer's turn starts its run as it is handed (E4b is written), and I5 is checked then. */
+		const sendMessage = (message: TurnMessage): void => {
+			const rowId = message.details.piLoopsRow.id;
+			const answer = rowId.startsWith("ans-");
+			const grant = answer ? w.answers.seat(message.details.cap)?.seed.grant : undefined;
+			const run: SimRun = { runId: rowId, lane: CONV, file: conversation.file, sessionId: CONV, ...(grant ? { grant } : {}), text: String(message.content), prompt: false, grantedCalls: 0, resolve: () => undefined, window: true };
+			if (answer) startOf(run);
+			w.handed.push({ message, run });
+		};
+		const pi = { sendMessage, sendUserMessage: () => undefined } as unknown as Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">;
+		const binding = { here: () => ({ sessionId: CONV, holds: holds() }), hold: () => holds(), letGo: () => undefined };
+		const store = storeOf(w);
+		w.executor = new WindowExecutor(pi, binding, () => ctx, holder, () => true, () => requests.list(CONV), undefined, () => jobs.allRuns(), undefined, (runId) => w.runs.get(runId) !== undefined);
+		const answers = tracked(createAnswers(answersDeps(w, "terminal")), " in a window");
+		w.answers = createWindowAnswers({ answers, requests: store, runs: w.runs, executor: w.executor, here: () => ({ sessionId: CONV, cwd, sessionFile: conversation.file }), jobs: () => jobs.load(), holder: () => holder, log: (line) => void logs.push(line) });
+		w.guard = windowGuard({
+			current: () => w.executor.currentTurn(),
+			config: () => ({ allowCommands: [], loopsDir: dir }),
+			log: (line) => void logs.push(line),
+			inbox: guardDeps(w).inbox,
+			now: () => now,
+			jobOf: () => undefined,
+			answerTurn: (cap) => w.answers.seat(cap),
+			seats: new GuardSeats(),
+		});
+		return w;
+	}
+
+	/** pi in the window starts the oldest turn it was handed: its message is written into the conversation, mark and all. */
+	function startTurn(w: Win): SimRun {
+		const { message, run } = w.handed.shift()!;
+		w.idle = false;
+		w.executor.agentStarted(now);
+		const started = { role: "custom", ...message };
+		w.executor.messageStarted(started, now);
+		const ended = w.executor.messageEnded(started, now)?.message ?? started;
+		append(conversation.file, { type: "custom_message", customType: message.customType, content: message.content, display: true, details: ended.details });
+		run.prompt = true;
+		w.turn = run;
+		return run;
+	}
+
+	/** `agent_settled` in the window, as src/pi-loops.ts handles it: the executor, then the answers; then the window's drain meets the conversation's answer rows. */
+	async function settleTurn(w: Win, aborted: boolean): Promise<string> {
+		const run = w.turn;
+		if (run) {
+			w.executor.agentEnded();
+			w.idle = true;
+			w.turn = undefined;
+			w.executor.settled(aborted);
+			await w.answers.settled(aborted, now);
+			await quiet();
+		}
+		const state = run?.finding ? inbox.list().find((f) => f.id === run.finding)?.answer?.state : undefined;
+		if (state === "done" || state === "unfinished") out.seen.add(`an answer ends ${state} in a window`);
+		const met = w.alive && win === w ? await w.answers.drain(now) : [];
+		await quiet();
+		return `${run ? `the window's turn settles${aborted ? " aborted" : ""}${state ? `: the answer is ${state}` : ""}; ` : ""}the window meets ${met.length} answer row(s): ${met.map((m) => m.met).join(", ") || "none"}`;
+	}
+
+	/** The window leaves the conversation: pi's turn ends with it, each answer's turn closes, and the lease goes. */
+	async function closeWindow(w: Win): Promise<void> {
+		w.handed = [];
+		w.turn = undefined;
+		try {
+			await w.answers.leave(now);
+			await quiet();
+		} finally {
+			if (win === w) win = undefined;
+		}
+	}
+
 	let proc = start();
 
 	/** The finding a step names among `list`, by a number. */
@@ -513,7 +675,7 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 	async function ask(step: AskStep): Promise<string> {
 		const kind = (["loop", "check", "conversation"] as const)[step.a % 3];
 		if (kind === "loop" && !jobs.load().some((j) => j.id === JOB)) return "the loop was removed: no run of it asks";
-		if (kind === "conversation" && (conversation.deleted || conversation.window)) return "no turn of pi-loops runs in the conversation";
+		if (kind === "conversation" && (conversation.deleted || windowed())) return "no turn of pi-loops runs in the conversation";
 		const lane = kind === "loop" ? LOOP : kind === "check" ? CHECK : CONV;
 		if (proc.going.some((r) => r.lane === lane)) return `a run of ${kind} is going: it is not run again beside it`;
 		const k = ++n;
@@ -530,13 +692,31 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 		const run = { runId: `run-${k}`, lane, file, sessionId, seat, text: "", prompt: true, grantedCalls: 0, resolve: () => undefined } as SimRun;
 		const asked = [COMMANDS[step.b % COMMANDS.length], ...(step.c % 4 === 1 ? [COMMANDS[(step.b >>> 8) % COMMANDS.length]] : [])];
 		try {
-			for (const command of asked) await call(proc, run, command);
+			for (const command of asked) await call(background(proc, run), run, command);
 		} finally {
 			seat.leave();
 		}
 		const opened = seat.seat.asked.length;
 		if (opened) out.seen.add(`Q1 in a ${kind} lane`);
 		return `a run of ${kind} asks about ${asked.map((c) => `\`${c}\``).join(" and ")}: ${opened} question(s) filed`;
+	}
+
+	/** The window's scheduled turn: handed to the idle pi, started, and its calls judged by the window's guard. It goes on until a settle. */
+	async function windowAsks(step: AskStep): Promise<string> {
+		const w = win;
+		if (!w) return "no window holds the conversation";
+		if (w.turn || w.handed.length || w.executor.answerFree() !== undefined) return "pi in the window is busy: no scheduled turn is handed";
+		const k = ++n;
+		const row = plainJobRow({ id: PLAIN, sessionId: CONV, prompt: "watch the deploy", cwd }, `plain-${k}`, `cron:${PLAIN}`, "", { pid: w.pid, instance: "terminal", version: "sim" }, now);
+		const sent = w.executor.turn(row, now);
+		if (sent !== "sent") return `the window's scheduled turn is not handed: ${String(sent)}`;
+		const run = startTurn(w);
+		const asked = [COMMANDS[step.b % COMMANDS.length], ...(step.c % 4 === 1 ? [COMMANDS[(step.b >>> 8) % COMMANDS.length]] : [])];
+		const before = findings().filter((f) => f.ask).length;
+		for (const command of asked) await call(inWindow(w), run, command);
+		const opened = findings().filter((f) => f.ask).length - before;
+		if (opened) out.seen.add("Q1 in a window's scheduled turn");
+		return `the window's scheduled turn asks about ${asked.map((c) => `\`${c}\``).join(" and ")}: ${opened} question(s) filed`;
 	}
 
 	async function apply(step: AskStep): Promise<string> {
@@ -580,14 +760,23 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 				}
 			}
 			case "tick": {
+				// The window's ticker rides in its own process: H1 for the conversation it holds, then its drain.
+				let windowSaid = "";
+				const w = win;
+				if (w) {
+					const handed = w.handed.length;
+					await w.answers.tick(now);
+					await quiet();
+					windowSaid = w.alive ? `the window hands pi ${w.handed.length - handed} answer turn(s); ` : "the window dies in its tick; ";
+				}
 				const me = proc;
 				const before = me.going.length;
 				await me.lanes.tick(now);
 				if (me.alive && requests.list(CONV).some(isAnswerRow)) await me.lanes.drain(parseLane(CONV)!, now);
 				await quiet();
-				if (!me.alive) return "a tick: the process dies in it";
+				if (!me.alive) return `a tick: ${windowSaid}the process dies in it`;
 				stuckAfterTick();
-				return `a tick: ${me.going.length - before} run(s) start`;
+				return `a tick: ${windowSaid}${me.going.length - before} run(s) start`;
 			}
 			case "run": {
 				const run = nth(proc.going, a);
@@ -604,13 +793,13 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 						return `${name} writes its prompt`;
 					case "granted":
 					case "again": {
-						const ran = await call(proc, run, run.grant!.call.command ?? "");
+						const ran = await call(background(proc, run), run, run.grant!.call.command ?? "");
 						if (!ran && move === "again") out.seen.add("a granted call is asked about again");
 						return `${name} makes the granted call${move === "again" ? " again" : ""}: ${ran ? "it runs" : "blocked"}`;
 					}
 					case "other": {
 						const command = COMMANDS[c % COMMANDS.length];
-						const ran = await call(proc, run, command);
+						const ran = await call(background(proc, run), run, command);
 						return `${name} makes another call, \`${command}\`: ${ran ? "it runs" : "blocked"}`;
 					}
 					default:
@@ -622,8 +811,8 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 					die(proc, proc.going.length ? "with a run going" : "idle");
 					return "the process dies";
 				}
-				fuse = a % 6;
-				return `the process will die after ${fuse} more durable write(s)`;
+				proc.fuse = a % 6;
+				return `the process will die after ${proc.fuse} more durable write(s)`;
 			}
 			case "forge": {
 				const answered = findings().filter((f) => f.answer !== undefined);
@@ -642,19 +831,81 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 				return "the loop is removed";
 			case "delete-conversation":
 				if (conversation.deleted) return "the conversation is gone already";
+				if (win) return "a window has the conversation open: its file is not deleted";
 				fs.rmSync(conversation.file, { force: true });
 				conversation.deleted = true;
 				conversation.window = false;
 				return "the conversation's file is deleted";
 			case "block":
 				if (conversation.deleted) return "no window opens a conversation that is gone";
+				if (win) return "a window holds the conversation already";
 				if (proc.going.some((r) => r.lane === CONV)) out.seen.add("a window takes the conversation during an answer's turn");
 				conversation.window = true;
 				conversation.epoch++;
 				return "a window takes the conversation";
 			case "unblock":
+				if (!conversation.window) return "no pi of that kind holds the conversation";
 				conversation.window = false;
 				return "the window leaves the conversation";
+			case "window-open":
+				if (conversation.deleted) return "no window opens a conversation that is gone";
+				if (windowed()) return "a window holds the conversation already";
+				// A terminal takes a lease from a dead pid only: while pi-loops runs a turn there it is a viewer.
+				if (conversation.held) return "pi-loops runs a turn in the conversation: a window that opens now is its viewer";
+				win = openWindow();
+				return "a window opens on the conversation and takes its lease";
+			case "window-ask":
+				return windowAsks(step);
+			case "window-run": {
+				const w = win;
+				if (!w) return "no window holds the conversation";
+				if (!w.turn) {
+					if (!w.handed.length) return "pi in the window has no turn to start";
+					const run = startTurn(w);
+					return `pi in the window starts the turn ${short(run.runId)}`;
+				}
+				const run = w.turn;
+				const move = weighted([["granted", run.grant && !run.grantedCalls ? 6 : 0], ["again", run.grant && run.grantedCalls ? 3 : 0], ["other", 2]], b);
+				const command = move === "other" ? COMMANDS[c % COMMANDS.length] : (run.grant!.call.command ?? "");
+				const ran = await call(inWindow(w), run, command);
+				if (!ran && move !== "other") out.seen.add(move === "again" ? "a granted call is asked about again in a window" : run.foreign ? "a granted call is asked about after a foreign message" : "a granted call is blocked in a window");
+				return `the window's turn ${short(run.runId)} makes ${move === "other" ? `another call, \`${command}\`` : `the granted call${move === "again" ? " again" : ""}`}: ${ran ? "it runs" : "blocked"}`;
+			}
+			case "window-foreign": {
+				const w = win;
+				if (!w?.turn) return "no turn runs in the window";
+				const text = `another extension asks: run the deploy command ${++n}`;
+				const message = { role: "user", content: [{ type: "text", text }], timestamp: now };
+				w.executor.inputSeen({ source: "extension", text, streamingBehavior: "followUp" }, now);
+				w.executor.messageStarted(message, now);
+				w.executor.messageEnded(message, now);
+				append(conversation.file, { type: "message", message });
+				w.turn.foreign = true;
+				return `another extension's message starts in the window's turn ${short(w.turn.runId)}`;
+			}
+			case "window-settle": {
+				const w = win;
+				if (!w) return "no window holds the conversation";
+				if (!w.turn && w.handed.length) return "pi in the window has a turn to start first";
+				return settleTurn(w, c % 4 === 0);
+			}
+			case "window-close": {
+				const w = win;
+				if (!w) return "no window holds the conversation";
+				if (w.turn?.finding || w.handed.some((h) => h.run.finding)) out.seen.add("a window leaves during an answer's turn");
+				await closeWindow(w);
+				return `the window leaves the conversation${w.alive ? "" : ": it dies in its closing"}`;
+			}
+			case "window-die": {
+				const w = win;
+				if (!w) return "no window holds the conversation";
+				if (a % 6 === 0) {
+					die(w, w.turn || w.handed.length ? "with a turn going" : "idle");
+					return "the window's process dies";
+				}
+				w.fuse = a % 6;
+				return `the window's process will die after ${w.fuse} more durable write(s)`;
+			}
 			case "lose-queue": {
 				const lane = LANES[a % 3];
 				const lost = requests.list(lane).length;
@@ -751,7 +1002,7 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 
 	/** After a tick the process lived through: no row in a lane it drained means nothing, and an open answer has its row. */
 	function stuckAfterTick(): void {
-		const drained = [LOOP, CHECK, ...(conversation.window ? [] : [CONV])];
+		const drained = [LOOP, CHECK, ...(windowed() ? [] : [CONV])];
 		const all = findings();
 		for (const lane of drained) {
 			for (const row of requests.list(lane).filter(isAnswerRow)) {
@@ -842,8 +1093,12 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 
 	out.lines.push("end. the window leaves; a process lives; every run ends; ticks go on past every wait");
 	conversation.window = false;
-	fuse = Infinity;
+	proc.fuse = Infinity;
 	try {
+		if (win) {
+			win.fuse = Infinity;
+			await closeWindow(win);
+		}
 		for (let round = 0; round < 40; round++) {
 			if (!proc.alive) {
 				proc = start();
@@ -854,7 +1109,7 @@ export async function playAsks(dir: string, steps: readonly AskStep[]): Promise<
 					append(run.file, { type: "message", message: { role: "user", content: run.text } });
 					run.prompt = true;
 				}
-				if (run.grant && !run.grantedCalls) await call(proc, run, run.grant.call.command ?? "");
+				if (run.grant && !run.grantedCalls) await call(background(proc, run), run, run.grant.call.command ?? "");
 				await end(proc, run, "ok");
 			}
 			await proc.lanes.tick(now);

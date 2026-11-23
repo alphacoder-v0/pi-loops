@@ -292,6 +292,20 @@ test("a finding keeps its lane through a rewrite, and a lane that is not a strin
 	assert.equal("lane" in inbox.list().find((e) => e.id === findingId("x"))!, false);
 });
 
+test("[thread] a finding keeps re, the id of its thread's root, through a rewrite; a re that is not an inb- id reads as missing", async () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	const root = await inbox.append({ ...once, text: "the root" });
+	const reply = await inbox.append({ ...once, text: "Your yes to x could not be started (it could not be started).", re: root.id });
+	assert.equal(reply.re, root.id, "written when it is set");
+	assert.equal("re" in root, false, "and only then");
+	await answersOver(inbox).say(root.id, "no", { by: "cli" });
+	assert.equal(inbox.list().find((e) => e.id === reply.id)?.re, root.id, "the rewrite of the file kept it");
+	for (const [n, re] of [["a", "cron-abc"], ["b", 5], ["c", "inb-short"], ["d", `inb-${"A".repeat(32)}`]] as const) {
+		fs.appendFileSync(inbox.file, `${JSON.stringify({ id: findingId(`bad-re-${n}`), created_at: AT, status: "new", source: "s", run_id: "r", cwd: "/p", text: "t", re })}\n`);
+		assert.equal("re" in inbox.list().find((e) => e.id === findingId(`bad-re-${n}`))!, false, `re ${JSON.stringify(re)} is dropped`);
+	}
+});
+
 test("pi-loops inbox --json fields do not gain lane", () => {
 	assert.equal((FINDING_FIELDS as readonly string[]).includes("lane"), false);
 	assert.equal(FINDING_FIELDS.length, 10);

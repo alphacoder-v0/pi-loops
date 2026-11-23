@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseTriggerRule } from "../src/triggers.ts";
-import { type WatchPlan, actionDanger, askTitle, planCard, scheduleWords, watchChoice, watchOptions } from "../src/watch-plan.ts";
+import { type Proposal, type WatchPlan, actionDanger, askTitle, planCard, proposalCard, scheduleWords, watchChoice, watchOptions } from "../src/watch-plan.ts";
+import type { LoopJob } from "../src/store.ts";
+import type { DynamicTriggerRule } from "../src/triggers.ts";
 
 const NOW = Date.parse("2026-11-05T10:00:00");
 const rulePlan = (over: Partial<Extract<WatchPlan, { kind: "rule" }>> = {}): WatchPlan => ({ kind: "rule", rule: { condition: "~/build.done appears", action: "run cargo test and show me the result", cwd: "/p" }, where: "chat", once: true, ...over });
@@ -72,7 +74,7 @@ test("askTitle is the card as one line per row: what pi shows in a terminal, and
 	assert.equal(askTitle(daily), ["Set up this watch?", `Runs: every day at 09:00 · next ${daily.next}`, "Does: read TODO.md and tell me about new unchecked items", 'Command: /cron add --stateful "0 9 * * *" read TODO.md and tell me about new unchecked items'].join("\n"));
 	const careful = planCard(rulePlan({ rule: { condition: "the build lands", action: "rm -rf ~/build", cwd: "/p" } }), { now: NOW, pollSecs: 60, home: "/home/me" });
 	assert.match(askTitle(careful), /\nLooks: every minute\n/);
-	assert.match(askTitle(careful), /\nCareful: When this runs nobody is asked: pi-loops refuses rm recursive\+force on \$HOME or ~ and does the safe part\.\n/);
+	assert.match(askTitle(careful), /\nCareful: When this runs and reaches rm recursive\+force on \$HOME or ~, pi-loops does not run it: it asks you in the inbox and goes on without it\.\n/);
 });
 
 test("askTitle indents a value's further lines, so no line of an action can pass for a row of its own", () => {
@@ -111,4 +113,25 @@ test("the card's command line is redacted the way its action is", () => {
 	assert.doesNotMatch(card.command, /sk-abcdefghijklmnopqrstuvwxyz/);
 	assert.doesNotMatch(card.does, /sk-abcdefghijklmnopqrstuvwxyz/);
 	assert.match(card.command, /^\/new-trigger when the build lands, curl/);
+});
+
+test("proposalCard is the page's card of a proposal: askTitle's rows without the Command line, the options in the terminal's order, every text redacted", () => {
+	const proposed = { at: "2026-11-21T10:00:00.000+00:00", session: "s1" };
+	const secret = "sk-abcdefghijklmnopqrstuvwxyz0123456789";
+	const job: LoopJob = { id: "cron-aaaaaaaa", name: `pr-${secret}`, schedule: { kind: "cron", expr: "0 9 * * *" }, prompt: `read TODO.md with Bearer ${secret}`, cwd: "/p", stateful: true, enabled: false, catchUp: true, createdAt: "2026-11-21T10:00:00.000+00:00", proposed };
+	const card = proposalCard({ kind: "schedule", job }, { now: NOW, pollSecs: 600 })!;
+	const title = askTitle(planCard(schedulePlan({ job: { schedule: job.schedule, prompt: job.prompt, cwd: "/p" } }), { now: NOW, pollSecs: 600 }));
+	assert.deepEqual(card.rows.map(([l, v]) => `${l}: ${v}`), title.split("\n").slice(1, -1), "the terminal's rows, the Command line left out");
+	assert.deepEqual(card.rows.map(([l]) => l), ["Runs", "Does"]);
+	assert.deepEqual(card.options, ["Set it up · inbox", "Set it up · inbox · with checks", "Set it up · this conversation", "Cancel"]);
+	assert.deepEqual([card.kind, card.id, card.session, card.at], ["schedule", "cron-aaaaaaaa", "s1", proposed.at]);
+	assert.doesNotMatch(JSON.stringify(card), /sk-abcdefghijklmnopqrstuvwxyz/, "the label and the action are redacted");
+	const rule = { id: `dyn-${"a".repeat(32)}`, condition: "~/build.done appears", action: "rm -rf ~/build", cwd: "/p", enabled: false, fireOnce: true, promoteToChat: true, createdAt: proposed.at, proposed } as DynamicTriggerRule;
+	const ruled = proposalCard({ kind: "rule", rule }, { now: NOW, pollSecs: 60, home: "/home/me" })!;
+	assert.deepEqual(ruled.rows.map(([l]) => l), ["Waits for", "Looks", "Then", "Careful"]);
+	assert.equal(ruled.rows[1][1], "every minute");
+	assert.equal(ruled.options[0], "Set it up · this conversation · once", "the model's choice first");
+	assert.equal(ruled.label, rule.id);
+	const setUp: Proposal = { kind: "schedule", job: { ...job, enabled: true, proposed: undefined } };
+	assert.equal(proposalCard(setUp, { now: NOW, pollSecs: 600 }), undefined, "a record that is not proposed has no card");
 });

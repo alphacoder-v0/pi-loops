@@ -90,6 +90,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 /* An inbox finding as a card: the second paper on the list's, no border; amber only on the flag and
    on the one button to press. Text wraps whole, whatever is in it: nothing in a card scrolls sideways. */
 .icard{background:var(--panel2);border-radius:10px;padding:10px;display:grid;gap:6px;color:var(--fg);font-size:var(--fs-sm);min-width:0;max-width:100%;overflow-wrap:anywhere}
+.icard.reply{margin-left:16px;border-left:2px solid var(--line)}
 .icard .ih{display:flex;gap:6px;align-items:baseline;min-width:0}
 .icard .ih b{font-weight:600;flex:1;min-width:0}
 .icard .flag{color:var(--brand);flex:none}
@@ -402,15 +403,16 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
 dialog h3{margin:0 0 10px;font-size:var(--fs-md);font-weight:650}
 dialog pre{background:var(--side);border:1px solid var(--line);padding:9px 10px;border-radius:8px}
 dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 0 0}
-/* Watch for…: the sentence box and the plan card (docs/design.md decision 24). Inspire tokens only:
-   --panel2 for the card, --brand for Set it up and the chosen chip, colour only for danger. */
+/* Watch for…: the sentence box, its now and needs-more cards, and a proposal's card (docs/design.md
+   decision 24). Inspire tokens only: --panel2 for a card, --brand for the first option, colour only
+   for danger. */
 /* The body scrolls and the buttons stay: Read it in the dialog's own menu below the body, a card's
-   Cancel and Set it up stuck to the bottom of the scrolling body while the card is in view. */
+   buttons stuck to the bottom of the scrolling body while the card is in view. */
 #watch{width:min(540px,calc(100% - 32px));max-height:90dvh;overflow:hidden}
 #watch[open]{display:flex;flex-direction:column}
 #watchBody{overflow:auto;min-height:0;flex:1 1 auto}
 #watch menu{flex:none}
-#watchCards .plan .foot{position:sticky;bottom:0;background:var(--panel2);padding-top:4px;display:grid;gap:6px}
+#watchCards .proposal>.acts{position:sticky;bottom:0;background:var(--panel2);padding-top:4px}
 #watch label{display:block;font-size:var(--fs-sm);color:var(--dim);margin:0 0 6px}
 #watch textarea{width:100%;box-sizing:border-box;min-height:4.5em;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;background:var(--panel);color:var(--fg);resize:vertical}
 #watchEx{display:flex;flex-wrap:wrap;gap:5px;align-items:center;font-size:var(--fs-sm);margin:6px 0 0}
@@ -421,29 +423,18 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 #watchStatus.bad{color:var(--bad)}
 #watchCards{display:grid;gap:10px;margin-top:10px}
 .plan{background:var(--panel2);border-radius:12px;padding:12px 14px;display:grid;gap:10px;font-size:var(--fs-sm);min-width:0;max-width:100%;overflow-wrap:anywhere}
-.plan.stale{opacity:.7}
 .plan .planh{font-weight:600}
-.plan .planh.bad,.plan .bad{color:var(--bad)}
-.plan dl{margin:0;display:grid;grid-template-columns:88px minmax(0,1fr);gap:8px 10px}
-.plan dt{color:var(--dim)}
-.plan dd{margin:0;min-width:0;overflow-wrap:anywhere}
-.plan dd pre{margin:0;padding:8px 10px;background:var(--code);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;font-family:inherit;font-size:var(--fs-sm);color:var(--fg)}
+.plan .planh.bad{color:var(--bad)}
 .plan .dim{color:var(--dim)}
 .plan .ib{white-space:pre-wrap}
-.plan .chips{display:flex;flex-wrap:wrap;gap:6px}
-.plan .chips button{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:4px 11px;min-height:32px;font-size:var(--fs-sm);color:var(--fg);max-width:100%;text-align:left;white-space:normal;overflow-wrap:anywhere}
-.plan .chips button small{display:block;font-size:var(--fs-xs);color:var(--dim)}
-.plan .chips button.on{border-color:var(--brand);background:var(--brand-soft);color:var(--brand)}
-.plan .chips button.on small{color:var(--brand)}
-.plan .cstat{font-size:var(--fs-sm)}
-.plan .cstat:empty{display:none}
-.plan .acts{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
-.plan .acts button{min-height:32px;padding:4px 12px;border-radius:8px;font-size:var(--fs-sm)}
-.plan .acts button:disabled{opacity:.45;cursor:default}
+/* A proposal's card: the inbox question's (.icard), with an action's further lines kept in its row. */
+.icard.proposal dd{white-space:pre-wrap}
+.icard.proposal dd.bad{color:var(--bad)}
+.icard .acts[hidden]{display:none}
 /* The row only carries the card into the conversation: one box, the card's, not a box around a box. */
-.row.plan{max-width:min(100%,44rem);background:none;padding:0;border-radius:0}
-.row.plan>span:empty{display:none}
-@media (max-width:420px){.plan dl{grid-template-columns:minmax(0,1fr)}.plan dt{margin-top:2px}.plan .acts button.primary{flex:1 1 100%}}
+.row.proposal{max-width:min(100%,44rem);background:none;padding:0;border-radius:0}
+.row.proposal>span:empty{display:none}
+@media (max-width:420px){.icard.proposal dl{grid-template-columns:minmax(0,1fr)}.icard.proposal .acts button.primary{flex:1 1 100%}}
 #pairPick{width:100%;margin-bottom:8px}
 .qr{display:flex;justify-content:center;padding:6px 0}
 .qr svg{width:min(62vw,240px);height:auto;background:#fff;padding:8px;border-radius:8px}
