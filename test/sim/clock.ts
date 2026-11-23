@@ -3,7 +3,9 @@
  * and drain rows through claims and loop settlement. The real clock, request store, proof, history,
  * status and settlement rules do the work.
  *
- * What is simulated: time, ticker processes, one conversation lease and the run of a claimed row.
+ * What is simulated: time, ticker processes, one conversation lease, the run of a claimed row, and
+ * in one world in two the follow-up a loop's going run sets (`wake_me`): its row, or its note on a
+ * queued row, and a crash between that write and the follow-up's removal.
  *
  * What is left out: hooks, findings, budgets, slot caps, gates and a window's pi. A window delivers
  * a plain row by writing its mark at once.
@@ -11,7 +13,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { claimable, landed, plainRunId, proofOf, type EngineSinks } from "../../src/engine.ts";
-import { advanceClock, ClockNewer, ClockStore, decideTick, wanted, writeSlot, commitSlot, type Clock, type ClockFile, type SimClockSubject, type SlotWritten, type SpendDecision, type TickDecision, type TickStores } from "../../src/clock.ts";
+import { advanceClock, ClockNewer, ClockStore, commitFollowup, decideTick, wanted, writeFollowup, writeSlot, commitSlot, type Clock, type ClockFile, type FollowupDecision, type FollowupT2, type SimClockSubject, type SlotWritten, type SpendDecision, type TickDecision, type TickStores } from "../../src/clock.ts";
 import { loopLane, type LaneId } from "../../src/lane.ts";
 import { withFileLockSync, writeFileAtomic } from "../../src/lock.ts";
 import { RequestStore, type ClaimedRow, type Row, type UnclaimedRow } from "../../src/requests.ts";
@@ -25,10 +27,14 @@ import { JobStore, type LoopJob, type RunRecord } from "../../src/store.ts";
 import { type Random, weighted } from "./prng.ts";
 
 type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
-export interface Ticker { readonly pid: number; readonly kind: "background" | "window"; alive: boolean; startedAt: number; pending: Array<{ decision: SpendDecision; written?: SlotWritten }> }
-export interface SlotLedger { ids: Set<string>; appends: number; spent: number; commits: number; fires: number; collapses: number; exit?: "delivered" | "stopped" | "dead" | "cancelled" }
-export interface ClockWorld { now: number; readonly jobs: readonly LoopJob[]; readonly tickers: Ticker[]; lease: { holder?: number; epoch: number }; readonly records: RunRecord[]; readonly entries: unknown[]; readonly ledger: Map<string, SlotLedger> }
-export type ClockStep = { readonly do: "tick"; readonly ticker: number } | { readonly do: "write"; readonly ticker: number } | { readonly do: "die" | "start"; readonly ticker: number } | { readonly do: "drain"; readonly lane: LaneId } | { readonly do: "end"; readonly lane: LaneId; readonly how: RunEnd["how"]; readonly dies?: number } | { readonly do: "deliver" } | { readonly do: "lease"; readonly to: number | undefined } | { readonly do: "cancel"; readonly lane: LaneId } | { readonly do: "forget" } | { readonly do: "newer" } | { readonly do: "advance"; readonly ms: number };
+/** A decision a ticker read and has not finished writing: a slot's T2 and T3, or a follow-up's. */
+export type Pending = { decision: SpendDecision; written?: SlotWritten; t2?: undefined } | { decision: FollowupDecision; written?: undefined; t2?: FollowupT2 };
+export interface Ticker { readonly pid: number; readonly kind: "background" | "window"; alive: boolean; startedAt: number; pending: Pending[] }
+export interface SlotLedger { ids: Set<string>; appends: number; spent: number; commits: number; fires: number; collapses: number; exit?: "delivered" | "stopped" | "parked" | "dead" | "cancelled" }
+/** A follow-up a run set (`wake_me`), keyed by its id: the rows a tick put it in. Its runs are read from the records. */
+export interface FollowupLedger { readonly job: string; readonly rows: Set<string>; replaced?: true }
+export interface ClockWorld { now: number; readonly jobs: readonly LoopJob[]; readonly tickers: Ticker[]; lease: { holder?: number; epoch: number }; readonly records: RunRecord[]; readonly entries: unknown[]; readonly ledger: Map<string, SlotLedger>; readonly followups: Map<string, FollowupLedger> }
+export type ClockStep = { readonly do: "tick"; readonly ticker: number } | { readonly do: "write"; readonly ticker: number } | { readonly do: "die" | "start"; readonly ticker: number } | { readonly do: "drain"; readonly lane: LaneId } | { readonly do: "end"; readonly lane: LaneId; readonly how: RunEnd["how"]; readonly dies?: number } | { readonly do: "deliver" } | { readonly do: "lease"; readonly to: number | undefined } | { readonly do: "cancel"; readonly lane: LaneId } | { readonly do: "forget" } | { readonly do: "newer" } | { readonly do: "advance"; readonly ms: number } | { readonly do: "wake"; readonly lane: LaneId; readonly ms: number; readonly quiet: boolean };
 export interface ClockOutcome { steps: string[]; violation?: string; seen: Set<string> }
 
 const JOBS: readonly LoopJob[] = [
@@ -59,6 +65,12 @@ export function checkI1(world: ClockWorld, queues: ReadonlyMap<LaneId, readonly 
 		if (entry.commits && entry.ids.size > 0 && !entry.exit && !row && !hasClaim && entry.spent === 0) return say("the committed slot has no row, run or exit");
 		if (entry.spent && allRows.some((item) => item.id === rowId && item.run && !world.records.some((record) => record.runId === rowId && record.startedAt === item.run!.started_at))) return say("a spent slot's copy was claimed again");
 		if (entry.spent && entry.appends > 1 && entry.ids.size > 1) return say("a spent slot was copied into a second row");
+	}
+	for (const [id, entry] of world.followups) {
+		if (!entry.replaced && entry.rows.size === 0 && readClock(internal, entry.job)?.followup?.id !== id) return `follow-up ${id} of job ${entry.job} left clock.json and is in no row`;
+		if (entry.rows.size > 1) return `follow-up ${id} of job ${entry.job} was put in ${entry.rows.size} rows: ${[...entry.rows].join(", ")}`;
+		const runs = world.records.filter((record) => (record as RunRecordM4b).woken_ids?.includes(id) && ["succeeded", "failed", "stopped"].includes(runEnd(record).how));
+		if (runs.length > 1) return `follow-up ${id} of job ${entry.job} ran ${runs.length} times: ${runs.map((record) => `${record.runId}@${record.startedAt}`).join(", ")}`;
 	}
 	for (const job of world.jobs) {
 		const queue = queues.get(job.stateful ? loopLane(job.id) : job.sessionId!) ?? [];
@@ -100,13 +112,16 @@ export async function play(dir: string, random: Random, steps: number, subject: 
 		sinks: { started: () => undefined, finished: () => undefined, log: () => undefined },
 		holder: () => ({ pid: process.pid, procStart: undefined }),
 	};
-	const world = { now: Date.parse("2026-06-01T12:00:00Z"), jobs: JOBS, tickers: [], lease: { epoch: 1 }, records: [], entries: [], ledger: new Map(), clock, subject, forgotten: false, newer: false } as ClockWorld & { clock: Clock; subject: SimClockSubject; forgotten: boolean; newer: boolean };
+	const world = { now: Date.parse("2026-06-01T12:00:00Z"), jobs: JOBS, tickers: [], lease: { epoch: 1 }, records: [], entries: [], ledger: new Map(), followups: new Map(), clock, subject, forgotten: false, newer: false } as ClockWorld & { clock: Clock; subject: SimClockSubject; forgotten: boolean; newer: boolean };
 	const out: ClockOutcome = { steps: [], seen: new Set() };
 	let nextPid = 100;
 	// In one world in three a second process ticks the loops too: pi-loops in the background that stalled and resumed beside the one that took its place (design, the table T1 to T3: two processes that tick at once).
 	const twoBackgrounds = random() % 3 === 0;
 	// The person's catch-up setting: off in half the worlds, so a slot missed while no ticker ran is skipped.
 	const catchUp = random() % 2 === 0;
+	// In one world in two the loops' runs set follow-ups (`wake_me`). In those worlds clock.json is not deleted (that drops the follow-up) or replaced by a newer version (that stops every tick).
+	const wakes = random() % 2 === 0;
+	const woke = new Set<string>();
 	for (let i = 0; i < 3; i++) world.tickers.push({ pid: ++nextPid, kind: i === 0 || (i === 1 && twoBackgrounds) ? "background" : "window", alive: true, startedAt: world.now, pending: [] });
 	world.lease.holder = world.tickers[1].pid;
 	const queuesNow = (): Map<LaneId, CountedRow[]> => new Map(lanes.map((lane) => [lane, requests.list(lane) as CountedRow[]]));
@@ -134,7 +149,11 @@ export async function play(dir: string, random: Random, steps: number, subject: 
 		const histories = runHistory(world.records);
 		for (const [jobId, lane] of selected) read.set(jobId, { rows: requests.list(lane) as CountedRow[], history: histories.get(jobId), cwdMissing: false });
 		const decisions = decideTick({ jobs: JOBS, clock: file, view: { now: world.now, startedAt: ticker.startedAt, tickMs: 60_000, catchUp, kind: ticker.kind, self: { pid: ticker.pid, instance: String(ticker.pid), version: "sim" }, mine, read } });
-		ticker.pending = decisions.flatMap((decision) => {
+		ticker.pending = decisions.flatMap((decision): Pending[] => {
+			if (decision.do === "followup") {
+				if (decision.write === "none") out.seen.add(`follow-up ${decision.why}`);
+				return [{ decision }];
+			}
 			if (!(decision.do === "row" || decision.do === "collapse" || decision.do === "cursor" || decision.do === "skip")) return [];
 			const history = read.get(decision.job)?.history;
 			if (history?.spent.has(plainRunId(decision.job, decision.slot))) spentWhenRead.add(decision);
@@ -152,9 +171,11 @@ export async function play(dir: string, random: Random, steps: number, subject: 
 		// A drain runs when a lane has rows, and a run ends where one has a claim: most steps go to such a lane, a few to any.
 		const busy = lanes.filter((l) => requests.list(l).length > 0);
 		const claimed = lanes.slice(0, 2).filter((l) => requests.list(l).some((row) => row.run));
+		// A run calls wake_me once.
+		const waking = claimed.filter((l) => requests.list(l).some((row) => row.run && !woke.has(row.run.id)));
 		const lane = busy.length && random() % 4 !== 0 ? busy[random() % busy.length] : lanes[random() % lanes.length];
 		const loop = claimed.length && random() % 4 !== 0 ? claimed[random() % claimed.length] : lanes.slice(0, 2)[random() % 2];
-		const choices: Array<readonly [ClockStep["do"], number]> = [["tick", stalls ? 0 : 5], ["write", stalls ? 1 : ticker.pending.length ? 8 : 1], ["die", !ticker.alive ? 0 : ticker.pending.some((item) => item.written) ? 6 : 2], ["start", !ticker.alive ? 3 : 0], ["drain", 3], ["end", 2], ["deliver", 2], ["lease", 2], ["cancel", 1], ["forget", subject.forget ? 1 : 0], ["newer", subject.newer ? 1 : 0], ["advance", 4]];
+		const choices: Array<readonly [ClockStep["do"], number]> = [["tick", stalls ? 0 : 5], ["write", stalls ? 1 : ticker.pending.length ? 8 : 1], ["die", !ticker.alive ? 0 : ticker.pending.some((item) => item.t2) ? 12 : ticker.pending.some((item) => item.written) ? 6 : 2], ["wake", wakes && waking.length ? 6 : 0], ["start", !ticker.alive ? 3 : 0], ["drain", 3], ["end", 2], ["deliver", 2], ["lease", 2], ["cancel", 1], ["forget", subject.forget && !wakes ? 1 : 0], ["newer", subject.newer && !wakes ? 1 : 0], ["advance", 4]];
 		const action = weighted(choices, random());
 		switch (action) {
 			case "tick": return { do: "tick", ticker: world.tickers.indexOf(ticker) };
@@ -166,6 +187,7 @@ export async function play(dir: string, random: Random, steps: number, subject: 
 			case "deliver": return { do: "deliver" };
 			case "lease": return { do: "lease", to: live.length ? live[random() % live.length].pid : undefined };
 			case "cancel": return { do: "cancel", lane };
+			case "wake": return { do: "wake", lane: waking[random() % waking.length], ms: [5_000, 30_000, 90_000][random() % 3], quiet: random() % 4 === 0 };
 			case "forget": return { do: "forget" };
 			case "newer": return { do: "newer" };
 			default: return { do: "advance", ms: [60_000, 5 * 60_000, 30 * 60_000][random() % 3] };
@@ -178,6 +200,21 @@ export async function play(dir: string, random: Random, steps: number, subject: 
 				case "write": {
 					const ticker = world.tickers[step.ticker]; const next = ticker.pending[0];
 					if (!ticker.alive || !next) break;
+					if (next.decision.do === "followup") {
+						const decision = next.decision;
+						if (next.t2 === undefined) {
+							next.t2 = writeFollowup(decision, store);
+							const item = world.followups.get(decision.followup.id);
+							if (item && next.t2 === "wrote" && decision.write === "row") { item.rows.add(decision.row.id); out.seen.add("follow-up row written"); }
+							if (item && next.t2 === "added" && decision.write === "onto") { item.rows.add(decision.onto); out.seen.add("follow-up joins a queued row"); }
+							out.steps.push(`ticker ${ticker.pid} T2 follow-up ${decision.job} ${decision.followup.id} ${decision.write}: ${next.t2}`);
+						} else {
+							const result = commitFollowup(decision, next.t2, store, world.now);
+							if ("t3" in result) out.steps.push(`ticker ${ticker.pid} T3 follow-up ${decision.job} ${decision.followup.id}: ${result.t3}`);
+							ticker.pending.shift();
+						}
+						break;
+					}
 					if (!next.written) {
 						if (world.tickers.some((other) => other !== ticker && other.alive && other.pending.some((item) => item.written))) out.seen.add("two tickers cross T2 and T3");
 						next.written = writeSlot(next.decision, store);
@@ -203,7 +240,7 @@ export async function play(dir: string, random: Random, steps: number, subject: 
 					}
 					break;
 				}
-				case "die": { const ticker = world.tickers[step.ticker]; if (ticker.alive) { if (ticker.pending.some((item) => item.written)) out.seen.add("dies between T2 and T3"); ticker.alive = false; ticker.pending = []; out.steps.push(`ticker ${ticker.pid} dies`); } break; }
+				case "die": { const ticker = world.tickers[step.ticker]; if (ticker.alive) { if (ticker.pending.some((item) => item.written)) out.seen.add("dies between T2 and T3"); if (ticker.pending.some((item) => item.t2)) out.seen.add("dies between a follow-up's row and its removal"); ticker.alive = false; ticker.pending = []; out.steps.push(`ticker ${ticker.pid} dies`); } break; }
 				case "start": { const ticker = world.tickers[step.ticker]; world.tickers[step.ticker] = { ...ticker, pid: ++nextPid, alive: true, startedAt: world.now, pending: [] }; out.steps.push(`ticker restarts as ${world.tickers[step.ticker].pid}`); break; }
 				case "drain": { if (!step.lane.startsWith("@cron-")) break; const row = requests.list(step.lane).find((item): item is UnclaimedRow => item.kind === "input" && !item.run); if (!row) break; if (landed(row, prove(step.lane))) { const proofRun = world.records.filter((record) => record.runId === row.id).at(-1); if (proofRun && !["succeeded", "failed", "stopped"].includes(runEnd(proofRun).how)) fail(`job ${JOBS.find((job) => loopLane(job.id) === row.lane)?.id}, slot ${slotFromId(row.id)}: an owed copy left without a run`); requests.remove(step.lane, [row.id]); markExit(row.id, "delivered"); if (proofRun) out.seen.add("spent copy leaves without a run"); out.steps.push(`proved ${row.id} leaves`); break; } const run = { id: row.id, pid: 900, started_at: stamp(world.now) } as ClaimedRow["run"] & { [key: string]: unknown }; if (requests.claim(step.lane, row.id, run as never)) { if (orphans.has(row.id)) { out.seen.add("orphan runs once"); orphans.delete(row.id); } const abandoned = world.records.find((record) => record.runId === row.id && !["succeeded", "failed", "stopped"].includes(runEnd(record).how)); if (abandoned) out.seen.add("owed copy runs"); out.steps.push(`claims ${row.id}`); } break; }
 				case "end": { const claimed = requests.list(step.lane).find((row): row is ClaimedRow => !!row.run); if (!claimed) break; out.steps.push(`end action ${step.how} for ${claimed.id} at ${claimed.run.started_at}`); await close(claimed, step.how, step.dies); break; }
@@ -213,6 +250,21 @@ export async function play(dir: string, random: Random, steps: number, subject: 
 				case "forget": subject.forget?.(); out.steps.push("clock.json is deleted"); world.forgotten = true; world.newer = false; out.seen.add("clock forgotten"); break;
 				case "newer": subject.newer?.(); out.steps.push("clock.json is replaced by a newer version"); world.newer = true; out.seen.add("clock newer"); break;
 				case "advance": world.now += step.ms; break;
+				case "wake": {
+					// The loop's going run calls wake_me: a second call replaces the first.
+					const running = requests.list(step.lane).find((row) => row.run);
+					const job = JOBS.find((item) => loopLane(item.id) === step.lane);
+					if (!running?.run || !job) break;
+					woke.add(running.run.id);
+					const before = subject.read().jobs[job.id]?.followup;
+					const replaced = before && world.followups.get(before.id);
+					if (replaced) replaced.replaced = true;
+					clock.setFollowup(job.id, { at: stamp(world.now + step.ms), note: `look again (${running.run.id} at ${world.now})`, set_by: running.run.id }, step.quiet, world.now);
+					const set = subject.read().jobs[job.id]?.followup;
+					if (set) world.followups.set(set.id, { job: job.id, rows: new Set() });
+					out.steps.push(`run ${running.run.id} of ${job.id} sets follow-up ${set?.id} for ${stamp(world.now + step.ms)}${step.quiet ? ", quiet until then" : ""}`);
+					break;
+				}
 			}
 		} catch (error) {
 			if (!(error instanceof ClockNewer)) throw error;
@@ -222,7 +274,7 @@ export async function play(dir: string, random: Random, steps: number, subject: 
 	async function close(row: ClaimedRow, how: RunEnd["how"], dies?: number): Promise<void> {
 		const job = JOBS.find((item) => loopLane(item.id) === row.lane)!;
 		const previous = world.records.find((record) => record.runId === row.id && record.startedAt === row.run.started_at);
-		const record: RunRecordM4b = previous as RunRecordM4b ?? { runId: row.id, row: row.id, jobId: job.id, stateful: job.stateful, cwd: job.cwd, pid: row.run.pid, startedAt: row.run.started_at, finishedAt: stamp(world.now), ok: how === "succeeded", ...(how === "failed" ? { error: "failed" } : {}), ...(how === "stopped" ? { aborted: true as const, stoppedBy: "person" as const } : how === "handed-back" ? { aborted: true as const } : how === "interrupted" ? { interrupted: true as const } : {}), findings: 0, droppedFindings: 0, stateUpdated: false, ordinal: world.records.filter((entry) => entry.jobId === job.id && (entry.ok || !!entry.error)).length + 1 };
+		const record: RunRecordM4b = previous as RunRecordM4b ?? { runId: row.id, row: row.id, jobId: job.id, stateful: job.stateful, cwd: job.cwd, pid: row.run.pid, startedAt: row.run.started_at, finishedAt: stamp(world.now), ok: how === "succeeded", ...(how === "failed" ? { error: "failed" } : {}), ...(how === "stopped" ? { aborted: true as const, stoppedBy: "person" as const } : how === "handed-back" ? { aborted: true as const } : how === "interrupted" ? { interrupted: true as const } : {}), findings: 0, droppedFindings: 0, stateUpdated: false, ordinal: world.records.filter((entry) => entry.jobId === job.id && (entry.ok || !!entry.error)).length + 1, ...(row.payload?.woken?.length ? { cause: "wake" as const, woken: row.payload.woken } : {}), ...(row.payload?.woken_ids?.length ? { woken_ids: row.payload.woken_ids } : {}) };
 		const item = ledger(job.id, slotFromId(row.id));
 		if (!previous) {
 			world.records.push(record);
@@ -234,6 +286,9 @@ export async function play(dir: string, random: Random, steps: number, subject: 
 		if (dies === undefined) {
 			try { await closeLoopRun(row, closeDeps, world.now, record); }
 			catch (error) { if (!(error instanceof ClockNewer)) throw error; }
+			// The exit the real closing wrote, as the cut path below marks it: a loop's row parked at its third interrupted attempt is one.
+			const last = plan[plan.length - 1];
+			if (last.write === "row" && !requests.list(row.lane).some((item) => item.id === row.id)) { if (last.fate.do === "leave") markExit(row.id, last.fate.exit); else if (last.fate.do === "dead") markExit(row.id, "dead"); }
 			out.seen.add(`end ${how}`);
 			out.steps.push(`closing ${row.id} as ${how}`);
 			return;

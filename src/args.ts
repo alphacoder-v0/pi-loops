@@ -3,7 +3,7 @@
  *
  *   /cron add [--stateful|--loop] [--inject] [--name <n>] [--cwd <dir>] [--model <m>] [--thinking <lvl>]
  *             [--tools a,b] [--timeout <dur>] [--catchup|--no-catchup] [--verify] [--checker-model <m>]
- *             <schedule> <prompt…>
+ *             [--gate '<command>'] <schedule> <prompt…>
  *
  * `--loop` is `--stateful` said the way the docs say it; `--inject` is the default (a plain job)
  * said out loud, which is what a person reaches for when they are undoing a `--stateful` they typed.
@@ -63,9 +63,11 @@ export interface AddArgs {
 	catchUp?: boolean;
 	verify: boolean;
 	checkerModel?: string;
+	/** A loop's gate (design 3.3): one command looked at before each run; no model call while it prints the same. */
+	gate?: string;
 }
 
-const VALUE_FLAGS = new Set(["--name", "--cwd", "--model", "--thinking", "--tools", "--timeout", "--checker-model"]);
+const VALUE_FLAGS = new Set(["--name", "--cwd", "--model", "--thinking", "--tools", "--timeout", "--checker-model", "--gate"]);
 
 /**
  * The usage line for `/cron add`, printed by the errors below — one line, because it arrives as a
@@ -106,9 +108,14 @@ export function parseAddArgs(input: string, now: number = Date.now()): AddArgs {
 			else if (flag === "--tools") out.tools = val.split(",").map((s) => s.trim()).filter(Boolean);
 			else if (flag === "--timeout") out.timeoutMs = parseDuration(val);
 			else if (flag === "--checker-model") out.checkerModel = val;
+			else if (flag === "--gate") {
+				out.gate = val;
+				out.stateful = true; // a gate holds a loop's runs; a plain job's turn is not gated
+			}
 		} else throw new Error(`unknown flag ${flag}`);
 		idx++;
 	}
+	if (out.gate !== undefined && !out.stateful) throw new Error("--gate is for a loop: drop --inject");
 	if (idx >= tokens.length) throw new Error(`missing schedule; ${CRON_ADD_USAGE}`);
 
 	let scheduleTokens: Token[];
@@ -150,6 +157,10 @@ export interface SetArgs {
 	prompt?: string;
 	/** Jobs only: already parsed, so a typo is rejected before it can be stored. */
 	schedule?: Schedule;
+	/** Jobs only: `--wake -` removes what a loop set for itself with `wake_me` (its follow-up and its quiet). */
+	wake?: null;
+	/** Loops only: `--gate '<command>'` sets the loop's gate, `--gate -` removes it. */
+	gate?: string | null;
 }
 
 export interface SetOptions {
@@ -163,7 +174,7 @@ export interface SetOptions {
  * `--model -` (or `current`) removes the pin.
  */
 export function parseSetArgs(input: string, opts: SetOptions = {}): SetArgs {
-	const usage = `usage: /cron|/triggers set <id> [--model <provider/id>|-] [--thinking <level>|-] [--timeout <dur>|-] [--name <n>|-]${opts.job ? ' [--tools a,b|-] [--prompt "<text>"] [--schedule "<expr>"]' : ""}`;
+	const usage = `usage: /cron|/triggers set <id> [--model <provider/id>|-] [--thinking <level>|-] [--timeout <dur>|-] [--name <n>|-]${opts.job ? ' [--tools a,b|-] [--prompt "<text>"] [--schedule "<expr>"] [--wake -] [--gate \'<command>\'|-]' : ""}`;
 	const tokens = tokenize(input);
 	const out: SetArgs = { ref: "" };
 	let touched = 0;
@@ -189,6 +200,13 @@ export function parseSetArgs(input: string, opts: SetOptions = {}): SetArgs {
 		// A plain job's `--tools` was inert in 0.22 and caps its turns since 0.23: `-` is how such a job
 		// is uncapped without remove-and-re-add. A rule has no tools of its own.
 		else if (opts.job && t === "--tools") out.tools = clear ? null : val.split(",").map((s) => s.trim()).filter(Boolean);
+		// A wake is the loop's to set (`wake_me`); a person can only take it away.
+		else if (opts.job && t === "--wake") {
+			if (val !== "-") throw new Error("--wake takes - : it removes the wake a loop set for itself (a loop sets one with wake_me)");
+			out.wake = null;
+		}
+		// A gate is a person's to set (design 3.3); `-` unquoted removes it, as `-` clears a pin.
+		else if (opts.job && t === "--gate") out.gate = val === "-" && !arg.quoted ? null : val;
 		// Rewording a loop or moving it to another hour used to mean remove-and-re-add, which mints a
 		// new id — and the notes a stateful loop has been accumulating live at `state/<id>.md`.
 		else if (opts.job && (t === "--prompt" || t === "--schedule")) {

@@ -80,8 +80,62 @@ All notable changes to pi-loops are documented here. The format follows
 - **A loop's notes file from 0.24.2 needs no conversion.** `state/<id>.md` is read as it is. A
   file edited by hand to more than 2000 characters, which 0.24.2 cut when it read it, is now read
   whole, and the loop's next run writes it back under the cap.
+- **A rule that waits for a path gets a `gate` field, and `triggers.json` stays version 1.** The
+  first start of this version gives each rule that has only `precheck` a `gate` with the same path.
+  A rule keeps its `gate` when it has one. A new path rule is written with both fields, so 0.24.2
+  still reads the path and still makes no model call while it is absent. 0.24.2 keeps the `gate`
+  field when it writes the file. 0.24.2 ignores a gate that is not a path: such a rule costs it one
+  model call each poll, as a rule with no gate does.
+
+### Added
+
+- **A loop sets one wake for itself with `wake_me`.** Every run of a loop has the tool, whatever the
+  job's `--tools` say. `wake_me({ when, note, quiet })` runs the loop once more at `when` (`in 20m`,
+  or `at <ISO time with its offset>`), and the run reads `note` in a new `[woken]` block of its
+  prompt. With `quiet`, the loop's scheduled runs before that time are skipped. A wake is 60 seconds
+  to 7 days ahead; a second call replaces the first; at most 24 runs in 24 hours start from wakes.
+  A wake that comes due while a scheduled run waits joins that run. `/cron` and the page's loop row
+  show `next wake …` and `quiet until …`; `/cron set <ref> --wake -` and the row's ✕ remove them;
+  `/cron runs` says `woke itself: "<note>"`. The loop prompt's output protocol has one more line,
+  about `wake_me`. See docs/loops.md, "A loop wakes itself".
+- **A loop can have a gate: no model call while nothing changed.** `/cron add --gate '<command>'`,
+  `/cron set <ref> --gate '<command>'|-` and a recipe job's `gate` key set one command that runs
+  before each scheduled run, in the loop's directory: the dangerous-command policy first, 5 seconds,
+  the first 4000 characters of its output, at most once a minute for each loop. While it prints what
+  the last gated run saw, the slot is decided and nothing runs: no row, no run, no model call, and
+  one look more is counted in `clock.json`. Any other reading is stored in `events.jsonl` (source
+  `gate:<job id>`) before the row, which names it; the run reads it in a new `[gate]` block of its
+  prompt, and the reading becomes the gate's `seen` when the run ends without a failure. A look that
+  fails runs the loop as a loop with no gate. `/cron` says `gate: `<command>`: the same for N looks
+  since 09:00; no model call until it changes`, or `gate failing: <why>; <name> runs without the
+  gate until it works`; the page's loop row and `cron_list` say the same. `cron_create` and
+  `new_trigger` take `gate` only where the call proposes: the card shows it in a `Checks first` row.
+  A rule's command gate runs the same way in its check. A gate is refused where it is set, and an
+  imported archive's gate is dropped with a note, when the policy would refuse or ask about it in an
+  unattended run (the loops directory included; `[danger] allow` is not, only a look uses it), or
+  when it would not show as itself: a line break, a control or format character (a terminal escape,
+  a bidi override, a zero-width space), or a part that reads as a secret. Every surface shows a gate
+  whole, and the text beside it with those characters taken out: each line of `/cron`, `/cron runs`,
+  `/triggers rules` and `cron_list`'s text is cleaned as its last step, whichever field it shows.
+  The question that enables imported automation lists each gate it brings, and
+  `pi-loops import --activate-triggers=on` prints each gate before it enables anything.
+  `pi-loops inspect` shows each loop's and rule's gate. A look kills its whole process group when it
+  ends. `pi-loops inspect` and `import` also take every format character (Unicode `Cf`) and line
+  separator out of what they print from an archive, where they took out only the bidi ones.
+  `pi-loops inbox` lines now drop Unicode `Cf` characters too (emoji joiners among them), as
+  `inspect` and `import` do. 0.24.2 ignores a loop's gate and runs every
+  slot, and checks a rule with a command gate with the model each poll. `CONTRACT.md` 2.2 lists
+  `gate` among a recipe job's optional keys. See docs/loops.md, "A gate: no model call while nothing
+  changed".
 
 ### Changed
+
+- **A rule that waits for a path keeps its last look in `clock.json`.** How many looks found the
+  path absent, and the last look, are no longer in the memory of the process. A restart of pi-loops
+  writes no second `waiting` row, and the page shows the next look after a restart. A look that lets
+  the rule through is stored as it was taken in `events.jsonl` (source `gate:<rule id>`) before the
+  check starts, and the check's `running` row names it in `details.events`. A look that finds the
+  path absent is only counted.
 
 - **A loop's notes are cut at the write, and never silently (#214).** When a run writes notes over
   2000 characters, `state/<id>.md` keeps the leading whole lines that fit and ends with a line that
@@ -130,7 +184,7 @@ All notable changes to pi-loops are documented here. The format follows
   `Cancelled. Nothing runs.` The conversation list counts a proposal with the decisions that need
   you. Before, the tools asked in the same call and created at once, and the page drew pi's
   question as a card with choice chips that gave up after thirty minutes. A sub-agent's `cron_create`, `cron_create` in a scheduled turn, `/cron add` and a recipe
-  still create enabled jobs; there, a `gate` argument is refused with `a gate needs a person`. A
+  still create enabled jobs; there, a model's `gate` argument is refused with `a gate needs a person`. A
   `jobs.json` and a `triggers.json` that 0.24.2 wrote have no proposals: there is nothing to
   convert. See "A proposed watch" in docs/loops.md and docs/triggers.md.
 - **A goal that waits on you resumes with your answer.** When the evaluator says only a person can

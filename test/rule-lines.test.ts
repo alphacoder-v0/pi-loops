@@ -58,3 +58,15 @@ test("/triggers status says in plain words what checks the rules, what it last f
 		"  ! disk full",
 	]);
 });
+
+test("[clean-at-sink] no /triggers rules line carries a control or format character, whichever field held it", () => {
+	const nasty = "a\u001b[2J‮b​c\u009bd";
+	const rules = [
+		rule({ id: `dyn-${nasty}`, condition: `c ${nasty}`, action: `x ${nasty}`, gate: { kind: "command", command: `gh ${nasty}` } } as Partial<DynamicTriggerRule>),
+		rule({ cwd: `/home/dev/o ${nasty}`, createdBy: { sessionId: `s ${nasty}`, cwd: "/" }, proposed: { at: "", session: SESSION } } as Partial<DynamicTriggerRule>),
+	];
+	const lines = [...ruleLines(rules, opts), ...ruleLines(rules, { ...opts, numbered: false })];
+	const text = lines.join("\n");
+	for (const word of ["c a", "x a", "o a", "s a"]) assert.ok(text.includes(word), `${word}: ${text}`);
+	for (const line of lines) assert.equal(/[\p{Cc}\p{Cf}]/u.test(line), false, JSON.stringify(line));
+});

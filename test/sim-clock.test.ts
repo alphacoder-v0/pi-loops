@@ -1,5 +1,6 @@
 /**
- * A seeded simulation of the clock and I1 through tickers, crashes, row runs and loop settlement.
+ * A seeded simulation of the clock and I1 through tickers, crashes, row runs, loop settlement and
+ * the follow-ups a loop's run sets.
  *
  *   SIM_SEED       first seed (default 1; schedule n runs seed SIM_SEED + n)
  *   SIM_SCHEDULES  schedules to run (default 400)
@@ -21,7 +22,7 @@ const FIRST_SEED = setting("SIM_SEED", 1);
 const SCHEDULES = setting("SIM_SCHEDULES", 400);
 const STEPS = setting("SIM_STEPS", 100);
 
-test("[I1] one row per job and slot through tickers, crashes and settlement", async () => {
+test("[I1] one row per job and slot, and one run per follow-up, through tickers, crashes and settlement", async () => {
 	const seen = new Set<string>();
 	for (let n = 0; n < SCHEDULES; n++) {
 		const seed = FIRST_SEED + n;
@@ -34,7 +35,7 @@ test("[I1] one row per job and slot through tickers, crashes and settlement", as
 		}
 	}
 	if (SCHEDULES >= 400) {
-		for (const must of ["dies between T2 and T3", "two tickers cross T2 and T3", "lost T3", "not-holder T3", "owed copy runs", "collapse counted", "collapse counted-before", "loop collapse leaves fired", "end succeeded", "end failed", "end stopped", "end handed-back", "end interrupted", "closing cut after record", "closing cut after job patch", "closing cut after successor", "closing cut after row", "clock forgotten", "clock newer"]) assert.ok(seen.has(must), `no schedule reached: ${must}`);
+		for (const must of ["dies between T2 and T3", "two tickers cross T2 and T3", "lost T3", "not-holder T3", "owed copy runs", "collapse counted", "collapse counted-before", "loop collapse leaves fired", "end succeeded", "end failed", "end stopped", "end handed-back", "end interrupted", "closing cut after record", "closing cut after job patch", "closing cut after successor", "closing cut after row", "clock forgotten", "clock newer", "follow-up row written", "follow-up joins a queued row", "dies between a follow-up's row and its removal"]) assert.ok(seen.has(must), `no schedule reached: ${must}`);
 	}
 	console.log(`${SCHEDULES} schedules of ${STEPS} steps; reached: ${[...seen].sort().join(", ")}`);
 });

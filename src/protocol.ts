@@ -5,6 +5,7 @@
  */
 import * as path from "node:path";
 import { formatDuration } from "./schedule.ts";
+import { gateShown } from "./gate.ts";
 
 export const LOOP_STATE_MAX_CHARS = 2000;
 export const INBOX_TEXT_MAX_CHARS = 500;
@@ -32,6 +33,14 @@ export const REPORTED_CLOSE = "[/reported]";
 /** The block after `[reported]` that lists the loop's questions that wait for a person (`askedLines`). */
 export const ASKED_OPEN = "[asked]";
 export const ASKED_CLOSE = "[/asked]";
+/** The block before the notes that says why a run that is not a plain slot started: the notes of the loop's follow-ups (`Row.payload.woken`). */
+export const WOKEN_OPEN = "[woken]";
+export const WOKEN_CLOSE = "[/woken]";
+/** The block after `[asked]` that shows what the loop's gate read this time (design 3.2), from the event the row names. */
+export const GATE_OPEN = "[gate]";
+export const GATE_CLOSE = "[/gate]";
+/** The protocol's line about `wake_me`, the tool every loop run has (src/tools.ts `wakeMeTool`). */
+export const WAKE_ME_LINE = "- To be woken before your next scheduled run, or to skip scheduled runs until a time, call wake_me.";
 /**
  * The blocks between the notes and the job text, in their order. The last pair is the block a 0.24.2
  * prompt carried there: a transcript that version wrote still shows its job text alone.
@@ -41,6 +50,8 @@ const DATA_BLOCKS: ReadonlyArray<readonly [string, string]> = [
 	[REPORTED_OPEN, REPORTED_CLOSE],
 	[ASKED_OPEN, ASKED_CLOSE],
 	["[dismissed]", "[/dismissed]"],
+	[WOKEN_OPEN, WOKEN_CLOSE],
+	[GATE_OPEN, GATE_CLOSE],
 ];
 
 /**
@@ -85,6 +96,31 @@ export interface LoopPromptMeta {
 	reported?: readonly string[];
 	/** `askedLines` of the loop's lane. */
 	asked?: readonly string[];
+	/** The row's `woken`: one note per follow-up that started this run. */
+	woken?: readonly string[];
+	/** `gateLines` of the reading the row names (`payload.events`): what the loop's gate read this time. */
+	gate?: readonly string[];
+}
+
+/** What a gate read, as the event stores it (src/gate.ts `lookCommand`). */
+export interface GateReadingText {
+	command: string;
+	exit?: number | null;
+	stdout?: string;
+	why?: string;
+	refused?: string;
+}
+
+/**
+ * The `[gate]` block's lines: the command, its exit code and its output as it was read (at most
+ * 4000 characters, the gate's cap), or why the look failed, which is why the gate did not hold the run.
+ */
+export function gateLines(r: GateReadingText): string[] {
+	const command = `command: ${gateShown(r.command)}`;
+	const failed = r.refused !== undefined ? `refused: ${r.refused}` : r.why;
+	if (failed !== undefined) return [command, `the gate failed (${failed}), so it did not hold this run; look for yourself what changed`];
+	const out = r.stdout ?? "";
+	return [command, `exit code: ${r.exit ?? "none"}`, out.trim() ? "output:" : "output: (none)", ...(out.trim() ? out.replace(/\n$/, "").split("\n") : [])];
 }
 
 export function composeLoopPrompt(action: string, previousState: string | undefined, meta?: LoopPromptMeta): string {
@@ -99,6 +135,8 @@ export function composeLoopPrompt(action: string, previousState: string | undefi
 	const files = dataBlock(NOTES_FILES_OPEN, NOTES_FILES_CLOSE, `longer notes you keep as files in ${dir ?? "your notes directory"}; read one when you need it`, meta?.notesFiles);
 	const reported = dataBlock(REPORTED_OPEN, REPORTED_CLOSE, "what this loop already told a person, and what they did with it; do not report these again unless what they describe has changed", meta?.reported);
 	const asked = dataBlock(ASKED_OPEN, ASKED_CLOSE, "questions of yours that wait for a person; do not ask them again", meta?.asked);
+	const woken = dataBlock(WOKEN_OPEN, WOKEN_CLOSE, "why this run started", meta?.woken?.map((note) => `you asked to be woken: ${note}`));
+	const gate = dataBlock(GATE_OPEN, GATE_CLOSE, "what this loop's gate reads now, which your last run that ended well did not see", meta?.gate);
 	const header = meta?.name ? `You are running the recurring loop "${meta.name}"` : "You are running a recurring loop";
 	/**
 	 * The run time, and how to write one.
@@ -116,6 +154,7 @@ export function composeLoopPrompt(action: string, previousState: string | undefi
 	return [
 		`${header}${when}. This is a background run: nobody is watching, and your final reply is parsed by a program.${limit}`,
 		"",
+		...woken,
 		"[loop-state] (your notes from the previous run of this recurring job)",
 		state,
 		LOOP_STATE_CLOSE,
@@ -123,12 +162,14 @@ export function composeLoopPrompt(action: string, previousState: string | undefi
 		...files,
 		...reported,
 		...asked,
+		...gate,
 		action.trim(),
 		"",
 		OUTPUT_PROTOCOL_HEADING,
 		`- End your reply with <loop-state>notes for the next run</loop-state>: it REPLACES the saved notes; keep it under ${LOOP_STATE_MAX_CHARS} characters and make it what your next run needs and cannot look up again (baselines, watermarks, decisions). What you reported is listed for you under [reported]: do not keep ids of reported things here.${dir ? ` Put anything longer in a file under ${dir} and name the file in your notes.` : ""}`,
 		`- For each finding a human should act on, emit <inbox>one concise line</inbox>, at most ${INBOX_TAGS_PER_RUN} per run and ${INBOX_TEXT_MAX_CHARS} characters each. No findings → no inbox tags; do not invent work.`,
 		"- When a finding needs a person to decide, write it as <inbox><the decision> · waits: <what waits on it> · if not: <what happens if nobody acts></inbox>.",
+		WAKE_ME_LINE,
 		"- Keep everything after the last tool call short so the tags are not truncated.",
 	].join("\n");
 }

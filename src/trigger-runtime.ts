@@ -19,7 +19,10 @@ import type { Inbox } from "./inbox.ts";
 import { type LaneId, parseLane } from "./lane.ts";
 import { failurePause, FAILING_AFTER } from "./backoff.ts";
 import { stamp } from "./schedule.ts";
-import { type Look, PathLooks, watchOf } from "./path-precheck.ts";
+import { type CommandGate, GATE_LOOK_EVERY_MS, type GatePolicy, type PathGate, type PathState, PathLooks, gateDecision, gateOf, lookCommand, pathReading } from "./gate.ts";
+import type { GateClocks } from "./clock.ts";
+import { EventLog } from "./events.ts";
+import { clockStore } from "./stores.ts";
 import {
 	DEFAULT_TRIGGER_POLL_INTERVAL_SECS,
 	DedupWindow,
@@ -116,9 +119,31 @@ export interface TriggerRuntimeOptions {
 	inbox?: Pick<Inbox, "appendOnce" | "pinnedTranscripts">;
 	/** The `stat` a waiting rule's look uses; tests inject one that hangs. */
 	stat?: (p: string) => Promise<unknown>;
+	/** Where a gate reading that opens a check is stored before the check runs; omitted, `events.jsonl` beside the rules, written as a window. */
+	events?: Pick<EventLog, "append">;
+	/** Where a rule's gate readings are counted; omitted, `clock.json` beside the rules. */
+	clock?: GateClocks;
+	/** What a rule's command gate is judged by; omitted, the loops directory beside the rules with no allowlist. */
+	gatePolicy?: () => GatePolicy;
 }
 
 export const DEFAULT_MAX_CONCURRENT_CHECKS = 3;
+
+/** What the gates let through to a check: the rules whose path is there, and the stored readings (`events.jsonl` ids) that opened it. */
+export interface GateLet {
+	prechecked?: string[];
+	events?: string[];
+	/** The command readings that opened it: each rule's `seen` once the check ends without a failure. */
+	seen?: { rule: string; digest: string; at: string }[];
+}
+
+/** One gated rule's look this poll: whether it opens the check, the event that stored it, and what `seen` becomes when the check does not fail. */
+interface RuleLook {
+	decision: "wake" | "hold";
+	state?: PathState;
+	event?: string;
+	seen?: { rule: string; digest: string; at: string };
+}
 
 /** The ticker's interval, which `tick` here runs on (src/ticker.ts, 30 s): no poll comes sooner. */
 const POLL_TICK_MS = 30_000;
@@ -265,10 +290,17 @@ export class TriggerRuntime {
 	readonly lastPolls = new Map<string, LastPoll>();
 	dedupedCount = 0;
 	cycleSuppressedCount = 0;
-	/** The `stat`s of rules that wait for a path (src/path-precheck.ts): one in flight per rule. */
+	/** The `stat`s of rules that wait for a path (src/gate.ts): one in flight per rule. */
 	private readonly looks: PathLooks;
-	/** Each waiting rule's last look in this process and when it was made; the audit row is written on a change only. */
-	private readonly lastLooks = new Map<string, { look: Look; at: number }>();
+	private readonly events: Pick<EventLog, "append">;
+	/** Each gated rule's last reading and its look count (`clock.json`): the audit row is written on a change only. */
+	private readonly clock: GateClocks;
+	private readonly gatePolicy: () => GatePolicy;
+	/**
+	 * When this process last looked at each rule's command gate. `clock.json` holds the same time,
+	 * but a read or a write of it can fail; the minute is kept whatever the file says (design 3.3).
+	 */
+	private readonly commandLooks = new Map<string, number>();
 
 	constructor(opts: TriggerRuntimeOptions) {
 		this.store = opts.store;
@@ -286,6 +318,9 @@ export class TriggerRuntime {
 		this.budget = opts.budget ?? (() => ({ spent: 0, cap: 0, over: false }));
 		this.inbox = opts.inbox;
 		this.looks = new PathLooks({ stat: opts.stat });
+		this.events = opts.events ?? new EventLog(this.store.dir, "window");
+		this.clock = opts.clock ?? clockStore(this.store.dir);
+		this.gatePolicy = opts.gatePolicy ?? (() => ({ loopsDir: this.store.dir }));
 		// Audit writes are best-effort — a failed write never fails a trigger; say so once per distinct error.
 		let lastReported: string | undefined;
 		this.store.onPersistenceError ??= (message) => {
@@ -395,58 +430,115 @@ export class TriggerRuntime {
 			// After the claim, so a rule that waits for a path is looked at once per poll, as a model
 			// check would be. A path that is absent keeps its rule out of the prompt; an `unknown` look
 			// (no permission, a hung mount) asks the model, as before there was a pre-check.
-			const looks = await Promise.all(claimed.map((r) => this.lookFor(r)));
-			this.noteLooks(cwd, claimed, looks, now);
-			const due = claimed.filter((_, i) => looks[i] !== "absent");
+			const gated = await Promise.all(claimed.map((r) => this.lookGate(cwd, r, now)));
+			const due = claimed.filter((_, i) => gated[i]?.decision !== "hold");
 			if (!due.length) continue;
-			const prechecked = claimed.filter((_, i) => looks[i] === "present").map((r) => r.id);
+			const prechecked = claimed.filter((_, i) => gated[i]?.decision === "wake" && gated[i]?.state === "present").map((r) => r.id);
+			const events = gated.flatMap((g) => (g?.event ? [g.event] : []));
+			const seen = gated.flatMap((g) => (g?.seen ? [g.seen] : []));
 			// `handle` is documented not to reject; the catch is what makes that true rather than
 			// merely intended, since nothing above this would survive one.
-			void this.handle(buildPeriodicCheckTrigger(cwd, due.length, new Date(now), String(process.pid)), "sub_agent", due, prechecked.length ? { prechecked } : undefined).catch((err: any) =>
+			void this.handle(buildPeriodicCheckTrigger(cwd, due.length, new Date(now), String(process.pid)), "sub_agent", due, { ...(prechecked.length ? { prechecked } : {}), ...(events.length ? { events } : {}), ...(seen.length ? { seen } : {}) }).catch((err: any) =>
 				this.log(`check failed: ${err?.message ?? err}`),
 			);
 		}
 	}
 
-	/** A waiting rule's look, or undefined for a rule the model checks as it always did. */
-	private lookFor(rule: DynamicTriggerRule): Promise<Look | undefined> {
-		const w = watchOf(rule);
-		return w ? this.looks.look(rule.id, w) : Promise.resolve(undefined);
+	/**
+	 * A gated rule's look, or undefined for a rule the model checks as it always did. A reading that
+	 * opens the check is stored raw in `events.jsonl` first, and the check's `running` row names it; a
+	 * reading that holds adds one to the rule's look count in `clock.json` and stores nothing. A
+	 * reading that cannot be stored holds the rule until the next poll: nothing runs on a reading that
+	 * is not stored.
+	 *
+	 * One `trigger` audit row on a change only: `waiting` at the first look and when the path goes
+	 * away, `appeared` when it comes back. A rule whose path stays absent writes nothing more, which
+	 * is the point: no `running` row and no model call either.
+	 */
+	private async lookGate(cwd: string, rule: DynamicTriggerRule, now: number): Promise<RuleLook | undefined> {
+		const gate = gateOf(rule);
+		if (!gate) return undefined;
+		return gate.kind === "command" ? this.lookCommandGate(rule, gate, now) : this.lookPathGate(cwd, rule, gate, now);
 	}
 
 	/**
-	 * One `trigger` audit row per waiting rule on a change only: `waiting` at the first look this
-	 * process makes and when the path goes away, `appeared` when it comes back. A rule whose path stays
-	 * absent writes nothing more, which is the point: no `running` row and no model call either.
+	 * A rule's command gate (from a proposal the person said yes to): run in the rule's project, at
+	 * most once a minute, the policy first. A reading the last check that did not fail saw holds the
+	 * rule; any other reading, and a look that failed, opens the check, stored first. A poll inside the
+	 * minute holds the rule without a look and counts nothing.
 	 */
-	private noteLooks(cwd: string, rules: DynamicTriggerRule[], looks: Array<Look | undefined>, now: number): void {
-		rules.forEach((rule, i) => {
-			const look = looks[i];
-			const w = watchOf(rule);
-			if (!look || !w) return;
-			const prev = this.lastLooks.get(rule.id)?.look;
-			this.lastLooks.set(rule.id, { look, at: now });
-			const row = (state: string, summary: string) =>
-				this.store.appendAudit({ cwd, type: "trigger", traceId: newTraceId(), state, sourceLabel: "local:dynamic", eventLabel: rule.id, summary, details: { rule_id: rule.id, path: w.raw, resolved: w.resolved } });
-			if (look === "absent" && prev !== "absent") row("waiting", `no model call until ${w.raw} exists`);
-			else if (look === "present" && prev === "absent") row("appeared", `${w.raw} exists; the model checks the rule`);
-		});
+	private async lookCommandGate(rule: DynamicTriggerRule, gate: CommandGate, now: number): Promise<RuleLook> {
+		let before: ReturnType<GateClocks["readGate"]>;
+		try {
+			before = this.clock.readGate(rule.id);
+		} catch (err: any) {
+			this.log(`rule ${rule.id}: its gate state was not read: ${err?.message ?? err}`);
+		}
+		const last = Math.max(before?.last ? Date.parse(before.last.at) : -Infinity, this.commandLooks.get(rule.id) ?? -Infinity);
+		if (now - last < GATE_LOOK_EVERY_MS) return { decision: "hold" };
+		// Before the look, so no failure after it (the event, the look time) lets the next poll look again.
+		this.commandLooks.set(rule.id, now);
+		const reading = await lookCommand(gate.command, { cwd: rule.cwd, policy: this.gatePolicy() });
+		const decision = gateDecision(before?.seen?.digest, reading.look);
+		let event: { id: string; received_at: string } | undefined;
+		if (decision === "wake") {
+			try {
+				event = this.events.append(`gate:${rule.id}`, reading.raw);
+			} catch (err: any) {
+				this.log(`rule ${rule.id}: its gate reading was not stored, so it is not checked this poll: ${err?.message ?? err}`);
+				return { decision: "hold" };
+			}
+		}
+		const at = stamp(now);
+		try {
+			this.clock.noteGate(rule.id, reading.look.kind === "command" ? { at, digest: reading.look.digest } : { at, failed: reading.look.kind === "failed" ? reading.look.why : "not a command reading" }, decision === "hold");
+		} catch (err: any) {
+			this.log(`rule ${rule.id}: its gate reading was not counted: ${err?.message ?? err}`);
+		}
+		if (reading.look.kind === "failed") this.log(`rule ${rule.id}: gate failing: ${reading.look.why}; the model checks the rule until it works`);
+		return { decision, ...(event ? { event: event.id } : {}), ...(event && reading.look.kind === "command" ? { seen: { rule: rule.id, digest: reading.look.digest, at: event.received_at } } : {}) };
+	}
+
+	private async lookPathGate(cwd: string, rule: DynamicTriggerRule, gate: PathGate, now: number): Promise<RuleLook> {
+		const state = await this.looks.look(rule.id, gate);
+		const reading = pathReading(gate, state);
+		const decision = gateDecision(undefined, reading.look);
+		let event: string | undefined;
+		if (decision === "wake") {
+			try {
+				event = this.events.append(`gate:${rule.id}`, reading.raw).id;
+			} catch (err: any) {
+				this.log(`rule ${rule.id}: its gate reading was not stored, so it is not checked this poll: ${err?.message ?? err}`);
+				return { state, decision: "hold" };
+			}
+		}
+		let before: PathState | undefined;
+		try {
+			before = this.clock.noteGate(rule.id, { at: stamp(now), state }, decision === "hold")?.last?.state;
+		} catch (err: any) {
+			this.log(`rule ${rule.id}: its gate reading was not counted: ${err?.message ?? err}`);
+		}
+		const row = (auditState: string, summary: string) =>
+			this.store.appendAudit({ cwd, type: "trigger", traceId: newTraceId(), state: auditState, sourceLabel: "local:dynamic", eventLabel: rule.id, summary, details: { rule_id: rule.id, path: gate.raw, resolved: gate.resolved } });
+		if (state === "absent" && before !== "absent") row("waiting", `no model call until ${gate.raw} exists`);
+		else if (state === "present" && before === "absent") row("appeared", `${gate.raw} exists; the model checks the rule`);
+		return { state, decision, ...(event ? { event } : {}) };
 	}
 
 	/**
-	 * What the page's rule row says about a rule that waits for a path: its last look here, and when
-	 * the next one is. Polls ride the scheduler's 30-second tick, so no look comes sooner than that.
+	 * What the page's rule row says about a rule that waits for a path: its last look (`clock.json`),
+	 * and when the next one is. Polls ride the scheduler's 30-second tick, so no look comes sooner than that.
 	 */
-	ruleLook(ruleId: string): { look: Look; nextAt: number } | undefined {
-		const last = this.lastLooks.get(ruleId);
-		return last && { look: last.look, nextAt: last.at + Math.max(this.pollIntervalSecs * 1000, POLL_TICK_MS) };
+	ruleLook(ruleId: string): { look: PathState; nextAt: number } | undefined {
+		const last = this.clock.readGate(ruleId)?.last;
+		return last?.state && { look: last.state, nextAt: Date.parse(last.at) + Math.max(this.pollIntervalSecs * 1000, POLL_TICK_MS) };
 	}
 
 	/**
 	 * Admit one trigger: dedup, audit, deliver. Resolves when the delivery has finished and
 	 * never rejects: persistence or runner failures are audited (best effort) and logged.
 	 */
-	async handle(trigger: Trigger, delivery: TriggerDelivery, rules?: DynamicTriggerRule[], opts?: { prechecked?: string[] }): Promise<TriggerOutcome | undefined> {
+	async handle(trigger: Trigger, delivery: TriggerDelivery, rules?: DynamicTriggerRule[], opts?: GateLet): Promise<TriggerOutcome | undefined> {
 		// Sub-agents register no notification hooks and run no dynamic checker, so only the
 		// interactive process (hop 0) ever handles a trigger. Anything reaching a deeper hop is a
 		// cycle and is suppressed, audited as cycle-suppressed.
@@ -475,7 +567,7 @@ export class TriggerRuntime {
 		}
 	}
 
-	private async admit(trigger: Trigger, delivery: TriggerDelivery, rules?: DynamicTriggerRule[], opts?: { prechecked?: string[] }): Promise<TriggerOutcome | undefined> {
+	private async admit(trigger: Trigger, delivery: TriggerDelivery, rules?: DynamicTriggerRule[], opts?: GateLet): Promise<TriggerOutcome | undefined> {
 		// A sub-agent costs money and a process slot. Both bounds are checked before the dedup claim,
 		// so a refused trigger is never marked handled — a periodic check is simply raised again by the
 		// next poll, and a push (an event that happened once, which no server repeats) is held below.
@@ -539,7 +631,7 @@ export class TriggerRuntime {
 			// runs the finally at once, which would release the slot the moment the sub-agent started.
 			if (delivery === "inject_summary") return await this.deliverInjectSummary(trigger);
 			if (delivery === "inject_and_run") return await this.deliverInjectAndRun(trigger);
-			return await this.deliverSubAgent(trigger, rules, opts?.prechecked);
+			return await this.deliverSubAgent(trigger, rules, opts);
 		} finally {
 			// Held for the whole delivery, `deliverSubAgent` included, and released on every path out of
 			// it — a torn dedup file, a runner that rejects, an abort — or the pool leaks a slot.
@@ -677,7 +769,7 @@ export class TriggerRuntime {
 		return trigger.cwd ?? this.getSession().cwd;
 	}
 
-	private async deliverSubAgent(trigger: Trigger, evaluate?: DynamicTriggerRule[], prechecked?: string[]): Promise<TriggerOutcome> {
+	private async deliverSubAgent(trigger: Trigger, evaluate?: DynamicTriggerRule[], gates?: GateLet): Promise<TriggerOutcome> {
 		const start = this.now();
 		const session = this.getSession();
 		const cwd = this.cwdOf(trigger);
@@ -695,7 +787,7 @@ export class TriggerRuntime {
 		const running: RunningTrigger = { traceId: trigger.traceId, sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, startedAt: stamp(start), promptPreview: previewRedacted(prompt, 80), cwd, ctrl }; // 80 characters is a banner, not a prompt
 		this.running.set(trigger.traceId, running);
 		this.hooks.onStarted?.(running);
-		this.store.appendAudit({ cwd, type: "trigger_result", traceId: trigger.traceId, state: "running", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { rule_count: rules.length, cwd, ...(prechecked?.length ? { prechecked } : {}), ...envelopeOf(trigger) } });
+		this.store.appendAudit({ cwd, type: "trigger_result", traceId: trigger.traceId, state: "running", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { rule_count: rules.length, cwd, ...(gates?.prechecked?.length ? { prechecked: gates.prechecked } : {}), ...(gates?.events?.length ? { events: gates.events } : {}), ...envelopeOf(trigger) } });
 
 		// The check runs with the model the rules were created under, not whatever the process that
 		// happens to own the timer is using (`checkCap`), and with the longest per-rule timeout.
@@ -762,6 +854,16 @@ export class TriggerRuntime {
 		// An abort is the user's decision about this run, not evidence that the rule's check is broken,
 		// so it neither counts against the rule nor clears what earlier failures recorded.
 		if (!ctrl.signal.aborted) await this.recordCheckOutcome(rules, result.ok, cwd);
+		// A command gate's reading is `seen` only after a check that did not fail: a failed one leaves
+		// it, so the same change opens the next check again.
+		if (result.ok && !ctrl.signal.aborted)
+			for (const seen of gates?.seen ?? []) {
+				try {
+					this.clock.seeGate(seen.rule, { digest: seen.digest, at: seen.at });
+				} catch (err: any) {
+					this.log(`rule ${seen.rule}: its gate's seen reading was not written: ${err?.message ?? err}`);
+				}
+			}
 
 		let promoted = false;
 		const promoteRules = matchedRules.filter((r) => r.promoteToChat);

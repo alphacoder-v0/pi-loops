@@ -19,7 +19,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { sameProject } from "./paths.ts";
 import { LOOP_STATE_MAX_CHARS, capChars } from "./protocol.ts";
-import { pathOnlyCondition } from "./path-precheck.ts";
+import { type CommandGate, type GatePolicy, commandGateOf, defaultGatePolicy, gateCommandWhy, gateShown, pathOnlyCondition, precheckOf } from "./gate.ts";
 import { previewRedacted } from "./redact.ts";
 import { computeNext, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
 import type { Clock, ClockFile, RunClose } from "./clock.ts";
@@ -262,6 +262,8 @@ export interface ImportInput {
 	existingJobs?: LoopJob[];
 	existingRules?: DynamicTriggerRule[];
 	now?: () => Date;
+	/** What an imported gate is checked by; omitted, this process's loops directory with no allowlist. */
+	gatePolicy?: GatePolicy;
 }
 
 /**
@@ -307,24 +309,29 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
  * you have to trust blindly at exactly the moment you are least able to (restoring on a new
  * machine); a summary is printed before importing, which makes it available on its own.
  */
-export function inspectArchive(archivePath: string): { schema: string; createdAt: string; sourceCwd: string; entryCount: number; loopStateCount: number; jobs: Array<{ schedule: string; prompt: string; enabled: boolean }>; rules: Array<{ condition: string; action: string; enabled: boolean }> } {
+export function inspectArchive(archivePath: string): { schema: string; createdAt: string; sourceCwd: string; entryCount: number; loopStateCount: number; jobs: Array<{ schedule: string; prompt: string; enabled: boolean; gate?: string }>; rules: Array<{ condition: string; action: string; enabled: boolean; gate?: string }> } {
 	const files = readTar(fs.readFileSync(archivePath));
 	for (const name of files.keys()) validateArchivePath(name);
 	const manifestBytes = files.get(MANIFEST_PATH);
 	if (!manifestBytes) throw new Error("archive has no manifest.json");
 	const manifest = JSON.parse(manifestBytes.toString("utf8")) as Manifest;
-	const jobs: Array<{ schedule: string; prompt: string; enabled: boolean }> = [];
-	const rules: Array<{ condition: string; action: string; enabled: boolean }> = [];
+	const jobs: Array<{ schedule: string; prompt: string; enabled: boolean; gate?: string }> = [];
+	const rules: Array<{ condition: string; action: string; enabled: boolean; gate?: string }> = [];
+	// Each gate whole, as every surface shows one (`gateShown`): it is a command the archive's author wrote.
+	const gateOfRaw = (value: unknown) => {
+		const gate = commandGateOf(value);
+		return gate ? { gate: gateShown(gate.command) } : {};
+	};
 	const cron = files.get(CRON_PATH);
 	if (cron) {
 		for (const j of (JSON.parse(cron.toString("utf8"))?.jobs ?? []) as LoopJob[]) {
-			jobs.push({ schedule: isValidSchedule(j.schedule) ? formatSchedule(j.schedule) : "(invalid)", prompt: previewRedacted(j.prompt ?? "", 100), enabled: !!j.enabled });
+			jobs.push({ schedule: isValidSchedule(j.schedule) ? formatSchedule(j.schedule) : "(invalid)", prompt: previewRedacted(j.prompt ?? "", 100), enabled: !!j.enabled, ...gateOfRaw(j.gate) });
 		}
 	}
 	const trig = files.get(TRIGGERS_PATH);
 	if (trig) {
 		for (const r of (JSON.parse(trig.toString("utf8"))?.rules ?? []) as DynamicTriggerRule[]) {
-			rules.push({ condition: previewRedacted(r.condition ?? "", 80), action: previewRedacted(r.action ?? "", 80), enabled: !!r.enabled });
+			rules.push({ condition: previewRedacted(r.condition ?? "", 80), action: previewRedacted(r.action ?? "", 80), enabled: !!r.enabled, ...gateOfRaw(r.gate) });
 		}
 	}
 	return {
@@ -366,6 +373,21 @@ export function importSession(input: ImportInput): ImportSummary {
 	// Every sidecar is staged and validated before anything is committed: a rejected archive
 	// must not leave an orphan session file behind.
 	const dedup = new Dedup(input);
+	// The archive's author set its gates, not the person importing: each one gets the whole check a
+	// gate gets where a person sets it, and every gate that comes in, or does not, is said out loud.
+	const gateNotes: string[] = [];
+	const gatePolicy = input.gatePolicy ?? defaultGatePolicy();
+	const checkedGate = (value: unknown, what: string): CommandGate | undefined => {
+		const gate = commandGateOf(value);
+		if (!gate) return undefined;
+		const why = gateCommandWhy(gate.command, gatePolicy);
+		if (why) {
+			gateNotes.push(`${what}: its gate was not imported (${why})`);
+			return undefined;
+		}
+		gateNotes.push(`${what} runs \`${gateShown(gate.command)}\` before each run (its gate)`);
+		return gate;
+	};
 	const idMap = new Map<string, string>();
 	const jobs: LoopJob[] = [];
 	const carry: Record<string, RunClose> = {};
@@ -395,7 +417,7 @@ export function importSession(input: ImportInput): ImportSummary {
 			// with the fresh import session would make every import look new and double the automation.
 			// A job the project owns stays the project's; one with no owner at all is from before
 			// `createdBy` and counts as the exporting conversation's.
-			const { host: _legacyHost, owner: _owner, createdBy: _createdBy, disabled: _disabled, ...rawJob } = fromV2(raw as unknown as V2Job).job as LoopJob & { host?: unknown };
+			const { host: _legacyHost, owner: _owner, createdBy: _createdBy, disabled: _disabled, gate: _theirGate, ...rawJob } = fromV2(raw as unknown as V2Job).job as LoopJob & { host?: unknown };
 			const projectOwned = raw.owner === "project";
 			const enabled = raw.enabled && input.activate;
 			const job: LoopJob = {
@@ -407,6 +429,9 @@ export function importSession(input: ImportInput): ImportSummary {
 				...(projectOwned ? { owner: "project" as const } : { createdBy: raw.createdBy ?? { sessionId: parsed.header.id, cwd: manifest.source?.cwd ?? input.targetCwd } }),
 			};
 			if (dedup.hasJob(job)) continue;
+			// A loop's gate travels with it when it passes the check; one this build does not read, or one on a plain job, is dropped.
+			const gate = raw.stateful ? checkedGate(_theirGate, `loop "${previewRedacted(gateShown(String(rawJob.name ?? raw.id)), 60)}"`) : undefined;
+			if (gate) job.gate = gate;
 			if (input.existingJobIds.has(job.id)) job.id = newId("cron");
 			idMap.set(raw.id, job.id);
 			carry[job.id] = fromArchiveCarry(raw);
@@ -424,12 +449,18 @@ export function importSession(input: ImportInput): ImportSummary {
 		for (const raw of file.rules as DynamicTriggerRule[]) {
 			if (!raw || typeof raw.id !== "string" || typeof raw.condition !== "string" || typeof raw.action !== "string") throw new Error("trigger sidecar contains an invalid rule");
 			if (!SAFE_ID.test(raw.id)) throw new Error("trigger sidecar contains an invalid rule id");
-			const { host: _legacyRuleHost, precheck: _theirPrecheck, ...rawRule } = raw as typeof raw & { host?: unknown };
+			const { host: _legacyRuleHost, precheck: _theirPrecheck, gate: _theirGate, ...rawRule } = raw as typeof raw & { host?: unknown };
 			const rule: DynamicTriggerRule = { ...rawRule, cwd: input.targetCwd, enabled: raw.enabled && input.activate, createdBy: raw.createdBy ?? { sessionId: parsed.header.id } };
-			// Read again here, against this project and this home: the archive's was resolved on the machine that wrote it.
-			const only = pathOnlyCondition(rule.condition, { cwd: input.targetCwd, home: os.homedir() });
-			if ("watch" in only) rule.precheck = only.watch;
+			// A command gate is the rule's when it passes the check; a path is read again here,
+			// against this project and this home: the archive's was resolved on the machine that wrote it.
 			if (dedup.hasRule(rule)) continue;
+			const command = checkedGate(_theirGate, `rule "${previewRedacted(gateShown(raw.condition), 60)}"`);
+			const only = pathOnlyCondition(rule.condition, { cwd: input.targetCwd, home: os.homedir() });
+			if (command) rule.gate = command;
+			else if ("gate" in only) {
+				rule.gate = only.gate;
+				rule.precheck = precheckOf(only.gate);
+			}
 			if (input.existingRuleIds.has(rule.id)) rule.id = newRuleId();
 			if (raw.enabled) originallyEnabledRules.push(rule.id);
 			rules.push(rule);
@@ -466,7 +497,7 @@ export function importSession(input: ImportInput): ImportSummary {
 		manifest,
 		skippedJobs: dedup.jobs,
 		skippedRules: dedup.rules,
-		notes: dedup.notes(),
+		notes: [...dedup.notes(), ...gateNotes],
 	};
 }
 
@@ -515,6 +546,21 @@ export async function applyImport(imp: ImportSummary, jobStore: JobStore, trigge
 	}
 }
 
+/** The line above an import's gates, in the question that enables them and before `--activate-triggers=on` enables them. */
+export const GATES_HEAD = "These gates run a command in the background before each run:";
+
+/**
+ * Each gate an import brings on the loops and rules named in `enabled`, one line each. A gate is a
+ * command that runs unattended once they are on: shown whole, through `gateShown` (an imported gate
+ * passed `gateCommandWhy`, so it shows as itself), and a name from the archive is cleaned the same way.
+ */
+export function importedGateLines(imp: Pick<ImportSummary, "jobs" | "rules">, enabled: { readonly jobs: readonly string[]; readonly rules: readonly string[] }): string[] {
+	return [
+		...imp.jobs.filter((j) => enabled.jobs.includes(j.id) && j.gate).map((j) => `- loop "${gateShown(j.name ?? j.id)}" runs first: ${gateShown(j.gate!.command)}`),
+		...imp.rules.filter((r) => enabled.rules.includes(r.id) && r.gate?.kind === "command").map((r) => `- rule ${r.id} runs first: ${gateShown((r.gate as CommandGate).command)}`),
+	];
+}
+
 /**
  * What `ask` means: after an import that did not activate, offer once to switch back on what the
  * source session had on, and do it if the answer is yes. Returns what was enabled.
@@ -534,7 +580,8 @@ export async function offerToEnable(
 	if (imp.automationEnabled) return none;
 	const pending = imp.originallyEnabledJobs.length + imp.originallyEnabledRules.length;
 	if (!pending || !confirm) return none;
-	const ok = await confirm("Enable imported automation?", `${count(imp.originallyEnabledJobs.length, "loop")} and ${count(imp.originallyEnabledRules.length, "rule")} were enabled in the source conversation. Enable them here now?`);
+	const gates = importedGateLines(imp, { jobs: imp.originallyEnabledJobs, rules: imp.originallyEnabledRules });
+	const ok = await confirm("Enable imported automation?", `${count(imp.originallyEnabledJobs.length, "loop")} and ${count(imp.originallyEnabledRules.length, "rule")} were enabled in the source conversation. Enable them here now?${gates.length ? `\n${GATES_HEAD}\n${gates.join("\n")}` : ""}`);
 	if (!ok) return none;
 	for (const id of imp.originallyEnabledJobs) {
 		const before = jobStore.load().find((j) => j.id === id);

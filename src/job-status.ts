@@ -186,10 +186,45 @@ export interface ListedStatus {
 	readonly errorIs?: { readonly kind: "failed"; readonly at: string } | { readonly kind: "note" } | { readonly kind: "waiting"; readonly since: string };
 	/** The run going now. */
 	readonly run?: RunningMarker;
+	/** The follow-up the loop set for itself (`wake_me`): when, and its note. */
+	readonly wake?: { readonly at: string; readonly note: string };
+	/** The loop asked for no scheduled run before this (`wake_me` with quiet), and why. Shown while it is ahead. */
+	readonly quiet?: { readonly until: string; readonly why: string };
+	/**
+	 * A gated loop's gate (design 6.7): its command; how many looks held the loop since the reading
+	 * changed, and when the reading the last gated run saw was taken (`since`); and why the last look
+	 * failed, while it is the last one.
+	 */
+	readonly gate?: { readonly command: string; readonly looks: number; readonly since?: string; readonly failing?: string };
+}
+
+/** A gated loop's gate as the lists show it, from its definition and its clock entry. */
+function gateStatus(job: LoopJob, clock: JobClock | undefined): Pick<ListedStatus, "gate"> {
+	if (!job.stateful || !job.gate) return {};
+	const g = clock?.gate;
+	return { gate: { command: job.gate.command, looks: g?.looks ?? 0, ...(g?.seen ? { since: g.seen.at } : {}), ...(g?.last?.failed !== undefined ? { failing: g.last.failed } : {}) } };
+}
+
+/** What the loop set for itself, as the lists show it: from its clock entry, for a loop only. */
+function wakeStatus(clock: JobClock | undefined): Pick<ListedStatus, "wake" | "quiet"> {
+	return {
+		...(clock?.followup ? { wake: { at: clock.followup.at, note: clock.followup.note } } : {}),
+		...(clock?.quietUntil !== undefined ? { quiet: { until: clock.quietUntil, why: clock.quietWhy ?? "" } } : {}),
+	};
 }
 
 /** A job as every list shows it: the definition, and its status from its clock, its rows and its run log. */
 export type ListedJob = LoopJob & { readonly status: ListedStatus };
+
+/**
+ * When a run on this row fired the schedule (`fired`, the base of an `every` schedule), or undefined
+ * when it did not. A follow-up's own row (`wake_me`) is the loop's one timer beside its schedule, so
+ * its run fires nothing; a slot that collapsed onto it fired at that slot. Any other row fired when
+ * its run started.
+ */
+export function firedBy(row: Pick<Row, "source" | "collapsed_slot"> & { readonly run?: { readonly started_at: string } }): string | undefined {
+	return row.source.startsWith("wake:") ? row.collapsed_slot : row.run?.started_at;
+}
 
 export function listedJob(job: LoopJob, clock: JobClock | undefined, rows: readonly Row[], history: JobHistory | undefined, live: (row: ClaimedRow) => boolean = claimAlive): ListedJob {
 	const cleared = clock?.cleared;
@@ -220,7 +255,8 @@ export function listedJob(job: LoopJob, clock: JobClock | undefined, rows: reado
 	const parked = !job.enabled && job.disabled?.code === "interrupted";
 	const owedAgain = parked || (!claim && waiting !== undefined && (waiting.attempts > 0 || oneShotRetry));
 	let fired = clock?.fired;
-	if (claim && (!fired || Date.parse(claim.run.started_at) > Date.parse(fired))) fired = claim.run.started_at;
+	const claimFired = claim ? firedBy(claim) : undefined;
+	if (claimFired && (!fired || Date.parse(claimFired) > Date.parse(fired))) fired = claimFired;
 	let due = clock?.slot;
 	if (owedAgain || (!claim && waiting)) due = undefined;
 	if (owedAgain) fired = undefined;
@@ -243,6 +279,8 @@ export function listedJob(job: LoopJob, clock: JobClock | undefined, rows: reado
 			...counts,
 			...error,
 			...(claim ? { run: { runId: claim.run.id, pid: claim.run.pid, startedAt: claim.run.started_at } } : {}),
+			...wakeStatus(clock),
+			...gateStatus(job, clock),
 		},
 	};
 }

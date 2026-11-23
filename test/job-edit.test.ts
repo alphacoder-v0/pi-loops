@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { applyJobEdit, nextRunOf } from "../src/job-edit.ts";
 import { checkJobName } from "../src/tools.ts";
 import { parseSchedule } from "../src/schedule.ts";
+import { parseSetArgs } from "../src/args.ts";
 import { fromV2, type V2Job } from "../src/convert-v2.ts";
 
 const NOON = Date.parse("2026-09-09T12:00:00Z");
@@ -96,3 +97,36 @@ test("a disabled job reports no next run, whatever its schedule says", () => {
 	assert.equal(next(job({ lastDueAt: new Date(NOON - 3 * 3_600_000).toISOString() }), NOON).kind, "at");
 });
 
+
+test("[wake-me] /cron set <loop> --wake -: what the loop set goes from clock.json, beside an empty patch; jobs.json keeps the definition; a plain job and any other value are refused", () => {
+	assert.deepEqual(parseSetArgs("pr-watch --wake -", { job: true }), { ref: "pr-watch", wake: null });
+	assert.throws(() => parseSetArgs("pr-watch --wake in20m", { job: true }), /--wake takes - : it removes the wake a loop set for itself/);
+	assert.throws(() => parseSetArgs("rule --wake -"), /unknown flag --wake/, "a rule has no wake");
+	const loop = fromV2(job());
+	const followup = { id: "fu-1", at: new Date(NOON + 3_600_000).toISOString(), note: "check CI", set_by: "run-a", created_at: new Date(NOON).toISOString() };
+	const applied = applyJobEdit(loop.job, { ...(loop.clock ?? { runs: 0 }), followup, quietUntil: followup.at, quietWhy: "check CI" }, { wake: null }, ctx());
+	assert.deepEqual(applied.patch, {});
+	assert.equal(applied.clearWake, true);
+	assert.deepEqual(applied.changed, [`wake removed (it was ${followup.at}: "check CI") (quiet until ${followup.at})`]);
+	assert.equal(edit(job(), { name: "x" }, ctx()).clearWake, undefined, "an edit with no --wake leaves the wake");
+	assert.throws(() => edit(job({ stateful: false, sessionId: "s" }), { wake: null }, ctx()), /--wake is for a loop/);
+});
+
+test("/cron set <loop> --gate '<command>' sets the loop's gate in a patch, --gate - removes it; a plain job, an empty or refused command change nothing", () => {
+	assert.deepEqual(parseSetArgs("pr-watch --gate 'gh pr list --json number'", { job: true }), { ref: "pr-watch", gate: "gh pr list --json number" });
+	assert.deepEqual(parseSetArgs("pr-watch --gate -", { job: true }), { ref: "pr-watch", gate: null });
+	assert.deepEqual(parseSetArgs("pr-watch --gate '-'", { job: true }), { ref: "pr-watch", gate: "-" }, "a quoted - is a command");
+	assert.throws(() => parseSetArgs("rule --gate x"), /unknown flag --gate/, "a rule's gate comes only from a proposal");
+	const set = edit(job(), { gate: "gh pr list" }, ctx());
+	assert.deepEqual(set.patch, { gate: { kind: "command", command: "gh pr list" } });
+	assert.deepEqual(set.changed, ['gate changed from (none) to "gh pr list"']);
+	const gated = { ...fromV2(job()).job, gate: { kind: "command" as const, command: "gh pr list" } };
+	const removed = applyJobEdit(gated, fromV2(job()).clock, { gate: null }, ctx());
+	assert.equal("gate" in removed.patch && removed.patch.gate, undefined, "the patch removes it");
+	assert.ok("gate" in removed.patch);
+	assert.deepEqual(removed.changed, ['gate changed from "gh pr list" to (none)']);
+	assert.throws(() => edit(job({ stateful: false, sessionId: "s" }), { gate: "true" }, ctx()), /--gate is for a loop/);
+	assert.throws(() => edit(job(), { gate: "  " }, ctx()), /a gate needs a command/);
+	assert.throws(() => edit(job(), { gate: "sudo ls" }, ctx()), /the gate would be refused when it runs: sudo invocation/);
+	assert.throws(() => edit(job(), { gate: "ls\nrm x" }, ctx()), /a gate is one line/);
+});

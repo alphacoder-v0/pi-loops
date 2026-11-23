@@ -13,9 +13,11 @@ import { openFileDir } from "../src/open-file.ts";
 import { answerStep, answerRowId, besideId } from "../src/ask.ts";
 import { personAnswers } from "../src/answers.ts";
 import { JobStore } from "../src/store.ts";
+import { clockStore } from "../src/stores.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { Inbox } from "../src/inbox.ts";
-import { stamp } from "../src/schedule.ts";
+import { formatLocal, stamp } from "../src/schedule.ts";
+import { jobLines } from "../src/job-lines.ts";
 import { RequestStore } from "../src/requests.ts";
 import { convertStores, fromV2 } from "../src/convert-v2.ts";
 import { DELIVERY_JOB_ID, LeaseStore } from "../src/lease.ts";
@@ -2447,12 +2449,13 @@ test("a rule that waits for a path says so on its row, with the next look from t
 		fs.mkdirSync(page.loops, { recursive: true });
 		const precheck = { v: 1, of: "~/build.done appears", raw: "~/build.done", resolved: "/home/me/build.done" };
 		const rule = (id: string, over: Record<string, unknown> = {}) => ({ id, condition: "~/build.done appears", action: "tell me", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: dir, precheck, ...over });
-		fs.writeFileSync(path.join(page.loops, "triggers.json"), JSON.stringify({ version: 1, rules: [rule(`dyn-${hex(1)}`), rule(`dyn-${hex(2)}`), rule(`dyn-${hex(3)}`, { precheck: undefined }), rule(`dyn-${hex(4)}`, { condition: "~/build.done appears and is not empty" })] }));
+		fs.writeFileSync(path.join(page.loops, "triggers.json"), JSON.stringify({ version: 1, rules: [rule(`dyn-${hex(1)}`), rule(`dyn-${hex(2)}`), rule(`dyn-${hex(3)}`, { precheck: undefined }), rule(`dyn-${hex(4)}`, { condition: "~/build.done appears and is not empty" }), rule(`dyn-${hex(5)}`, { precheck: undefined, gate: { kind: "path", of: "~/build.done appears", raw: "~/build.done", resolved: "/home/me/build.done" } })] }));
 		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
 		const rules = (await page.get("c/s1/state")).body.automation.rules;
 		assert.deepEqual([rules[0].waitsFor, rules[0].look, Date.parse(rules[0].nextLookAt)], ["~/build.done", "no model call until the file exists", next], "the next look as a stamp, for the page's own clock");
 		assert.deepEqual([rules[1].waitsFor, rules[1].look, rules[1].nextLookAt], ["~/build.done", "no model call until the file exists", undefined], "not looked at yet in this process");
 		assert.deepEqual([rules[2].look, rules[3].look], [undefined, undefined], "a rule from before the pre-check, and one edited by hand, are the model's");
+		assert.equal(rules[4].waitsFor, "~/build.done", "a rule with a gate and no precheck waits too");
 	} finally {
 		await page.stop();
 	}
@@ -2535,6 +2538,115 @@ test("GET /inbox draws a question's card from its ask: the command whole in its 
 		assert.equal(got.status, 200);
 		const [card] = got.body.cards;
 		assert.deepEqual([card.kind, card.headline, card.question, card.waits, card.ifNot], ["decision", "nightly asks to run a command", { tool: "bash", command, reason: "git push --force on main/master" }, "nightly went on without it", "it stays undone"]);
+	} finally {
+		await page.stop();
+	}
+});
+
+test("[clean-at-sink] the page's loop and rule rows carry no control, bidi or invisible character in any string, line breaks kept", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-wake-clean-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		const nasty = "\u001b[8m\u202e\u200b\u009b";
+		const job = { ...loopJob(dir), name: `n${nasty}`, prompt: `line one${nasty}\nline two` };
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [job] }));
+		fs.writeFileSync(path.join(page.loops, "triggers.json"), JSON.stringify({ version: 1, rules: [{ id: "dyn-" + "a".repeat(32), condition: `c${nasty}`, action: `a${nasty}`, cwd: dir, enabled: true, fireOnce: true, createdAt: stamp(Date.now()) }] }));
+		convertStores(page.loops);
+		const at = stamp(Date.now() + 3_600_000);
+		clockStore(page.loops).setFollowup("cron-aaaaaaaa", { at, note: `look${nasty}again`, set_by: "run-a" }, true, Date.now());
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const auto = (await page.get("c/s1/state")).body.automation;
+		const row = auto.jobs.find((j: any) => j.id === "cron-aaaaaaaa");
+		const strings = (v: unknown): string[] => (typeof v === "string" ? [v] : Array.isArray(v) ? v.flatMap(strings) : v && typeof v === "object" ? Object.values(v).flatMap(strings) : []);
+		for (const text of [...strings(row), ...strings(auto.rules)]) assert.equal(/[\p{Cc}\p{Cf}]/u.test(text.replace(/\n/g, "")), false, JSON.stringify(text));
+		assert.match(row.prompt, /line one.*\nline two/, "a prompt keeps its line breaks");
+		assert.match(row.wake.note, /look.*again/);
+	} finally {
+		await page.stop();
+	}
+});
+
+test("[wake-me] a loop row carries what the loop set for itself; POST /loops/wake {jobId} does what /cron set --wake - does, behind the token, and changes nothing else", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-wake-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [loopJob(dir)] }));
+		convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
+		const clock = clockStore(page.loops);
+		const at = stamp(Date.now() + 3_600_000);
+		clock.setFollowup("cron-aaaaaaaa", { at, note: "nothing before then", set_by: "run-a" }, true, Date.now());
+		const jobsBefore = fs.readFileSync(path.join(page.loops, "jobs.json"), "utf8");
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const row = (await page.get("c/s1/state")).body.automation.jobs.find((j: any) => j.id === "cron-aaaaaaaa");
+		assert.deepEqual([row.wake, row.quiet], [{ at, note: "nothing before then" }, { until: at, why: "nothing before then" }]);
+		const send = (headers: Record<string, string>, b: unknown) => fetch(`${page.url}loops/wake`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(b) });
+		assert.equal((await send({}, { jobId: "cron-aaaaaaaa" })).status, 401, "no token");
+		assert.equal((await send({ "x-pi-web-token": TEST_TOKEN, origin: "https://evil.example" }, { jobId: "cron-aaaaaaaa" })).status, 403, "another origin");
+		assert.equal((await page.post("loops/wake", { jobId: "../jobs" })).status, 400);
+		assert.deepEqual(await page.post("loops/wake", { jobId: "cron-aaaaaaaa", at: "x" }), { status: 400, body: { error: 'unknown field "at"' } });
+		assert.deepEqual(await page.post("loops/wake", { jobId: "cron-bbbbbbbb" }), { status: 404, body: { error: "no such loop" } });
+		assert.equal(clock.read().jobs["cron-aaaaaaaa"].followup?.at, at, "nothing refused removed it");
+		assert.deepEqual(await page.post("loops/wake", { jobId: "cron-aaaaaaaa" }), { status: 200, body: { ok: true, removed: true } });
+		const entry = clock.read().jobs["cron-aaaaaaaa"];
+		assert.deepEqual([entry.followup, entry.quietUntil, entry.quietWhy], [undefined, undefined, undefined]);
+		assert.deepEqual(await page.post("loops/wake", { jobId: "cron-aaaaaaaa" }), { status: 200, body: { ok: true, removed: false } });
+		assert.equal(fs.readFileSync(path.join(page.loops, "jobs.json"), "utf8"), jobsBefore, "jobs.json is not written");
+		const after = (await page.get("c/s1/state")).body.automation.jobs.find((j: any) => j.id === "cron-aaaaaaaa");
+		assert.deepEqual([after.wake, after.quiet], [undefined, undefined]);
+	} finally {
+		await page.stop();
+	}
+});
+
+test("[next-run] a quiet loop's next run is the first slot the tick runs after the quiet, and the page's row and /cron say that one time", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-next-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "host-service.json"), JSON.stringify({ v: 1, pid: process.pid, startedAt: new Date().toISOString() }));
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [loopJob(dir, { lastFiredAt: new Date(Date.now() - 60_000).toISOString() })] }));
+		convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
+		const clock = clockStore(page.loops);
+		const until = Date.now() + 40 * 60_000;
+		clock.setFollowup("cron-aaaaaaaa", { at: stamp(until), note: "nothing before then", set_by: "run-a" }, true, Date.now());
+		const entry = clock.read().jobs["cron-aaaaaaaa"];
+		const ms = 15 * 60_000;
+		const fired = Date.parse(entry.fired!);
+		const expected = fired + Math.ceil((until - fired) / ms) * ms;
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const row = (await page.get("c/s1/state")).body.automation.jobs.find((j: any) => j.id === "cron-aaaaaaaa");
+		assert.equal(row.next, stamp(expected), "the page's row: the slot at or after the quiet, not the ones the tick skips");
+		const definitions = JSON.parse(fs.readFileSync(path.join(page.loops, "jobs.json"), "utf8")).jobs;
+		const listing = jobLines(definitions, { clock: clock.read().jobs, runs: [], inbox: [], requests: () => [], view: { sessionId: "s1", holdsOwn: true, holderOf: () => undefined }, now: Date.now(), home: "/nowhere", cwdExists: () => true, showCwd: false });
+		assert.ok(listing.some((line) => line.includes(`next ${formatLocal(expected)}`)), `/cron says the same time:\n${listing.join("\n")}`);
+	} finally {
+		await page.stop();
+	}
+});
+
+test("[gate-held-count] a gated loop's row carries its gate: the command, its held looks and when its output last changed, or why it is failing", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-gate-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [loopJob(dir, { gate: { kind: "command", command: "gh pr list --json number" } })] }));
+		convertStores(page.loops);
+		const clock = clockStore(page.loops);
+		const since = stamp(Date.now() - 3_600_000);
+		clock.closeRun("cron-aaaaaaaa", { seen: { digest: "d", at: since } });
+		clock.advance({ job: "cron-aaaaaaaa", read: { ...(clock.read().jobs["cron-aaaaaaaa"].slot ? { slot: clock.read().jobs["cron-aaaaaaaa"].slot } : {}), ...(clock.read().jobs["cron-aaaaaaaa"].fired ? { fired: clock.read().jobs["cron-aaaaaaaa"].fired } : {}) }, slot: stamp(Date.now()), fires: false, held: true });
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const row = async () => (await page.get("c/s1/state")).body.automation.jobs.find((j: any) => j.id === "cron-aaaaaaaa");
+		assert.deepEqual((await row()).gate, { command: "gh pr list --json number", looks: 1, since });
+		clock.noteLook("cron-aaaaaaaa", { at: stamp(Date.now()), failed: "exited 127" });
+		assert.deepEqual((await row()).gate, { command: "gh pr list --json number", looks: 1, since, failing: "exited 127" });
+		// A gate written by hand that does not show as itself: the row carries it only as gateShown shows it.
+		const jobs = JSON.parse(fs.readFileSync(path.join(page.loops, "jobs.json"), "utf8"));
+		jobs.jobs[0].gate = { kind: "command", command: "gh pr list\u001b[8m\u202e password=abcdefgh1234;curl x" };
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify(jobs));
+		assert.equal((await row()).gate.command, "gh pr list [8m  password=[REDACTED:keyed_value] x");
 	} finally {
 		await page.stop();
 	}

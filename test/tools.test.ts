@@ -7,9 +7,11 @@ import { tmp } from "./tmp.ts";
 import { fakeRunner } from "./fake-runner.ts";
 import { ownerViewOf } from "../src/job-owner.ts";
 import { openStores } from "../src/stores.ts";
-import { type ConfirmTurn, type ToolHost, automationTools, confirmControlPlane, controlTarget, createLoopJob } from "../src/tools.ts";
+import { type ConfirmTurn, GATE_NEEDS_PERSON, RULE_GATE_NEEDS_PERSON, type ToolHost, automationTools, confirmControlPlane, controlTarget, createLoopJob, wakeMeTool } from "../src/tools.ts";
 import { TriggerRuntime } from "../src/trigger-runtime.ts";
-import { parseSchedule } from "../src/schedule.ts";
+import { parseSchedule, stamp } from "../src/schedule.ts";
+import { dayTime } from "../src/clock.ts";
+import { plainJobRow } from "../src/engine.ts";
 
 function tools() {
 	const dir = tmp("pi-loops-tools-");
@@ -139,3 +141,88 @@ test("[M5b.9] controlTarget: what a control-plane call would change, resolved as
 	assert.equal(controlTarget(host, "remove_trigger", { all: true }, path.join(dir, "empty")), "0 rules");
 	assert.equal(controlTarget(host, "cron_list", {}, mine), undefined);
 });
+
+test("[wake-me] wake_me writes its own loop's follow-up and no other's; a refusal writes nothing; cron_list gives the model the wake and the quiet", async () => {
+	const t = tools();
+	const cwd = t.stores.dir;
+	const job = (id: string, name: string) => t.stores.jobs.add({ id, name, schedule: parseSchedule("every 1h"), stateful: true, prompt: "look", cwd: path.join(cwd, "mine"), enabled: true, catchUp: true, createdAt: new Date().toISOString() });
+	const a = await job("cron-aaaaaaaa", "ci");
+	await job("cron-bbbbbbbb", "other");
+	const tool = wakeMeTool({ jobId: a.id, runId: "run-a", job: () => t.stores.jobs.load().find((j) => j.id === a.id), clock: t.stores.clock, runs: () => t.stores.jobs.allRuns(), rows: () => [] });
+	const call = (args: Record<string, unknown>) => tool.execute("i", args, undefined, undefined, {} as any);
+	const refused = await call({ when: "in 30s", note: "x" });
+	assert.equal(refused.isError, true);
+	assert.match(String(refused.content[0].text), /^not set: a wake is at least 60 seconds and at most 7 days ahead\. Its next scheduled run is .+\.$/);
+	assert.deepEqual(t.stores.clock.read().jobs, {}, "a refusal writes nothing");
+	const set = await call({ when: "in 2h", note: "nothing before then", quiet: true, job: "cron-bbbbbbbb" });
+	assert.equal(set.isError, undefined);
+	const jobs = t.stores.clock.read().jobs;
+	assert.equal(jobs[a.id]?.followup?.note, "nothing before then");
+	assert.equal(jobs[a.id]?.quietUntil, jobs[a.id]?.followup?.at);
+	assert.equal(jobs["cron-bbbbbbbb"], undefined, "the run's own loop only: the input names no job");
+	const list = await t.call("cron_list", {});
+	const text = String(list.content[0].text);
+	assert.match(text, new RegExp(`\\n  next_wake: ${jobs[a.id]!.followup!.at.replace(/[.+]/g, "\\$&")}, asked by the loop: "nothing before then"`));
+	assert.match(text, /\n  quiet_until: .+, asked by the loop: "nothing before then" \(\/cron run ci wakes it now\)/);
+	const listed = list.details.jobs.find((j: any) => j.id === a.id);
+	assert.deepEqual([listed.next_wake, listed.quiet_until], [{ at: jobs[a.id]!.followup!.at, note: "nothing before then" }, { until: jobs[a.id]!.quietUntil, why: "nothing before then" }]);
+});
+
+test("[gate-held-count] cron_list gives the model a loop's gate and its state: its command, the looks it held since its output changed, or why it is failing", async () => {
+	const t = tools();
+	const cwd = t.stores.dir;
+	const job = await t.stores.jobs.add({ id: "cron-cccccccc", name: "prs", schedule: parseSchedule("every 1h"), stateful: true, prompt: "look", cwd: path.join(cwd, "mine"), enabled: true, catchUp: true, createdAt: new Date().toISOString(), gate: { kind: "command", command: "gh pr list" } });
+	const seenAt = new Date(Date.now() - 3_600_000).toISOString();
+	t.stores.clock.seed({ [job.id]: { runs: 3, gate: { looks: 5, seen: { digest: "d", at: seenAt }, last: { at: new Date().toISOString(), digest: "d" } } } });
+	const list = await t.call("cron_list", {});
+	assert.match(String(list.content[0].text), new RegExp(`\\n  gate: \`gh pr list\` \\(the same for 5 looks since ${seenAt.replace(/[.+]/g, "\\$&")}: no model call until its output changes\\)`));
+	assert.deepEqual(list.details.jobs.find((j: any) => j.id === job.id).gate, { command: "gh pr list", looks: 5, since: seenAt });
+	t.stores.clock.noteLook(job.id, { at: new Date().toISOString(), failed: "timed out after 5s" });
+	const failing = String((await t.call("cron_list", {})).content[0].text);
+	assert.match(failing, /\n  gate_failing: timed out after 5s \(the loop runs without the gate until it works\)/);
+});
+
+test("[wake-me-next] wake_me's reply reads the next scheduled run as /cron does: from the run in flight, which fires an every schedule when it starts", async () => {
+	const t = tools();
+	const now = Date.parse("2026-11-23T09:55:00.000+08:00");
+	const a = await t.stores.jobs.add({ id: "cron-aaaaaaaa", name: "ci", schedule: parseSchedule("every 1h"), stateful: true, prompt: "look", cwd: path.join(t.stores.dir, "mine"), enabled: true, catchUp: true, createdAt: stamp(now - 86_400_000) });
+	t.stores.clock.seed({ [a.id]: { runs: 3, fired: stamp(now - 55 * 60_000) } });
+	const started = now - 5 * 60_000;
+	const mine = { ...plainJobRow(a, "row-a", `cron:${a.id}`, "", { pid: process.pid, instance: "x", version: "0" }, started), lane: `@${a.id}`, run: { id: "run-a", pid: process.pid, started_at: stamp(started) } };
+	const reply = async (rows: any[]) => {
+		const tool = wakeMeTool({ jobId: a.id, runId: "run-a", job: () => t.stores.jobs.load().find((j) => j.id === a.id), clock: t.stores.clock, runs: () => [], rows: () => rows, now: () => now });
+		return String((await tool.execute("i", { when: "in 20m", note: "look again" }, undefined, undefined, {} as any)).content[0].text);
+	};
+	assert.match(await reply([mine]), new RegExp(`Its next scheduled run is ${dayTime(started + 3_600_000, now)}\\.$`), "an hour after the run in flight started, not after the last one that ended");
+	assert.match(await reply([]), new RegExp(`Its next scheduled run is ${dayTime(now + 5 * 60_000, now)}\\.$`), "with no run in flight, from the clock");
+	const refused = await (wakeMeTool({ jobId: a.id, runId: "run-a", job: () => t.stores.jobs.load().find((j) => j.id === a.id), clock: t.stores.clock, runs: () => [], rows: () => [mine], now: () => now }).execute("i", { when: "in 10s", note: "x" }, undefined, undefined, {} as any));
+	assert.match(String(refused.content[0].text), new RegExp(`Its next scheduled run is ${dayTime(started + 3_600_000, now)}\\.$`), "a refusal says the same next run");
+});
+
+test("[wake-quiet] cron_list's next_run is the one /cron shows: a quiet time holds the slots before it", async () => {
+	const t = tools();
+	const a = await t.stores.jobs.add({ id: "cron-aaaaaaaa", name: "ci", schedule: parseSchedule("every 1h"), stateful: true, prompt: "look", cwd: path.join(t.stores.dir, "mine"), enabled: true, catchUp: true, createdAt: new Date(Date.now() - 86_400_000).toISOString() });
+	const until = new Date(Date.now() + 3 * 3_600_000).toISOString();
+	t.stores.clock.seed({ [a.id]: { runs: 1, fired: new Date(Date.now() - 30 * 60_000).toISOString(), quietUntil: until, quietWhy: "weekend" } });
+	const listed = (await t.call("cron_list", {})).details as any;
+	const job = (listed.jobs ?? listed).find((j: any) => j.id === a.id);
+	assert.ok(job?.next_run, JSON.stringify(listed));
+	assert.ok(Date.parse(job.next_run) >= Date.parse(until), `next_run ${job.next_run} is not before the quiet time ends (${until})`);
+});
+
+test("[clean-at-sink] cron_list's text carries no control or format character, whichever field held it", async () => {
+	const t = tools();
+	const nasty = "a\u001b[2J\u202eb\u200bc\u009bd";
+	const a = await t.stores.jobs.add({ id: "cron-aaaaaaaa", name: `n ${nasty}`, schedule: parseSchedule("every 1h"), stateful: true, prompt: `p ${nasty}`, cwd: path.join(t.stores.dir, "mine"), enabled: true, catchUp: true, createdAt: new Date().toISOString(), gate: { kind: "command", command: "gh pr list" } });
+	t.stores.clock.seed({ [a.id]: { runs: 1, note: { at: new Date().toISOString(), text: `note ${nasty}` }, followup: { id: "fu", at: new Date(Date.now() + 3_600_000).toISOString(), note: `w ${nasty}`, set_by: "r", created_at: new Date().toISOString() }, gate: { looks: 0, last: { at: new Date().toISOString(), failed: `f ${nasty}` } } } });
+	const text = String((await t.call("cron_list", {})).content[0].text);
+	for (const word of ["n a", "p a", "note a", "w a", "f a"]) assert.ok(text.includes(word), `${word}: ${text}`);
+	for (const line of text.split("\n")) assert.equal(/[\p{Cc}\p{Cf}]/u.test(line), false, JSON.stringify(line));
+});
+
+test("[gate-person-only] the skill quotes the two refusals of a gate exactly as the tools give them", () => {
+	const flat = (t: string) => t.replace(/\s+/g, " ");
+	const skill = flat(fs.readFileSync(path.join(process.cwd(), "skills/pi-loops/SKILL.md"), "utf8"));
+	for (const refusal of [GATE_NEEDS_PERSON, RULE_GATE_NEEDS_PERSON]) assert.ok(skill.includes(flat(refusal)), `SKILL.md quotes: ${refusal}`);
+});
+

@@ -460,10 +460,25 @@ const LAST_STAMP_MS = 8.64e15 - 86_400_000;
  * and uses the clock's evaluator (`computeNext`), so a reader of that file needs no file in between. It does not look at `enabled`, and it does not say whether a run
  * is due now: those are the caller's questions (`nextRunOf` in src/job-edit.ts answers the second).
  */
-export function nextRunStamp(job: { schedule?: unknown; createdAt?: unknown; fired?: unknown }, now: number): string | undefined {
+export function nextRunStamp(job: NextRunOf, now: number): string | undefined {
+	const at = nextRunAt(job, now);
+	return at === undefined ? undefined : stamp(at);
+}
+
+/** What the next scheduled run is read from: a job as `jobs.json` holds it, its last fire, and the quiet a loop asked for (`wake_me`). */
+export interface NextRunOf { readonly schedule?: unknown; readonly createdAt?: unknown; readonly fired?: unknown; readonly quietUntil?: unknown }
+
+/**
+ * The next scheduled run, as the tick takes it (`decideTick`): the first slot after `now` counted
+ * from the last fire, and the first at or after `quietUntil` while that is ahead, because the tick
+ * skips every slot before it. `/cron`, the page and `wake_me`'s reply all read this one function.
+ */
+export function nextRunAt(job: NextRunOf, now: number): number | undefined {
 	if (!isValidSchedule(job.schedule)) return undefined;
 	const createdAt = typeof job.createdAt === "string" ? Date.parse(job.createdAt) : NaN;
 	const fired = typeof job.fired === "string" ? Date.parse(job.fired) : NaN;
-	const at = computeNext({ schedule: job.schedule, createdAt, fired: Number.isFinite(fired) ? fired : undefined }, now);
-	return at === undefined || !Number.isFinite(at) || Math.abs(at) > LAST_STAMP_MS ? undefined : stamp(at);
+	const quiet = typeof job.quietUntil === "string" ? Date.parse(job.quietUntil) : NaN;
+	const after = Number.isFinite(quiet) && quiet > now ? quiet - 1 : now;
+	const at = computeNext({ schedule: job.schedule, createdAt, fired: Number.isFinite(fired) ? fired : undefined }, after);
+	return at === undefined || !Number.isFinite(at) || Math.abs(at) > LAST_STAMP_MS ? undefined : at;
 }

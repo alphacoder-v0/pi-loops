@@ -17,7 +17,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { ProjectTrustStore, SessionManager, VERSION as PI_VERSION, copyToClipboard, formatDimensionNote, getAgentDir, readStoredCredential, resizeImage } from "@earendil-works/pi-coding-agent";
-import { ARCHIVE_EXT, type ActivateMode, applyImport, automationOf, defaultExportPath, exportSession, importSession, offerToEnable, parseActivateMode } from "./archive.ts";
+import { ARCHIVE_EXT, type ActivateMode, GATES_HEAD, applyImport, automationOf, defaultExportPath, exportSession, importSession, importedGateLines, offerToEnable, parseActivateMode } from "./archive.ts";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "./args.ts";
@@ -32,7 +32,7 @@ import { LoopsLog, pruneLogs } from "./log.ts";
 import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
-import { capRedacted, previewRedacted, redact, screenText } from "./redact.ts";
+import { capRedacted, plainLine, previewRedacted, redact, screenText } from "./redact.ts";
 import { CANCELLED_LINE, answerLine, answerWho, cancelRefusal, cardLines, cardOrigin, clearLeftTail, dismissOutcome, dismissTail, inboxCard, noQuestionLine, questionActions, threadOrder, threadedLines, threads, yesTerminalLine } from "./inbox-card.ts";
 import { type Answers, conversationFile, createAnswers } from "./answers.ts";
 import { type StepRefusal, answerOpen, answerRowId } from "./ask.ts";
@@ -44,13 +44,14 @@ import { copyText, isRemoteTty } from "./browser-open.ts";
 import { execFile } from "node:child_process";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
+import { gateShown } from "./gate.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
 import { plural } from "./plural.ts";
 import { type OwnerView, type PlainJobLeases, type SessionSnapshot, openWhere, ownerViewOf, runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, closedConversation, holderAlive, holderDelivers, openWindowPids, procStart } from "./lease.ts";
 import { parseLane } from "./lane.ts";
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, newTriggerRow, promotionTarget, promotionView, proofOf, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, sessionFileEntries, stopRow, waitingLine } from "./engine.ts";
-import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, proposalsNotice, queueLines, toolsCapNotice } from "./job-lines.ts";
+import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, proposalsNotice, queueLines, toolsCapNotice, wokeWords } from "./job-lines.ts";
 import { type Proposal, askProposal } from "./watch-plan.ts";
 import { type SettleState, offerAtSettle, oneRunAtATime, settleOffers, settleReady } from "./settle-offer.ts";
 import type { Row, UnclaimedRow } from "./requests.ts";
@@ -1264,6 +1265,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		'    e.g. /cron add --stateful "0 9 * * *" check the repo issues and report anything new since the last run',
 		"    schedule also accepts @daily | every 30m | in 10m | at 2026-09-08T18:00",
 		"    --verify: maker/checker — a second adversarial sub-agent reviews findings before they enter /inbox (--checker-model <provider/id> to use another model)",
+		"    --gate '<command>': a loop runs that command first, at most once a minute, and calls no model while it prints what the last run saw (/cron set <ref> --gate '<command>'|- changes it)",
 		"    more flags: --name <n> --cwd <dir> --model <provider/id> --thinking <lvl> --tools a,b --timeout 20m --catchup|--no-catchup (default: loops catch up a missed tick, plain jobs do not)",
 		"/cron enable|disable|remove <n|id|name>      /cron run <n|id|name>   fire now",
 		"/cron set <n|id|name> [--model <p/id>|-] [--thinking <lvl>|-] [--timeout <dur>|-] [--name <n>|-] [--tools a,b|-]   change what a job runs with (- = clear it: a loop then uses pi's default, a plain job its conversation's; --tools - uncaps a plain job's turns)",
@@ -1398,6 +1400,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							catchUp: parsed.catchUp,
 							verify: parsed.verify,
 							checkerModel: parsed.checkerModel,
+							...(parsed.gate !== undefined ? { gate: { kind: "command" as const, command: parsed.gate } } : {}),
 						});
 						const next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt) }, Date.now());
 						cronControlAudit("add", "slash", undefined, job);
@@ -1415,6 +1418,7 @@ export default function piLoops(pi: ExtensionAPI) {
 									]
 								: ["  mode: inject-and-run (the result appears in this chat; while this chat is closed it still runs, in the background, and each run is a model turn)"]),
 							`  action: ${previewRedacted(job.prompt, 120)}`,
+							...(job.gate ? [`  gate: \`${gateShown(job.gate.command)}\` runs first, at most once a minute; no model call while it prints what the last run saw`] : []),
 						]);
 						refreshBadge();
 						return;
@@ -1606,6 +1610,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						// The patch carries only the edited fields: `update` re-reads under a lock, and a tick
 						// that started a run in between has already set `running` on the copy it hands back.
 						if (applied.slot !== undefined) stores.clock.reset(job.id, applied.slot);
+						const woke = applied.clearWake ? stores.clock.clearWake(job.id) : undefined;
 						const updated = await stores.jobs.update(job.id, (j) => Object.assign(j, applied.patch));
 						if (!updated) return;
 						// The row the page writes for a schedule change, in the shared audit; nothing for an edit
@@ -1631,6 +1636,8 @@ export default function piLoops(pi: ExtensionAPI) {
 							`  thinking: ${updated.thinking ?? "(the running session's current level)"}`,
 							`  timeout: ${updated.timeoutMs ? `${Math.round(updated.timeoutMs / 1000)}s` : "default"}`,
 							`  tools: ${updated.tools?.length ? updated.tools.join(", ") : updated.stateful ? "(this chat's built-in tools)" : "(none: its turns run uncapped, as your own do)"}`,
+							...(woke === undefined ? [] : [`  wake: ${woke ? "removed what the loop set; it runs on its schedule" : "(the loop had set none)"}`]),
+							...(change.gate === undefined ? [] : [`  gate: ${updated.gate ? `\`${gateShown(updated.gate.command)}\` runs first; no model call while it prints what the last run saw` : "(none: every due slot runs)"}`]),
 						]);
 						return;
 					}
@@ -1654,17 +1661,18 @@ export default function piLoops(pi: ExtensionAPI) {
 							return;
 						}
 						const newestFirst = [...runs].reverse();
-						show(ctx, `Recent runs${job ? ` of ${job.name ?? job.id}` : ""} (${runs.length}, newest first)`, [
+						// Each line through `plainLine` as its last step, as every `/cron` line is (src/job-lines.ts `jobLines`).
+						show(ctx, plainLine(`Recent runs${job ? ` of ${job.name ?? job.id}` : ""} (${runs.length}, newest first)`), [
 							...newestFirst.map((r, i) => {
 								const secs = Math.max(0, Math.round((Date.parse(r.finishedAt) - Date.parse(r.startedAt)) / 1000));
 								const who = job ? "" : `${r.jobName ?? r.jobId} `;
 								const cost = r.usage?.cost ? ` $${r.usage.cost.toFixed(3)}` : "";
 								const chk = r.checker ? (r.checker.ok ? `, checker kept ${r.checker.kept}/${r.checker.kept + r.checker.dropped.length + r.checker.unreviewed}` : ", checker FAILED") : "";
-								const tail = r.ok ? `${plural(r.findings, "finding")}${chk}${r.stateUpdated ? ", state updated" : ""}${notesCutWords(r)}` : r.stoppedBy === "person" ? `stopped by you ${r.stoppedFrom === "page" ? "from the page" : "from a terminal"}` : r.aborted ? "stopped" : `FAILED: ${previewRedacted(r.error ?? "?", 80)}`;
+								const tail = r.ok ? `${plural(r.findings, "finding")}${chk}${r.stateUpdated ? ", state updated" : ""}${notesCutWords(r)}${wokeWords(r)}` : r.stoppedBy === "person" ? `stopped by you ${r.stoppedFrom === "page" ? "from the page" : "from a terminal"}` : r.aborted ? "stopped" : `FAILED: ${previewRedacted(r.error ?? "?", 80)}`;
 								return `${String(i + 1).padStart(2)}. ${formatLocal(Date.parse(r.startedAt))} ${who}${secs}s${cost} · ${tail}${r.sessionFile ? "" : " (no transcript)"}`;
 							}),
 							job ? `transcript: /cron trace ${job.name ?? job.id} <k>` : "transcript: /cron trace <job> <k>",
-						]);
+						].map(plainLine));
 						return;
 					}
 					case "trace": {
@@ -2886,7 +2894,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (owner.projectOwned) lines.push("  the loops belong to this project: this conversation is not saved yet, so a finding runs in the conversation you claim it from");
 		for (const line of plan.addLines) {
 			const parsed = parseAddArgs(line);
-			const job = await createJob({ schedule: parsed.schedule, prompt: parsed.prompt, stateful: parsed.stateful, name: parsed.name, model: parsed.model, thinking: parsed.thinking, tools: parsed.tools, timeoutMs: parsed.timeoutMs, catchUp: parsed.catchUp, verify: parsed.verify, checkerModel: parsed.checkerModel, recipe: m.name }, owner);
+			const job = await createJob({ schedule: parsed.schedule, prompt: parsed.prompt, stateful: parsed.stateful, name: parsed.name, model: parsed.model, thinking: parsed.thinking, tools: parsed.tools, timeoutMs: parsed.timeoutMs, catchUp: parsed.catchUp, verify: parsed.verify, checkerModel: parsed.checkerModel, recipe: m.name, ...(parsed.gate !== undefined ? { gate: { kind: "command" as const, command: parsed.gate } } : {}) }, owner);
 			cronControlAudit("add", "slash", undefined, job);
 			const next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt) }, Date.now());
 			lines.push(`  job ${job.name}: ${formatSchedule(job.schedule)}${next ? ` (next run ${formatLocal(next)})` : ""}${job.stateful ? "" : " · runs in this chat, and in the background while it is closed (each run a model turn)"}`);
@@ -3216,6 +3224,9 @@ export default function piLoops(pi: ExtensionAPI) {
 					existingJobIds: new Set(store.load().map((j) => j.id)),
 					existingRuleIds: new Set(triggers.store.load().map((r) => r.id)),
 				});
+				// With `on` the import enables what it brings: its gates are shown before anything is on, as the CLI does.
+				const gates = mode === "on" ? importedGateLines(imp, { jobs: imp.jobs.filter((j) => j.enabled).map((j) => j.id), rules: imp.rules.filter((r) => r.enabled).map((r) => r.id) }) : [];
+				if (gates.length) show(ctx, GATES_HEAD, gates);
 				await applyImport(imp, store, triggers.store, stores.clock);
 				for (const job of imp.jobs) cronControlAudit("add", "slash", undefined, job);
 				refreshBadge();

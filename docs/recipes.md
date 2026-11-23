@@ -174,8 +174,15 @@ budget_hint_usd = 10                # optional; only a hint in `show` and the co
 name = "issue-triage"               # the /cron add --name
 schedule = "*/30 * * * *"           # anything /cron add takes, except in/at (a recipe job recurs)
 playbook = "triage.md"              # the file this job's runs read
-timeout = "45m"                     # optional: verify, timeout, thinking, tools, prompt
+timeout = "45m"                     # optional: verify, timeout, thinking, tools, prompt, gate
+gate = "gh issue list --json number,updatedAt"  # optional: the job's --gate, a command run before each run
 ```
+
+A job's `gate` is the `--gate` a person would type (see [loops.md](loops.md), "A gate: no model call
+while nothing changed"): one command that pi-loops runs before each scheduled run, at most once a
+minute, in the project. While it prints what the last run saw, the run is held and no model is
+called. The manifest is refused when the dangerous-command policy would refuse the command, or when
+it is more than one line.
 
 Each `[[job]]` is checked by building the `/cron add` line it stands for and parsing it with the
 same parser: a bad schedule, a `--timeout` that is not a duration, an expression that never

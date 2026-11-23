@@ -2,13 +2,15 @@ import * as path from "node:path";
 import { askedLines, resolveCap } from "./ask.ts";
 import { type EngineSinks, applyFate, plainJobRow, plainRunId } from "./engine.ts";
 import { OVERFLOW_FILE, notesFileLines, notesFiles as listNotesFiles, notesWrite, reportedFor } from "./notes.ts";
-import { findingKind, composeCheckerPrompt, composeLoopPrompt, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
+import { findingKind, composeCheckerPrompt, composeLoopPrompt, gateLines, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
+import type { EventLog } from "./events.ts";
+import { commandReadingOf, readingDigest, type CommandReading } from "./gate.ts";
 import type { ClaimedRow, Row, UnclaimedRow } from "./requests.ts";
 import { RunList, STOPPED_BY_PERSON } from "./run-list.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { formatLocalZoned, stamp } from "./schedule.ts";
-import { type JobHistory, runHistory } from "./job-status.ts";
+import { type JobHistory, firedBy, runHistory } from "./job-status.ts";
 import { type LoopSettlement, INTERRUPTED, loopEnd, oneShotDoneV3, runEnd, settleLoop } from "./settle.ts";
 import type { SessionSnapshot } from "./job-owner.ts";
 import type { Stores } from "./stores.ts";
@@ -29,7 +31,17 @@ export type RunRecordM4b = RunRecord & {
 	stop?: ProcessStop;
 	/** Findings the run reported that the repeat rule did not file again: a `new` finding of the loop has the same text. Absent when there were none. */
 	repeats?: number;
+	/** The notes of the follow-ups that started this run (`cause: "wake"`): `/cron runs` says the first, and `wake_me` counts these runs. */
+	woken?: string[];
+	/** Their ids, as the row carried them (`woken_ids`). */
+	woken_ids?: string[];
 };
+
+/** The job a loop lane's row names: the clock's slot, a person's `/cron run`, or the loop's follow-up. */
+export function rowJob(source: Row["source"]): string {
+	for (const prefix of ["cron-run:", "wake:", "cron:"]) if (source.startsWith(prefix)) return source.slice(prefix.length);
+	return source;
+}
 export type { ProcessStop } from "./store.ts";
 
 export interface LoopRunDeps {
@@ -42,12 +54,25 @@ export interface LoopRunDeps {
 	readonly engine: () => EngineSinks;
 	readonly sinks: LoopSinks;
 	readonly now?: () => number;
+	/** `events.jsonl`: the gate reading a row names (`payload.events`), for the `[gate]` block and for `seen`. */
+	readonly events?: Pick<EventLog, "get">;
 }
 
 export interface LoopRowPayload extends NonNullable<ClaimedRow["payload"]> {
 	slot?: string;
 	catch_up?: true;
 	requested_by?: string;
+	/** The gate reading that opened this run (`events.jsonl` ids, design 3.3): one, from the tick. */
+	events?: string[];
+}
+
+/** The gate reading a row names, read back from `events.jsonl`, with when it was stored. Undefined when the row names none or the log no longer has it. */
+export function gateReadingOf(row: Pick<Row, "payload">, events: Pick<EventLog, "get"> | undefined): { reading: CommandReading; at: string } | undefined {
+	const id = (row.payload as LoopRowPayload | undefined)?.events?.[0];
+	const event = id === undefined ? undefined : events?.get(id);
+	if (!event || !event.source.startsWith("gate:")) return undefined;
+	const reading = commandReadingOf(event.raw);
+	return reading && { reading, at: event.received_at };
 }
 
 export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps): Promise<void> {
@@ -76,12 +101,17 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 		} catch (error) { deps.sinks.log(`loop ${job.id}: inbox read failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
 		// From jobs.json only, as tools and cwd are: a row in the lane file can be written by hand.
 		const timeoutMs = job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
+		let gate: string[] | undefined;
+		try { const read = gateReadingOf(row, deps.events); gate = read && gateLines(read.reading); }
+		catch (error) { deps.sinks.log(`loop ${job.id}: gate reading read failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
 		const prompt = composeLoopPrompt(job.prompt, previousState, {
 			name: job.name,
 			notesDir,
 			notesFiles,
 			reported,
 			asked,
+			woken: payload?.woken,
+			gate,
 			timeoutMs,
 			runAt: `${formatLocalZoned(started)}${payload?.catch_up ? " (catching up a missed tick)" : ""}`,
 		});
@@ -167,6 +197,8 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 			sessionId: result.sessionId, sessionFile: result.sessionFile, checker,
 			forSession: job.createdBy?.sessionId, ordinal: nextOrdinal(job.id, deps),
 			...(payload?.requested_by ? { requestedBy: { sessionId: payload.requested_by } } : {}),
+			...(payload?.woken?.length ? { cause: "wake" as const, woken: payload.woken } : {}),
+			...(payload?.woken_ids?.length ? { woken_ids: payload.woken_ids } : {}),
 			...(aborted ? { aborted: true as const } : {}),
 			...(byPerson ? { stoppedBy: "person" as const, stoppedFrom: running?.stoppedFrom ?? "cli" } : {}),
 		};
@@ -253,17 +285,19 @@ export function ensureRecord(row: ClaimedRow, deps: Pick<LoopRunDeps, "stores" |
 		existing = records.find((record) => record.runId === row.run.id && Date.parse(record.startedAt) >= Date.parse(row.run.started_at)) as RunRecordM4b | undefined;
 		if (existing) return undefined;
 		return ended ?? {
-			runId: row.run.id, row: row.id, jobId: row.source.startsWith("cron-run:") ? row.source.slice("cron-run:".length) : row.source.slice("cron:".length),
+			runId: row.run.id, row: row.id, jobId: rowJob(row.source),
 			jobName: undefined, stateful: true, cwd: row.payload?.cwd ?? "", pid: row.run.pid,
 			startedAt: row.run.started_at, finishedAt: stamp(now), ok: false, error: INTERRUPTED,
 			findings: 0, droppedFindings: 0, stateUpdated: false, interrupted: true,
+			...(row.payload?.woken?.length ? { cause: "wake" as const, woken: row.payload.woken } : {}),
+			...(row.payload?.woken_ids?.length ? { woken_ids: row.payload.woken_ids } : {}),
 			...(own ? {} : { stop: stoppedTogether(row.run, claims, records as RunRecordM4b[]) }),
 		};
 	});
 	return existing ?? (deps.stores.jobs.listRuns().find((record) => record.runId === row.run.id && Date.parse(record.startedAt) >= Date.parse(row.run.started_at)) as RunRecordM4b);
 }
 
-export interface RunClose { readonly ordinal?: number; readonly fired?: string }
+export interface RunClose { readonly ordinal?: number; readonly fired?: string; readonly slot?: string; readonly seen?: { readonly digest: string; readonly at: string } }
 export type Fate =
 	| { readonly do: "leave"; readonly exit: "delivered" | "stopped" | "parked" }
 	| { readonly do: "owed" }
@@ -277,15 +311,24 @@ export type CloseStep =
 	| { readonly write: "successor"; readonly row: UnclaimedRow };
 export type RowStep = { readonly write: "row"; readonly fate: Fate };
 export type ClosePlan = readonly [...CloseStep[], RowStep];
-export interface CloseInput { readonly row: ClaimedRow; readonly job: LoopJob | undefined; readonly record: RunRecordM4b; readonly history: JobHistory; readonly self: Row["created_by"]; readonly now: number }
+export interface CloseInput {
+	readonly row: ClaimedRow; readonly job: LoopJob | undefined; readonly record: RunRecordM4b; readonly history: JobHistory; readonly self: Row["created_by"]; readonly now: number;
+	/** The gate reading the row named (`gateReadingOf`): `seen` when the run succeeded and the reading is of the job's gate as it is now. */
+	readonly gate?: { readonly reading: CommandReading; readonly at: string };
+}
 
 export function closeSteps(input: CloseInput): ClosePlan {
 	const { row, job, record, history, self, now } = input;
 	const settled: LoopSettlement = settleLoop(row, job, loopEnd(record, history), aloneIn(record));
 	const end = runEnd(record);
+	// `seen` only after a run that did not fail (design 3.3): a failed one leaves it, and the same change wakes the loop again.
+	const digest = input.gate && end.how === "succeeded" && input.gate.reading.command === job?.gate?.command ? readingDigest(input.gate.reading) : undefined;
 	const close: RunClose = {
 		...(end.how === "succeeded" || end.how === "failed" ? { ordinal: history.ordinal } : {}),
-		...(end.how === "succeeded" || end.how === "failed" || end.how === "stopped" ? { fired: row.run.started_at } : {}),
+		...((end.how === "succeeded" || end.how === "failed" || end.how === "stopped") && firedBy(row) !== undefined ? { fired: firedBy(row) } : {}),
+		...(row.payload?.woken_ids?.length ? { followups: row.payload.woken_ids } : {}),
+		...(row.collapsed_slot === undefined ? {} : { slot: row.collapsed_slot }),
+		...(digest === undefined ? {} : { seen: { digest, at: input.gate!.at } }),
 	};
 	const steps: CloseStep[] = [{ write: "run-end", record }];
 	if (job && Object.keys(close).length) steps.push({ write: "clock", job: job.id, close });
@@ -297,7 +340,7 @@ export function closeSteps(input: CloseInput): ClosePlan {
 	return [...steps, { write: "row", fate: settled.row }] as ClosePlan;
 }
 
-export async function closeLoopRun(row: ClaimedRow, deps: Pick<LoopRunDeps, "stores" | "engine" | "sinks" | "holder">, now: number, ended?: RunRecordM4b): Promise<ClosedM4b> {
+export async function closeLoopRun(row: ClaimedRow, deps: Pick<LoopRunDeps, "stores" | "engine" | "sinks" | "holder" | "events">, now: number, ended?: RunRecordM4b): Promise<ClosedM4b> {
 	const fail = (what: string, error: unknown): void => deps.sinks.log(`loop run ${row.id}: ${what} failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
 	// A run that ended here closes on what it holds, as main's end of a run does: a store that cannot be
 	// read or written now is logged, and the row is still written last. Whatever still throws before the
@@ -321,9 +364,16 @@ export async function closeLoopRun(row: ClaimedRow, deps: Pick<LoopRunDeps, "sto
 	// A run whose record could not be written still counts, as main counts it in its own field.
 	try { history = (recorded ? deps.stores.history() : runHistory([...deps.stores.jobs.allRuns(), record])).get(jobId) ?? history; }
 	catch (error) { fail("run history read", error); }
+	// The row as the lane holds it now: a slot that collapsed onto it while it ran is on this copy only.
+	let current = row;
+	try { current = (deps.stores.requests.list(row.lane).find((item) => item.id === row.id && item.run?.started_at === row.run.started_at) as ClaimedRow | undefined) ?? row; }
+	catch (error) { fail("row read", error); }
+	let gate: CloseInput["gate"];
+	try { gate = job?.gate ? gateReadingOf(current, deps.events) : undefined; }
+	catch (error) { fail("gate reading read", error); }
 	let outcome: ClosedM4b["outcome"] = "waiting";
 	let closedJob = job;
-	for (const step of closeSteps({ row, job, record, history, self: deps.engine().self(), now })) {
+	for (const step of closeSteps({ row: current, job, record, history, self: deps.engine().self(), now, ...(gate ? { gate } : {}) })) {
 		if (step.write === "row") {
 			outcome = await applyFate(deps.stores.requests, deps.engine(), row, step.fate, now);
 			continue;
@@ -348,7 +398,7 @@ export async function closeLoopRun(row: ClaimedRow, deps: Pick<LoopRunDeps, "sto
 		catch (error) { fail("jobs read", error); }
 		if (current) {
 			const history = deps.stores.history().get(jobId) ?? { ordinal: 0, streak: 0, spent: new Set<string>() };
-			const queued = deps.stores.requests.list(row.lane).some((candidate) => candidate.source === `cron:${jobId}` || candidate.source === `cron-run:${jobId}`);
+			const queued = deps.stores.requests.list(row.lane).some((candidate) => candidate.source === `cron:${jobId}` || candidate.source === `cron-run:${jobId}` || candidate.source === `wake:${jobId}`);
 			if (oneShotDoneV3(current, { running: undefined, queued: queued || undefined, runs: history.ordinal, ...(history.streak ? { error: { streak: history.streak } } : {}) })) {
 				await deps.stores.jobs.remove(jobId);
 				deps.sinks.retired?.(current, history.streak >= 2 ? "one-shot failed twice" : "one-shot finished");

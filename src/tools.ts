@@ -7,21 +7,22 @@
  */
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal } from "./job-signal.ts";
 import { formatWait, queuedPrompt, type QueuedPrompt, runningRun } from "./engine.ts";
-import { type ListedJob, listedJobs } from "./job-status.ts";
-import { statusField, statusWord } from "./job-lines.ts";
+import { type ListedJob, listedJob, listedJobs } from "./job-status.ts";
+import { gateFields, statusField, statusWord, wakeFields } from "./job-lines.ts";
+import { gateCommandWhy, gateShown } from "./gate.ts";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Type, type TSchema } from "typebox";
-import { previewRedacted } from "./redact.ts";
-import { computeNext, formatLocal, formatSchedule, parseSchedule, stamp } from "./schedule.ts";
+import { plainLine, previewRedacted } from "./redact.ts";
+import { computeNext, formatLocal, formatSchedule, nextRunAt, parseSchedule, stamp } from "./schedule.ts";
 import type { SessionSnapshot } from "./job-owner.ts";
 import { removeJob } from "./stores.ts";
 import type { Stores } from "./stores.ts";
 import type { RunList } from "./run-list.ts";
-import { DISABLED_BY_PERSON, MAX_PROMPT_BYTES, type JobStore, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
-import type { RequestStore } from "./requests.ts";
+import { DISABLED_BY_PERSON, MAX_PROMPT_BYTES, type JobStore, type LoopJob, type RunRecord, newId, owningSessionId, resolveJobRef } from "./store.ts";
+import type { RequestStore, Row } from "./requests.ts";
 import type { Inbox } from "./inbox.ts";
 import { jobNameFrom } from "./job-name.ts";
 import { asleepNote, ownerSession, runsSomewhere, whereRuns, type OwnerView } from "./job-owner.ts";
@@ -33,6 +34,7 @@ import { type TriggerStore, auditRule, cleanCondition, controlPlanePreflight, lo
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { capWords } from "./guard.ts";
 import { WATCH_ASK_HEAD } from "./watch-plan.ts";
+import { type ClockStore, WAKE_NOTE_MAX, WAKE_RUNS_PER_DAY, decideWake, wakeSetText } from "./clock.ts";
 
 export interface ControlPlaneRequest {
 	/** What is being approved, value-free. */
@@ -154,6 +156,8 @@ export interface CreateJobInput {
 	recipe?: string;
 	/** A watch the person has not said yes to (design 2.5): written with `enabled: false`. */
 	proposed?: { at: string; session: string };
+	/** A loop's gate (design 3.3): a person's `--gate`, a recipe's key, or a proposal's, which the person sees on the card. */
+	gate?: { kind: "command"; command: string };
 }
 
 export interface JobScope {
@@ -242,6 +246,8 @@ export function checkJobInput(input: Pick<CreateJobInput, "schedule" | "prompt" 
 export async function createLoopJob(host: ToolStoresHost & Pick<ToolHost, "session" | "ensureHost">, input: CreateJobInput, scope?: JobScope): Promise<LoopJob> {
 	const existing = jobsOf(host as ToolHost).load();
 	const cwd = checkJobInput(input, existing, host.session());
+	const gateWhy = input.gate ? (input.stateful ? gateCommandWhy(input.gate.command, { loopsDir: host.stores.dir }) : "a gate is for a loop: a plain job's turn is not gated") : undefined;
+	if (gateWhy) throw new Error(gateWhy);
 	const job: LoopJob = {
 		id: newId("cron"),
 		name: input.name ?? jobNameFrom(input.prompt, existing),
@@ -269,6 +275,7 @@ export async function createLoopJob(host: ToolStoresHost & Pick<ToolHost, "sessi
 		...(scope?.projectOwned ? { owner: "project" as const } : { createdBy: { sessionId: scope?.parentSessionId ?? host.session().sessionId, cwd: scope?.parentCwd ?? host.session().cwd } }),
 		sessionId: owningSessionId(input.stateful, host.session().sessionId, scope?.parentSessionId),
 		...(input.proposed ? { proposed: input.proposed } : {}),
+		...(input.stateful && input.gate ? { gate: { kind: "command" as const, command: input.gate.command } } : {}),
 	};
 	await jobsOf(host).add(job);
 	if (job.stateful) host.ensureHost?.();
@@ -295,6 +302,17 @@ function turnOf(scope: ToolScope, host: ToolHost, ctx: Pick<ExtensionContext, "h
 
 /** Where a create tool makes a job at once, a gate is refused whole: only a person sets one (design 3.3). */
 export const GATE_NEEDS_PERSON = "a gate needs a person: set it with /cron set <name> --gate";
+
+/** The same for a rule, which `/cron set` cannot reach: a rule's gate is set only from a proposal the person answers. */
+export const RULE_GATE_NEEDS_PERSON = "a gate needs a person: new_trigger with a gate proposes the rule, and the person sets it up";
+
+const GATE_DESCRIPTION = "Optional: one shell command looked at before each run, at most once a minute, in the watch's directory (5 s, its first 4000 characters of output). While it prints what the last run saw, no model is called. Only when the watch is proposed to a person, who sees the command on the card; refused anywhere the tool creates at once. Use a cheap, read-only command whose output changes exactly when there is something new (gh pr list --json number,updatedAt).";
+
+/** A gate a create tool was given, or why it cannot be one: the whole check, against this loops directory, before the card shows it. */
+function gateOf(command: string, loopsDir: string): { kind: "command"; command: string } | string {
+	const why = gateCommandWhy(command, { loopsDir });
+	return why ?? { kind: "command", command };
+}
 
 /** A proposal waits in a conversation for its answer, and its receipt lands there: one pi has not saved has no lane for either. */
 const NO_CONVERSATION = "a watch is proposed in a saved conversation, and this one is not saved (--no-session): /cron add or /new-trigger in a saved one sets it up";
@@ -330,7 +348,8 @@ function renderTriggerRulesForTool(rules: ReturnType<TriggerStore["load"]>, host
  */
 function nextRunForTool(job: ListedJob, now: number, view: OwnerView): number | undefined {
 	if (!job.enabled || !runsSomewhere(job, view)) return undefined;
-	return computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), fired: job.status.fired ? Date.parse(job.status.fired) : undefined }, now);
+	// The one next-run function /cron, the page and wake_me read, so cron_list agrees with them.
+	return nextRunAt({ schedule: job.schedule, createdAt: job.createdAt, fired: job.status.fired, quietUntil: job.status.quiet?.until }, now);
 }
 
 /** A plain job's prompt waiting in its conversation's queue (src/engine.ts `queuedPrompt`); a loop has no queue. */
@@ -368,6 +387,8 @@ function renderCronJobsForTool(jobs: readonly ListedJob[], host: Pick<ToolHost, 
 		if (word) lines.push(`  ${statusField(word, now)}`);
 		if (job.status.streak) lines.push(`  consecutive_failures: ${job.status.streak}`);
 		if (job.status.collapsed) lines.push(`  skipped_overlap_count: ${job.status.collapsed}`);
+		for (const field of wakeFields(job, now)) lines.push(`  ${field}`);
+		for (const field of gateFields(job)) lines.push(`  ${field}`);
 		if (job.stateful) {
 			// The same two facts `/cron` shows, so the model can say "this loop's findings are all
 			// dismissed" or "it has found nothing in 12 runs" when the user asks about their automation.
@@ -376,7 +397,8 @@ function renderCronJobsForTool(jobs: readonly ListedJob[], host: Pick<ToolHost, 
 			if (s.quiet >= QUIET_MARK_AFTER) lines.push(`  quiet_streak: ${s.quiet} (consecutive runs with no finding)`);
 		}
 	}
-	return lines.join("\n");
+	// Each line through `plainLine` as its last step, as `/cron` does: a field added later is cleaned too.
+	return lines.map(plainLine).join("\n");
 }
 
 /** A rule made at once, as `new_trigger` made one before proposals: the person's own turn with no UI, after `confirmTool`. */
@@ -454,6 +476,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 				spec: Type.Optional(Type.String({ description: "The whole rule as one sentence, only when condition and action cannot be given apart." })),
 				fire_once: Type.Optional(Type.Boolean({ description: "Whether to disable the rule after the first successful match. Defaults to true unless the user explicitly asks for a repeating trigger." })),
 				promote_to_chat: Type.Optional(Type.Boolean({ description: "Whether a match's result goes into this conversation (true) or the inbox (false). With a person present the question starts at this conversation whatever this says; with nobody to ask, the default is false." })),
+				gate: Type.Optional(Type.String({ description: GATE_DESCRIPTION })),
 			},
 			{ additionalProperties: false },
 		),
@@ -475,6 +498,10 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			if (!fromSpec && looksLikeFixedScheduleRequest(params.condition ?? "")) return deny("fixed scheduled jobs must use cron_create, not new_trigger");
 			const s = host.session();
 			const turn = turnOf(scope, host, ctx);
+			const gate = params.gate === undefined ? undefined : gateOf(params.gate, host.stores.dir);
+			if (typeof gate === "string") return deny(gate);
+			// A gate needs a person (design 3.3): only a proposal, which they see on the card, carries one.
+			if (gate && turn === "no-ui") return deny(RULE_GATE_NEEDS_PERSON);
 			if (turn === "no-ui") {
 				// Nobody could answer a proposal here: the rule is asked for as before proposals, with
 				// `confirmTool`, which a pi with no UI refuses.
@@ -489,7 +516,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			// turn Result starts at this conversation whatever `promote_to_chat` said (its documented
 			// default is not a choice anyone made); Repeats follows `fire_once`.
 			const promoteToChat = turn === "person" ? true : (params.promote_to_chat ?? false);
-			return proposeRule(host, scope, { condition, action, cwd: s.cwd, sessionId: s.sessionId, model: s.model, thinking: s.thinking, fireOnce: params.fire_once ?? true, promoteToChat, proposed: { at: stamp(), session: s.sessionId } });
+			return proposeRule(host, scope, { condition, action, cwd: s.cwd, sessionId: s.sessionId, model: s.model, thinking: s.thinking, fireOnce: params.fire_once ?? true, promoteToChat, proposed: { at: stamp(), session: s.sessionId }, ...(gate ? { gate } : {}) });
 		},
 	});
 	register({
@@ -578,6 +605,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			name: Type.Optional(Type.String({ description: "Short unique label (letters, digits, . _ -)." })),
 			cwd: Type.Optional(Type.String({ description: "Directory a stateful job's sub-agent runs in. Default: current project." })),
 			catch_up: Type.Optional(Type.Boolean({ description: "Run once for a missed tick (default: true for stateful jobs, false for plain jobs)." })),
+			gate: Type.Optional(Type.String({ description: GATE_DESCRIPTION })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			let schedule: LoopJob["schedule"];
@@ -587,9 +615,12 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 				return deny(err?.message ?? String(err));
 			}
 			const turn = turnOf(scope, host, ctx);
-			// Not in the schema until a gate is something a job can carry; a model that sends one anyway
-			// gets the refusal of design 6.3 where nobody can see the card, and creates nothing.
-			if ((params as { gate?: unknown }).gate !== undefined) return deny(turn === "person" ? "a gate is not something this version of pi-loops can set up: propose the watch without one" : GATE_NEEDS_PERSON);
+			// A gate needs a person (design 3.3): accepted only in the person's own turn, where the call
+			// writes a proposal and the card shows the command. Anywhere the tool creates at once the call
+			// is refused whole, and nothing is created.
+			if (params.gate !== undefined && turn !== "person") return deny(GATE_NEEDS_PERSON);
+			const gate = params.gate === undefined ? undefined : gateOf(params.gate, host.stores.dir);
+			if (typeof gate === "string") return deny(gate);
 			if (turn === "person") {
 				// P1 (design 2.5): a proposal, which nothing runs until the person says yes. A schedule's
 				// Result starts at the inbox (a loop) unless the model said plainly that it belongs in this
@@ -597,8 +628,9 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 				// cannot make.
 				const s = host.session();
 				if (!s.sessionId) return deny(NO_CONVERSATION);
-				const where = params.stateful === false && !params.verify ? "chat" : "inbox";
-				const draft = { schedule, prompt: params.action, verify: params.verify ?? false, name: params.name, catchUp: params.catch_up };
+				// A gate is a loop's: a gated watch starts at the inbox, and its card offers no plain job.
+				const where = params.stateful === false && !params.verify && !gate ? "chat" : "inbox";
+				const draft = { schedule, prompt: params.action, verify: params.verify ?? false, name: params.name, catchUp: params.catch_up, ...(gate ? { gate } : {}) };
 				let cwd: string;
 				try {
 					cwd = checkJobInput({ ...draft, stateful: where === "inbox", cwd: params.cwd }, jobsOf(host).load(), s);
@@ -640,7 +672,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const view = ownerOf(host);
 			const nextRun = (j: ListedJob) => nextRunForTool(j, nowMs, view);
 			const heldBy = (j: ListedJob) => { const where = whereRuns(j, view); return where.kind === "terminal" ? where.pid : undefined; };
-			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: jobsOf(host).jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, proposed: j.proposed ? true : undefined, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: runningRunForTool(j, host), last_due_at: j.status.due, last_fired_at: j.status.fired, last_completed_at: j.status.completed, last_error: j.status.error ? previewRedacted(j.status.error, 120) : undefined, consecutive_failures: j.status.streak || undefined, skipped_overlap_count: j.status.collapsed, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: whereRuns(j, view).kind === "asleep" || undefined, held_by_pid: heldBy(j), queued: queuedForTool(j, host, nowMs), created_at: j.createdAt })) } };
+			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: jobsOf(host).jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, proposed: j.proposed ? true : undefined, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: runningRunForTool(j, host), last_due_at: j.status.due, last_fired_at: j.status.fired, last_completed_at: j.status.completed, last_error: j.status.error ? previewRedacted(j.status.error, 120) : undefined, consecutive_failures: j.status.streak || undefined, skipped_overlap_count: j.status.collapsed, next_wake: j.status.wake, quiet_until: j.status.quiet && Date.parse(j.status.quiet.until) > nowMs ? j.status.quiet : undefined, gate: j.status.gate && { ...j.status.gate, command: gateShown(j.status.gate.command), ...(j.status.gate.failing !== undefined ? { failing: gateShown(j.status.gate.failing) } : {}) }, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: whereRuns(j, view).kind === "asleep" || undefined, held_by_pid: heldBy(j), queued: queuedForTool(j, host, nowMs), created_at: j.createdAt })) } };
 		},
 	});
 
@@ -705,4 +737,51 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		},
 	});
 	return scope.hop === 0 ? defs : defs.filter((d) => !HOP0_ONLY.has(d.name));
+}
+
+/** What `wake_me` reads and writes: the job whose run calls it, and nothing else. */
+export interface WakeMeHost {
+	/** The job whose run this is, from the runner's request: never from the model's input. */
+	readonly jobId: string;
+	readonly runId: string;
+	job(): LoopJob | undefined;
+	readonly clock: Pick<ClockStore, "read" | "setFollowup">;
+	/** The run log, for the follow-ups of the last 24 hours. */
+	runs(): readonly RunRecord[];
+	/** The loop's lane (`requests/<lane>.jsonl`): the row this run claimed fires the schedule, as `/cron` reads it. */
+	rows(): readonly Row[];
+	now?(): number;
+}
+
+/**
+ * `wake_me` (design 3.3): a loop sets one follow-up for itself. Offered in a loop's run only, whatever
+ * the job's `--tools` say (src/sdk-runner.ts adds it); it writes `clock.json` and only for its job.
+ */
+export function wakeMeTool(host: WakeMeHost): ToolDefinition<any, any> {
+	const definition: ToolDefinition<TSchema, { set: boolean; at?: string; quiet?: boolean }> = {
+		name: "wake_me",
+		label: "Wake this loop",
+		description: `Run this loop once more at a time you choose, with a note of what to look at then. when: "in 20m", or "at 2026-11-16T09:00+08:00" (an ISO time with its offset); at least 60 seconds and at most 7 days ahead. note: at most ${WAKE_NOTE_MAX} characters; the run it starts reads it under [woken]. quiet: also skip this loop's scheduled runs before that time ("nothing before Monday"). One wake per loop: a second call replaces everything the first set. At most ${WAKE_RUNS_PER_DAY} runs in 24 hours start from wakes. A wake starts a new session: put what it needs in the note and your notes.`,
+		parameters: Type.Object({
+			when: Type.String({ description: '"in <duration>" (in 20m, in 2h) or "at <ISO time with its offset>"' }),
+			note: Type.String({ description: `What to look at then, at most ${WAKE_NOTE_MAX} characters.` }),
+			quiet: Type.Optional(Type.Boolean({ description: "Also skip this loop's scheduled runs before that time." })),
+		}),
+		async execute(_id, params) {
+			const now = host.now?.() ?? Date.now();
+			const job = host.job();
+			if (!job || !job.stateful) return { content: [{ type: "text", text: "not set: this loop is no longer in the store." }], isError: true, details: { set: false } };
+			const p = params as { when: string; note: string; quiet?: boolean };
+			const stored = host.clock.read().jobs[job.id];
+			// The run in flight fires the schedule when it starts, as `/cron` reads it (src/job-status.ts
+			// `listedJob`): the next scheduled run counts from it, not from the last run that ended.
+			const fired = listedJob(job, stored, host.rows(), undefined, (row) => row.run.id === host.runId).status.fired;
+			const clock = stored ? { ...stored, fired } : fired === undefined ? undefined : { runs: 0, fired };
+			const answer = decideWake({ when: String(p.when ?? ""), note: String(p.note ?? ""), quiet: p.quiet === true }, { job, clock, runs: host.runs(), now });
+			if ("refused" in answer) return { content: [{ type: "text", text: answer.refused }], isError: true, details: { set: false } };
+			const replaced = host.clock.setFollowup(job.id, { at: answer.at, note: answer.note, set_by: host.runId }, answer.quiet, now);
+			return { content: [{ type: "text", text: wakeSetText(job, clock, answer, replaced, now) }], details: { set: true, at: answer.at, quiet: answer.quiet } };
+		},
+	};
+	return definition as ToolDefinition<any, any>;
 }

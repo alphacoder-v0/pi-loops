@@ -854,6 +854,21 @@ test("[job-removed-aborts] the next drain of a removed loop's lane removes its r
 	} finally { await s.host.stop(); }
 });
 
+test("[wake-me] the next drain of a removed loop's lane removes a lone follow-up row as job-removed", async () => {
+	const s = scene(ok);
+	try {
+		const id = "cron-removed-woken";
+		const lane = loopLane(id)!;
+		await s.host.stores.jobs.add({ ...job(s, { id, stateful: true }), sessionId: undefined } as any);
+		const base = plainJobRow({ ...job(s, { id, stateful: true }), sessionId: lane } as any, "fu-removed", `cron:${id}`, "", { pid: process.pid, instance: "test", version: "0" });
+		s.requests.append({ ...base, lane, source: `wake:${id}`, mode: "unattended", payload: { ...base.payload!, woken: ["look at #12"], woken_ids: ["fu-removed"] } } as any);
+		await s.host.stores.jobs.remove(id);
+		await s.host.loops.drainAll(Date.now());
+		assert.deepEqual(s.requests.list(lane), []);
+		assert.equal(s.calls.length, 0);
+	} finally { await s.host.stop(); }
+});
+
 test("a row of the job at its second attempt, its backoff over, is started under its own id", async () => {
 	const b = bare();
 	const held = await addV2(b, job(b, notDue()) as any);
@@ -956,6 +971,26 @@ test("[cwd-missing-30min] a loop whose cwd is missing waits 30 minutes from the 
 		assert.match(disabled?.why ?? "", /^disabled: cwd .* has been missing since /);
 		assert.deepEqual(s.requests.list(lane), [], "the slot is spent and the stale row is gone");
 		assert.equal(s.calls.length, 1);
+	} finally { await s.host.stop(); }
+});
+
+test("[wake-me] a loop whose cwd is missing and whose only row is its follow-up waits from the first miss and is disabled after 30 minutes, and the follow-up row is spent", async () => {
+	const s = scene(ok);
+	try {
+		const id = "cron-cwd-woken";
+		const cwd = path.join(s.dir, "never-mounted");
+		const lane = loopLane(id)!;
+		const book = () => s.host.stores.book().jobs.find((candidate) => candidate.id === id);
+		await s.host.stores.jobs.add({ ...job(s, { id, stateful: true, cwd }), sessionId: undefined } as any);
+		const base = plainJobRow({ ...job(s, { id, stateful: true, cwd }), sessionId: lane } as any, "fu-cwd", `cron:${id}`, "", { pid: process.pid, instance: "test", version: "0" });
+		s.requests.append({ ...base, lane, source: `wake:${id}`, mode: "unattended", payload: { ...base.payload!, woken: ["look at #12"], woken_ids: ["fu-cwd"] } } as any);
+		const t0 = Date.now();
+		await s.host.loops.drain(parseLane(lane) as any, t0);
+		assert.equal(Date.parse(s.host.stores.clock.read().jobs[id]?.cwdMissing ?? ""), t0, "the first miss is marked");
+		await s.host.loops.drain(parseLane(lane) as any, t0 + 30 * 60_000);
+		assert.equal(book()?.disabled?.code, "cwd-missing");
+		assert.deepEqual(s.requests.list(lane), [], "the follow-up row is spent");
+		assert.equal(s.calls.length, 0);
 	} finally { await s.host.stop(); }
 });
 

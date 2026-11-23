@@ -7,7 +7,8 @@
  */
 import { createHash } from "node:crypto";
 import { dangerousCommandReason } from "./danger.ts";
-import { previewRedacted, redact } from "./redact.ts";
+import { gateShown } from "./gate.ts";
+import { plainLine, previewRedacted, redact } from "./redact.ts";
 import type { RequestStore, Row, UnclaimedRow } from "./requests.ts";
 import { computeNext, formatDuration, formatLocal, formatSchedule, stamp } from "./schedule.ts";
 import type { JobStore, LoopJob } from "./store.ts";
@@ -24,6 +25,8 @@ export interface RuleDraft {
 	sessionId?: string;
 	model?: string;
 	thinking?: string;
+	/** A command gate the model proposed (design 3.3): the card shows it, and the rule carries it after a yes. */
+	gate?: { kind: "command"; command: string };
 }
 export type WatchPlan =
 	| { kind: "schedule"; job: JobDraft; where: WatchWhere }
@@ -44,6 +47,8 @@ export interface WatchCard {
 	verify?: boolean;
 	/** Why the unattended policy would refuse the action's command, when it would. */
 	danger?: string;
+	/** The gate's command as `gateShown` shows it, which for a gate is the command whole: what runs before each wake (design 6.3's `Checks first` row). */
+	gate?: string;
 	/** The terminal line that would do the same, whole and redacted. */
 	command: string;
 }
@@ -79,8 +84,17 @@ export function actionDanger(action: string, home?: string): string | undefined 
 	return undefined;
 }
 
+/**
+ * Every row of the card goes through `plainLine` (the gate's own through `gateShown`): a terminal
+ * escape, a bidi override or a zero-width character in a condition, an action or a name would
+ * otherwise repaint or hide the rows around it, the gate's among them.
+ */
 /** The terminal line that would do the same, whole and redacted: one line, since that is how it would be typed. */
-const oneLine = (text: string) => redact(text).replace(/\s+/g, " ").trim();
+const oneLine = (text: string) => redact(plainLine(text)).replace(/\s+/g, " ").trim();
+/** An action as the card shows it: redacted, each of its lines through `plainLine`; `askTitle` indents the lines after the first. */
+const shownLines = (text: string) => redact(text.split("\n").map(plainLine).join("\n"));
+/** A value as `/cron add` reads one quoted token (src/args.ts `tokenize`). */
+const quoted = (value: string) => `'${value.replace(/[\\']/g, (c) => `\\${c}`)}'`;
 
 /** What the card says, from the plan: the schedule in words and its next run, or the condition and how often the background looks. */
 export function planCard(plan: WatchPlan, ctx: { now: number; pollSecs: number; home?: string }): WatchCard {
@@ -91,18 +105,20 @@ export function planCard(plan: WatchPlan, ctx: { now: number; pollSecs: number; 
 			kind: "schedule",
 			when: scheduleWords(plan.job.schedule),
 			next: next === undefined ? undefined : formatLocal(next),
-			does: redact(plan.job.prompt),
+			does: shownLines(plan.job.prompt),
 			verify: plan.job.verify || undefined,
 			danger: actionDanger(plan.job.prompt, ctx.home),
-			command: oneLine(`/cron add${plan.where === "inbox" ? " --stateful" : ""}${plan.job.name ? ` --name ${plan.job.name}` : ""} "${spec}" ${plan.job.prompt}`),
+			...(plan.job.gate ? { gate: gateShown(plan.job.gate.command) } : {}),
+			command: oneLine(`/cron add${plan.where === "inbox" ? " --stateful" : ""}${plan.job.name ? ` --name ${plan.job.name}` : ""}${plan.job.gate ? ` --gate ${quoted(plan.job.gate.command)}` : ""} "${spec}" ${plan.job.prompt}`),
 		};
 	}
 	return {
 		kind: "rule",
-		when: redact(plan.rule.condition),
+		when: gateShown(plan.rule.condition),
 		looksEverySecs: ctx.pollSecs,
-		does: redact(plan.rule.action),
+		does: shownLines(plan.rule.action),
 		danger: actionDanger(plan.rule.action, ctx.home),
+		...(plan.rule.gate ? { gate: gateShown(plan.rule.gate.command) } : {}),
 		command: oneLine(`/new-trigger when ${plan.rule.condition}, ${plan.rule.action}`),
 	};
 }
@@ -116,14 +132,22 @@ function looksWords(secs: number): string {
 	return secs >= 120 ? `every ${Math.round(secs / 60)} minutes` : secs === 60 ? "every minute" : `every ${secs} seconds`;
 }
 
+/** The gate's row (design 6.3, M5b.4): `Looks` is how often a rule looks, so the gate's row is `Checks first`. */
+function checksFirst(command: string): [string, string] {
+	return ["Checks first", `runs \`${command}\` first; no model call while it says the same`];
+}
+
 /** The card's rows, as label and value: what a terminal's question and the page's card both show. */
 function cardRows(card: WatchCard): [string, string][] {
 	const rows: [string, string][] = [];
 	if (card.kind === "rule") {
 		rows.push(["Waits for", card.when], ["Looks", looksWords(card.looksEverySecs ?? 600)]);
+		if (card.gate !== undefined) rows.push(checksFirst(card.gate));
 		rows.push(["Then", card.does]);
 	} else {
-		rows.push(["Runs", `${card.when}${card.next ? ` · next ${card.next}` : ""}`], ["Does", card.does]);
+		rows.push(["Runs", `${card.when}${card.next ? ` · next ${card.next}` : ""}`]);
+		if (card.gate !== undefined) rows.push(checksFirst(card.gate));
+		rows.push(["Does", card.does]);
 	}
 	if (card.danger) rows.push(["Careful", `When this runs and reaches ${card.danger}, pi-loops does not run it: it asks you in the inbox and goes on without it.`]);
 	rows.push(["Command", card.command]);
@@ -168,7 +192,8 @@ const VOCABULARY = new Map<string, SetChoice>([...SCHEDULE_CHOICES.map((c) => [o
  * own defaults come first, which is what a terminal's selector highlights and the page's chips start on.
  */
 export function watchOptions(plan: WatchPlan): string[] {
-	const all = plan.kind === "rule" ? RULE_CHOICES : SCHEDULE_CHOICES;
+	// A gate is a loop's (design 3.3): a gated schedule is not offered as a plain job of this conversation.
+	const all = plan.kind === "rule" ? RULE_CHOICES : plan.job.gate ? SCHEDULE_CHOICES.filter((c) => c.where === "inbox") : SCHEDULE_CHOICES;
 	const first = plan.kind === "rule" ? all.find((c) => c.where === plan.where && c.once === plan.once)! : all.find((c) => c.where === plan.where && c.checks === (plan.where === "inbox" && plan.job.verify === true))!;
 	return [first, ...all.filter((c) => c !== first)].map((c) => optionText(plan.kind, c)).concat(WATCH_CANCEL);
 }
@@ -190,10 +215,11 @@ export function proposalLabel(p: Proposal): string {
 export function planOf(p: Proposal): WatchPlan {
 	if (p.kind === "rule") {
 		const r = p.rule;
-		return { kind: "rule", rule: { condition: r.condition, action: r.action, cwd: r.cwd, sessionId: r.createdBy?.sessionId, model: r.model, thinking: r.thinking }, where: r.promoteToChat ? "chat" : "inbox", once: r.fireOnce };
+		const gate = r.gate?.kind === "command" ? { gate: { kind: "command" as const, command: r.gate.command } } : {};
+		return { kind: "rule", rule: { condition: r.condition, action: r.action, cwd: r.cwd, sessionId: r.createdBy?.sessionId, model: r.model, thinking: r.thinking, ...gate }, where: r.promoteToChat ? "chat" : "inbox", once: r.fireOnce };
 	}
 	const j = p.job;
-	return { kind: "schedule", job: { schedule: j.schedule, prompt: j.prompt, name: j.name, cwd: j.cwd, verify: j.verify, catchUp: j.catchUp, model: j.model, thinking: j.thinking, tools: j.tools, timeoutMs: j.timeoutMs, checkerModel: j.checkerModel }, where: j.stateful ? "inbox" : "chat" };
+	return { kind: "schedule", job: { schedule: j.schedule, prompt: j.prompt, name: j.name, cwd: j.cwd, verify: j.verify, catchUp: j.catchUp, model: j.model, thinking: j.thinking, tools: j.tools, timeoutMs: j.timeoutMs, checkerModel: j.checkerModel, ...(j.gate ? { gate: j.gate } : {}) }, where: j.stateful ? "inbox" : "chat" };
 }
 
 /** A proposal as the page draws it (`GET /watch`): the terminal's rows without its Command line, and the options in the order the terminal offers them. */
@@ -214,7 +240,7 @@ export function proposalCard(p: Proposal, ctx: { now: number; pollSecs: number; 
 	if (!record.proposed) return undefined;
 	const plan = planOf(p);
 	const rows = cardRows(planCard(plan, ctx)).filter(([label]) => label !== "Command");
-	return { kind: p.kind, id: record.id, session: record.proposed.session, at: record.proposed.at, label: redact(proposalLabel(p)), rows, options: watchOptions(plan) };
+	return { kind: p.kind, id: record.id, session: record.proposed.session, at: record.proposed.at, label: gateShown(proposalLabel(p)), rows, options: watchOptions(plan) };
 }
 
 /**
@@ -241,6 +267,8 @@ export function proposalPatch(p: Proposal, choice: SetChoice, now: number): void
 		job.sessionId = job.proposed?.session;
 		delete job.model;
 		delete job.thinking;
+		// A plain job has no gate; the card of a gated watch does not offer one, so only a hand-made answer gets here.
+		delete job.gate;
 	}
 	if (stateful && choice.checks) job.verify = true;
 	else {
@@ -341,7 +369,7 @@ export async function answerProposal(stores: ProposalStores, ref: { kind: Propos
 	else auditRule(stores.rules, op, ctx.actor, after?.kind === "rule" ? after.rule : before.rule);
 	const session = before.kind === "schedule" ? before.job.proposed!.session : before.rule.proposed!.session;
 	stores.requests.appendIfAbsent(receiptRow(after ?? before, session, choice, now, ctx.by));
-	const label = redact(proposalLabel(before));
+	const label = gateShown(proposalLabel(before));
 	if (!after || choice.verdict === "cancel") return { outcome: "cancelled", proposal: before, line: `cancelled: ${label} is removed and nothing ran` };
 	const when = after.kind === "schedule" ? scheduleWords(after.job.schedule) : `waits for ${previewRedacted(after.rule.condition, 60)}`;
 	return { outcome: "set", proposal: after, line: `set up: ${label} · ${when} · ${optionText(after.kind, choice).slice("Set it up · ".length)}` };

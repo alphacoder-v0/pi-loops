@@ -33,7 +33,8 @@ import { type LoopJob, type RunRecord, newId } from "./store.ts";
 import { RUNTIME_RIDERS, type Riders, type TickFacts } from "./ticker.ts";
 import { openStores, type Stores } from "./stores.ts";
 import { createLoopLanes, abortRemovedJobs, type LoopLanes } from "./background-executor.ts";
-import { runClockTick, type TickScope } from "./clock.ts";
+import { gateSources, runClockTick, type TickScope } from "./clock.ts";
+import { type GatePolicy, lookCommand } from "./gate.ts";
 import { FAILING_AFTER, failurePause } from "./backoff.ts";
 import { computeDue } from "./schedule.ts";
 import { type ToolHost, automationTools, controlTarget, createLoopJob } from "./tools.ts";
@@ -42,6 +43,7 @@ import { TriggerRuntime, checkLane, checkSessionDir, promotionToInbox } from "./
 import { auditCronFinish, auditCronStart, controlPlanePreflight } from "./triggers.ts";
 import { shortSessionId } from "./session-head.ts";
 import { DEAD_SESSION_MARKER } from "./convert-v2.ts";
+import { EventLog } from "./events.ts";
 
 export interface HostRuntimeDeps {
 	dir: string;
@@ -275,8 +277,15 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		loopFinished(named);
 	};
 	const loopLog = (message: string, level?: "info" | "warning", job?: Pick<LoopJob, "cwd">): void => { log(redact(message)); if (level !== "info") notice(message, job?.cwd); };
+	/** What arrived from outside, stored before anything reads it: a loop's or a rule's gate reading. */
+	const events = new EventLog(dir, "background");
+	/** A gate's command is judged as an unattended run's is: this loops directory, and the allowlist the guard reads. */
+	const gatePolicy = (): GatePolicy => ({ loopsDir: dir, allowCommands: deps.config().allowCommands });
+	// One for the process: a look whose time could not be written is held here for its minute.
+	const loopGates = gateSources({ look: (command, cwd) => lookCommand(command, { cwd, policy: gatePolicy() }), store: (source, raw) => events.append(source, raw).id, write: (job, last) => stores.clock.noteLook(job, last) });
 	const loops: LoopLanes = createLoopLanes({
 		stores,
+		events,
 		runs,
 		runner: deps.runner,
 		session: deps.session,
@@ -485,6 +494,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		slots,
 		budget: () => budgetState(stores.jobs, deps.config().dailyBudgetUsd, Date.now()),
 		inbox: stores.inbox,
+		events,
+		gatePolicy,
 		hooks: {
 			onPromote: promote,
 			// A push that injects and runs reaches the host only when no window has its server (host.ts): the inbox.
@@ -593,6 +604,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				heldEpoch: (sessionId: string) => leases.holds(sessionId, me()) ? leases.read(sessionId)?.epoch : undefined,
 				// One liveness with the loop lanes and the answer lanes: an `ans-` claim of this process holds nothing once its run left the list.
 				claimLive: (row: ClaimedRow) => laneClaimLive(row, { pid: process.pid, procStart: ownStart }, (runId) => runs.get(runId) !== undefined),
+				// A loop's gate (design 3.3): looked at in the loop's directory, its opening reading stored first.
+				gate: loopGates,
 			};
 			const scope: TickScope = { kind: "background", self: createdBy(), startedAt: facts.startedAt, tickMs: facts.tickMs, catchUp: deps.config().cronCatchUp, budgetOver: budgetState(stores.jobs, deps.config().dailyBudgetUsd, now).over, mine: (job) => job.stateful ? { kind: "loop" } : undefined };
 			await runClockTick(scope, sources, { jobs: { remove: (id) => stores.jobs.remove(id), disable: (id, disabled) => stores.jobs.disable(id, disabled) }, caughtUp: (job) => log(`loop ${job.name ?? job.id}: catching up a missed tick`), log: (message, level, job) => { log(redact(message)); if (level !== "info") notice(message, job?.cwd); } }, now);

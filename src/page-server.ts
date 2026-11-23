@@ -21,7 +21,7 @@ import { buildSessionProjection, migrateSessionEntries, parseSessionEntries, typ
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName, shouldReadAgain } from "./lease.ts";
 import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom, machineWide } from "./activity.ts";
 import { formatSchedule, nextRunStamp, scheduleWords, stamp } from "./schedule.ts";
-import { type Look, lookLine, watchOf } from "./path-precheck.ts";
+import { type PathState, gateOf, gateShown, lookLine } from "./gate.ts";
 import { failingJobs } from "./job-health.ts";
 import { type JobHistory, type ListedJob, listedJob, runHistory } from "./job-status.ts";
 import type { ClockFile } from "./clock.ts";
@@ -35,7 +35,7 @@ import { type InboxCard, CANCELLED_LINE, DISMISS_CHIPS, answerLine, answerWho, c
 import { type PersonAnswers, personAnswers } from "./answers.ts";
 import { type StepRefusal, answerRowId } from "./ask.ts";
 import { INBOX_TEXT_MAX_CHARS } from "./protocol.ts";
-import { redact, screenText } from "./redact.ts";
+import { plainLine, redact, screenText } from "./redact.ts";
 import { readSessionHead, shortSessionId } from "./session-head.ts";
 import { JobStore, type LoopJob, MAX_PROMPT_BYTES } from "./store.ts";
 import { summarizeSessionFile } from "./transcript.ts";
@@ -88,7 +88,7 @@ export interface PageServerOptions {
 	/** Stop this run, on a loop row (src/host-control-channel.ts stopRun): the whole run id, never a prefix. */
 	stopRun?: (runId: string) => StopAnswer;
 	/** A rule that waits for a path: its last look in the process that checks rules, and when the next one is. */
-	ruleLook?: (ruleId: string) => { look: Look; nextAt: number } | undefined;
+	ruleLook?: (ruleId: string) => { look: PathState; nextAt: number } | undefined;
 	/**
 	 * pi's sessions directory, which the conversation list reads (src/conversation-rows.ts). Without it
 	 * the list reads only the directories of the session files leases name, so a server built in a
@@ -1126,6 +1126,17 @@ async function startConversation(pool: ChildPool, cwd: string, piArgs: string[])
 	return { error: `pi did not say which conversation it is in ${key === undefined ? "before it exited" : "within 15 s"}${words ? `: ${words}` : ""}` };
 }
 
+/**
+ * A loop's or a rule's row for the page, cleaned at the sink: every string in it, at any depth, has
+ * each line through `plainLine`, so no field beside a gate (a name, a prompt, an error, a wake note)
+ * carries a control, bidi or invisible character, including a field added later. Line breaks stay.
+ */
+function cleanRow<T>(row: T): T {
+	const clean = (v: unknown): unknown =>
+		typeof v === "string" ? v.split("\n").map(plainLine).join("\n") : Array.isArray(v) ? v.map(clean) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, clean(x)])) : v;
+	return clean(row) as T;
+}
+
 export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const LOOPS_DIR = opts.dir;
 	const TOKEN = opts.token;
@@ -1196,8 +1207,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	 * 09:22 · " in the browser's local time in front of the line.
 	 */
 	function ruleWait(r: any): { waitsFor?: string; look?: string; nextLookAt?: string } {
-		const w = typeof r?.condition === "string" ? watchOf(r) : undefined;
-		if (!w || !r.enabled) return {};
+		const w = typeof r?.condition === "string" ? gateOf(r) : undefined;
+		if (w?.kind !== "path" || !r.enabled) return {};
 		const last = opts.ruleLook?.(r.id);
 		const timed = (last?.look ?? "absent") === "absent" && last ? { nextLookAt: stamp(last.nextAt) } : {};
 		return { waitsFor: maskSecrets(w.raw), look: lookLine(last?.look, undefined, String), ...timed };
@@ -1243,7 +1254,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			}
 			return jobClaim(j.id, rows)?.run;
 		};
-		const jobs = allJobs.filter(inThisProject).map((j: any) => ({
+		const jobs = allJobs.filter(inThisProject).map((j: any) => cleanRow({
 			id: j.id,
 			name: j.name,
 			label: loopLabel({ id: String(j.id), name: typeof j.name === "string" ? j.name : undefined }),
@@ -1268,6 +1279,11 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			lastEnd: lastEndOf(j.id),
 			// A loop's worth, and at most one suggestion that never applies itself (src/job-tune.ts).
 			...loopWorth(j, now),
+			// What the loop set for itself with wake_me (design 6.6): its next wake, and its quiet while that is ahead.
+			wake: j.stateful && j.status.wake ? { at: j.status.wake.at, note: plainLine(maskSecrets(j.status.wake.note)) } : undefined,
+			quiet: j.stateful && j.status.quiet && Date.parse(j.status.quiet.until) > now ? { until: j.status.quiet.until, why: plainLine(maskSecrets(j.status.quiet.why)) } : undefined,
+			// The loop's gate (design 6.7): its command, how many looks held it since its output changed and when that was, or why it is failing.
+			gate: j.stateful && j.status.gate ? { command: gateShown(j.status.gate.command), looks: j.status.gate.looks, ...(j.status.gate.since ? { since: j.status.gate.since } : {}), ...(j.status.gate.failing !== undefined ? { failing: gateShown(j.status.gate.failing) } : {}) } : undefined,
 			// The open body of a card shows these, which the terminal's `/cron` line has and the panel
 			// did not; they leave the store as they were written, no reshaping.
 			cwd: j.cwd,
@@ -1282,7 +1298,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			ref: j.name || j.id,
 			// Only for a job that is actually going to run, which is the rule `/cron` follows. The time
 			// is computed from the job when the page asks for its state.
-			next: j.enabled && runsSomewhere(owned(j), view) ? nextRunStamp({ schedule: j.schedule, createdAt: j.createdAt, fired: j.status.fired }, now) : undefined,
+			next: j.enabled && runsSomewhere(owned(j), view) ? nextRunStamp({ schedule: j.schedule, createdAt: j.createdAt, fired: j.status.fired, quietUntil: j.status.quiet?.until }, now) : undefined,
 			// Where it runs when that is not here, in the terminal's words (src/job-owner.ts). A disabled
 			// one runs nowhere, and the card already says it is off.
 			asleep: j.enabled ? asleepNote(owned(j), view) : undefined,
@@ -1290,7 +1306,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const allRules = readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? [];
 		const rules = allRules
 			.filter(inThisProject)
-			.map((r: any) => ({ id: r.id, condition: maskSecrets(r.condition), action: maskSecrets(r.action), enabled: !!r.enabled, proposed: !!r.proposed, fireOnce: !!r.fireOnce, firedAt: r.firedAt, ...ruleWait(r) }));
+			.map((r: any) => cleanRow({ id: r.id, condition: maskSecrets(r.condition), action: maskSecrets(r.action), enabled: !!r.enabled, proposed: !!r.proposed, fireOnce: !!r.fireOnce, firedAt: r.firedAt, ...ruleWait(r) } as Record<string, unknown>));
 		// Two counts, not one. They used to be added together, and `/cron` counts jobs only — so the
 		// panel's number disagreed with the command's whenever a rule lived somewhere else, and the line
 		// that exists to say "your job is not gone, it is elsewhere" pointed at `/cron all`, where a
@@ -2016,6 +2032,26 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	}
 
 	/**
+	 * `POST /loops/wake {jobId}`: the ✕ on a loop row's wake line, which does what `/cron set <loop>
+	 * --wake -` does: the follow-up and the quiet the loop set for itself go. Only a loop of a project
+	 * the page lists. Answers whether there was anything to remove.
+	 */
+	function clearLoopWake(b: Record<string, unknown>): { status: number; body: Record<string, unknown> } {
+		const refused = exactly(b, ["jobId"]);
+		if (refused) return refused;
+		const jobId = b.jobId as string;
+		if (!JOB_ID.test(jobId)) return { status: 400, body: { error: "bad job id" } };
+		try {
+			const job = jobStore.load().find((j) => j.id === jobId);
+			if (!job || !job.stateful || typeof job.cwd !== "string" || !job.cwd || !knownProject(job.cwd)) return { status: 404, body: { error: "no such loop" } };
+			return { status: 200, body: { ok: true, removed: clock.clearWake(job.id) } };
+		} catch (err: any) {
+			opts.log(`pi-loops web: wake ${jobId}: ${err?.stack ?? err?.message ?? err}`);
+			return { status: 500, body: { error: "could not change the loop" } };
+		}
+	}
+
+	/**
 	 * `POST /loops/tune {jobId, key, choice}`: a loop row's suggestion, applied or kept. The body names
 	 * the suggestion only by its key; the server computes it again from the store and refuses a key
 	 * it would not suggest now (409), so a page cannot ask for any other change. Both writes are one
@@ -2636,10 +2672,10 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				}
 				// A loop row's Stop this run and its suggestion: behind the token like the inbox's actions,
 				// and like them they never start this page's pi.
-				if (!prefixed && (url.pathname === "/loops/stop" || url.pathname === "/loops/tune") && req.method === "POST") {
+				if (!prefixed && (url.pathname === "/loops/stop" || url.pathname === "/loops/tune" || url.pathname === "/loops/wake") && req.method === "POST") {
 					const b = await inboxBody(req, LOOPS_BODY_MAX);
 					if (!("ok" in b)) return void json(res, { error: b.error }, b.status);
-					const done = url.pathname === "/loops/stop" ? stopLoopRun(b.ok) : await tuneLoop(b.ok);
+					const done = url.pathname === "/loops/stop" ? stopLoopRun(b.ok) : url.pathname === "/loops/wake" ? clearLoopWake(b.ok) : await tuneLoop(b.ok);
 					return void json(res, done.body, done.status);
 				}
 				if (!prefixed && url.pathname === "/inbox/seen" && req.method === "POST") {

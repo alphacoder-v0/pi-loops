@@ -48,6 +48,7 @@ src/loop-run.ts              one loop run, its stop record, and its ordered clos
 src/ticker.ts               one process timer and its typed, ordered riders
 src/stores.ts               stores of a loops directory, opened once, and job removal
 src/trigger-runtime.ts      dynamic-rule evaluation, deliveries, promotion, audit
+src/gate.ts                 a gate: a look before a model is asked (a path's `stat`, a command's digest) and whether it wakes; `pathOnlyCondition`
 src/triggers.ts             rule store, parsing, prompt, dedup window
 src/goal.ts                 /goal: the stop-condition state machine, evaluator prompts, continuation budget
 src/ask.ts                  a question from a background run and its answer, as values: the shapes, the table of steps, the pure deciders, and `PROTOCOL`, the writes of each transition in order
@@ -67,7 +68,6 @@ src/job-signal.ts           what a loop's runs came to: findings filed, claimed,
 src/job-lines.ts            the `/cron` listing itself, out of the unimportable extension so a marker or column is testable
 src/job-owner.ts            where a job runs, as one question the scheduler, the lists and `/cron run` all ask the same way
 src/job-tune.ts             the one change the page suggests for a loop, decided from its signal, never applied by itself
-src/path-precheck.ts        a rule that only waits for a path: `stat` before any model is asked
 src/run-card.ts             what a finished run writes into the conversation, and which runs are fresh (`freshRuns`)
 src/inbox-card.ts           a finding as a person reads it: card, terminal line, `screenText`, and the claim prompt
 src/activity.ts             the page's activity strip and attention counts, computed from the run, audit and inbox files
@@ -109,6 +109,7 @@ storage
 src/lane.ts                 a lane's id and its one grammar: a conversation's session id, `@cron-…` for a loop, `@check-…` for a project's checks; the file name it gives
 src/store.ts                jobs.json (version 3: definitions only), state/, runs.jsonl, sessions/
 src/inbox.ts                inbox.jsonl
+src/events.ts               events.jsonl: what arrived from outside (an MCP push, a gate's reading), stored as received before anything reads it; rotated by rename to events.1.jsonl
 src/archive.ts              .pisession export/import
 src/lock.ts                 the mkdir lock, atomic writes, is-that-pid-alive
 src/convert-v2.ts           what older versions left in the loops directory, at every start: a version 2 jobs.json converted to version 3 (cursors to clock.json, owed slots to rows), retired files removed; version 2's shape (`V2Job`, `fromV2`) lives here, and the store and an archive's import read through it
@@ -137,7 +138,7 @@ recipes/<name>/             a recipe: recipe.toml, the playbooks its jobs read, 
 examples/                   a dependency-free MCP push server, and an mcp.toml to point at it
 test/                       node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
 test/downstream/            the contract in docs/downstream.md checked from the outside: sh + jq driving `pi-loops`, a loop run in the background against fake-model.mjs, no import of src/; upgrade.sh starts a directory 0.24.2 left
-test/journey/               the journeys J1-J13 (`npm run journey -- J1 …`), `boot.mjs` and `terminal.mjs`, a sandboxed page with a stand-in model (a journey's seed may script it with `answer`)
+test/journey/               the journeys J1-J14 (`npm run journey -- J1 …`), `boot.mjs` and `terminal.mjs`, a sandboxed page with a stand-in model (a journey's seed may script it with `answer`)
 test/sim/                   the seeded simulation of the request engine that test/sim.test.ts runs: world.ts (the real engine and stores around a simulated pi, lease, clock and crashes, and what that leaves out), schedule.ts (the steps a seed draws), invariants.ts (what is checked after every step), prng.ts; claims.ts (a lane the background runs: rows a run claims, runs that end in every way, a process that dies at any write), which test/sim-claims.test.ts runs; held.ts (a held turn in a closed conversation: the real closing and settle table around a simulated runner, a window that takes the conversation, a process that dies at any write), which test/sim-held.test.ts runs; clock.ts (interleaved ticker decisions and T2/T3 writes, crashes, row proofs and loop settlement; checks I1: one row per job and slot), which test/sim-clock.test.ts runs
 test/tmp.ts                 every test's temporary directory: removed when the test passes, kept and named when it fails (PI_LOOPS_KEEP_TMP=1 keeps all), strays it started ended
 scripts/                    typecheck.mjs, lint.mjs, check-docs.mjs — TypeScript comes through npx, nothing is a dependency

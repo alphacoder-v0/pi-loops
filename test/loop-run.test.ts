@@ -20,6 +20,8 @@ import { stamp } from "../src/schedule.ts";
 import { type LoopJob } from "../src/store.ts";
 import { tmp } from "./tmp.ts";
 import { fakeRunner } from "./fake-runner.ts";
+import { EventLog } from "../src/events.ts";
+import { commandDigest } from "../src/gate.ts";
 
 const now = Date.now();
 const makeJob = (over: Partial<LoopJob> = {}): LoopJob => ({
@@ -216,6 +218,7 @@ async function standIn(dir: string, reply: string, inbox: Pick<ReturnType<typeof
 		isTrusted: () => false,
 		ownDir: tmp("pi-loops-own-"),
 		guard: { seats: new GuardSeats(), deps: { inbox, allowCommands: () => [], now: Date.now, ...(opts.loopsDir ? { loopsDir: opts.loopsDir } : {}) } },
+		...(opts.loopsDir ? { loopsDir: opts.loopsDir } : {}),
 	});
 	return { real, modelLog, fake };
 }
@@ -433,5 +436,121 @@ test("[own-notes-dir] through the seated guard, a loop run writes a file in its 
 		assert.deepEqual(stores.inbox.list().filter((f) => f.ask), [], "no question is filed");
 	} finally {
 		fake.kill();
+	}
+});
+
+test("[wake-me] a run its follow-up started reads [woken] and is recorded as one: cause wake, its notes; an interrupted one too", async () => {
+	const f = setup();
+	const job = await f.stores.jobs.add(makeJob());
+	const id = "fu-00000000000000000000000000000001";
+	const row: UnclaimedRow = {
+		v: 3, id, lane: "@cron-0123456789abcdef0123456789abcdef", kind: "input", source: "wake:cron-0123456789abcdef0123456789abcdef", mode: "unattended", wake: "turn",
+		payload: { text: `[Trigger ${id}] check changes`, cwd: process.cwd(), woken: ["check CI on #12"] }, collapse_key: "cron:cron-0123456789abcdef0123456789abcdef", created_at: stamp(now), created_by: f.createdBy, attempts: 0,
+	};
+	f.stores.requests.append(row);
+	const claimed = f.runs.claim(f.stores.requests, row, { pid: process.pid, procStart: "self" }, { jobId: job.id, label: "check", promptPreview: "check", ctrl: new AbortController() }, now)!;
+	let prompt = "";
+	f.deps.runner = async (request) => {
+		prompt = request.prompt;
+		return { ok: true, exitCode: 0, timedOut: false, text: "<loop-state>n</loop-state>", usage: { input: 1, output: 1, cost: 0, turns: 1 } };
+	};
+	await runLoop(claimed, job as LoopJob, f.deps);
+	assert.match(prompt, /\n\[woken\] \(why this run started\)\nyou asked to be woken: check CI on #12\n\[\/woken\]\n\n\[loop-state\]/);
+	assert.deepEqual([f.finished[0].jobId, f.finished[0].cause, f.finished[0].woken], [job.id, "wake", ["check CI on #12"]]);
+	assert.deepEqual(f.stores.requests.list(row.lane), [], "the row is closed");
+	// A process that died mid-run: its closing records the follow-up run all the same, so wake_me counts it.
+	const dead = { ...row, id: "fu-00000000000000000000000000000002", run: { id: "fu-00000000000000000000000000000002", pid: 99999999, procStart: "dead", started_at: stamp(now) } } as ClaimedRow;
+	const record = ensureRecord(dead, f.deps, now);
+	assert.deepEqual([record.jobId, record.interrupted, record.cause, record.woken], [job.id, true, "wake", ["check CI on #12"]]);
+});
+
+test("[wake-me] wake_me is offered in a loop's run whatever the job's --tools say, and the model's call sets that loop's follow-up in clock.json", { timeout: 60_000 }, async () => {
+	const { dir, stores, deps, createdBy } = setup();
+	const cwd = path.join(dir, "proj");
+	fs.mkdirSync(cwd, { recursive: true });
+	const { real, modelLog, fake } = await standIn(dir, "<loop-state>waiting for CI</loop-state>", stores.inbox, { loopsDir: dir, script: [{ match: "PROMPT-WAKE", tool: "wake_me", args: { when: "in 20m", note: "check CI on #12" } }] });
+	try {
+		const job = makeJob({ cwd, prompt: "PROMPT-WAKE look at CI", tools: ["read"], name: "ci" });
+		await stores.jobs.add(job);
+		const requests: SubagentRequest[] = [];
+		const loopDeps: LoopRunDeps = { ...deps, now: Date.now, runner: (req) => (requests.push(req), real(req)), session: () => ({ sessionId: "s1", cwd }) };
+		const row: UnclaimedRow = { v: 3, id: "run-00000000000000000000000000000003", lane: `@${job.id}`, kind: "input", source: `cron:${job.id}`, mode: "unattended", wake: "turn", payload: { text: "x", cwd }, created_at: stamp(now), created_by: createdBy, attempts: 0 };
+		stores.requests.append(row);
+		const claimed = deps.runs.claim(stores.requests, row, deps.holder(), { jobId: job.id, label: "ci", promptPreview: "x", ctrl: new AbortController() }, now)!;
+		const before = Date.now();
+		await runLoop(claimed, job, loopDeps);
+		const bodies = fs.readFileSync(modelLog, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+		assert.deepEqual((bodies[0].tools ?? []).map((t: any) => t.function?.name).sort(), ["read", "wake_me"], "the job's one tool, and wake_me");
+		const followup = stores.clock.read().jobs[job.id]?.followup;
+		assert.equal(followup?.note, "check CI on #12");
+		assert.equal(followup?.set_by, row.id, "set by the run that called it");
+		assert.ok(followup && Date.parse(followup.at) >= before + 20 * 60_000 - 1_000 && Date.parse(followup.at) <= Date.now() + 20 * 60_000, "20 minutes from the call");
+		const results = bodies.flatMap((body) => body.messages.filter((m: any) => m.role === "tool").map((m: any) => String(m.content)));
+		assert.ok(results.some((text) => /^set: this loop wakes at .+ \("check CI on #12"\)\. Its next scheduled run is .+\.$/.test(text)), `the model reads design 6.6's words: ${results.join(" | ")}`);
+		// A check's run, a checker's and a conversation's turn are not a loop's run: no wake_me.
+		const other = await real({ cwd, prompt: "PROMPT-NONE list nothing", timeoutMs: 20_000, hop: 1, kind: "checker", jobId: job.id, runId: "r" });
+		assert.equal(other.ok, true);
+		const last = JSON.parse(fs.readFileSync(modelLog, "utf8").trim().split("\n").at(-1)!);
+		assert.equal((last.tools ?? []).some((t: any) => t.function?.name === "wake_me"), false, "a checker's run has no wake_me");
+	} finally {
+		fake.kill();
+	}
+});
+
+test("[wake-collapse] a run whose row carries a follow-up records its id, and its closing takes that follow-up from the clock; a follow-up the run set for itself stays", async () => {
+	for (const setsItsOwn of [false, true]) {
+		const f = setup();
+		const job = await f.stores.jobs.add(makeJob());
+		const followup = { at: stamp(now - 60_000), note: "check CI on #12", set_by: "run-earlier" };
+		f.stores.clock.setFollowup(job.id, followup, false, now - 600_000);
+		const joined = f.stores.clock.read().jobs[job.id].followup!;
+		const id = "run-00000000000000000000000000000009";
+		const row: UnclaimedRow = {
+			v: 3, id, lane: `@${job.id}`, kind: "input", source: `cron:${job.id}`, mode: "unattended", wake: "turn",
+			payload: { text: `[Trigger ${id}] check changes`, cwd: process.cwd(), woken: [joined.note], woken_ids: [joined.id] }, collapse_key: `cron:${job.id}`, created_at: stamp(now), created_by: f.createdBy, attempts: 0,
+		};
+		f.stores.requests.append(row);
+		const claimed = f.runs.claim(f.stores.requests, row, { pid: process.pid, procStart: "self" }, { jobId: job.id, label: "check", promptPreview: "check", ctrl: new AbortController() }, now)!;
+		f.deps.runner = async () => {
+			if (setsItsOwn) f.stores.clock.setFollowup(job.id, { at: stamp(now + 3_600_000), note: "look again", set_by: id }, false, now);
+			return { ok: true, exitCode: 0, timedOut: false, text: "<loop-state>n</loop-state>", usage: { input: 1, output: 1, cost: 0, turns: 1 } };
+		};
+		await runLoop(claimed, job as LoopJob, f.deps);
+		assert.deepEqual(f.finished[0].woken_ids, [joined.id]);
+		assert.deepEqual(f.stores.requests.list(row.lane), [], "the row is closed");
+		assert.equal(f.stores.clock.read().jobs[job.id].followup?.note, setsItsOwn ? "look again" : undefined);
+	}
+});
+
+test("[gate-seen-on-success] a gated run that ends without a failure writes the reading its row named as the gate's seen; a failed run leaves it, and so does a run of a gate the person changed since; the run reads it in [gate]", async () => {
+	for (const how of ["failed", "succeeded", "changed"] as const) {
+		const f = setup();
+		const job = await f.stores.jobs.add(makeJob({ gate: { kind: "command", command: how === "changed" ? "gh pr list --state all" : "gh pr list" } }));
+		const events = new EventLog(f.dir, "background");
+		const event = events.append(`gate:${job.id}`, JSON.stringify({ command: "gh pr list", exit: 0, stdout: "#12 fix login\n" }));
+		const id = "run-00000000000000000000000000000007";
+		const row: UnclaimedRow = {
+			v: 3, id, lane: `@${job.id}`, kind: "input", source: `cron:${job.id}`, mode: "unattended", wake: "turn",
+			payload: { text: `[Trigger ${id}] check changes`, cwd: process.cwd(), events: [event.id] } as UnclaimedRow["payload"], collapse_key: `cron:${job.id}`, created_at: stamp(now), created_by: f.createdBy, attempts: 0,
+		};
+		f.stores.requests.append(row);
+		const claimed = f.runs.claim(f.stores.requests, row, { pid: process.pid, procStart: "self" }, { jobId: job.id, label: "check", promptPreview: "check", ctrl: new AbortController() }, now)!;
+		let prompt = "";
+		const deps: LoopRunDeps = {
+			...f.deps,
+			events,
+			runner: async (request) => {
+				prompt = request.prompt;
+				return how === "failed"
+					? { ok: false, exitCode: 1, timedOut: false, text: "", errorMessage: "provider error", usage: { input: 1, output: 1, cost: 0, turns: 1 } }
+					: { ok: true, exitCode: 0, timedOut: false, text: "<loop-state>n</loop-state>", usage: { input: 1, output: 1, cost: 0, turns: 1 } };
+			},
+		};
+		await runLoop(claimed, job as LoopJob, deps);
+		assert.match(prompt, /\n\[gate\] \(what this loop's gate reads now, which your last run that ended well did not see\)\ncommand: gh pr list\nexit code: 0\noutput:\n#12 fix login\n\[\/gate\]\n\ncheck changes/, how);
+		assert.deepEqual(f.stores.requests.list(row.lane), [], `${how}: the row is closed`);
+		const seen = f.stores.clock.read().jobs[job.id]?.gate?.seen;
+		if (how === "succeeded") assert.deepEqual(seen, { digest: commandDigest(0, "#12 fix login\n"), at: event.received_at });
+		else assert.equal(seen, undefined, `${how}: seen is left, so the same change wakes the loop again`);
 	}
 });

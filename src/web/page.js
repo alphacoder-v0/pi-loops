@@ -1253,6 +1253,8 @@ const stopping = new Map();
 const stopNote = new Map();
 /** A suggestion's answer, by loop id, until the next draw shows the loop as it is now. */
 const tuneNote = new Map();
+/** The answer to a wake line's ✕, by loop id, until the next draw. */
+const wakeNote = new Map();
 /** How long a stop may take before the row says so instead of claiming it. */
 const STOP_SLOW_MS = 8000;
 // A click anywhere outside a loop row closes an open confirm, sending nothing. The row's own buttons
@@ -1311,6 +1313,36 @@ async function sendTune(j, choice) {
   refresh().catch(() => {});
 }
 
+/** A wake line's ✕: what `/cron set <loop> --wake -` does, the follow-up and the quiet the loop set go. */
+async function sendWake(j) {
+  const r = await inboxPost("/loops/wake", { jobId: j.id });
+  wakeNote.set(j.id, r.status === 200 ? (r.body.removed ? "Removed. It runs on its schedule." : "The loop had set none.") : "Could not do that: " + str(r.body && r.body.error || "no answer"));
+  refresh().catch(() => {});
+}
+
+/**
+ * A loop's gate line (design 6.7): the command whole, as the server sent it (`gateShown`: what runs),
+ * and when its output last changed, in this browser's time. Not cut: a cut would hide what follows it.
+ */
+function gateWords(g) {
+  if (typeof g.failing === "string") return "Gate failing: " + str(g.failing) + "; it runs without the gate until it works";
+  const command = str(g.command);
+  const at = typeof g.since === "string" ? new Date(Date.parse(g.since)) : undefined;
+  const changed = at && Number.isFinite(at.getTime()) ? " · last changed " + String(at.getHours()).padStart(2, "0") + ":" + String(at.getMinutes()).padStart(2, "0") : "";
+  return "No model call while `" + command + "` says the same" + changed;
+}
+
+/** One line of what a loop set for itself (design 6.6), with its ✕. */
+function wakeLine(text, j) {
+  const line = document.createElement("span");
+  line.className = "runline";
+  const x = rowButton("✕", false, () => sendWake(j).catch(() => {}), "wake-clear");
+  x.title = "Remove what the loop set";
+  x.setAttribute("aria-label", "Remove what the loop set");
+  line.append(textEl("span", "", text), x);
+  return line;
+}
+
 /** The row under a loop's name: running with Stop this run and its confirm, the signal, one suggestion. */
 function drawLoopRow(slot, j) {
   const name = str(j.name || j.id);
@@ -1347,6 +1379,13 @@ function drawLoopRow(slot, j) {
     done.onclick = (e) => { e.preventDefault(); e.stopPropagation(); };
     slot.append(done);
   }
+  // What the loop set for itself with wake_me: its next wake, and its quiet while that is ahead.
+  if (j.wake && typeof j.wake.at === "string") slot.append(wakeLine("next wake " + clock(j.wake.at) + ', asked by the loop: "' + str(j.wake.note) + '"', j));
+  if (j.quiet && typeof j.quiet.until === "string") slot.append(wakeLine("quiet until " + clock(j.quiet.until) + ', asked by the loop: "' + str(j.quiet.why) + '"', j));
+  // The loop's gate (design 6.7): no model call while its command says the same, or why it is failing.
+  if (j.gate && typeof j.gate.command === "string") slot.append(textEl("span", "runline", gateWords(j.gate)));
+  const woke = wakeNote.get(j.id);
+  if (woke) { slot.append(textEl("span", "signal note", woke)); wakeNote.delete(j.id); }
   const g = j.signal;
   // Only what is not zero: a row with nothing to say about its month says nothing.
   const said = g ? [

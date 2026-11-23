@@ -51,9 +51,11 @@ never the machine's.
 
 ### Rules that wait for a path
 
-A condition that is only "a path exists or appears" is recorded as pre-checkable when the rule is
-created (`precheck` on the rule in `triggers.json`: the condition it was read from, the path as
-typed, and the absolute path). The path is one token: `~/…`, `$HOME/…`, `${HOME}/…`, an absolute
+A condition that is only "a path exists or appears" gets a gate when the rule is created: `gate`
+on the rule in `triggers.json`, `{"kind": "path", …}` with the condition it was read from, the path
+as typed, and the absolute path. The rule also gets `precheck` with the same path, which is the field
+0.24.2 reads. A rule that has only `precheck` (one that 0.24.2 made) is read through it, and the
+next start of pi-loops gives it the `gate`. `triggers.json` stays `version: 1`. The path is one token: `~/…`, `$HOME/…`, `${HOME}/…`, an absolute
 path, `./…` or `../…`, a relative path with a `/`, a file name with an extension (`build.done`), or a
 quoted path that may hold spaces. The verb is one of `exists`, `appears`, `is created`, `shows up`,
 `is there`, `is present`, `存在`, `出现`, `被创建`, `生成` (a `文件` or `目录` before the verb is the
@@ -68,7 +70,7 @@ Anything else is refused as path-only and checked by the model, as before: a glo
 (`~/x appears and it contains ERROR`, `~/a exists or ~/b exists`), another verb, a bare word with no
 `/` or extension (`README`), a variable other than `$HOME`, `~user`, a URL, or a network path
 (`//server/…`, `/net/…`, `/Network/…`). A rule created before
-0.24.0 has no `precheck` and keeps calling the model; create it again to get the pre-check. So does
+0.24.0 has no gate and keeps calling the model; create it again to get the pre-check. So does
 a rule whose condition was edited by hand after it was created. An imported rule, from 0.22 or later,
 is read again when it is imported, against the project it is imported into and this machine's home,
 so a path-only one gets the pre-check then.
@@ -81,18 +83,37 @@ event JSON and every enabled rule and is told to inspect the filesystem, command
 as needed, execute the actions of matching rules, and reply `matched dyn-…` or exactly
 `no dynamic trigger rule matched`. Matched fire-once rules are disabled with `fired_at`.
 
-A rule that waits for a path (`precheck`, above) is looked at first: after the poll is claimed,
+A rule that waits for a path (its `gate`, above) is looked at first: after the poll is claimed,
 pi-loops `stat`s the path, which follows symlinks, and gives up after 2 seconds. At most two looks
 are out at once in the process, and one per path; past that a look counts as one that cannot answer. While the path is
 absent the rule is left out of the check, so a project whose only rules wait for absent paths
-makes no model call and writes no `running` row. The audit gets one `trigger` row `waiting`
-("no model call until ~/build.done exists") at the first look pi-loops makes and whenever the path
-goes away, and one `appeared` when it is back; the check that follows names the rules the look let
-through in `details.prechecked` on its `running` row. When the look cannot answer (no permission, a
+makes no model call and writes no `running` row. Such a look stores nothing: it adds one to the
+rule's look count in `clock.json`, where the rule's last look is kept too. A look that lets the rule
+through is stored as it was taken before the check starts: one line in `events.jsonl` with source
+`gate:<rule id>` and the path, the absolute path and what the look found. The audit gets one
+`trigger` row `waiting` ("no model call until ~/build.done exists") at the first look and whenever
+the path goes away, and one `appeared` when it is back; the check that follows names the rules the
+look let through in `details.prechecked` on its `running` row, and the stored looks in
+`details.events`. When the look cannot answer (no permission, a
 mount that does not answer in time) the model checks the rule, as before. A repeating rule is
 checked every poll while its path exists, and matches again after the path is deleted and comes
 back. The rule's row on the page says what it waits for and when the next look is: "waits for
 ~/build.done · next look 09:22 · no model call until the file exists".
+
+A rule can also have a command gate: `gate` is `{"kind": "command", "command": "…"}`. Only a
+proposal sets one: `new_trigger` with `gate`, which the person sees in the card's `Checks first`
+row before they say yes. `new_trigger` where it creates at once (a pi with no UI) refuses a `gate`
+whole: `a gate needs a person: new_trigger with a gate proposes the rule, and the person sets it up`.
+`/cron set` cannot set a rule's gate. After the poll is claimed,
+pi-loops runs the command in the rule's project, as a loop's gate runs (see [loops.md](loops.md), "A
+gate: no model call while nothing changed"): the same checks where it is set, the
+dangerous-command policy with the loops directory first, 5 seconds, the first 4000 characters, its
+process group killed when the look ends, at most once a minute for each rule. While it prints what the last check that did
+not fail saw, the rule is left out of the check and the look is counted in `clock.json`. Any other
+reading, and a look that fails, lets the rule through, stored first in `events.jsonl` (source
+`gate:<rule id>`). When the check ends without a failure, that reading is the rule's `seen`; a check
+that fails leaves it. A rule with a command gate has no `precheck`, so 0.24.2 checks it with the
+model each poll.
 
 Pushed MCP notifications (see [mcp.md](mcp.md)) enter the same runtime and are evaluated against
 the rules unless the server is configured as an `inject_summary` / `inject_and_run` feed.

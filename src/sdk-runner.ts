@@ -19,6 +19,11 @@ import { type ParentRuntimeFlags, type RunnerResult, type SubagentRequest, type 
 import type { ToolLimit } from "./ask.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { projectNeedsTrust } from "./trust.ts";
+import { wakeMeTool } from "./tools.ts";
+import { clockStore } from "./stores.ts";
+import { RequestStore } from "./requests.ts";
+import { loopLane } from "./lane.ts";
+import { JobStore, defaultLoopsDir } from "./store.ts";
 
 export interface InProcessRunnerDeps {
 	agentDir: string;
@@ -56,6 +61,8 @@ export interface InProcessRunnerDeps {
 	 * refused and nobody is asked.
 	 */
 	guard?: { seats: GuardSeats; deps: GuardDeps };
+	/** The loops directory `wake_me` writes `clock.json` in; absent, the one this process uses (`defaultLoopsDir`). */
+	loopsDir?: string;
 	/**
 	 * Today's automation spend and the cap it must stay under — `budgetState` from `job-status.ts`, read
 	 * *while* a run is in flight rather than only before it is dispatched. A callback, not the
@@ -509,6 +516,26 @@ export function asCapped(req: SubagentRequest): SubagentRequest {
 	return { ...rest, cwd: cap.cwd, timeoutMs: cap.timeoutMs, ...(model === undefined ? {} : { model }), ...(thinking === undefined ? {} : { thinking }) } as SubagentRequest;
 }
 
+/**
+ * The tools a loop's run has whatever its job's `--tools` say, as every run has the guard: `wake_me`,
+ * bound to the run's own job (design 3.3). None for any other run: a check, a checker, a
+ * conversation's turn.
+ */
+export function loopRunTools(req: Pick<SubagentRequest, "kind" | "jobId" | "runId">, loopsDir: string): ToolDefinition<any, any>[] {
+	if (req.kind !== "loop" || !req.jobId || !req.runId) return [];
+	const jobId = req.jobId;
+	const jobs = new JobStore(loopsDir);
+	const requests = new RequestStore(loopsDir);
+	const lane = loopLane(jobId);
+	return [wakeMeTool({ jobId, runId: req.runId, job: () => jobs.load().find((job) => job.id === jobId), clock: clockStore(loopsDir), runs: () => jobs.allRuns(), rows: () => (lane ? requests.list(lane) : []) })];
+}
+
+/** `run` with `names` added to its list and never cut: a run's own tools are not the job's to declare. */
+export function withOwnTools(run: RunTools, names: readonly string[]): RunTools {
+	if (!names.length) return run;
+	return { ...run, ...(run.tools ? { tools: [...new Set([...run.tools, ...names])] } : {}), keep: (active) => [...new Set([...run.keep(active), ...active.filter((t) => names.includes(t))])] };
+}
+
 export function subSessionTools(req: Pick<SubagentRequest, "tools">, parentTools: string[] | undefined, customTools: Array<{ name: string }>): string[] | undefined {
 	const custom = customTools.map((t) => t.name);
 	if (req.tools) return [...new Set(req.tools.filter((t) => !parentTools || parentTools.includes(t) || custom.includes(t)))];
@@ -818,8 +845,10 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 				return failedRun(`model runtime: ${err?.message ?? err}`);
 			}
 
-			const customTools = await untilStopped(deps.customTools(req));
-			if (customTools === STOPPED) return stoppedResult();
+			const shared = await untilStopped(deps.customTools(req));
+			if (shared === STOPPED) return stoppedResult();
+			const own = loopRunTools(req, deps.loopsDir ?? defaultLoopsDir());
+			const customTools = [...shared, ...own];
 			// A held turn runs in someone's conversation, so it gets a loader of its own: the shared one
 			// stubs `invalidate`, which is fine for a throwaway sub-session and wrong for that.
 			// A held turn borrows its conversation's cached set and hands it back however the run ends.
@@ -828,7 +857,7 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			releaseHeld = () => void load.then((h) => h.done()).catch(() => undefined);
 			const resources = await untilStopped(load.then((h) => h.resources));
 			if (resources === STOPPED) return stoppedResult();
-			const allowed = capTools(req);
+			const allowed = withOwnTools(capTools(req), own.map((tool) => tool.name));
 			// The file `laneTranscript` chose may have been swapped since: just before pi opens it, it is
 			// still a regular file and no link; once open, it is still the session it was chosen for.
 			if (req.resume !== undefined && !regularFile(req.resume.file)) return failedRun(`the transcript to resume is no longer a regular file: ${req.resume.file}`);

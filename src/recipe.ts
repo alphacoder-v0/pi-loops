@@ -15,6 +15,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseAddArgs, type AddArgs } from "./args.ts";
+import { gateCommandWhy } from "./gate.ts";
 import { parseToml, type TomlTable, type TomlValue } from "./toml.ts";
 import { computeNext, formatSchedule, stamp } from "./schedule.ts";
 import { PI_LOOPS_VERSION as VERSION } from "./version.ts";
@@ -35,6 +36,8 @@ export interface RecipeJob {
 	tools?: string[];
 	/** Prompt override; the default is the pointer sentence built by `promptFor`. */
 	prompt?: string;
+	/** The loop's gate (`--gate`, design 3.3): one command looked at before each run; no model call while it prints the same. */
+	gate?: string;
 }
 
 export interface RecipeManifest {
@@ -191,6 +194,8 @@ export function addLineFor(job: RecipeJob, installDir: string): string {
 	if (job.timeout) parts.push("--timeout", q(job.timeout));
 	if (job.thinking) parts.push("--thinking", q(job.thinking));
 	if (job.tools?.length) parts.push("--tools", q(job.tools.join(",")));
+	// Always quoted, with its backslashes kept: a command is read back as one token, as a person would type it.
+	if (job.gate !== undefined) parts.push("--gate", `"${job.gate.replace(/[\\"]/g, (c) => `\\${c}`)}"`);
 	parts.push(q(job.schedule), promptFor(job, installDir));
 	return parts.join(" ");
 }
@@ -253,6 +258,7 @@ export function parseManifest(text: string, opts: { now?: number } = {}): Recipe
 			thinking: str(t, "thinking", jw),
 			tools: strList(t, "tools", jw),
 			prompt: str(t, "prompt", jw),
+			gate: str(t, "gate", jw),
 		};
 		if (seen.has(job.name)) throw new Error(`${jw}: job name "${job.name}" is used twice`);
 		seen.add(job.name);
@@ -264,6 +270,8 @@ export function parseManifest(text: string, opts: { now?: number } = {}): Recipe
 			// What createLoopJob refuses at creation, refused here, so a manifest is bad before it is installed.
 			const t = opts.now ?? Date.now();
 			if (parsed.schedule.kind === "cron" && computeNext({ schedule: parsed.schedule, createdAt: t }, t) === undefined) throw new Error(`${formatSchedule(parsed.schedule)} has no next run`);
+			const gateWhy = parsed.gate === undefined ? undefined : gateCommandWhy(parsed.gate);
+			if (gateWhy) throw new Error(gateWhy);
 		} catch (e) {
 			throw new Error(`${jw} (${job.name}): ${(e as Error).message}`);
 		}

@@ -2,12 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { personRow, plainJobRow, queuedPrompt, recipeRow } from "../src/engine.ts";
 import type { InboxEntry } from "../src/inbox.ts";
-import { heldJobsNotice, jobLines, leftConversationLine, panelLines, pickQueued, proposalsNotice, queueLines, statusField, statusWord, toolsCapNotice, loopLabel } from "../src/job-lines.ts";
+import { gateFields, heldJobsNotice, jobLines, leftConversationLine, panelLines, pickQueued, proposalsNotice, queueLines, statusField, statusWord, toolsCapNotice, loopLabel, wokeWords } from "../src/job-lines.ts";
 import { formatLocal } from "../src/schedule.ts";
 import { capWords } from "../src/guard.ts";
 import { parseSchedule, stamp } from "../src/schedule.ts";
 import type { RunRecord } from "../src/store.ts";
 import { fromV2, type V2Job } from "../src/convert-v2.ts";
+import { dayTime } from "../src/clock.ts";
 import { type ListedJob, listedJob, runHistory } from "../src/job-status.ts";
 
 /**
@@ -329,4 +330,57 @@ test("/cron lists a proposal where it lists a disabled job, with the two command
 	const rule = { id: "dyn-1", condition: "c", action: "a", enabled: false, fireOnce: true, promoteToChat: true, createdAt: "", cwd: "/", proposed: { at: "", session: SESSION } };
 	assert.equal(proposalsNotice([proposed], [rule], SESSION), "[cron] 2 watches wait for your yes: /cron enable pr-watch · /triggers enable dyn-1 ask again");
 	assert.equal(panelLines({ rules: [rule], jobs: [], runs: [], runText: () => "", sources: [], hookEvents: [] })[1].text, "c → a  [proposed]");
+});
+
+test("[wake-me] /cron under a loop: its next wake and its quiet, as the loop asked (design 6.6); /cron runs says a run woke itself", () => {
+	const loop = job();
+	const definition = fromV2(loop).job;
+	const wakeAt = NOW + 80 * 60_000;
+	const monday = NOW + 3 * DAY;
+	const weekday = new Date(monday).toLocaleDateString("en-US", { weekday: "short" });
+	const clock = { ...fromV2(loop).clock!, followup: { id: "fu-1", at: stamp(wakeAt), note: "check CI on #12", set_by: "run-a", created_at: stamp(NOW) }, quietUntil: stamp(monday), quietWhy: "nothing changes over the weekend" };
+	const lines = linesFor([loop], { clock: { [loop.id]: clock } });
+	assert.ok(lines.includes(`    next wake ${formatLocal(wakeAt).slice(11)}, asked by the loop: "check CI on #12"`), lines.join("\n"));
+	assert.ok(lines.includes(`    quiet until ${weekday} ${formatLocal(monday).slice(11)}, asked by the loop: "nothing changes over the weekend" (/cron run pr-watch wakes it now)`), lines.join("\n"));
+	const after = linesFor([loop], { clock: { [loop.id]: { ...clock, followup: undefined } }, now: monday + 60_000 });
+	assert.equal(after.some((l) => /next wake|quiet until/.test(l)), false, "a quiet that has passed and a wake that is gone say nothing");
+	assert.equal(listedJob(definition, clock, [], undefined).status.wake?.note, "check CI on #12");
+	const record = { runId: "fu-1", jobId: loop.id, stateful: true, cwd: loop.cwd, pid: 1, startedAt: stamp(NOW), finishedAt: stamp(NOW + 5_000), ok: true, findings: 0, droppedFindings: 0, stateUpdated: true };
+	assert.equal(wokeWords({ ...record, woken: ["check CI on #12"] } as RunRecord), `, woke itself: "check CI on #12"`);
+	assert.equal(wokeWords(record as RunRecord), "", "a scheduled run says nothing more");
+});
+
+test("[gate-held-count] /cron under a gated loop: the same for N looks since the reading the last run saw, no run has seen one yet, or the gate failing (design 6.7); cron_list gives the model the same", () => {
+	const loop = { ...job(), gate: { kind: "command", command: "gh pr list --json number,updatedAt" } } as V2Job;
+	const seenAt = NOW - 3 * 60 * 60_000;
+	const held = { ...fromV2(loop).clock!, gate: { looks: 37, seen: { digest: "d", at: stamp(seenAt) }, last: { at: stamp(NOW - 60_000), digest: "d" } } };
+	const lines = linesFor([loop], { clock: { [loop.id]: held } });
+	assert.ok(lines.includes(`    gate: \`gh pr list --json number,updatedAt\`: the same for 37 looks since ${dayTime(seenAt, NOW)}; no model call until it changes`), lines.join("\n"));
+	const fresh = linesFor([loop], { clock: { [loop.id]: fromV2(loop).clock! } });
+	assert.ok(fresh.includes("    gate: `gh pr list --json number,updatedAt`: no run has seen its output yet; the next look wakes the loop"), fresh.join("\n"));
+	const failing = { ...held, gate: { ...held.gate, last: { at: stamp(NOW - 60_000), failed: "timed out after 5s" } } };
+	const failed = linesFor([loop], { clock: { [loop.id]: failing } });
+	assert.ok(failed.includes("    gate failing: timed out after 5s; pr-watch runs without the gate until it works"), failed.join("\n"));
+	assert.equal(failed.some((l) => l.includes("the same for")), false, "a failing gate says only that");
+	assert.deepEqual(gateFields(listedJob(fromV2(loop).job, held, [], undefined)), [`gate: \`gh pr list --json number,updatedAt\` (the same for 37 looks since ${stamp(seenAt)}: no model call until its output changes)`]);
+	assert.deepEqual(gateFields(listedJob(fromV2(loop).job, failing, [], undefined)), ["gate: `gh pr list --json number,updatedAt`", "gate_failing: timed out after 5s (the loop runs without the gate until it works)"]);
+	assert.equal(linesFor([job()], { clock: { [job().id]: held } }).some((l) => l.includes("gate")), false, "a loop with no gate says nothing of one");
+});
+
+test("[clean-at-sink] no /cron line carries a control or format character, whichever field held it: name, note, wake note, quiet, error, prompt, gate", () => {
+	const nasty = "a\u001b[2J‮b​c\u009bd";
+	const id = "cron-0123456789abcdef0123456789abcdef";
+	const failedAt = stamp(NOW - 60_000);
+	const failed: RunRecord = { runId: "run-f", jobId: id, stateful: true, cwd: "/", pid: 1, startedAt: failedAt, finishedAt: failedAt, ok: false, error: `boom ${nasty}`, findings: 0, droppedFindings: 0, stateUpdated: false };
+	const gated = { ...fromV2(job({ name: `n ${nasty}`, prompt: `p ${nasty}` })).job, gate: { kind: "command" as const, command: `gh ${nasty}` } };
+	const erring = { ...fromV2(job({ id, name: `e ${nasty}` })).job };
+	const noted = { ...fromV2(job({ id: "cron-0000eeee", name: "noted" })).job };
+	const clock = {
+		[gated.id]: { runs: 3, followup: { id: "fu-1", at: stamp(NOW + 3_600_000), note: `w ${nasty}`, set_by: "r", created_at: stamp(NOW) }, quietUntil: stamp(NOW + 7_200_000), quietWhy: `q ${nasty}`, gate: { looks: 1, seen: { digest: "d", at: stamp(NOW - 60_000) }, last: { at: stamp(NOW - 30_000), failed: `f ${nasty}` } } },
+		[noted.id]: { runs: 1, note: { at: stamp(NOW - 30_000), text: `note ${nasty}` } },
+	};
+	const lines = jobLines([gated, erring, noted], { clock, runs: [failed], inbox: [], requests: () => [], view: { sessionId: SESSION, holdsOwn: true, holderOf: () => undefined }, now: NOW, home: HOME, cwdExists: () => true, showCwd: false });
+	const text = lines.join("\n");
+	for (const word of ["n a", "p a", "w a", "q a", "f a", "e a", "boom a", "note a"]) assert.ok(text.includes(word), `${word}: ${text}`);
+	for (const line of lines) assert.equal(/[\p{Cc}\p{Cf}]/u.test(line), false, JSON.stringify(line));
 });

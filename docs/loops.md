@@ -101,7 +101,10 @@ expire. The model reads `proposed cron job cron-… "pr-watch": the person sees 
 not to wait, not to do the action now and not to call the tool again. A sub-agent's `cron_create`
 (hop 1), `cron_create` in a scheduled or held turn, `/cron add` and a recipe still create an
 enabled job. A `gate` passed to `cron_create` where it creates at once is refused whole: `a gate
-needs a person: set it with /cron set <name> --gate`. A proposal needs a saved conversation: with
+needs a person: set it with /cron set <name> --gate`. Where the call writes a proposal, the gate is
+on it, and the card shows the command in a `Checks first` row: ``runs `gh pr list` first; no model
+call while it says the same``. A gated watch is a loop, so its card does not offer *this
+conversation* (see "A gate: no model call while nothing changed"). A proposal needs a saved conversation: with
 `--no-session` the tools refuse it. In your own turn in a pi with no UI (`pi -p`) nobody could
 answer a proposal, so the tools do what 0.24.2 did: `cron_create` creates an enabled job, and
 `new_trigger` asks pi's confirm, which a pi with no UI refuses (`create dynamic trigger requires
@@ -175,6 +178,10 @@ catch-up, the job's timeout):
 ```text
 You are running the recurring loop "<name>" (current run started <when it started, on the clock of the machine running it, with that machine's offset>; write any time in your notes with its offset, as that one has). This is a background run: nobody is watching, and your final reply is parsed by a program. The run is stopped after <the job's timeout> and counted as a failure, so finish inside that time.
 
+[woken] (why this run started)
+you asked to be woken: check CI on #12
+[/woken]
+
 [loop-state] (your notes from the previous run of this recurring job)
 <contents of the state file, or "(first run)">
 [/loop-state]
@@ -199,10 +206,12 @@ Output protocol (mandatory):
 - End your reply with <loop-state>notes for the next run</loop-state>: it REPLACES the saved notes; keep it under 2000 characters and make it what your next run needs and cannot look up again (baselines, watermarks, decisions). What you reported is listed for you under [reported]: do not keep ids of reported things here. Put anything longer in a file under <loops dir>/state/<id>/ and name the file in your notes.
 - For each finding a human should act on, emit <inbox>one concise line</inbox>, at most 16 per run and 500 characters each. No findings → no inbox tags; do not invent work.
 - When a finding needs a person to decide, write it as <inbox><the decision> · waits: <what waits on it> · if not: <what happens if nobody acts></inbox>.
+- To be woken before your next scheduled run, or to skip scheduled runs until a time, call wake_me.
 - Keep everything after the last tool call short so the tags are not truncated.
 ```
 
-A block with nothing to list is left out. Then:
+A block with nothing to list is left out. The `[woken]` block is there only in a run that the loop's
+own wake started (see "A loop wakes itself" below). Then:
 
 - the last `<loop-state>` block replaces `state/<id>.md`, the notes (see "A loop's notes" below);
 - up to 16 `<inbox>` tags (each ≤500 characters) are appended to the inbox; extras are counted as dropped
@@ -248,6 +257,126 @@ dismiss, from the page, a terminal or `pi-loops inbox`. pi-loops builds the bloc
 what it reported in its notes. Its questions about a call are in the `[asked]` block instead.
 
 `/cron gc --purge` and `/cron remove --purge` remove the notes directory with the notes.
+
+### A loop wakes itself
+
+Every run of a loop has the tool `wake_me`, whatever the job's `--tools` say. A run calls it to have
+the loop run once more at a time the run chooses, with a note of what to look at then:
+
+```text
+wake_me({ when: "in 20m", note: "check CI on #12" })
+wake_me({ when: "at 2026-11-16T09:00+08:00", note: "nothing changes over the weekend", quiet: true })
+```
+
+- `when` is `in <duration>` or `at <ISO time with its offset>`, the forms `/cron add` reads for one
+  time. It is at least 60 seconds and at most 7 days ahead.
+- `note` is at most 500 characters. The run that the wake starts reads it in its `[woken]` block.
+- `quiet: true` also skips the loop's scheduled runs before that time. Each skipped slot is decided
+  and spent, with the note `quiet until <time>, asked by the loop: "<note>"`.
+- A loop has one wake. A second call replaces everything the first set: the time, the note and the
+  quiet. A call without `quiet` removes the quiet of the call before.
+- At most 24 runs in 24 hours start from wakes, counted from the run log.
+
+A refused call sets nothing, and says which bound it crossed and when the loop's next scheduled
+run is:
+
+```text
+not set: a wake is at least 60 seconds and at most 7 days ahead. Its next scheduled run is 15:00.
+not set: this loop has woken itself 24 times in the last 24 hours. Its next scheduled run is 15:00.
+```
+
+A call that sets a wake says so, and says the wake it replaces:
+
+```text
+set: this loop wakes at 2026-11-14 14:20 +08:00 ("check CI on #12"). This replaces the wake you set for 16:00. Its next scheduled run is 15:00.
+```
+
+The wake is written to `clock.json` for the loop whose run called the tool, and for no other. When
+its time comes, pi-loops queues one run in the loop's lane, and then removes the wake. A wake that
+comes due while a scheduled run of the loop waits in the queue adds its note to that run, and a
+slot that comes due while the wake's run waits is counted onto it: the loop runs once, for both
+reasons. A wake always starts a new session: what the run wants to carry over goes in the note and
+in its notes. A wake of a disabled loop waits until the loop is enabled. With `clock.json` gone, the
+wake and the quiet are gone, and the loop runs at its next scheduled time.
+
+`/cron` says what the loop set, under the loop:
+
+```text
+    next wake 14:20, asked by the loop: "check CI on #12"
+    quiet until Mon 09:00, asked by the loop: "nothing changes over the weekend" (/cron run nightly wakes it now)
+```
+
+`cron_list` gives the model the same facts as `next_wake` and `quiet_until`, with full stamps. The
+page's loop row shows the same two lines, each with a ✕. `/cron set <ref> --wake -` and the ✕ remove
+the wake and the quiet. `/cron runs` adds `, woke itself: "<note>"` to a run that a wake started.
+
+### A gate: no model call while nothing changed
+
+A loop can have a gate: one shell command that pi-loops runs before a scheduled run, to see whether
+anything changed. While the command prints what the last run saw, the slot is held: no row, no run
+and no model call. Set it when you add the loop, or later:
+
+```text
+/cron add --stateful --gate 'gh pr list --json number,updatedAt' "every 10m" report new or updated pull requests
+/cron set pr-watch --gate 'gh pr list --json number,updatedAt'
+/cron set pr-watch --gate -
+```
+
+`--gate` makes the job a loop: a plain job's turn has no gate. A recipe sets one with its job's
+`gate` key (see [recipes.md](recipes.md)). A model sets one only when it proposes the watch, and you
+see the command on the card, in its `Checks first` row (see "A proposed watch"). A model that
+creates a job at once, in a scheduled turn or in a loop's run, is refused with `a gate needs a
+person: set it with /cron set <name> --gate`.
+
+How a look works:
+
+- A gate is one line of at most 1000 characters. It is refused where it is set (`/cron add`,
+  `/cron set`, a recipe, a proposal, an imported archive) when the dangerous-command policy would
+  refuse it or ask about it in an unattended run, with the loops directory: a gate runs with nobody
+  there to ask. Where a gate is set, the policy is asked without `[danger] allow`. Only a look, when
+  the gate runs, also lets through the prefixes `[danger] allow` lists.
+- A gate is shown as itself everywhere, whole: on the card, in `/cron`, `cron_list`, the page, an
+  archive's question and the run's `[gate]` block. So a command that would not show as itself is
+  refused where it is set: one with a line break, a control character (a terminal escape among
+  them), a format character (a bidi override, a zero-width space, any Unicode `Cf`), or a part that
+  reads as a secret (`password=…`), which every surface would hide. A person never says yes to part
+  of what runs. The text beside a gate is cleaned too: each line of `/cron`, `/cron runs`,
+  `/triggers rules` and `cron_list`'s text has every control and format character made a space as
+  its last step, whichever field it shows (a name, a note, a wake's note, an error, a prompt).
+- An archive's gates are shown before anything runs them: `pi-loops inspect` shows each loop's and
+  rule's gate, and `pi-loops import` prints each gate it brings before it enables anything, with
+  `--activate-triggers=on` as in the question it asks.
+- When a slot comes due, pi-loops runs the command in the loop's directory, with `sh -c`, stdin
+  closed, a timeout of 5 seconds, and the first 4000 characters of its output. It runs the policy
+  first, as for every unattended command. When the look ends, its whole process group is killed, so
+  a command that the shell left running in the background does not outlive the look. It looks at
+  most once a minute for each loop, also when the time of the last look could not be written to
+  `clock.json`. A slot that comes due while a run of the loop is queued or going is counted onto
+  that run, and nothing is looked at.
+- The reading is the exit code and the output. When it is the reading the last gated run saw (its
+  `seen` in `clock.json`), the slot is held. The slot is decided, the look is counted in
+  `clock.json`, and nothing else is written.
+- Any other reading opens the slot. pi-loops first stores it in `events.jsonl` (source
+  `gate:<job id>`, with the command, the exit code and the output), then writes the row, which names
+  that event. The run reads it in its `[gate]` block: the command, the exit code and the output.
+- When the run ends without a failure, that reading becomes `seen`. A run that fails, times out or
+  is stopped leaves `seen` as it was, so the same change opens the next slot again.
+- A look that fails opens the slot, which is what a loop with no gate does. A look fails when the
+  policy refuses the command, after 5 seconds, when the command cannot start, when a signal ends it,
+  and when it exits with 126 or more. Any other exit code is a reading.
+
+`/cron` says what the gate does, under the loop:
+
+```text
+    gate: `gh pr list --json number,updatedAt`: the same for 37 looks since 09:00; no model call until it changes
+    gate failing: timed out after 5s; pr-watch runs without the gate until it works
+```
+
+Before the first gated run ends, the line says ``no run has seen its output yet; the next look
+wakes the loop``. The page's loop row says ``No model call while `gh pr list --json number,updatedAt` says
+the same · last changed 09:00``, or `Gate failing: <why>`. `cron_list` gives the model the gate and its state. A
+held slot is not a run: it is in no run list and writes no card. A slot that `quiet` skips (see "A
+loop wakes itself") is not looked at. A wake that the loop set, and `/cron run`, run without a look.
 
 Every run leaves a trail: the sub-agent's full transcript (`/cron trace <job> [k]`, 20 per job) and
 a run log with exit code, duration, cost and finding counts (`/cron runs`). Prompts are capped at 8 KB.
