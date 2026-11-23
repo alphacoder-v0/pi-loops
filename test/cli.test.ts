@@ -8,6 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
+import { reportedFor } from "../src/notes.ts";
 import { readUiPrefs, writeUiPref } from "../src/ui-prefs.ts";
 import { UsageError, abortTarget, addLauncher, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherAction, launcherScript, launcherState, launcherTarget, loopsDir, pageAddress, pageFlagRefusal, pageLaunchHost, pageLink, pageOutcomeLines, openOutcome, keySpent, pageTarget, parseCliArgs, webPageRequest, cliRoute, isNewerVersion, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, slashDir, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
@@ -262,7 +263,7 @@ test("pi-loops inbox: list, claim and dismiss with no pi open, as JSON a program
 		assert.match(last().error, /--reason needs a text/);
 		assert.equal(await runCli(["inbox", "dismiss", news.id, "--reason", "that file is generated"], out), 0);
 		assert.equal(lines[lines.length - 1], `dismissed ${news.id}  a TODO went stale  (project, watch, ${formatLocal(Date.parse(news.created_at))})`, "a plain dismiss shows the finding too");
-		assert.equal(inbox.feedbackFor("cron-1").length, 1, "the reason reaches the loop's next run, as /inbox dismiss does");
+		assert.ok(reportedFor(inbox.list(), "cron-1", Date.now()).some((line) => line.includes('dismissed ("that file is generated"): a TODO went stale')), "the reason reaches the loop's next run under [reported], as /inbox dismiss does");
 		assert.equal(await runCli(["inbox", "list", "--cwd", project], out), 0);
 		assert.match(lines[lines.length - 1], /nothing new/);
 		assert.equal(await runCli(["inbox", "wat", "--json"], out), 1);

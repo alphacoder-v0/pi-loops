@@ -1294,3 +1294,30 @@ test("[R2-2] the skill, docs/loops.md and the changelog carry capWords' sentence
 		assert.ok(text.includes(`A job made without it keeps the chat's built-in tools. ${builtins.person}`), `${file}: a job with the chat's built-in tools`);
 	}
 });
+
+test("[own-notes-dir] judgeCall and guardCall: a run in a loop's lane may use a path tool in that loop's notes directory; a conversation's run, a window's turn, a run with no seat and a shell command get no exception", async () => {
+	const { loops, proj, policy } = ownFiles();
+	const notes = path.join(loops, "state", LANE.slice(1));
+	fs.mkdirSync(notes, { recursive: true });
+	const inNotes = write(path.join(notes, "prs.md"), proj);
+	assert.deepEqual(judgeCall(inNotes, turn(), policy), { kind: "allow" }, "the loop's own run");
+	assert.deepEqual(judgeCall({ toolName: "read", toolCallId: "c", cwd: proj, input: { path: path.join(notes, "prs.md") } }, turn(), policy), { kind: "allow" });
+	const refused = { kind: "refuse", reason: OWN, whyNot: { why: "not-shown" } };
+	assert.deepEqual(judgeCall(write(`${notes}.md`, proj), turn(), policy), refused, "its index is not in its notes directory");
+	assert.deepEqual(judgeCall(write(path.join(loops, "state", "cron-b2", "x.md"), proj), turn(), policy), refused, "another loop's notes");
+	assert.deepEqual(judgeCall(inNotes, turn({ lane: "@cron-b2" }), policy), refused, "another loop's run");
+	assert.deepEqual(judgeCall(inNotes, turn({ lane: "s-conversation" }), policy), refused, "a conversation's run");
+	assert.deepEqual(judgeCall(inNotes, turn({ lane: "@check-proj" }), policy), refused, "a check's run");
+	assert.deepEqual(judgeCall(inNotes, turn({ resumable: false, lane: undefined }), policy), { kind: "refuse", reason: OWN, whyNot: { why: "no-transcript" } }, "a run with no seat (a checker)");
+	assert.equal(judgeCall({ ...bash(`echo x > ${path.join(notes, "prs.md")}`), cwd: proj }, turn(), policy).kind, "question", "a shell command into it is asked about, as before");
+
+	const w = world();
+	const deps: GuardDeps = { ...w.deps, loopsDir: loops };
+	const { seat } = new GuardSeats().enter(sm("s1"), "/runs/s1.jsonl", { lane: LANE, origin: { ...ORIGIN, cwd: proj }, cap: capOf({ cwd: proj }) });
+	assert.equal(await guardCall(inNotes, seat, deps), undefined, "the seated guard of the loop's run lets it through");
+	assert.match((await guardCall(write(`${notes}.md`, proj), seat, deps))?.reason ?? "", /^refused by pi-loops: reads or writes pi-loops' own files/);
+	const handler = windowGuard({ current: () => ({ kind: "row" as const, id: "run-1111222233334444", mode: "unattended" as const }), config: () => policy, log: () => undefined, inbox: w.deps.inbox, now: () => NOW, jobOf: () => undefined });
+	const out = await handler({ toolName: inNotes.toolName, toolCallId: inNotes.toolCallId, input: inNotes.input }, { cwd: proj, sessionManager: { getSessionId: () => "s", getSessionFile: () => "/sessions/s.jsonl" } });
+	assert.equal(out?.block, true, "a window's scheduled turn gets no exception");
+	assert.equal(w.inbox.list().length, 0);
+});

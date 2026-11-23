@@ -1,5 +1,7 @@
+import * as path from "node:path";
 import { askedLines, resolveCap } from "./ask.ts";
 import { type EngineSinks, applyFate, plainJobRow, plainRunId } from "./engine.ts";
+import { OVERFLOW_FILE, notesFileLines, notesFiles as listNotesFiles, notesWrite, reportedFor } from "./notes.ts";
 import { findingKind, composeCheckerPrompt, composeLoopPrompt, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
 import type { ClaimedRow, Row, UnclaimedRow } from "./requests.ts";
 import { RunList, STOPPED_BY_PERSON } from "./run-list.ts";
@@ -56,17 +58,24 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 		let previousState: string | undefined;
 		try { previousState = deps.stores.jobs.readState(job.id); }
 		catch (error) { deps.sinks.log(`loop ${job.id}: state read failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
-		let dismissed: Array<{ text: string; reason: string }> = [];
-		try { dismissed = deps.stores.inbox.feedbackFor(job.id, deps.stores.book().clock.jobs[job.id]?.fired).map((entry) => ({ text: entry.text, reason: entry.dismiss_reason ?? "" })); }
-		catch (error) { deps.sinks.log(`loop ${job.id}: feedback read failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
+		const notesDir = deps.stores.jobs.notesDir(job.id);
+		let notesFiles: string[] = [];
+		try { notesFiles = notesFileLines(listNotesFiles(notesDir)); }
+		catch (error) { deps.sinks.log(`loop ${job.id}: notes directory read failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
+		let reported: string[] = [];
 		let asked: string[] = [];
-		try { asked = askedLines(deps.stores.inbox.list(), row.lane); }
-		catch (error) { deps.sinks.log(`loop ${job.id}: questions read failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
+		try {
+			const findings = deps.stores.inbox.list();
+			reported = reportedFor(findings, job.id, now());
+			asked = askedLines(findings, row.lane);
+		} catch (error) { deps.sinks.log(`loop ${job.id}: inbox read failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
 		// From jobs.json only, as tools and cwd are: a row in the lane file can be written by hand.
 		const timeoutMs = job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
 		const prompt = composeLoopPrompt(job.prompt, previousState, {
 			name: job.name,
-			dismissed,
+			notesDir,
+			notesFiles,
+			reported,
 			asked,
 			timeoutMs,
 			runAt: `${formatLocalZoned(started)}${payload?.catch_up ? " (catching up a missed tick)" : ""}`,
@@ -96,9 +105,20 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 		if (!stillThere) deps.sinks.log(`loop ${job.id}: removed during the run; its state and findings are discarded`, undefined, job);
 		const parsed = parseRunOutput(result.text);
 		let stateUpdated = false;
+		let notesCut: RunRecord["notesCut"];
+		// A failed or stopped run leaves the index as it was; files it wrote in its notes directory stay.
 		if (stillThere && result.ok && parsed.state !== undefined) {
-			try { deps.stores.jobs.writeState(job.id, parsed.state); stateUpdated = true; }
-			catch (error) { deps.sinks.log(`loop ${job.id}: state write failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
+			const notes = notesWrite(parsed.state);
+			try {
+				// The whole text first: an index that says "the whole text is in overflow.md" is never on disk without it.
+				if (notes.overflow !== undefined) deps.stores.jobs.writeOverflow(job.id, notes.overflow);
+				deps.stores.jobs.writeState(job.id, notes.index);
+				stateUpdated = true;
+				if (notes.cut) {
+					notesCut = notes.cut;
+					deps.sinks.log(`loop ${job.name ?? job.id}: notes cut ${notes.cut.from}→${notes.cut.to} characters; the whole text is in ${path.join(notesDir, OVERFLOW_FILE)}`, "warning", job);
+				}
+			} catch (error) { deps.sinks.log(`loop ${job.id}: state write failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
 		}
 		let checker: RunRecord["checker"];
 		let reviewed: Array<{ text: string; verified?: boolean; reason?: string }> = parsed.findings.map((text) => ({ text }));
@@ -111,14 +131,14 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 		if (stillThere && result.ok) {
 			for (const finding of reviewed) {
 				try {
-					await deps.stores.inbox.append({
+					const filed = await deps.stores.inbox.append({
 						source,
 						text: finding.text, run_id: runId, job_id: job.id, cwd: job.cwd,
 						kind: findingKind(finding.text), verified: finding.verified,
 						verified_reason: finding.reason, session_id: job.createdBy?.sessionId,
 						transcript: result.sessionFile, transcript_id: result.sessionId, lane: row.lane,
-					});
-					findings.push(finding.text);
+					}, { unlessRepeat: true });
+					if (filed) findings.push(finding.text);
 				} catch (error) { deps.sinks.log(`loop ${job.id}: inbox append failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
 			}
 		}
@@ -132,6 +152,7 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 			exitCode: result.exitCode,
 			error: result.ok ? undefined : byPerson ? STOPPED_BY_PERSON : redact(result.errorMessage ?? "unknown error"),
 			findings: findings.length, droppedFindings: parsed.droppedFindings, stateUpdated,
+			...(notesCut ? { notesCut } : {}),
 			model: result.model ?? model, usage: result.usage, warning: result.warning,
 			retries: result.retries, compactions: result.compactions,
 			summary: previewRedacted(findings[0] ?? stripProtocolTags(result.text), 400) || undefined,

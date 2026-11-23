@@ -77,8 +77,32 @@ All notable changes to pi-loops are documented here. The format follows
     after you close that window and open the conversation in a window of this version; before
     that, the job is turned off again within ten minutes. A `--no-session` conversation cannot be
     opened again: make its jobs again in a new conversation.
+- **A loop's notes file from 0.24.2 needs no conversion.** `state/<id>.md` is read as it is. A
+  file edited by hand to more than 2000 characters, which 0.24.2 cut when it read it, is now read
+  whole, and the loop's next run writes it back under the cap.
 
 ### Changed
+
+- **A loop's notes are cut at the write, and never silently (#214).** When a run writes notes over
+  2000 characters, `state/<id>.md` keeps the leading whole lines that fit and ends with a line that
+  says how much was written and kept. The whole text goes to `state/<id>/overflow.md`. The run log
+  records `notesCut`, pi-loops logs one warning, and `/cron runs` adds `, notes cut 3200→1890 (whole
+  text in overflow.md)`. Before, the notes were cut at 2000 characters when written, when read and
+  when the prompt was made, and nothing said so.
+- **A loop can keep longer notes as files.** A run of a loop can read, write and edit files in its
+  own notes directory, `state/<id>/` in the loops directory, with pi's file tools. The prompt lists
+  the files in a `[notes-files]` block, with size and date: they are not loaded. Every other path of
+  the loops directory, the loop's `state/<id>.md` and another loop's notes stay refused, judged on
+  the real path, and a shell command that reaches them is still a question. `/cron gc --purge` and
+  `/cron remove --purge` remove the directory with the notes. A `.pisession` export carries the
+  notes (`state/<id>.md`) but not the files of `state/<id>/`.
+- **A loop is told what it already reported.** Its prompt has a `[reported]` block: its `new`
+  findings and the findings a person claimed or dismissed in the last 14 days, newest first, each
+  with its status and dismiss reason, the text cut at 200 characters. The block replaces
+  `[dismissed]`, which showed a dismiss reason to one run only, and the prompt no longer asks the
+  loop to keep "ids already seen" in its notes.
+- **A loop's finding is not filed twice.** A finding whose text is the same as a `new` finding of
+  the same loop is not filed again and is not counted in the run's findings.
 
 - **A watch the agent sets up in your own turn waits for your yes.** `cron_create` and
   `new_trigger` in your own turn in a pi with a UI, and `new_trigger` in a scheduled turn, now write a proposal: the

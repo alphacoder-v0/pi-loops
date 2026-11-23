@@ -179,22 +179,73 @@ You are running the recurring loop "<name>" (current run started <when it starte
 <contents of the state file, or "(first run)">
 [/loop-state]
 
+[notes-files] (longer notes you keep as files in <loops dir>/state/<id>/; read one when you need it)
+- prs.md · 3.1 KB · changed 2026-11-13
+[/notes-files]
+
+[reported] (what this loop already told a person, and what they did with it; do not report these again unless what they describe has changed)
+- 11-12 new: PR #12 has failing CI
+- 11-11 dismissed ("Not a bug"): flaky test in foo.test.ts
+- 11-10 claimed: draft the release notes for 0.24.2
+[/reported]
+
+[asked] (questions of yours that wait for a person; do not ask them again)
+- 11-13 run `git push --force origin fix/login`
+[/asked]
+
 <your prompt>
 
 Output protocol (mandatory):
-- End your reply with <loop-state>notes for the next run</loop-state> — it REPLACES the saved state; keep it under 2000 characters and make it the information your next run needs (baselines, ids already seen, watermarks).
+- End your reply with <loop-state>notes for the next run</loop-state>: it REPLACES the saved notes; keep it under 2000 characters and make it what your next run needs and cannot look up again (baselines, watermarks, decisions). What you reported is listed for you under [reported]: do not keep ids of reported things here. Put anything longer in a file under <loops dir>/state/<id>/ and name the file in your notes.
 - For each finding a human should act on, emit <inbox>one concise line</inbox>, at most 16 per run and 500 characters each. No findings → no inbox tags; do not invent work.
 - When a finding needs a person to decide, write it as <inbox><the decision> · waits: <what waits on it> · if not: <what happens if nobody acts></inbox>.
 - Keep everything after the last tool call short so the tags are not truncated.
 ```
 
-Then:
+A block with nothing to list is left out. Then:
 
-- the last `<loop-state>` block replaces `state/<id>.md` (capped at 2000 characters);
+- the last `<loop-state>` block replaces `state/<id>.md`, the notes (see "A loop's notes" below);
 - up to 16 `<inbox>` tags (each ≤500 characters) are appended to the inbox; extras are counted as dropped
   — the count is exact up to the first 1000 tags, past which a reply is a runaway rather than a report;
+- a finding whose text is the same as a `new` finding of the same loop is not filed again, and is
+  not counted in the run's findings. When you claim or dismiss that finding, the same words are filed
+  again the next time the loop reports them;
 - missing or malformed tags never fail a run: the state stays untouched, nothing enters the inbox;
 - a run that is still going when the next tick arrives is skipped and counted (`skipped overlaps`).
+
+### A loop's notes
+
+A loop writes one text each run, its notes, and the text replaces the notes of the run before. A
+run sees the notes in its `[loop-state]` block. The notes are capped at 2000 characters when they
+are written, and the cap is never silent. When a run writes more, `state/<id>.md` keeps the leading
+whole lines that fit and ends with one line:
+
+```text
+(cut by pi-loops: you wrote 3200 characters and 1890 are kept here. The whole text is in overflow.md. Move what matters into files and keep these notes under 2000 characters.)
+```
+
+The whole text goes to `state/<id>/overflow.md`, so nothing is lost. The run log records the cut,
+pi-loops writes one warning in its log, and `/cron runs` adds `, notes cut 3200→1890 (whole text in
+overflow.md)` to the run's line. A run that fails, times out or is stopped does not change the
+notes.
+
+A loop can keep longer notes as files in its notes directory, `state/<id>/` in the loops directory.
+The `[notes-files]` block lists each file with its size and the date it changed, at most 50 files:
+the files are listed, not loaded, so a file costs one line of the prompt. The run reads a file when
+it needs it. Files that a run writes stay when the run fails. A run of a loop can read, write and
+edit files in its own notes directory with pi's file tools (`read`, `write`, `edit`, `grep`, `find`,
+`ls`). The path is judged by its real path: `state/<id>.md` is not in the directory, and another
+loop's notes, the rest of the loops directory, a `../` out of the directory and a symbolic link in it
+that leads back into the loops directory are refused, as for every other run. A shell command that
+reaches the directory is a question, as before (see "When something looks wrong").
+
+The `[reported]` block lists what the loop already told a person and what that person did: its `new`
+findings (the newest 12) and its findings that a person claimed or dismissed in the last 14 days (the
+newest 12), newest first. Each line has the date, the status, the reason of a dismiss, and the text
+cut at 200 characters. pi-loops builds the block from the inbox, so the loop does not keep ids of
+what it reported in its notes. Its questions about a call are in the `[asked]` block instead.
+
+`/cron gc --purge` and `/cron remove --purge` remove the notes directory with the notes.
 
 Every run leaves a trail: the sub-agent's full transcript (`/cron trace <job> [k]`, 20 per job) and
 a run log with exit code, duration, cost and finding counts (`/cron runs`). Prompts are capped at 8 KB.
@@ -284,14 +335,11 @@ not running the line after `/inbox claim` adds "It runs when pi-loops runs in th
 conversation after the current turn, with this one command allowed.`
 
 A dismiss with words after the number — `/inbox dismiss 2 that file is generated, ignore it` — is
-the one way a person talks back to a loop. The reason is stored on the entry and put in front of
-the **next run of the loop that reported it**, between its notes and its task, in a `[dismissed]`
-block that says not to report the finding again unless what it describes has changed, and to carry
-into the notes whatever it needs to remember that. It is shown to that one run only: a loop has
-nothing but its notes between runs, and a second memory the notes cap does not bound would be one
-the loop could not edit or forget. Up to eight reasons per run, the newest kept. A bare
-`/inbox dismiss 2` and `/inbox clear` stay silent, as before — "not interesting" is not something
-the next run can act on. `/inbox all` shows the reason on the dismissed line. For a dismiss,
+the one way a person talks back to a loop. The reason is stored on the entry, and the loop that
+reported the finding sees it for 14 days in the `[reported]` block of its prompt (see "A loop's
+notes"), which tells it not to report the finding again unless what it describes has changed. A
+bare `/inbox dismiss 2` and `/inbox clear` are listed there as dismissed, with no reason.
+`/inbox all` shows the reason on the dismissed line. For a dismiss,
 `--all` counts only before the reason begins (`/inbox dismiss --all 3 …` or `/inbox dismiss 3 --all …`);
 a reason that mentions `--all` in passing does not re-number the list you were looking at.
 
@@ -743,7 +791,8 @@ for example `inbox entry inb-… was already dismissed`.
 A run cannot answer for a person, because a yes in the inbox lets a dangerous call through. In an
 unattended run, a built-in file tool (`read`, `write`, `edit`, `grep`, `find`, `ls`) whose path is
 in the loops directory is refused, and nobody is asked: the question could not show what the tool
-would read or write. A shell command that reaches the loops directory is a question, "reads or
+would read or write. The one exception is a loop's run in its own notes directory,
+`state/<id>/` (see "A loop's notes"). A shell command that reaches the loops directory is a question, "reads or
 writes pi-loops' own files". The directory that holds the control socket when the path of the
 loops directory is too long for a socket, `pi-loops-<uid>` in the temporary directory, counts as
 pi-loops' own files too. A question with the reason "answers for a person" comes from these

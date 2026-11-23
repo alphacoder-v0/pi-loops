@@ -12,6 +12,7 @@ import { TriggerStore } from "../src/triggers.ts";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { withinProject } from "../src/paths.ts";
 import { budgetState } from "../src/job-status.ts";
+import { reportedFor } from "../src/notes.ts";
 import { JOBS_FILE_VERSION, JobStore, type LoopJob, type RunRecord, newId, owningSessionId, piAgentDir, resolveJobRef, sessionExists } from "../src/store.ts";
 
 
@@ -42,7 +43,7 @@ test("job store round trip, update, remove keeps state unless purged", async () 
 	});
 	assert.equal(store.load().find((j) => j.id === a.id)?.runCount, 5);
 	store.writeState(a.id, "notes " + "x".repeat(5000));
-	assert.ok(Array.from(store.readState(a.id)!).length <= 2001);
+	assert.equal(store.readState(a.id), "notes " + "x".repeat(5000), "read as written: the notes are capped once, at the write (notesWrite)");
 	assert.equal(store.readState(b.id), undefined);
 	assert.equal(resolveJobRef(store.load(), "2"), undefined, "a number is a position in a list, so only a caller that printed one gets it");
 	assert.equal(resolveJobRef(store.load(), "2", { ordinals: true })?.id, b.id);
@@ -57,6 +58,31 @@ test("job store round trip, update, remove keeps state unless purged", async () 
 	store.purgeState(a.id);
 	assert.equal(store.load().length, 1);
 	assert.ok(!fs.existsSync(store.statePath(a.id)));
+});
+
+test("[purge-state] purgeState removes a loop's notes directory with its index and transcripts, and orphanStates counts the directory", async () => {
+	const dir = tmp("pi-loops-purge-notes-");
+	const store = new JobStore(dir);
+	const live = await store.add(job({ id: "cron-live", name: "live" }));
+	store.writeState("cron-gone", "notes");
+	store.writeOverflow("cron-gone", "the whole text");
+	fs.mkdirSync(path.join(store.notesDir("cron-gone"), "deep"), { recursive: true });
+	fs.writeFileSync(path.join(store.notesDir("cron-gone"), "deep", "prs.md"), "prs");
+	fs.mkdirSync(store.notesDir("cron-only-files"), { recursive: true });
+	fs.writeFileSync(path.join(store.notesDir("cron-only-files"), "a.md"), "abcd");
+	store.writeOverflow(live.id, "kept");
+	assert.equal(store.notesDir("cron-gone"), path.join(dir, "state", "cron-gone"));
+	const orphans = new Map(store.orphanStates().map((o) => [o.id, o.bytes]));
+	assert.deepEqual([...orphans.keys()].sort(), ["cron-gone", "cron-only-files"], "a notes directory alone makes an orphan; a live job's is not one");
+	assert.equal(orphans.get("cron-gone"), "notes\n".length + "the whole text\n".length + "prs".length, "the index and the whole directory tree");
+	store.purgeState("cron-gone");
+	store.purgeState("cron-only-files");
+	assert.equal(fs.existsSync(store.statePath("cron-gone")), false);
+	assert.equal(fs.existsSync(store.notesDir("cron-gone")), false, "the notes directory goes with its index");
+	assert.equal(fs.existsSync(store.notesDir("cron-only-files")), false);
+	assert.equal(fs.existsSync(path.join(store.notesDir(live.id), "overflow.md")), true, "a live job's notes are not touched");
+	await store.remove(live.id, { purge: true });
+	assert.equal(fs.existsSync(store.notesDir(live.id)), false, "remove with purge takes the notes directory too");
 });
 
 test("orphanStates lists a job that left only transcripts, and purgeState removes them", async () => {
@@ -465,13 +491,12 @@ test("a host stamp an older build left in jobs.json is ignored on read and gone 
 	assert.ok(!fs.readFileSync(path.join(dir, "jobs.json"), "utf8").includes("the-old-laptop"), "and it does not survive a write");
 });
 
-test("a dismiss with a reason is kept on the entry and handed to that loop's next run; a bare dismiss and a clear are not", async () => {
+test("a dismiss with a reason is kept on the entry, a bare dismiss and a claim keep none, and [reported] shows the loop each with its reason", async () => {
 	const inbox = new Inbox(tmp("pi-loops-test-"));
 	const a = await inbox.append({ source: "cron:x", text: "finding a", run_id: "r1", job_id: "job-x", cwd: "/" });
 	const b = await inbox.append({ source: "cron:x", text: "finding b", run_id: "r1", job_id: "job-x", cwd: "/" });
 	const c = await inbox.append({ source: "cron:y", text: "finding c", run_id: "r2", job_id: "job-y", cwd: "/" });
 	const d = await inbox.append({ source: "cron:x", text: "finding d", run_id: "r1", job_id: "job-x", cwd: "/" });
-	const before = new Date(Date.now() - 60_000).toISOString();
 	await answersOver(inbox).say(a.id, "no", { by: "cli" }, { reason: "  that file is\n generated  " });
 	await answersOver(inbox).say(b.id, "no", { by: "cli" });
 	await answersOver(inbox).say(c.id, "no", { by: "cli" }, { reason: "other loop's business" });
@@ -482,15 +507,8 @@ test("a dismiss with a reason is kept on the entry and handed to that loop's nex
 	assert.equal(raw[1].dismiss_reason, null);
 	assert.ok(raw[1].dismissed_at, "a bare dismiss is still stamped");
 	assert.equal(raw[3].dismiss_reason, null, "only a dismiss records a reason");
-	assert.deepEqual(inbox.feedbackFor("job-x").map((e) => e.id), [a.id], "reasoned dismissals of this job only");
-	assert.deepEqual(inbox.feedbackFor("job-x", before).map((e) => e.id), [a.id], "since a time before the dismiss: shown");
-	assert.deepEqual(inbox.feedbackFor("job-x", new Date(Date.now() + 60_000).toISOString()), [], "since a time after it: already shown to that run");
-	await answersOver(inbox).clear(undefined, { by: "terminal", session: "s" });
-	assert.deepEqual(inbox.feedbackFor("job-x").map((e) => e.id), [a.id], "clear stamps the time but has no reason to pass on");
-	assert.equal(inbox.list().find((e) => e.id === a.id)?.dismiss_reason, "that file is generated");
-	// A line dismissed before pi-loops stamped dismissed_at has no time to compare and is left out.
-	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-00000000000000000000000000000001", created_at: before, source: "cron:x", text: "old", trace_id: "r0", job_id: "job-x", cwd: "/", status: "dismissed", dismiss_reason: "typed by hand" })}\n`);
-	assert.deepEqual(inbox.feedbackFor("job-x").map((e) => e.id), [a.id]);
+	const day = raw[0].dismissed_at.slice(5, 10);
+	assert.deepEqual(reportedFor(inbox.list(), "job-x", Date.now()).sort(), [`- ${day} dismissed ("that file is generated"): finding a`, `- ${day} dismissed: finding b`, `- ${raw[3].created_at.slice(5, 10)} claimed: finding d`].sort(), "this loop's findings only, each with what the person did");
 });
 
 test("piAgentDir gives pi's own answer, so the CLI need not load pi's SDK to find the loops directory", () => {

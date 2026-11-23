@@ -9,6 +9,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { notesDirOf } from "./notes.ts";
 import { realpathish } from "./paths.ts";
 
 const SHELL_WORD = /\b(bash|sh|zsh|fish|dash|ksh)\b/;
@@ -611,8 +612,13 @@ const PATH_MAX = 4096;
  * judged, a relative path of a call that comes with no cwd, a variant of the name that pi's `read`
  * tries when the file is not there (decomposed letters, a curly apostrophe), and a tool of an
  * extension or an MCP server that reads or writes by a path: only pi's built-in tools are judged.
+ *
+ * `ownJob` is the id of the loop whose run makes the call: a path inside its notes directory
+ * (`<loops dir>/state/<id>/`, src/notes.ts `notesDirOf`) by realpath is not refused. The index
+ * `state/<id>.md` is not inside it. A link inside it is judged where it leads, and a notes directory
+ * that a link puts somewhere else gets no exception.
  */
-export function pathToolReason(call: { toolName: string; input?: unknown }, cwd: string | undefined, loopsDir: string, platform: NodeJS.Platform = process.platform): string | undefined {
+export function pathToolReason(call: { toolName: string; input?: unknown }, cwd: string | undefined, loopsDir: string, platform: NodeJS.Platform = process.platform, ownJob?: string): string | undefined {
 	if (!PATH_TOOLS.has(call.toolName)) return undefined;
 	const given = (call.input as { path?: unknown } | undefined)?.path;
 	let p = typeof given === "string" && given ? given : PATH_DEFAULTS_TO_CWD.has(call.toolName) ? "." : undefined;
@@ -634,8 +640,17 @@ export function pathToolReason(call: { toolName: string; input?: unknown }, cwd:
 	// A path longer than any file system takes is refused by the system before it is opened
 	// (ENAMETOOLONG), and resolving it level by level costs time that grows with its square.
 	if (resolved.length > PATH_MAX) return undefined;
-	const target = fold(realpathish(resolved));
+	const real = realpathish(resolved);
+	const target = fold(real);
 	const root = fold(realpathish(loopsDir));
+	if (ownJob !== undefined) {
+		// The exception is compared without folding letter case: on a volume that tells `cron-AAAA` from
+		// `cron-aaaa`, folding would let one loop into another's notes. A path written in another case
+		// on a volume that ignores it is not the exception, and is refused below (fail closed).
+		const notes = realpathish(notesDirOf(loopsDir, ownJob));
+		// Only where the loops directory says it is: a link at `state` or at `state/<id>` could make it any directory.
+		if (notes === path.join(realpathish(loopsDir), "state", ownJob) && within(real, notes)) return undefined;
+	}
 	return within(target, root) || (call.toolName === "grep" && within(root, target)) ? OWN_FILES : undefined;
 }
 

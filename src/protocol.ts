@@ -3,6 +3,7 @@
  * docs/loops.md: the sub-agent ends its reply with <loop-state>…</loop-state>
  * and zero or more <inbox>…</inbox> tags. Extraction never fails a run.
  */
+import * as path from "node:path";
 import { formatDuration } from "./schedule.ts";
 
 export const LOOP_STATE_MAX_CHARS = 2000;
@@ -22,20 +23,25 @@ export const FIRST_RUN_MARKER = "(first run)";
  */
 export const LOOP_STATE_CLOSE = "[/loop-state]";
 export const OUTPUT_PROTOCOL_HEADING = "Output protocol (mandatory):";
-/** The block between the notes and the job text that carries what a person said when dismissing (`/inbox dismiss <n> <reason>`). */
-export const DISMISSED_OPEN = "[dismissed]";
-export const DISMISSED_CLOSE = "[/dismissed]";
-/** The block after `[dismissed]` that lists the loop's questions that wait for a person (`askedLines`). */
+/** The block after the notes that lists the files of the loop's notes directory (src/notes.ts `notesFileLines`). */
+export const NOTES_FILES_OPEN = "[notes-files]";
+export const NOTES_FILES_CLOSE = "[/notes-files]";
+/** The block after `[notes-files]` that lists what the loop already reported and what a person did with it (src/notes.ts `reportedFor`). */
+export const REPORTED_OPEN = "[reported]";
+export const REPORTED_CLOSE = "[/reported]";
+/** The block after `[reported]` that lists the loop's questions that wait for a person (`askedLines`). */
 export const ASKED_OPEN = "[asked]";
 export const ASKED_CLOSE = "[/asked]";
-/** How many dismissed-with-reason findings one run is shown; the newest survive. */
-export const DISMISSED_PER_RUN = 8;
-
-/** One finding a person dismissed with a reason, as the loop that reported it is told. */
-export interface DismissedFeedback {
-	text: string;
-	reason: string;
-}
+/**
+ * The blocks between the notes and the job text, in their order. The last pair is the block a 0.24.2
+ * prompt carried there: a transcript that version wrote still shows its job text alone.
+ */
+const DATA_BLOCKS: ReadonlyArray<readonly [string, string]> = [
+	[NOTES_FILES_OPEN, NOTES_FILES_CLOSE],
+	[REPORTED_OPEN, REPORTED_CLOSE],
+	[ASKED_OPEN, ASKED_CLOSE],
+	["[dismissed]", "[/dismissed]"],
+];
 
 /**
  * A checkpoint is a finding that asks a person to decide, and docs/recipes.md fixes its shape:
@@ -57,33 +63,42 @@ export function capChars(text: string, max: number): string {
 }
 
 /**
- * A person's reason and a finding's text go inside the `[dismissed]` block as data. Written as they
- * are, a `[/dismissed]` in either would end the block early and put the rest of the line where the
- * run reads its task; spaced, it reads the same to a person and closes nothing.
+ * A data block of the prompt: the lines are data (a finding's words, a file name, a command), so a
+ * line that says the close of any block is spaced (`[/ reported]`): written as it is, it would end
+ * the block early and put the rest of the line where the run reads its task. No line, no block.
  */
-function unclosing(text: string, tag = "dismissed"): string {
-	return text.replace(new RegExp(String.raw`\[\/(\s*)${tag}\]`, "gi"), `[/ ${tag}]`);
+function dataBlock(open: string, close: string, note: string, lines: readonly string[] | undefined): string[] {
+	if (!lines?.length) return [];
+	const closes = new RegExp(String.raw`\[\/(\s*)(${DATA_BLOCKS.map(([, c]) => c.slice(2, -1)).join("|")})\]`, "gi");
+	return [`${open} (${note})`, ...lines.map((line) => line.replace(closes, (_, _space, tag: string) => `[/ ${tag.toLowerCase()}]`)), close, ""];
 }
 
-export function composeLoopPrompt(action: string, previousState: string | undefined, meta?: { name?: string; runAt?: string; dismissed?: DismissedFeedback[]; asked?: readonly string[]; timeoutMs?: number }): string {
-	const state = previousState && previousState.trim() ? capChars(previousState, LOOP_STATE_MAX_CHARS) : FIRST_RUN_MARKER;
+export interface LoopPromptMeta {
+	name?: string;
+	runAt?: string;
+	timeoutMs?: number;
+	/** `<loops dir>/state/<id>/`, the loop's notes directory. */
+	notesDir?: string;
+	/** `notesFileLines` of that directory. */
+	notesFiles?: readonly string[];
+	/** `reportedFor` of the loop. */
+	reported?: readonly string[];
+	/** `askedLines` of the loop's lane. */
+	asked?: readonly string[];
+}
+
+export function composeLoopPrompt(action: string, previousState: string | undefined, meta?: LoopPromptMeta): string {
+	// Capped once, at the write (src/notes.ts `notesWrite`): what is on disk is what the run reads.
+	const state = previousState && previousState.trim() ? previousState.trim() : FIRST_RUN_MARKER;
 	/**
-	 * Feedback, not permission. A reason is shown to the one run after it was given and then only
-	 * lives on in that run's notes: the person spoke once, and the notes are the only thing a loop
-	 * carries between runs — a second channel that the notes cap does not bound would be a memory the
-	 * loop could not edit or forget. Newest last, so the most recent word is nearest the task.
+	 * The loop authors one text, the notes, and it replaces that text whole each run. Everything else
+	 * here is built by pi-loops from a ledger with a fixed window, and forgets on its own; the files
+	 * are listed, not loaded.
 	 */
-	const dismissed = (meta?.dismissed ?? []).slice(-DISMISSED_PER_RUN);
-	const feedback = dismissed.length
-		? [
-				`${DISMISSED_OPEN} (findings of yours a person dismissed since your previous run, and why — do not report these again unless what they describe has changed; put what you need to remember that in your notes)`,
-				...dismissed.map((d) => `- "${unclosing(capChars(d.text.replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS))}" — ${unclosing(capChars(d.reason.replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS))}`),
-				DISMISSED_CLOSE,
-				"",
-			]
-		: [];
-	// A command is the model's words: one that holds `[/asked]` must not end the block early.
-	const asked = meta?.asked?.length ? [`${ASKED_OPEN} (questions of yours that wait for a person; do not ask them again)`, ...meta.asked.map((line) => unclosing(line, "asked")), ASKED_CLOSE, ""] : [];
+	const dir = meta?.notesDir ? `${meta.notesDir.replace(/[\\/]+$/, "")}${path.sep}` : undefined;
+	const files = dataBlock(NOTES_FILES_OPEN, NOTES_FILES_CLOSE, `longer notes you keep as files in ${dir ?? "your notes directory"}; read one when you need it`, meta?.notesFiles);
+	const reported = dataBlock(REPORTED_OPEN, REPORTED_CLOSE, "what this loop already told a person, and what they did with it; do not report these again unless what they describe has changed", meta?.reported);
+	const asked = dataBlock(ASKED_OPEN, ASKED_CLOSE, "questions of yours that wait for a person; do not ask them again", meta?.asked);
 	const header = meta?.name ? `You are running the recurring loop "${meta.name}"` : "You are running a recurring loop";
 	/**
 	 * The run time, and how to write one.
@@ -105,12 +120,13 @@ export function composeLoopPrompt(action: string, previousState: string | undefi
 		state,
 		LOOP_STATE_CLOSE,
 		"",
-		...feedback,
+		...files,
+		...reported,
 		...asked,
 		action.trim(),
 		"",
 		OUTPUT_PROTOCOL_HEADING,
-		`- End your reply with <loop-state>notes for the next run</loop-state> — it REPLACES the saved state; keep it under ${LOOP_STATE_MAX_CHARS} characters and make it the information your next run needs (baselines, ids already seen, watermarks).`,
+		`- End your reply with <loop-state>notes for the next run</loop-state>: it REPLACES the saved notes; keep it under ${LOOP_STATE_MAX_CHARS} characters and make it what your next run needs and cannot look up again (baselines, watermarks, decisions). What you reported is listed for you under [reported]: do not keep ids of reported things here.${dir ? ` Put anything longer in a file under ${dir} and name the file in your notes.` : ""}`,
 		`- For each finding a human should act on, emit <inbox>one concise line</inbox>, at most ${INBOX_TAGS_PER_RUN} per run and ${INBOX_TEXT_MAX_CHARS} characters each. No findings → no inbox tags; do not invent work.`,
 		"- When a finding needs a person to decide, write it as <inbox><the decision> · waits: <what waits on it> · if not: <what happens if nobody acts></inbox>.",
 		"- Keep everything after the last tool call short so the tags are not truncated.",
@@ -169,11 +185,10 @@ export function stripProtocolTags(text: string): string {
  * what a display wants — a prompt from somewhere else is still the best thing to show.
  */
 export function jobTextOf(prompt: string): string {
-	const afterState = prompt.split(LOOP_STATE_CLOSE).pop()?.split(OUTPUT_PROTOCOL_HEADING)[0] ?? prompt;
-	// The dismissed block sits between the notes and the job text; it is the person's words, not the job's.
-	const afterFeedback = afterState.trimStart().startsWith(DISMISSED_OPEN) ? afterState.split(DISMISSED_CLOSE).slice(1).join(DISMISSED_CLOSE) : afterState;
-	// So does the asked block after it: the loop's own questions, not the job's text.
-	return afterFeedback.trimStart().startsWith(ASKED_OPEN) ? afterFeedback.split(ASKED_CLOSE).slice(1).join(ASKED_CLOSE) : afterFeedback;
+	let rest = prompt.split(LOOP_STATE_CLOSE).pop()?.split(OUTPUT_PROTOCOL_HEADING)[0] ?? prompt;
+	// The data blocks sit between the notes and the job text: pi-loops' words, not the job's.
+	for (const [open, close] of DATA_BLOCKS) if (rest.trimStart().startsWith(open)) rest = rest.split(close).slice(1).join(close);
+	return rest;
 }
 
 /* ---------------------------------------------------------- maker/checker */
@@ -252,7 +267,8 @@ export function parseRunOutput(text: string): ParsedRunOutput {
 	const all = extractTagAll(text, "inbox", MAX_INBOX_TAGS_SCANNED);
 	const findings = all.slice(0, INBOX_TAGS_PER_RUN).map((f) => capChars(f.replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS));
 	return {
-		state: stateRaw === undefined ? undefined : capChars(stateRaw, LOOP_STATE_MAX_CHARS),
+		// Not capped here: `notesWrite` cuts it at the write and says so.
+		state: stateRaw,
 		findings,
 		droppedFindings: Math.max(0, all.length - INBOX_TAGS_PER_RUN),
 	};

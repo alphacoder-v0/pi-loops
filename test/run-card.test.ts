@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CARDED_FIRST_RUNS, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardFor, runCardLines, runCardsHere, runLine } from "../src/run-card.ts";
+import { CARDED_FIRST_RUNS, burstLine, freshRuns, notesCutWords, panelRuns, placeRunCards, runCardDelivery, runCardFor, runCardLines, runCardsHere, runLine } from "../src/run-card.ts";
 import type { RunRecord } from "../src/store.ts";
 
 const record = (over: Partial<RunRecord> = {}): RunRecord => ({
@@ -153,4 +153,9 @@ test("a card for a run someone asked for carries the first line of its reply, sc
 	const [long] = runCardLines(record({ ordinal: 4, requestedBy: asked, summary: "y".repeat(400) }));
 	assert.ok(long.length <= 120, `clipped to the card: ${long.length}`);
 	assert.deepEqual(runCardLines(record({ ordinal: 4, requestedBy: asked, ok: false, error: "provider 500", summary: "partial" })), [], "a failure's card says its error, as it does today");
+});
+
+test("[notes-cut-visible] /cron runs says a run's notes were cut, by how much, and where the whole text is", () => {
+	assert.equal(notesCutWords(record({ notesCut: { from: 3200, to: 1890 } })), ", notes cut 3200→1890 (whole text in overflow.md)");
+	assert.equal(notesCutWords(record()), "", "a run whose notes fit says nothing more");
 });

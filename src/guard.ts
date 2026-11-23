@@ -142,12 +142,15 @@ function controlPlaneShown(call: Pick<ToolCallFacts, "toolName" | "input" | "tar
 
 /**
  * Why the policy needs a person for a call, or undefined when it may run, in this order: a path
- * tool into the loops directory (`pathToolReason`, its relative path against `cwd`); in a
+ * tool into the loops directory (`pathToolReason`, its relative path against `cwd`), except a loop
+ * run's into its own notes directory, which `lane` names; in a
  * conversation's unattended turn, a control-plane tool; a tool outside `declared`; a shell command
  * `dangerousCommandReason` refuses.
  */
-function policyNeed(call: Pick<ToolCallFacts, "toolName" | "input" | "target">, cwd: string | undefined, declared: GuardTurn["declared"], cfg: GuardPolicy, conversationTurn?: true): string | undefined {
-	const own = cfg.loopsDir === undefined ? undefined : pathToolReason(call, cwd, cfg.loopsDir);
+function policyNeed(call: Pick<ToolCallFacts, "toolName" | "input" | "target">, cwd: string | undefined, declared: GuardTurn["declared"], cfg: GuardPolicy, conversationTurn?: true, lane?: LaneId): string | undefined {
+	// A loop's run may use path tools in its own notes directory (src/notes.ts); every other run gets no exception.
+	const loop = lane === undefined ? undefined : parseLane(lane);
+	const own = cfg.loopsDir === undefined ? undefined : pathToolReason(call, cwd, cfg.loopsDir, undefined, loop?.kind === "loop" ? loop.id.slice(1) : undefined);
 	if (own !== undefined) return own;
 	const shown = conversationTurn ? controlPlaneShown(call) : undefined;
 	if (shown !== undefined) return `changes what pi-loops runs: ${shown}`;
@@ -177,7 +180,7 @@ function policyNeed(call: Pick<ToolCallFacts, "toolName" | "input" | "target">, 
  */
 export function judgeCall(call: ToolCallFacts, turn: GuardTurn, cfg: GuardPolicy): CallVerdict {
 	const command = commandOf(call);
-	const reason = policyNeed(call, call.cwd, turn.declared, cfg, turn.conversationTurn);
+	const reason = policyNeed(call, call.cwd, turn.declared, cfg, turn.conversationTurn, turn.lane);
 	const hash = inputHash(call.input);
 	const nested = call.parentToolCallId !== undefined;
 	const controlPlane = turn.conversationTurn === true && CONTROL_PLANE_TOOLS.includes(call.toolName);
@@ -441,7 +444,7 @@ export async function guardCall(call: ToolCallFacts, seat: GuardSeat | undefined
 			}
 		}
 		case "asked": {
-			const reason = askedReason(call, deps, window, conversationTurn(seat, window));
+			const reason = askedReason(call, deps, window, conversationTurn(seat, window), seat?.lane);
 			return block(reason, askedMessage(reason));
 		}
 		case "refuse":
@@ -451,8 +454,8 @@ export async function guardCall(call: ToolCallFacts, seat: GuardSeat | undefined
 }
 
 /** The policy's reason for a call that `judgeCall` found already asked about. */
-function askedReason(call: ToolCallFacts, deps: GuardDeps, window: WindowCall | undefined, conversation: boolean): string {
-	return policyNeed(call, call.cwd, window?.declared, { allowCommands: deps.allowCommands(), loopsDir: deps.loopsDir ?? defaultLoopsDir() }, conversation ? true : undefined) ?? call.toolName;
+function askedReason(call: ToolCallFacts, deps: GuardDeps, window: WindowCall | undefined, conversation: boolean, lane: LaneId | undefined): string {
+	return policyNeed(call, call.cwd, window?.declared, { allowCommands: deps.allowCommands(), loopsDir: deps.loopsDir ?? defaultLoopsDir() }, conversation ? true : undefined, lane) ?? call.toolName;
 }
 
 /** `GuardTurn.conversationTurn`: a window's scheduled turn, or a seat in a conversation's lane (a turn pi-loops runs in a closed conversation). */

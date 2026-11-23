@@ -49,9 +49,8 @@ export interface InboxEntry {
 	/** true = passed the checker; false = checker dropped it (never appended); null = no checker / unreviewed. */
 	verified: boolean | null;
 	/**
-	 * Why a person dismissed it, when they said; null when they did not. A bare dismiss is silent; a
-	 * reason goes back to the loop that reported the finding, in its next run's prompt
-	 * (`Inbox.feedbackFor`).
+	 * Why a person dismissed it, when they said; null when they did not. The loop that reported the
+	 * finding is shown it under `[reported]` for 14 days (src/notes.ts `reportedFor`).
 	 */
 	dismiss_reason: string | null;
 	job_id?: string;
@@ -60,7 +59,7 @@ export interface InboxEntry {
 	claimed_by?: string;
 	/** Checker's reason when it kept a finding, if it gave one. */
 	verified_reason?: string;
-	/** When it was dismissed — what decides whether the loop's next run is shown the reason. */
+	/** When it was dismissed: what decides how long `[reported]` shows it to the loop. */
 	dismissed_at?: string;
 	/** The transcript of the run that filed this finding (RunRecord.sessionFile), for a person to open. */
 	transcript?: string;
@@ -166,7 +165,14 @@ export class Inbox {
 		this.lockPath = path.join(dir, "inbox.lock");
 	}
 
-	async append(entry: NewFinding): Promise<InboxEntry> {
+	/**
+	 * Append `entry`. With `unlessRepeat` (a loop's finding), a finding whose text equals a `new`
+	 * finding of the same loop (`job_id`) is not filed again, and the append gives undefined. The look
+	 * and the append are one step under the inbox lock, so two runs of one loop file one finding.
+	 */
+	append(entry: NewFinding): Promise<InboxEntry>;
+	append(entry: NewFinding, opts: { unlessRepeat: true }): Promise<InboxEntry | undefined>;
+	async append(entry: NewFinding, opts: { unlessRepeat?: true } = {}): Promise<InboxEntry | undefined> {
 		const full = this.build(entry);
 		fs.mkdirSync(path.dirname(this.file), { recursive: true });
 		// Under the same lock as the triage rewrites: findings are appended by every pi window, the
@@ -174,8 +180,12 @@ export class Inbox {
 		// rewrites the whole file — an append landing mid-rewrite is a finding nobody ever sees.
 		// The lock is awaited, never spun on: a leftover lock directory from a killed process would
 		// otherwise block this process's event loop for the whole stale window.
-		await withFileLock(this.lockPath, () => this.write(full));
-		return screenFinding(full);
+		return withFileLock(this.lockPath, () => {
+			// Compared by the stored words, as `appendOnce` compares them.
+			if (opts.unlessRepeat && full.job_id !== undefined && this.lines().filter(isFindingLine).some(({ stored: e }) => e.status === "new" && e.job_id === full.job_id && e.text === full.text)) return undefined;
+			this.write(full);
+			return screenFinding(full);
+		});
 	}
 
 	/**
@@ -424,18 +434,6 @@ export class Inbox {
 		} catch {
 			return 0;
 		}
-	}
-
-	/**
-	 * What a person told one loop by dismissing its findings with a reason, since `since` (the start
-	 * of the loop's previous run: everything before it was already shown to that run). Oldest first.
-	 * A dismiss without a reason is not feedback — "not interesting" is not something the next run can
-	 * act on, and the person did not ask it to — so it is not here. A reason dismissed before pi-loops
-	 * stamped `dismissed_at` has no time to compare and is left out too.
-	 */
-	feedbackFor(jobId: string, since?: string): InboxEntry[] {
-		const after = since ? Date.parse(since) : Number.NEGATIVE_INFINITY;
-		return this.list().filter((e) => e.job_id === jobId && e.status === "dismissed" && !!e.dismiss_reason && !!e.dismissed_at && Date.parse(e.dismissed_at) > after);
 	}
 
 	/**
