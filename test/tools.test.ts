@@ -7,7 +7,7 @@ import { tmp } from "./tmp.ts";
 import { fakeRunner } from "./fake-runner.ts";
 import { ownerViewOf } from "../src/job-owner.ts";
 import { openStores } from "../src/stores.ts";
-import { type ConfirmTurn, type ToolHost, automationTools, confirmControlPlane, controlTarget, createLoopJob, wakeMeTool } from "../src/tools.ts";
+import { type ConfirmTurn, GATE_NEEDS_PERSON, RULE_GATE_NEEDS_PERSON, type ToolHost, automationTools, confirmControlPlane, controlTarget, createLoopJob, wakeMeTool } from "../src/tools.ts";
 import { TriggerRuntime } from "../src/trigger-runtime.ts";
 import { parseSchedule, stamp } from "../src/schedule.ts";
 import { dayTime } from "../src/clock.ts";
@@ -219,3 +219,10 @@ test("[clean-at-sink] cron_list's text carries no control or format character, w
 	for (const word of ["n a", "p a", "note a", "w a", "f a"]) assert.ok(text.includes(word), `${word}: ${text}`);
 	for (const line of text.split("\n")) assert.equal(/[\p{Cc}\p{Cf}]/u.test(line), false, JSON.stringify(line));
 });
+
+test("[gate-person-only] the skill quotes the two refusals of a gate exactly as the tools give them", () => {
+	const flat = (t: string) => t.replace(/\s+/g, " ");
+	const skill = flat(fs.readFileSync(path.join(process.cwd(), "skills/pi-loops/SKILL.md"), "utf8"));
+	for (const refusal of [GATE_NEEDS_PERSON, RULE_GATE_NEEDS_PERSON]) assert.ok(skill.includes(flat(refusal)), `SKILL.md quotes: ${refusal}`);
+});
+

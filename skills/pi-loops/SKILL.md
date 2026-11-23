@@ -68,9 +68,10 @@ is something new: no timestamps of now, no counters that move on their own. Keep
 
 Only a person sets a gate. Pass `gate` only in the person's own turn, where the call proposes and
 the person sees the command on the card. Where the tool creates at once (inside a loop's run, a
-scheduled turn, a pi with no UI) a `gate` is refused whole with `a gate needs a person: set it with
-/cron set <name> --gate`: create the job without it and tell the person they can add one with that
-command. Inside a gated run, the `[gate]` block shows what the command printed this time.
+scheduled turn, a pi with no UI) a `gate` is refused whole. For `cron_create` the refusal is `a gate
+needs a person: set it with /cron set <name> --gate`: create the job without it and tell the person
+they can add one with that command. For `new_trigger` it is `a gate needs a person: new_trigger with a
+gate proposes the rule, and the person sets it up`: a rule's gate comes only from a proposal. Inside a gated run, the `[gate]` block shows what the command printed this time.
 
 ## Triage
 

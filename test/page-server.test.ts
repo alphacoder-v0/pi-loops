@@ -2543,6 +2543,24 @@ test("GET /inbox draws a question's card from its ask: the command whole in its 
 	}
 });
 
+test("[clean-at-sink] the page's wake and quiet notes carry no control, bidi or invisible character", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-wake-clean-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [loopJob(dir)] }));
+		convertStores(page.loops);
+		const at = stamp(Date.now() + 3_600_000);
+		clockStore(page.loops).setFollowup("cron-aaaaaaaa", { at, note: "look\u001b[8m\u202eagain\u200b", set_by: "run-a" }, true, Date.now());
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const row = (await page.get("c/s1/state")).body.automation.jobs.find((j: any) => j.id === "cron-aaaaaaaa");
+		for (const text of [row.wake.note, row.quiet.why]) assert.equal(/[\p{Cc}\p{Cf}]/u.test(text), false, JSON.stringify(text));
+		assert.match(row.wake.note, /look.*again/);
+	} finally {
+		await page.stop();
+	}
+});
+
 test("[wake-me] a loop row carries what the loop set for itself; POST /loops/wake {jobId} does what /cron set --wake - does, behind the token, and changes nothing else", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-wake-");
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));

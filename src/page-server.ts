@@ -35,7 +35,7 @@ import { type InboxCard, CANCELLED_LINE, DISMISS_CHIPS, answerLine, answerWho, c
 import { type PersonAnswers, personAnswers } from "./answers.ts";
 import { type StepRefusal, answerRowId } from "./ask.ts";
 import { INBOX_TEXT_MAX_CHARS } from "./protocol.ts";
-import { redact, screenText } from "./redact.ts";
+import { plainLine, redact, screenText } from "./redact.ts";
 import { readSessionHead, shortSessionId } from "./session-head.ts";
 import { JobStore, type LoopJob, MAX_PROMPT_BYTES } from "./store.ts";
 import { summarizeSessionFile } from "./transcript.ts";
@@ -1269,8 +1269,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			// A loop's worth, and at most one suggestion that never applies itself (src/job-tune.ts).
 			...loopWorth(j, now),
 			// What the loop set for itself with wake_me (design 6.6): its next wake, and its quiet while that is ahead.
-			wake: j.stateful && j.status.wake ? { at: j.status.wake.at, note: maskSecrets(j.status.wake.note) } : undefined,
-			quiet: j.stateful && j.status.quiet && Date.parse(j.status.quiet.until) > now ? { until: j.status.quiet.until, why: maskSecrets(j.status.quiet.why) } : undefined,
+			wake: j.stateful && j.status.wake ? { at: j.status.wake.at, note: plainLine(maskSecrets(j.status.wake.note)) } : undefined,
+			quiet: j.stateful && j.status.quiet && Date.parse(j.status.quiet.until) > now ? { until: j.status.quiet.until, why: plainLine(maskSecrets(j.status.quiet.why)) } : undefined,
 			// The loop's gate (design 6.7): its command, how many looks held it since its output changed and when that was, or why it is failing.
 			gate: j.stateful && j.status.gate ? { command: gateShown(j.status.gate.command), looks: j.status.gate.looks, ...(j.status.gate.since ? { since: j.status.gate.since } : {}), ...(j.status.gate.failing !== undefined ? { failing: gateShown(j.status.gate.failing) } : {}) } : undefined,
 			// The open body of a card shows these, which the terminal's `/cron` line has and the panel
