@@ -40,7 +40,7 @@ import { type RunnerResult, type SubagentRequest, failedRun } from "../../src/ru
 import { stamp } from "../../src/schedule.ts";
 import { SubagentSlots } from "../../src/slots.ts";
 import { JobStore, type LoopJob } from "../../src/store.ts";
-import { checkSessionDir } from "../../src/trigger-runtime.ts";
+import { checkSessionDir } from "../../src/check-run.ts";
 import { TriggerStore } from "../../src/triggers.ts";
 import { type RowCap, type WindowAnswers, WindowExecutor, createWindowAnswers, windowGuard } from "../../src/window-executor.ts";
 import { type FindingMemory, decidedOnceOver, findingMemory, remember, standingOf } from "./invariants.ts";

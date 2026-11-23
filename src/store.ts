@@ -16,6 +16,7 @@ import * as path from "node:path";
 import { fromV2, type V2Job } from "./convert-v2.ts";
 import { randomBytes } from "node:crypto";
 import { withFileLock, withFileLockSync, writeFileAtomic } from "./lock.ts";
+import { parseLane } from "./lane.ts";
 import { OVERFLOW_FILE, notesDirOf, walkNoLinks } from "./notes.ts";
 import type { Schedule } from "./schedule.ts";
 
@@ -703,10 +704,12 @@ export class JobStore {
 			const cost = (rec.usage?.cost ?? 0) + (rec.checker?.cost ?? 0);
 			total += cost;
 			runs++;
-			const entry = byJob.get(rec.jobId) ?? { cost: 0, runs: 0, name: rec.jobName };
+			// A project's checks are in the log under its check lane, which names no job: the line says whose checks they are.
+			const name = rec.jobName ?? (parseLane(rec.jobId)?.kind === "check" ? `checks of ${path.basename(rec.cwd) || rec.cwd}` : undefined);
+			const entry = byJob.get(rec.jobId) ?? { cost: 0, runs: 0, name };
 			entry.cost += cost;
 			entry.runs++;
-			if (rec.jobName) entry.name = rec.jobName;
+			if (name) entry.name = name;
 			byJob.set(rec.jobId, entry);
 		}
 		const rotated = this.rotatedSpend(sinceMs);

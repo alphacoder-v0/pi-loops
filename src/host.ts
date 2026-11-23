@@ -36,7 +36,7 @@ import { Ticker, HOST_RIDERS, BACKGROUND_RIDERS, type Riders } from "./ticker.ts
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv, type McpNotification, type McpServerConfig } from "./mcp.ts";
 import { failingJobs } from "./job-health.ts";
-import { listedJobs } from "./job-status.ts";
+import { jobRuns, listedJobs } from "./job-status.ts";
 import { loopLabel } from "./job-lines.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { parentRuntimeFlags, type RunnerResult, type SubagentRunner } from "./runner.ts";
@@ -557,8 +557,7 @@ function snapshot(): HostSnapshot & { slots: { inUse: number; limit: number } } 
 		inboxNew: host.stores.inbox.newCount(),
 		// Without these a host that has failed every run for six hours reads exactly like one
 		// that succeeded an hour ago: "nothing running right now".
-		recent: host.stores.jobs
-			.listRuns(undefined, 5)
+		recent: jobRuns(host.stores.jobs.allRuns(), undefined, 5)
 			.reverse()
 			.map(recentRun),
 		// The three-in-a-row rule `/cron` and the badge use: one missed run is not a failing loop.

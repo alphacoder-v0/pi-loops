@@ -27,7 +27,7 @@ import { createInProcessRunner } from "../src/sdk-runner.ts";
 import type { LoopJob, RunRecord } from "../src/store.ts";
 import { openStores } from "../src/stores.ts";
 import { RUNTIME_RIDERS } from "../src/ticker.ts";
-import { checkSessionDir, triggerSessionKey } from "../src/trigger-runtime.ts";
+import { checkSessionDir, triggerSessionKey } from "../src/check-run.ts";
 import { buildPeriodicCheckTrigger } from "../src/triggers.ts";
 import { withFileLock } from "../src/lock.ts";
 import { tmp } from "./tmp.ts";

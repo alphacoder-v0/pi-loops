@@ -72,7 +72,7 @@ export function loopLane(jobId: string): LaneId | undefined {
 
 /**
  * A project's check lane: `@check-`, the directory's name and the digest of `triggerSessionKey`
- * (src/trigger-runtime.ts). What a rule check or a push files for the project names it. The name is
+ * (src/check-run.ts). What a rule check or a push files for the project names it. The name is
  * made of the characters a lane id takes and cut to 100, so that any directory has a lane; no project
  * (`cwd` empty) has none.
  */

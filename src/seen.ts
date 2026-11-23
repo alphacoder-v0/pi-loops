@@ -181,7 +181,7 @@ export function awayFor(input: AwayInput): AwaySummary {
 		if (!r.ok && !r.aborted) failedRuns++;
 		costUsd += (typeof r.usage?.cost === "number" ? r.usage.cost : 0) + (typeof r.checker?.cost === "number" ? r.checker.cost : 0);
 	}
-	// A rule check files one finding per conversation it was for (src/trigger-runtime.ts): one result.
+	// A rule check files one finding per conversation it was for (src/check-run.ts): one result.
 	const groups = new Map<string, InboxEntry[]>();
 	for (const f of findings) {
 		if (f.status !== "new" || !findingHere(f) || !after(f.created_at)) continue;

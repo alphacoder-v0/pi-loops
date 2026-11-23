@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { promotionBody } from "../src/trigger-runtime.ts";
+import { promotionBody } from "../src/check-run.ts";
 import { capRedacted, previewRedacted } from "../src/redact.ts";
 import { buildPeriodicCheckTrigger } from "../src/triggers.ts";
 

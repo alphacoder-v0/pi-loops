@@ -138,7 +138,7 @@ function turnRow(id: string, source: Row["source"], text: string, to: RowAddress
 
 /**
  * An MCP push a server delivers as `inject_and_run`: one turn in the window that has the server.
- * `prompt` already starts with `[Trigger <traceId>] ` (src/trigger-runtime.ts), so the trace id is
+ * `prompt` already starts with `[Trigger <traceId>] ` (src/check-run.ts), so the trace id is
  * the row id and no second prefix is added. Pushes of one event kind collapse on the trigger's own
  * idempotency key, without the `mcp:<server>:` the key repeats from the source.
  */
@@ -1358,7 +1358,7 @@ async function deadLetter(store: RequestStore, sinks: EngineSinks, row: Row, why
 	// since-you-looked count and `/inbox open` tell results from runs by that source. Any other row
 	// was meant to run in the conversation, so its finding says why it did not, before a claim reruns it.
 	const rule = row.source.startsWith("rule:") ? row.source.slice("rule:".length) : undefined;
-	// The check that produced a rule's result decided its finding already (src/trigger-runtime.ts:
+	// The check that produced a rule's result decided its finding already (src/check-run.ts:
 	// filed it, or skipped a repeat), so its dead letter files nothing; a result no check decided is
 	// filed once by its run (Inbox.appendOnce).
 	if (rule !== undefined) {

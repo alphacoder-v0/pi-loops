@@ -58,7 +58,7 @@ import type { Row, UnclaimedRow } from "./requests.ts";
 import { WindowExecutor, createWindowAnswers, turnJob, unattendedTurn, windowGuard } from "./window-executor.ts";
 import { RunList } from "./run-list.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
-import { budgetState, jobCounts, type ListedJob, listedJobs, switchTargets } from "./job-status.ts";
+import { budgetState, jobCounts, jobRuns, type ListedJob, listedJobs, switchTargets } from "./job-status.ts";
 import { runClockTick, decideRunNow } from "./clock.ts";
 import { DISABLED_BY_PERSON } from "./store.ts";
 import { openStores, removeJob } from "./stores.ts";
@@ -73,7 +73,8 @@ import { SubagentSlots } from "./slots.ts";
 import { askHost, noticesToShow, renderHostSnapshot, ringHost, type HostSnapshot } from "./host-control-channel.ts";
 import { HOST_LOG, crashPaused, crashPauseText, decideEviction, ensureHost, evictHost, heartbeatFresh, hostPushWork, hostServiceAlive, LEAVE_WAIT_MS, RESTART_WAIT_LINE, piPackageDir, readHostService, readSpawnLog, type HostServiceRecord } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
-import { TriggerRuntime, type TriggerOutcome, promotionToInbox, checkSessionDir } from "./trigger-runtime.ts";
+import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
+import { promotionToInbox, checkSessionDir } from "./check-run.ts";
 import { scheduleAudit } from "./job-tune.ts";
 import { auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTrigger, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ConfirmTurn, type ToolHost, automationTools, checkJobName, confirmControlPlane, controlTarget, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
@@ -1655,7 +1656,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "runs": {
 						const job = rest ? pick(rest) : undefined;
 						if (rest && !job) return;
-						const runs = stores.jobs.listRuns(job?.id, 15);
+						const runs = jobRuns(stores.jobs.allRuns(), job?.id, 15);
 						if (!runs.length) {
 							show(ctx, "Runs: none yet", []);
 							return;
@@ -1687,7 +1688,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							ctx.ui.notify("usage: /cron trace [job] [k]   (k = 1 is the latest run)", "warning");
 							return;
 						}
-						const runs = stores.jobs.listRuns(job?.id, 200).reverse();
+						const runs = jobRuns(stores.jobs.allRuns(), job?.id, 200).reverse();
 						const run = runs[k - 1];
 						if (!run) {
 							ctx.ui.notify(`no run #${k}${job ? ` for ${job.name ?? job.id}` : ""} (have ${runs.length})`, "warning");

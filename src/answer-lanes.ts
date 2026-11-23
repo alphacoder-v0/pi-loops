@@ -39,9 +39,9 @@ export interface AnswerLaneDeps {
 	transcriptHeld(sessionId: string): boolean;
 	/** Whether a rule check of the project whose check lane this is runs now (`TriggerRuntime.checkRunningIn`): a check's run is in no `RunList`. */
 	checkRunning(lane: LaneId): boolean;
-	/** Where a check lane's transcripts are: `checkSessionDir` of src/trigger-runtime.ts. */
+	/** Where a check lane's transcripts are: `checkSessionDir` of src/check-run.ts. */
 	checkSessionDir(cwd: string): string;
-	/** The cap of the check of project `cwd`, as its own run has it: `checkCap` of src/trigger-runtime.ts. */
+	/** The cap of the check of project `cwd`, as its own run has it: `checkCap` of src/check-run.ts. */
 	checkCap(cwd: string): ResolvedCap;
 	/** A closed conversation, for an answer's turn there: its lease, taken for one run and given back (`conversations` of `createBackgroundExecutor`). */
 	readonly conversations: HeldConversations;

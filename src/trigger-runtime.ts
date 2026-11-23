@@ -7,12 +7,11 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createHash } from "node:crypto";
 import { realpathish } from "./paths.ts";
-import { sameProject, withinProject } from "./paths.ts";
-import { capRedacted, previewRedacted } from "./redact.ts";
-import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
-import { type ResolvedCap, resolveCap } from "./ask.ts";
+import { withinProject } from "./paths.ts";
+import { previewRedacted } from "./redact.ts";
+import type { SubagentRunner } from "./runner.ts";
+import type { ResolvedCap } from "./ask.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import type { JobStore } from "./store.ts";
 import type { Inbox } from "./inbox.ts";
@@ -28,15 +27,12 @@ import {
 	DedupWindow,
 	NO_MATCH_SENTINEL,
 	PollLedger,
-	SUMMARY_CAP_CHARS,
 	type DynamicTriggerRule,
 	type Trigger,
 	TriggerStore,
-	checkDecidedFinding,
 	buildPeriodicCheckTrigger,
-	extractDynamicRuleIds,
-	renderDynamicTriggerPrompt,
  newTraceId } from "./triggers.ts";
+import { DEFAULT_TRIGGER_RUN_TIMEOUT_MS, type GateLet, type PromoteTarget, checkCap, envelopeOf, promotionBody, runCheck } from "./check-run.ts";
 
 /** Bounded, display-only status of a periodic check. */
 export type LastPoll = { at: string; cwd: string; outcome: string; traceId: string; sourceLabel: string; eventLabel: string; summary: string };
@@ -65,9 +61,6 @@ export interface TriggerOutcome {
 	promoted: boolean;
 	sessionFile?: string;
 }
-
-/** Where a promotion / injection went: the chat of this process, the queue of the conversation that created the rule (src/requests.ts), the inbox, or nowhere because an earlier one with its key is still queued. */
-export type PromoteTarget = "chat" | "queued" | "inbox" | "collapsed";
 
 export interface TriggerRuntimeHooks {
 	/**
@@ -129,14 +122,6 @@ export interface TriggerRuntimeOptions {
 
 export const DEFAULT_MAX_CONCURRENT_CHECKS = 3;
 
-/** What the gates let through to a check: the rules whose path is there, and the stored readings (`events.jsonl` ids) that opened it. */
-export interface GateLet {
-	prechecked?: string[];
-	events?: string[];
-	/** The command readings that opened it: each rule's `seen` once the check ends without a failure. */
-	seen?: { rule: string; digest: string; at: string }[];
-}
-
 /** One gated rule's look this poll: whether it opens the check, the event that stored it, and what `seen` becomes when the check does not fail. */
 interface RuleLook {
 	decision: "wake" | "hold";
@@ -156,96 +141,6 @@ const POLL_TICK_MS = 30_000;
  * is dropped, with an audit row, instead of the list growing until the process dies.
  */
 export const MAX_PENDING_PUSHES = 32;
-
-/**
- * Transcripts are kept per project, not in one directory for the machine: a shared budget meant
- * three projects polling every ten minutes exhausted it within hours, taking the evidence for
- * "why did this rule not match?" with them.
- *
- * The basename alone was not per project: `~/a/web` and `~/b/web` landed in one directory, back to
- * one shared budget of 40 — and each project's prune deleted the other's evidence. So the readable
- * basename keeps its place and a short digest of the resolved path makes it unique. Resolved the way
- * everything else here compares paths (`realpathish`), so a worktree reached through a symlink is
- * still the same project. The name is the resolved path's too: a project reached through a symlink
- * keeps its checks' transcripts where the checks of its real path keep them.
- */
-export function triggerSessionKey(cwd: string): string {
-	const real = realpathish(cwd || "unknown");
-	const base = path.basename(real).replace(/[^A-Za-z0-9._-]/g, "_") || "unknown";
-	const digest = createHash("sha256").update(real).digest("hex").slice(0, 8);
-	return `triggers-${base}-${digest}`;
-}
-
-/**
- * A project's check session directory: where its checks write their transcripts, and where an answer
- * in its check lane finds them. The one source for both, from the resolved path of `cwd`.
- */
-export function checkSessionDir(jobs: Pick<JobStore, "sessionDirFor">, cwd: string): string {
-	return jobs.sessionDirFor(triggerSessionKey(cwd));
-}
-
-/**
- * The cap of a project's check, the one source for the check's own run and for the run of an answer
- * in its check lane: the longest timeout its rules name, else `runTimeoutMs` (`[triggers]
- * run_timeout_secs`); the model and thinking level of the first rule that pins a model.
- */
-export function checkCap(cwd: string, rules: readonly Pick<DynamicTriggerRule, "timeoutMs" | "model" | "thinking">[], runTimeoutMs: number): ResolvedCap {
-	// A thinking level belongs to the model it was chosen for: both come from one rule.
-	const withModel = rules.find((r) => r.model);
-	const timeoutMs = rules.reduce((max, r) => Math.max(max, r.timeoutMs ?? 0), 0) || runTimeoutMs;
-	return resolveCap({ cwd, ...(withModel?.model ? { model: withModel.model } : {}), ...(withModel?.thinking ? { thinking: withModel.thinking } : {}), timeoutMs }, runTimeoutMs);
-}
-
-/** Check transcripts kept per project, as docs/configuration.md promises. */
-export const TRIGGER_SESSIONS_KEPT = 40;
-
-export const DEFAULT_TRIGGER_RUN_TIMEOUT_MS = 15 * 60_000;
-
-/** The engine prefixes `[Trigger <trace>] ` and injects the payload summary itself, capped. */
-export function promotionBody(trigger: Trigger, summary: string): string {
-	// Capped, never reflowed: a promoted result is often a file, a diff or test output, and rewrapping
-	// it is how a diff stops applying and a stack trace stops pointing anywhere. Truncation respects
-	// character boundaries, so the cap cannot cut a multi-byte character in half.
-	return `[Trigger ${trigger.traceId}] ${capRedacted(summary, SUMMARY_CAP_CHARS)}`;
-}
-
-/**
- * A sub-agent result promoted into the chat: `<source> fired <event>.\nResult: …`, so the chat says
- * what fired and not only what came back — a result with no cause reads as the agent talking to
- * itself. The rendered body is then capped at `SUMMARY_CAP_CHARS` characters — the same cap an audit
- * row's summary gets, and characters rather than bytes, so it cannot cut a multi-byte one in half.
- */
-export function promotionSummaryBody(trigger: Trigger, summary: string): string {
-	return capRedacted(`[Trigger ${trigger.traceId}] ${trigger.sourceLabel} fired ${trigger.eventLabel}.\nResult: ${summary}`, SUMMARY_CAP_CHARS);
-}
-
-/**
- * A promoted result no conversation can take, filed in the inbox: what both processes do when the
- * promotion falls back. A rule check decided its finding already (checkDecidedFinding), filed or
- * skipped as a repeat; a push with no rule did not, and is filed once by its run.
- */
-export async function promotionToInbox(inbox: Pick<Inbox, "appendOnce">, audit: Pick<TriggerStore, "listAudit">, content: string, trigger: { sourceLabel: string; traceId: string }, where: { cwd: string; sessionId?: string }): Promise<void> {
-	if (checkDecidedFinding(audit, trigger.traceId)) return;
-	const source = `trigger:${trigger.sourceLabel}`;
-	await inbox.appendOnce({ source, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: where.cwd, session_id: where.sessionId, lane: checkLane(where.cwd) }, { run_id: trigger.traceId, source });
-}
-
-/**
- * The envelope fields carried on every audit row, in every state a trigger passes through. Without
- * the idempotency key on each of them, "which pushes collapsed into which" cannot be answered after
- * the fact — and that question is the whole reason the dedup window is allowed to drop anything.
- * Bounded and redacted: a key is caller-supplied text.
- */
-/** Rules by the conversation that created them: one check's result goes to each of those once. */
-function byCreator(rules: readonly DynamicTriggerRule[]): Map<string | undefined, DynamicTriggerRule[]> {
-	const out = new Map<string | undefined, DynamicTriggerRule[]>();
-	for (const r of rules) out.set(r.createdBy?.sessionId, [...(out.get(r.createdBy?.sessionId) ?? []), r]);
-	return out;
-}
-
-function envelopeOf(trigger: Trigger): Record<string, unknown> {
-	return { idempotency_key: capRedacted(trigger.idempotencyKey, 256), replacement_policy: trigger.replacementPolicy, received_at: trigger.receivedAt };
-}
 
 export class TriggerRuntime {
 	readonly store: TriggerStore;
@@ -762,113 +657,54 @@ export class TriggerRuntime {
 		// `evaluate` is what the caller already resolved (the tick's claimed rules, a taken-over
 		// push); otherwise this is a direct handle() and we take the rules of this project we own.
 		const rules = evaluate ?? this.rulesFor(trigger.cwd);
-		if (!rules.length) {
-			this.store.appendAudit({ cwd, type: "trigger_result", traceId: trigger.traceId, state: "no_rules", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery: "sub_agent", ...envelopeOf(trigger) } });
-			const outcome: TriggerOutcome = { trigger, delivery: "sub_agent", ok: true, matchedRules: [], summary: "no enabled dynamic trigger rules", durationMs: 0, cost: 0, promoted: false };
-			this.hooks.onFinished?.(outcome);
-			return outcome;
-		}
-		const prompt = renderDynamicTriggerPrompt(trigger, rules);
 		const ctrl = new AbortController();
-		const running: RunningTrigger = { traceId: trigger.traceId, sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, startedAt: stamp(start), promptPreview: previewRedacted(prompt, 80), cwd, ctrl }; // 80 characters is a banner, not a prompt
-		this.running.set(trigger.traceId, running);
-		this.hooks.onStarted?.(running);
-		this.store.appendAudit({ cwd, type: "trigger_result", traceId: trigger.traceId, state: "running", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { rule_count: rules.length, cwd, ...(gates?.prechecked?.length ? { prechecked: gates.prechecked } : {}), ...(gates?.events?.length ? { events: gates.events } : {}), ...envelopeOf(trigger) } });
-
-		// The check runs with the model the rules were created under, not whatever the process that
-		// happens to own the timer is using (`checkCap`), and with the longest per-rule timeout.
-		const cap = checkCap(cwd, rules, this.runTimeoutMs);
-		const model = cap.model ?? session.model;
-		const thinking = cap.thinking ?? session.thinking;
-		const timeoutMs = cap.timeoutMs;
-		const lane = checkLane(cwd);
-		let result: RunnerResult;
+		let check: Awaited<ReturnType<typeof runCheck>>;
 		try {
-			// The guard's seat: a dangerous call files a question in the project's check lane.
-			const guard = lane === undefined ? undefined : { lane, origin: { source: `trigger:${trigger.sourceLabel}`, run_id: trigger.traceId, cwd, who: `the check of ${path.basename(cwd) || cwd}` }, cap };
-			result = await this.runner({ cwd, prompt, model, thinking, timeoutMs, signal: ctrl.signal, sessionDir: checkSessionDir(this.jobStore, cwd), hop: this.hop + 1, parentSessionId: session.sessionId, parentCwd: session.cwd, kind: "trigger", traceId: trigger.traceId, ...(guard ? { guard } : {}) });
-		} catch (err: any) {
-			result = failedRun(err?.message ?? String(err));
+			check = await runCheck(
+				{
+					runner: this.runner,
+					rules: this.store,
+					jobs: this.jobStore,
+					inbox: this.inbox,
+					clock: this.clock,
+					// The hook is handed the trigger as it arrived, as it always was.
+					promote: async (content, _withCwd, forSession) => (await this.hooks.onPromote?.(content, trigger, forSession)) ?? "chat",
+					session,
+					hop: this.hop,
+					runTimeoutMs: this.runTimeoutMs,
+					log: (message) => this.log(message),
+					now: this.now,
+				},
+				{
+					trigger: { ...trigger, cwd },
+					rules,
+					gates,
+					signal: ctrl.signal,
+					run: { id: trigger.traceId, cause: trigger.source.kind === "mcp" ? "push" : "check" },
+					onStarted: (promptPreview) => {
+						const running: RunningTrigger = { traceId: trigger.traceId, sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, startedAt: stamp(start), promptPreview, cwd, ctrl };
+						this.running.set(trigger.traceId, running);
+						this.hooks.onStarted?.(running);
+					},
+				},
+			);
 		} finally {
 			this.running.delete(trigger.traceId);
 		}
-		// Per project, not one budget for the machine: three projects polling every ten minutes used
-		// to exhaust a shared 40 within a couple of hours, taking the evidence with them. The key has
-		// to be the one the transcripts were written under, or the prune looks in a directory that
-		// does not exist and silently keeps everything.
-		// A transcript a finding points at, or an open answer resumes, is kept.
-		this.jobStore.pruneSessions(triggerSessionKey(cwd), TRIGGER_SESSIONS_KEPT, lane === undefined ? undefined : this.inbox?.pinnedTranscripts({ lane }, checkSessionDir(this.jobStore, cwd)));
-
-		const summary = result.text.trim();
-		// A check killed by the run timeout (or aborted) has usually already *executed* the matching
-		// rule's action — posting the comment, kicking the deploy — so the matched ids in whatever it
-		// managed to say still have to disarm a fire-once rule; otherwise the next poll does it again.
-		const matchedIds = extractDynamicRuleIds(summary);
-		const matchedRules = rules.filter((r) => matchedIds.includes(r.id));
-		if (matchedRules.length) await this.store.markFired(matchedRules.map((r) => r.id));
-		const quiet = result.ok && matchedRules.length === 0;
-		const state = ctrl.signal.aborted ? "aborted" : result.ok ? "completed" : "failed";
-		// Every match is a finding, before any promotion and before the result's row, which records what
-		// was decided (`details.inbox`): the promotion's inbox fallback and the row's dead letter read it
-		// and file nothing more (checkDecidedFinding). The text is what the check said, unedited. It is
-		// news: what a check says comes from outside, and `· waits:` in it must not make it a decision.
-		// A repeating rule that says again what its latest new finding says files nothing.
-		let inboxDecision: "filed" | "repeat" | undefined;
-		if (result.ok && matchedRules.length && this.inbox) {
-			const source = `trigger:${trigger.sourceLabel}`;
-			for (const [forSession, group] of byCreator(matchedRules)) {
-				try {
-					const there = await this.inbox.appendOnce({ source, text: summary, run_id: trigger.traceId, job_id: group[0].id, cwd, session_id: forSession, lane, transcript: result.sessionFile, transcript_id: result.sessionId }, { run_id: trigger.traceId, source, session_id: forSession }, { unlessRepeat: true });
-					inboxDecision = there.run_id === trigger.traceId ? "filed" : (inboxDecision ?? "repeat");
-				} catch (err: any) {
-					this.log(`trigger ${trigger.traceId.slice(0, 8)}: inbox append failed: ${err?.message ?? err}`);
-				}
-			}
+		if (check.state === "no_rules") {
+			const outcome: TriggerOutcome = { trigger, delivery: "sub_agent", ok: true, matchedRules: [], summary: check.summary, durationMs: 0, cost: 0, promoted: false };
+			this.hooks.onFinished?.(outcome);
+			return outcome;
 		}
-		this.store.appendAudit({
-			cwd,
-			type: "trigger_result",
-			traceId: trigger.traceId,
-			state,
-			sourceLabel: trigger.sourceLabel,
-			eventLabel: trigger.eventLabel,
-			summary: result.ok ? summary || NO_MATCH_SENTINEL : result.errorMessage,
-			// `matched_rule_ids` are this project's rules the check named; `named_rule_ids` is every id it
-			// wrote, a made-up one or another project's included, which only `/triggers audit` shows.
-			details: { delivery: "sub_agent", matched_rule_ids: matchedRules.map((r) => r.id), named_rule_ids: matchedIds, quiet, cost_usd: result.usage.cost, exit_code: result.exitCode, session_file: result.sessionFile, ...(inboxDecision ? { inbox: inboxDecision } : {}), ...envelopeOf(trigger) },
-		});
 		// An abort is the user's decision about this run, not evidence that the rule's check is broken,
 		// so it neither counts against the rule nor clears what earlier failures recorded.
-		if (!ctrl.signal.aborted) await this.recordCheckOutcome(rules, result.ok, cwd);
-		// A command gate's reading is `seen` only after a check that did not fail: a failed one leaves
-		// it, so the same change opens the next check again.
-		if (result.ok && !ctrl.signal.aborted)
-			for (const seen of gates?.seen ?? []) {
-				try {
-					this.clock.seeGate(seen.rule, { digest: seen.digest, at: seen.at });
-				} catch (err: any) {
-					this.log(`rule ${seen.rule}: its gate's seen reading was not written: ${err?.message ?? err}`);
-				}
-			}
-
-		let promoted = false;
-		const promoteRules = matchedRules.filter((r) => r.promoteToChat);
-		if (result.ok && promoteRules.length) {
-			// One check covers every rule of the project, and two conversations in one repo each get the
-			// result of their own rules: one promotion per creating conversation.
-			for (const [forSession, group] of byCreator(promoteRules)) {
-				const target = (await this.hooks.onPromote?.(promotionSummaryBody(trigger, summary), trigger, forSession)) ?? "chat";
-				promoted ||= target !== "inbox";
-				this.store.appendAudit({ cwd, type: "trigger_promotion", traceId: trigger.traceId, state: target === "inbox" ? "redirected" : "promoted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { prefix_injected: true, rule_ids: group.map((r) => r.id), to: target, template_name: "default", ...envelopeOf(trigger) } });
-			}
-		} else if (result.ok && matchedRules.length) {
-			this.store.appendAudit({ cwd, type: "trigger_promotion", traceId: trigger.traceId, state: "skipped", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { reason: "no matched rule has promote_to_chat", ...envelopeOf(trigger) } });
-		}
+		if (check.state !== "aborted") await this.recordCheckOutcome(rules, check.ok, cwd);
 		if (trigger.sourceLabel === "local:dynamic") {
-			this.lastPoll = { at: stamp(this.now()), cwd, outcome: state === "completed" ? (quiet ? "no match" : `matched ${matchedRules.length}`) : state, traceId: trigger.traceId, sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: previewRedacted(result.ok ? summary || NO_MATCH_SENTINEL : (result.errorMessage ?? ""), 160) };
+			const quiet = check.ok && check.matchedRules.length === 0;
+			this.lastPoll = { at: stamp(this.now()), cwd, outcome: check.state === "completed" ? (quiet ? "no match" : `matched ${check.matchedRules.length}`) : check.state, traceId: trigger.traceId, sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: previewRedacted(check.ok ? check.summary || NO_MATCH_SENTINEL : (check.error ?? ""), 160) };
 			this.lastPolls.set(cwd, this.lastPoll);
 		}
-		const outcome: TriggerOutcome = { trigger, delivery: "sub_agent", ok: result.ok, matchedRules, summary, error: result.ok ? undefined : result.errorMessage, durationMs: this.now() - start, cost: result.usage.cost, promoted, sessionFile: result.sessionFile };
+		const outcome: TriggerOutcome = { trigger, delivery: "sub_agent", ok: check.ok, matchedRules: [...check.matchedRules], summary: check.summary, error: check.error, durationMs: this.now() - start, cost: check.cost, promoted: check.promoted, sessionFile: check.sessionFile };
 		this.hooks.onFinished?.(outcome);
 		return outcome;
 	}

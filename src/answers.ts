@@ -56,7 +56,7 @@ export interface AnswersDeps {
 	sessionFile(id: ConversationId): string | undefined;
 	/** The entries of a session file, or undefined when the file is gone. */
 	entries(file: string): readonly unknown[] | undefined;
-	/** Where a check lane's transcripts are: `checkSessionDir` of src/trigger-runtime.ts, from the resolved path of `cwd`. */
+	/** Where a check lane's transcripts are: `checkSessionDir` of src/check-run.ts, from the resolved path of `cwd`. */
 	checkSessionDir(cwd: string): string;
 	/** `checkLane` of src/lane.ts, given as a function so that a test can name a check lane of its own. */
 	checkLaneOf(cwd: string): LaneId | undefined;

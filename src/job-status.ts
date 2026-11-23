@@ -1,6 +1,6 @@
 import { failurePause } from "./backoff.ts";
 import { claimAlive, plainCollapseKey } from "./engine.ts";
-import { loopLane } from "./lane.ts";
+import { loopLane, parseLane } from "./lane.ts";
 import { runEnd } from "./settle.ts";
 import type { ClockFile, JobClock } from "./clock.ts";
 import type { ClaimedRow, RequestStore, Row } from "./requests.ts";
@@ -22,6 +22,16 @@ export function budgetState(ledger: Pick<JobStore, "spend">, capValue: number | 
 	} catch {
 		return { spent: 0, cap, over: false }; // an unreadable run log must not stop the clock
 	}
+}
+
+/** A record of a project's check: its `jobId` is the check lane (`@check-…`), which is no job of jobs.json and no loop. */
+export function checkRecord(record: Pick<RunRecord, "jobId">): boolean {
+	return parseLane(record.jobId)?.kind === "check";
+}
+
+/** The records a list of runs shows, newest last, at most `limit`: those of `jobId`, else those of every job, a project's checks left out. */
+export function jobRuns(records: readonly RunRecord[], jobId: string | undefined, limit: number): RunRecord[] {
+	return records.filter((record) => (jobId === undefined ? !checkRecord(record) : record.jobId === jobId)).slice(-limit);
 }
 
 /** What the run log says about one job, folded in file order. */

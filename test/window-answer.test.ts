@@ -23,7 +23,7 @@ import type { RunnerResult, SubagentRequest, SubagentRunner } from "../src/runne
 import { stamp } from "../src/schedule.ts";
 import type { LoopJob, RunRecord } from "../src/store.ts";
 import { openStores } from "../src/stores.ts";
-import { checkSessionDir } from "../src/trigger-runtime.ts";
+import { checkSessionDir } from "../src/check-run.ts";
 import { checkLane } from "../src/lane.ts";
 import { RUNTIME_RIDERS } from "../src/ticker.ts";
 import { answerTurnEnd } from "../src/window-claim.ts";

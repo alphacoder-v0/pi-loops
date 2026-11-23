@@ -152,7 +152,7 @@ export function inboxCard(entry: InboxEntry, ctx: CardContext): InboxCard | unde
 	const origin = entry.source.startsWith("trigger:") ? "rule" : deadLetterParts(entry) ? "undelivered" : "loop";
 	const loopId = origin === "loop" ? entry.job_id : undefined;
 	const loopName = loopId ? ctx.loopName(loopId) : undefined;
-	// A rule check files its result with the first matched rule's id (src/trigger-runtime.ts); a push
+	// A rule check files its result with the first matched rule's id (src/check-run.ts); a push
 	// with no rule files its source label there, which names no rule.
 	const ruleId = origin === "rule" && entry.job_id?.startsWith("dyn-") ? entry.job_id : undefined;
 	const condition = ruleId ? ctx.ruleCondition?.(ruleId) : undefined;

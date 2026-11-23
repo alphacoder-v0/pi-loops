@@ -5,16 +5,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { JobStore } from "../src/store.ts";
-import { Inbox } from "../src/inbox.ts";
-import { attentionFrom } from "../src/activity.ts";
-import { MAX_PENDING_PUSHES, TRIGGER_SESSIONS_KEPT, TriggerRuntime, checkCap, checkSessionDir, promotionSummaryBody, promotionToInbox, triggerSessionKey } from "../src/trigger-runtime.ts";
+import { MAX_PENDING_PUSHES, TriggerRuntime } from "../src/trigger-runtime.ts";
+import { triggerSessionKey } from "../src/check-run.ts";
 import { checkLane, parseLane } from "../src/lane.ts";
 import { type Trigger, TriggerStore, buildPeriodicCheckTrigger, extractDynamicRuleIds } from "../src/triggers.ts";
 import type { RunnerResult, SubagentRequest } from "../src/runner.ts";
 import { fakeRunner } from "./fake-runner.ts";
-import { resolveCap } from "../src/ask.ts";
-import { personAnswers } from "../src/answers.ts";
-import { RequestStore } from "../src/requests.ts";
 
 /** A runner that matches whatever rules the prompt actually contains, so parallel checks differ. */
 function matchingRunner(extra: Partial<RunnerResult> = {}) {
@@ -305,23 +301,6 @@ test("injected pushes reach every window that has the server; rule-evaluated pus
 	}
 });
 
-test("trigger checks honour a per-rule timeout (and the configurable default) instead of a fixed 15 minutes", async () => {
-	const dir = tmp("pi-loops-trt-");
-	const finished: any[] = [];
-	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(), runTimeoutMs: 60_000, hooks: { onFinished: (o) => void finished.push(o) } });
-	const r = await rt.store.add({ condition: "c", action: "a", cwd: dir });
-	await rt.store.update(r.id, (rule) => void (rule.timeoutMs = 300));
-	process.env.FAKE_PI_SLEEP = "2";
-	try {
-		const out = await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
-		assert.equal(out?.ok, false);
-		assert.match(out?.error ?? "", /timed out after 0s|timed out/);
-	} finally {
-		delete process.env.FAKE_PI_SLEEP;
-		await rt.stop();
-	}
-});
-
 test("audit rows carry the project cwd and reach the session sink", async () => {
 	const dir = tmp("pi-loops-trt-");
 	const store = new TriggerStore(dir);
@@ -341,28 +320,6 @@ test("audit rows carry the project cwd and reach the session sink", async () => 
 		assert.deepEqual(store.listAudit(10, (r) => r.cwd === dir).length, sink.length);
 	} finally {
 		delete process.env.FAKE_PI_REPLY;
-		await rt.stop();
-	}
-});
-
-test("a check killed by the run timeout still disarms the fire-once rules whose action it already ran", async () => {
-	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
-	const finished: any[] = [];
-	const rt = new TriggerRuntime({
-		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), pollIntervalSecs: 1,
-		// The action (posting the comment, kicking the deploy) ran; the deadline hit before the reply finished.
-		runner: matchingRunner({ ok: false, exitCode: 1, timedOut: true, errorMessage: "timed out after 900s" }),
-		hooks: { onFinished: (o) => void finished.push(o) },
-	});
-	try {
-		const r = await rt.store.add({ condition: "c", action: "post the comment", cwd: dir });
-		const out = await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
-		assert.equal(out?.ok, false);
-		assert.equal(rt.store.load().find((x) => x.id === r.id)?.enabled, false, "the fire-once rule does not run its action again on the next poll");
-		const row = rt.store.listAudit(5).find((a) => a.type === "trigger_result" && a.state !== "running")!;
-		assert.equal(row.state, "failed", "and the non-ok state is what the audit records");
-		assert.deepEqual((row.details as any).matched_rule_ids, [r.id]);
-	} finally {
 		await rt.stop();
 	}
 });
@@ -601,34 +558,6 @@ test("a rule whose check keeps failing is polled with a widening gap instead of 
 	}
 });
 
-test("check transcripts are pruned where the checks actually write them", async () => {
-	// The write path is `sessions/triggers-<project>`; the prune asked for `sessions/triggers/<project>`,
-	// which does not exist, and the ENOENT was swallowed — so nothing was ever pruned and a project
-	// polling every ten minutes kept every transcript it had ever produced.
-	const dir = fs.realpathSync(tmp("pi-loops-trt-prune-"));
-	const finished: any[] = [];
-	const rt = new TriggerRuntime({
-		store: new TriggerStore(dir),
-		jobStore: new JobStore(dir),
-		getSession: () => ({ sessionId: "s", cwd: dir }),
-		runner: fakeRunner(),
-		pollIntervalSecs: 1,
-		hooks: { onFinished: (o) => void finished.push(o) },
-	});
-	const sessions = path.join(dir, "sessions", triggerSessionKey(dir));
-	fs.mkdirSync(sessions, { recursive: true });
-	for (let i = 0; i < TRIGGER_SESSIONS_KEPT + 20; i++) fs.writeFileSync(path.join(sessions, `old-${i}.jsonl`), "{}\n");
-	try {
-		await rt.store.add({ condition: "c", action: "a", cwd: dir, fireOnce: false });
-		await rt.tick(Date.now(), true);
-		await until(() => finished.length === 1, "the check ran");
-		assert.equal(fs.readdirSync(sessions).filter((f) => f.endsWith(".jsonl")).length, TRIGGER_SESSIONS_KEPT, "the cap docs/configuration.md promises");
-		assert.ok(finished[0].sessionFile?.startsWith(sessions), "and that is the directory the check wrote into");
-	} finally {
-		await rt.stop();
-	}
-});
-
 test("every audit row of one delivery carries the same cwd, even when the session moves mid-check", async () => {
 	// A check takes minutes; `/resume` or a project switch inside that window used to split one trace
 	// across two projects in the audit, so `/triggers audit` showed the promotion under a cwd the
@@ -668,34 +597,6 @@ test("every audit row of one delivery carries the same cwd, even when the sessio
 	}
 });
 
-test("two projects with the same basename get two transcript directories and prune only their own", async () => {
-	// The key was `triggers-<basename>`, so `~/a/web` and `~/b/web` shared one directory: one budget
-	// of 40 between them, and each project's prune deleted the other's evidence.
-	const dir = fs.realpathSync(tmp("pi-loops-trt-key-"));
-	const a = path.join(dir, "a", "web");
-	const b = path.join(dir, "b", "web");
-	fs.mkdirSync(a, { recursive: true });
-	fs.mkdirSync(b, { recursive: true });
-	const keyA = triggerSessionKey(a);
-	const keyB = triggerSessionKey(b);
-	assert.match(keyA, /^triggers-web-[0-9a-f]{8}$/, "the basename still says which project it is");
-	assert.notEqual(keyA, keyB);
-	assert.equal(keyA, triggerSessionKey(a), "and the key is stable for a project");
-
-	const store = new JobStore(dir);
-	const dirA = store.sessionDirFor(keyA);
-	const dirB = store.sessionDirFor(keyB);
-	assert.notEqual(dirA, dirB);
-	for (let i = 0; i < TRIGGER_SESSIONS_KEPT + 5; i++) {
-		fs.writeFileSync(path.join(dirA, `a-${i}.jsonl`), "{}\n");
-		fs.writeFileSync(path.join(dirB, `b-${i}.jsonl`), "{}\n");
-	}
-	store.pruneSessions(keyA, TRIGGER_SESSIONS_KEPT);
-	const count = (d: string) => fs.readdirSync(d).filter((f) => f.endsWith(".jsonl")).length;
-	assert.equal(count(dirA), TRIGGER_SESSIONS_KEPT);
-	assert.equal(count(dirB), TRIGGER_SESSIONS_KEPT + 5, "the other project's transcripts are not this one's to delete");
-});
-
 test("a push collapsed onto a queued one is audited as collapsed", async () => {
 	const dir = tmp("pi-loops-trt-");
 	const rt = new TriggerRuntime({
@@ -715,189 +616,6 @@ test("a push collapsed onto a queued one is audited as collapsed", async () => {
 		assert.equal(result.length, 1);
 		assert.equal((result[0].details as any).to, "collapsed", "the audit says the push was not written, not that it waits");
 	} finally {
-		await rt.stop();
-	}
-});
-
-test("every matched rule's result is one inbox finding, whatever promote_to_chat says; a quiet check files none", async () => {
-	const dir = tmp("pi-loops-trt-inbox-");
-	const inbox = new Inbox(dir);
-	const promoted: string[] = [];
-	// The promotion's inbox fallback, as both processes write it: it must find the check's finding.
-	const onPromote = async (content: string, trigger: Trigger, forSession?: string) => {
-		promoted.push(content);
-		await inbox.appendOnce({ source: `trigger:${trigger.sourceLabel}`, text: content, run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: dir, session_id: forSession }, { run_id: trigger.traceId, source: `trigger:${trigger.sourceLabel}` });
-		return "inbox" as const;
-	};
-	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(), inbox, hooks: { onPromote } });
-	try {
-		const quietRule = await rt.store.add({ condition: "q", action: "x", cwd: dir, sessionId: "creator", fireOnce: false });
-		process.env.FAKE_PI_REPLY = "no dynamic trigger matched";
-		await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
-		assert.equal(inbox.list().length, 0, "a quiet check files nothing");
-		await rt.store.remove(quietRule.id);
-
-		const kept = await rt.store.add({ condition: "~/build.done appears", action: "print it", cwd: dir, sessionId: "creator", fireOnce: false });
-		process.env.FAKE_PI_REPLY = `matched ${kept.id}. hello, world; test result: ok`;
-		const quiet = await rt.handle(buildPeriodicCheckTrigger(dir, 2), "sub_agent");
-		assert.equal(promoted.length, 0, "promote_to_chat false: nothing for the chat");
-		const first = inbox.list();
-		assert.equal(first.length, 1);
-		assert.deepEqual(
-			{ source: first[0].source, run_id: first[0].run_id, job_id: first[0].job_id, session_id: first[0].session_id, kind: first[0].kind, text: first[0].text, cwd: first[0].cwd, lane: first[0].lane },
-			{ source: "trigger:local:dynamic", run_id: quiet!.trigger.traceId, job_id: kept.id, session_id: "creator", kind: "news", text: `matched ${kept.id}. hello, world; test result: ok`, cwd: dir, lane: checkLane(dir) },
-			"the finding's text is what the check said, unedited",
-		);
-		assert.equal(rt.store.listAudit(1)[0].state, "skipped", "the promotion row still says why nothing reached the chat");
-
-		await rt.store.update(kept.id, (r) => { r.promoteToChat = true; });
-		process.env.FAKE_PI_REPLY = `matched ${kept.id}. second result`;
-		const out = await rt.handle(buildPeriodicCheckTrigger(dir, 3), "sub_agent");
-		assert.equal(promoted.length, 1, "promote_to_chat true: the result goes to the chat too");
-		const mine = inbox.list().filter((e) => e.run_id === out!.trigger.traceId);
-		assert.equal(mine.length, 1, "and is still exactly one finding");
-		assert.equal(mine[0].text, `matched ${kept.id}. second result`);
-	} finally {
-		delete process.env.FAKE_PI_REPLY;
-		await rt.stop();
-	}
-});
-
-test("[guard-seated] a check runs with a seat in its project's check lane; its result's finding records the check's transcript, which pruning keeps", async () => {
-	const dir = tmp("pi-loops-trt-seat-");
-	const inbox = new Inbox(dir);
-	const runner = fakeRunner();
-	const jobs = new JobStore(dir);
-	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: jobs, getSession: () => ({ sessionId: "s", cwd: dir }), runner, inbox });
-	try {
-		const rule = await rt.store.add({ condition: "~/build.done appears", action: "print it", cwd: dir, sessionId: "creator", fireOnce: false });
-		process.env.FAKE_PI_REPLY = `matched ${rule.id}. it is there`;
-		const out = await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
-		const lane = checkLane(dir)!;
-		assert.deepEqual(runner.calls[0].guard, { lane, origin: { source: "trigger:local:dynamic", run_id: out!.trigger.traceId, cwd: dir, who: `the check of ${path.basename(dir)}` }, cap: resolveCap({ cwd: dir }, runner.calls[0].timeoutMs) });
-		const [finding] = inbox.list();
-		assert.ok(out!.sessionFile, "the check wrote a transcript");
-		assert.equal(finding.transcript, out!.sessionFile, "the finding points at it");
-
-		// Older than the newest TRIGGER_SESSIONS_KEPT: kept only because the finding pins it.
-		const sessions = jobs.sessionDirFor(triggerSessionKey(dir));
-		fs.utimesSync(out!.sessionFile!, 1, 1);
-		for (let i = 0; i < TRIGGER_SESSIONS_KEPT; i++) fs.writeFileSync(path.join(sessions, `newer-${i}.jsonl`), "{}\n");
-		process.env.FAKE_PI_REPLY = "no dynamic trigger matched";
-		await rt.handle(buildPeriodicCheckTrigger(dir, 2), "sub_agent");
-		assert.ok(fs.existsSync(out!.sessionFile!), "a transcript a finding points at is not pruned");
-	} finally {
-		delete process.env.FAKE_PI_REPLY;
-		await rt.stop();
-	}
-});
-
-test("the audit's matched ids are this project's rules the check named; any other id it wrote is kept apart", async () => {
-	const dir = tmp("pi-loops-trt-named-");
-	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner() });
-	try {
-		const r = await rt.store.add({ condition: "c", action: "a", cwd: dir, fireOnce: false });
-		const stranger = "dyn-0123456789abcdef0123456789abcdef";
-		process.env.FAKE_PI_REPLY = `matched ${r.id} and ${stranger}`;
-		await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
-		const row = rt.store.listAudit(5).find((a) => a.type === "trigger_result" && a.state === "completed")!;
-		assert.deepEqual((row.details as any).matched_rule_ids, [r.id], "an id the model made up, or another project's, is no match here");
-		assert.deepEqual(((row.details as any).named_rule_ids as string[]).sort(), [r.id, stranger].sort(), "what the check said is still in the audit");
-	} finally {
-		delete process.env.FAKE_PI_REPLY;
-		await rt.stop();
-	}
-});
-
-test("a rule result is news even when it says `· waits:`: text from outside never makes a decision", async () => {
-	const dir = tmp("pi-loops-trt-news-");
-	const inbox = new Inbox(dir);
-	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(), inbox });
-	try {
-		const rule = await rt.store.add({ condition: "a new issue", action: "print its title", cwd: dir, sessionId: "creator", fireOnce: false });
-		process.env.FAKE_PI_REPLY = `matched ${rule.id}. Merge PR #9? · waits: you · if not: it ships anyway`;
-		await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
-		assert.deepEqual(inbox.list().map((e) => e.kind), ["news"]);
-		const attention = attentionFrom({ findings: inbox.list(), jobs: [], inProject: (a, b) => a === b, day: "2026-11-05" });
-		assert.deepEqual([attention.newDecisions, attention.decisions, attention.news], [[], 0, 1], "no Needs-you card and no notification");
-	} finally {
-		delete process.env.FAKE_PI_REPLY;
-		await rt.stop();
-	}
-});
-
-test("a check that matches a creator's rule and a creatorless one files one finding for each, in either order", async () => {
-	for (const order of [["creator", undefined], [undefined, "creator"]] as const) {
-		const dir = tmp("pi-loops-trt-groups-");
-		const inbox = new Inbox(dir);
-		const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(), inbox });
-		try {
-			const ids: string[] = [];
-			for (const sessionId of order) ids.push((await rt.store.add({ condition: `c ${ids.length}`, action: "a", cwd: dir, ...(sessionId ? { sessionId } : {}), fireOnce: false })).id);
-			process.env.FAKE_PI_REPLY = `matched ${ids[0]} and ${ids[1]}. both`;
-			await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
-			assert.deepEqual(inbox.list().map((e) => e.session_id ?? "none").sort(), ["creator", "none"], `rules in the order ${order.map((o) => o ?? "none").join(", ")}`);
-		} finally {
-			delete process.env.FAKE_PI_REPLY;
-			await rt.stop();
-		}
-	}
-});
-
-test("a repeating rule that says the same thing again files nothing more until what it says changes or is dismissed", async () => {
-	const dir = tmp("pi-loops-trt-repeat-");
-	const inbox = new Inbox(dir);
-	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(), inbox });
-	try {
-		const rule = await rt.store.add({ condition: "~/build.done exists", action: "print it", cwd: dir, sessionId: "creator", fireOnce: false });
-		process.env.FAKE_PI_REPLY = `matched ${rule.id}. hello, world`;
-		for (let n = 1; n <= 3; n++) await rt.handle(buildPeriodicCheckTrigger(dir, n), "sub_agent");
-		assert.equal(inbox.list().length, 1, "three polls that say the same are one finding");
-		process.env.FAKE_PI_REPLY = `matched ${rule.id}. hello, world 2`;
-		await rt.handle(buildPeriodicCheckTrigger(dir, 4), "sub_agent");
-		assert.equal(inbox.list().length, 2, "a new text is a new finding");
-		process.env.FAKE_PI_REPLY = `matched ${rule.id}. hello, world`;
-		await rt.handle(buildPeriodicCheckTrigger(dir, 5), "sub_agent");
-		assert.equal(inbox.list().length, 3, "only the latest new finding is compared");
-		const dirOf = path.dirname(inbox.file);
-		await personAnswers({ inbox, requests: new RequestStore(dirOf), jobs: new JobStore(dirOf), audit: new TriggerStore(dirOf), sessionFile: () => undefined, self: () => ({ pid: process.pid, instance: "test", version: "0" }), now: Date.now, log: () => undefined }).say(inbox.list().at(-1)!.id, "no", { by: "cli" }, { reason: "seen" });
-		await rt.handle(buildPeriodicCheckTrigger(dir, 6), "sub_agent");
-		assert.equal(inbox.list().filter((e) => e.status === "new").length, 3, "once dismissed, the same text is news again");
-	} finally {
-		delete process.env.FAKE_PI_REPLY;
-		await rt.stop();
-	}
-});
-
-test("a promoted result that falls back to the inbox is one finding, and a repeat files nothing more", async () => {
-	const dir = tmp("pi-loops-trt-fallback-");
-	const inbox = new Inbox(dir);
-	const store = new TriggerStore(dir);
-	const contents: string[] = [];
-	// The fallback both processes use when no conversation can take the result.
-	const onPromote = async (content: string, trigger: Trigger, forSession?: string) => {
-		contents.push(content);
-		await promotionToInbox(inbox, store, content, trigger, { cwd: dir, sessionId: forSession });
-		return "inbox" as const;
-	};
-	const rt = new TriggerRuntime({ store, jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(), inbox, hooks: { onPromote } });
-	try {
-		const rule = await rt.store.add({ condition: "~/build.done exists", action: "print it", cwd: dir, sessionId: "creator", fireOnce: false, promoteToChat: true });
-		process.env.FAKE_PI_REPLY = `matched ${rule.id}. hello, world`;
-		const first = await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
-		assert.equal(contents[0], promotionSummaryBody(first!.trigger, `matched ${rule.id}. hello, world`), "the fallback is handed the real promotion body");
-		assert.equal(inbox.list().filter((e) => e.run_id === first!.trigger.traceId).length, 1, "a first result is exactly one finding");
-		assert.equal(inbox.list().length, 1);
-		await rt.handle(buildPeriodicCheckTrigger(dir, 2), "sub_agent");
-		assert.equal(contents.length, 2, "the repeat was promoted and fell back too");
-		assert.equal(inbox.list().length, 1, "a repeat files nothing more through the fallback");
-		// A push no rule check decided: the fallback is its only writer.
-		const push = { traceId: "push-1", sourceLabel: "mcp:hub", eventLabel: "issue opened", cwd: dir } as Trigger;
-		await promotionToInbox(inbox, store, promotionSummaryBody(push, "issue #9 opened"), push, { cwd: dir });
-		await promotionToInbox(inbox, store, promotionSummaryBody(push, "issue #9 opened"), push, { cwd: dir });
-		assert.deepEqual(inbox.list().filter((e) => e.run_id === "push-1").map((e) => e.source), ["trigger:mcp:hub"], "filed once, by its run");
-	} finally {
-		delete process.env.FAKE_PI_REPLY;
 		await rt.stop();
 	}
 });
@@ -1097,34 +815,6 @@ test("a project's check lane is @check-, its directory's name and a digest of it
 		const lane = checkLane(path.join(a, name));
 		assert.equal(parseLane(lane!)?.kind, "check", `${name} -> ${lane}`);
 	}
-});
-
-test("what a promotion files in the inbox names the project's check lane, and a result with no project names none", async () => {
-	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
-	const inbox = new Inbox(dir);
-	const audit = new TriggerStore(dir);
-	await promotionToInbox(inbox, audit, "[Trigger t-1] the build is red", { sourceLabel: "local:dynamic", traceId: "t-1" }, { cwd: dir, sessionId: "s1" });
-	await promotionToInbox(inbox, audit, "[Trigger t-2] no project", { sourceLabel: "local:dynamic", traceId: "t-2" }, { cwd: "" });
-	const [withProject, without] = inbox.list();
-	assert.deepEqual([withProject.lane, withProject.session_id, withProject.text], [checkLane(dir), "s1", "the build is red"]);
-	assert.equal("lane" in without, false);
-});
-
-test("[check-dir-symlink] a project reached through a symlink keeps its check transcripts in its real path's directory; a real path's directory keeps its name", () => {
-	const root = tmp("pi-loops-trt-link-");
-	const real = path.join(root, "real-proj");
-	fs.mkdirSync(real);
-	const link = path.join(root, "link-proj");
-	fs.symlinkSync(real, link);
-	assert.equal(triggerSessionKey(link), triggerSessionKey(real), "one directory for one project");
-	assert.match(triggerSessionKey(real), /^triggers-real-proj-[0-9a-f]{8}$/, "named for the real directory, as before");
-	const jobs = new JobStore(root);
-	assert.equal(checkSessionDir(jobs, link), checkSessionDir(jobs, real));
-});
-
-test("[check-cap] checkCap: the longest timeout the rules name, else run_timeout_secs; the model and thinking level of the first rule that pins a model", () => {
-	assert.deepEqual(checkCap("/p", [], 60_000), resolveCap({ cwd: "/p" }, 60_000));
-	assert.deepEqual(checkCap("/p", [{ timeoutMs: 30_000 }, { timeoutMs: 120_000, model: "a/b", thinking: "high" }, { model: "c/d" }], 60_000), resolveCap({ cwd: "/p", model: "a/b", thinking: "high", timeoutMs: 120_000 }, 60_000));
 });
 
 test("a proposed rule is never checked: a periodic check and a push pass over it", async () => {
