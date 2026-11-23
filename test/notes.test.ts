@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { InboxEntry } from "../src/inbox.ts";
-import { NOTES_FILES_LISTED, OVERFLOW_FILE, REPORTED_PER_KIND, REPORTED_TEXT_CHARS, cutLine, notesDirOf, notesFileLines, notesFiles, notesWrite, reportedFor } from "../src/notes.ts";
+import { REPORTED_WORDS, NOTES_FILES_LISTED, OVERFLOW_FILE, REPORTED_PER_KIND, REPORTED_TEXT_CHARS, cutLine, notesDirOf, notesFileLines, notesFiles, notesWrite, reportedFor } from "../src/notes.ts";
 import { LOOP_STATE_MAX_CHARS } from "../src/protocol.ts";
 import { stamp } from "../src/schedule.ts";
 import { tmp } from "./tmp.ts";
@@ -124,3 +124,18 @@ test("[notes-files] notesFiles lists the regular files of a loop's notes directo
 	assert.equal(crowdLines.at(-1), "- … and 3 more", "a fixed size: the rest is one line");
 	assert.deepEqual(notesFileLines([{ name: "odd\nname.md", bytes: 1, changedMs: changed.getTime() }]), ["- odd name.md · 1 B · changed 2026-11-13"], "a name stays on its line");
 });
+
+test("[reported] every recipe that speaks of [reported] says what it lists in REPORTED_WORDS, as reportedFor applies it", () => {
+	const flat = (t: string) => t.replace(/\s+/g, " ");
+	for (const f of ["recipes/daily-digest/digest.md", "recipes/pr-watch/watch.md", "recipes/deps-sweeper/audit.md"]) {
+		assert.ok(flat(fs.readFileSync(path.join(process.cwd(), f), "utf8")).includes(flat(REPORTED_WORDS)), `${f} says what [reported] lists in REPORTED_WORDS`);
+	}
+	const now = Date.parse("2026-11-23T12:00:00Z");
+	const day = 86_400_000;
+	const news = Array.from({ length: 13 }, (_, i) => ({ id: `inb-${String(i).padStart(32, "0")}`, created_at: new Date(now - i * 3_600_000).toISOString(), status: "new", job_id: "cron-a1", text: `new ${i}`, source: "cron:cron-a1" }));
+	const old = { id: "inb-" + "f".repeat(32), created_at: new Date(now - 20 * day).toISOString(), status: "dismissed", dismissed_at: new Date(now - 15 * day).toISOString(), job_id: "cron-a1", text: "older than the window", source: "cron:cron-a1" };
+	const lines = reportedFor([...news, old] as any, "cron-a1", now);
+	assert.equal(lines.filter((l) => l.includes("new")).length, 12, "the newest 12 new findings");
+	assert.ok(!lines.some((l) => l.includes("older than the window")), "a finding decided 15 days ago is not listed");
+});
+

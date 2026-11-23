@@ -40,8 +40,8 @@ spelling.
    pushed since), `answered` (the author pushed or replied after a review and no reviewer has
    returned in a day). Take the first that applies, in that order.
 
-3. Compare with your notes and with the `[reported]` block of your prompt, which lists what you
-   reported in the last 14 days and what a person did with it. A finding is due only when a pull
+3. Compare with your notes and with the `[reported]` block of your prompt, which
+   lists your findings that are still new (the newest 12) and the ones a person claimed or dismissed in the last 14 days (the newest 12), with what they did. A finding is due only when a pull
    request's state **changed** since the last run, or when it is `awaiting-review` /
    `changes-requested` / `answered` and has been so for a whole number of days more than its newest
    line in `[reported]` says (day 2, day 3 …, never hourly).

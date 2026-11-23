@@ -20,6 +20,13 @@ export const OVERFLOW_FILE = "overflow.md";
 export const REPORTED_DAYS = 14;
 /** The newest `new` findings `[reported]` shows, and the newest decided ones, each. */
 export const REPORTED_PER_KIND = 12;
+/**
+ * What the `[reported]` block lists, in the one sentence every playbook and document uses: a recipe
+ * cannot compute it, so `test/notes.test.ts` holds each of them to this text, built from the limits
+ * `reportedFor` applies.
+ */
+export const REPORTED_WORDS = `lists your findings that are still new (the newest ${REPORTED_PER_KIND}) and the ones a person claimed or dismissed in the last ${REPORTED_DAYS} days (the newest ${REPORTED_PER_KIND}), with what they did`;
+
 /** A finding's text, and a dismiss reason, as `[reported]` cuts them. */
 export const REPORTED_TEXT_CHARS = 200;
 /** The files `[notes-files]` lists; a line says how many more there are. */

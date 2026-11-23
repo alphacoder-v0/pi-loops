@@ -21,9 +21,8 @@ GitHub spelling; if the file describes local Markdown files, read them the way i
 
 ## What to look at
 
-Take each in turn; note what you find, one line each. The `[reported]` block of your prompt lists
-what you reported in the last 14 days and what a person did with it, so a thing you reported
-yesterday and that has not changed is not news today.
+Take each in turn; note what you find, one line each. The `[reported]` block of your prompt
+lists your findings that are still new (the newest 12) and the ones a person claimed or dismissed in the last 14 days (the newest 12), with what they did, so a thing you reported yesterday and that has not changed is not news today.
 
 1. **The tracker.** Items opened or updated since your notes' watermark; items in a state that
    waits on a person (`needs-triage`, `ready-for-human`, `agent-blocked`, `in-review`) and how long

@@ -90,8 +90,8 @@ is read on every run, and a package on it is not updated at any level and not re
 · `open-pr=<url or none>` · `worktree=<path or none>`. Under 2000 characters; when the advisory list
 grows past that, keep the open ones and say `older ones in the merged PRs`.
 
-The majors you reported are not in these notes. The `[reported]` block lists what you reported in the
-last 14 days; a major can wait longer than that, so keep the list in a file `majors.md` in your notes
+The majors you reported are not in these notes. The `[reported]` block
+lists your findings that are still new (the newest 12) and the ones a person claimed or dismissed in the last 14 days (the newest 12), with what they did; a major can wait longer than that, so keep the list in a file `majors.md` in your notes
 directory (the prompt says where), one `<package>@<major>` a line, and read it before you report a
 major.
 

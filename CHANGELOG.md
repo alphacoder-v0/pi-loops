@@ -97,7 +97,8 @@ All notable changes to pi-loops are documented here. The format follows
   `/cron remove --purge` remove the directory with the notes. A `.pisession` export carries the
   notes (`state/<id>.md`) but not the files of `state/<id>/`.
 - **A loop is told what it already reported.** Its prompt has a `[reported]` block: its `new`
-  findings and the findings a person claimed or dismissed in the last 14 days, newest first, each
+  findings (the newest 12) and the findings a person claimed or dismissed in the last 14 days (the
+  newest 12), newest first, each
   with its status and dismiss reason, the text cut at 200 characters. The block replaces
   `[dismissed]`, which showed a dismiss reason to one run only, and the prompt no longer asks the
   loop to keep "ids already seen" in its notes.
@@ -107,6 +108,11 @@ All notable changes to pi-loops are documented here. The format follows
   repeat (`repeats`), and a run with a repeat does not count toward `quiet ×N`.
 - **A claim from `pi-loops inbox claim` records its time.** `[reported]` dates the finding by the
   claim, so a finding filed more than 14 days ago and claimed today is in the block.
+- **The recipes read `[reported]` instead of keeping what they reported in their notes.** The
+  daily digest, the PR watch and the dependency sweeper drop those lists from their notes; old notes
+  that still carry them are replaced at the next run. The sweeper keeps the majors it reported in
+  `majors.md` in its notes directory, so its first run after the update can report a major once
+  more. With more than 12 open findings, the PR watch counts days only for the 12 newest.
 
 - **A watch the agent sets up in your own turn waits for your yes.** `cron_create` and
   `new_trigger` in your own turn in a pi with a UI, and `new_trigger` in a scheduled turn, now write a proposal: the
