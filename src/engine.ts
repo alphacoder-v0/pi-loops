@@ -928,7 +928,11 @@ export interface JobsView {
 	goalActive(sessionId: string): boolean;
 }
 
-const jobOf = (source: string): string | undefined => (source.startsWith("cron:") ? source.slice("cron:".length) : source.startsWith("cron-run:") ? source.slice("cron-run:".length) : undefined);
+/** The job a row names: the clock's slot (`cron:`), `/cron run` (`cron-run:`), or a loop's follow-up (`wake:`). */
+const jobOf = (source: string): string | undefined => {
+	for (const prefix of ["cron:", "cron-run:", "wake:"]) if (source.startsWith(prefix)) return source.slice(prefix.length);
+	return undefined;
+};
 
 /**
  * The run id `/cron` and `cron_list` print as `running <id>`: the job's marker (a loop, or what an
@@ -1191,9 +1195,9 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 				actions.push({ do: "exit", row, exit: "job-removed" });
 				return done();
 			}
-			// The clock's prompt waits with its clock; `/cron run` was asked for, and `/cron run` itself
-			// refuses a job that is disabled when it is typed.
-			if (!job.enabled && row.source.startsWith("cron:")) {
+			// The clock's prompt and a loop's follow-up wait with its clock; `/cron run` was asked for, and
+			// `/cron run` itself refuses a job that is disabled when it is typed.
+			if (!job.enabled && !row.source.startsWith("cron-run:")) {
 				wait("its job is disabled");
 				return done();
 			}

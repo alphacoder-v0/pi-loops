@@ -31,6 +31,8 @@ export type RunRecordM4b = RunRecord & {
 	repeats?: number;
 	/** The notes of the follow-ups that started this run (`cause: "wake"`): `/cron runs` says the first, and `wake_me` counts these runs. */
 	woken?: string[];
+	/** Their ids, as the row carried them (`woken_ids`). */
+	woken_ids?: string[];
 };
 
 /** The job a loop lane's row names: the clock's slot, a person's `/cron run`, or the loop's follow-up. */
@@ -177,6 +179,7 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 			forSession: job.createdBy?.sessionId, ordinal: nextOrdinal(job.id, deps),
 			...(payload?.requested_by ? { requestedBy: { sessionId: payload.requested_by } } : {}),
 			...(payload?.woken?.length ? { cause: "wake" as const, woken: payload.woken } : {}),
+			...(payload?.woken_ids?.length ? { woken_ids: payload.woken_ids } : {}),
 			...(aborted ? { aborted: true as const } : {}),
 			...(byPerson ? { stoppedBy: "person" as const, stoppedFrom: running?.stoppedFrom ?? "cli" } : {}),
 		};
@@ -268,6 +271,7 @@ export function ensureRecord(row: ClaimedRow, deps: Pick<LoopRunDeps, "stores" |
 			startedAt: row.run.started_at, finishedAt: stamp(now), ok: false, error: INTERRUPTED,
 			findings: 0, droppedFindings: 0, stateUpdated: false, interrupted: true,
 			...(row.payload?.woken?.length ? { cause: "wake" as const, woken: row.payload.woken } : {}),
+			...(row.payload?.woken_ids?.length ? { woken_ids: row.payload.woken_ids } : {}),
 			...(own ? {} : { stop: stoppedTogether(row.run, claims, records as RunRecordM4b[]) }),
 		};
 	});
@@ -297,6 +301,7 @@ export function closeSteps(input: CloseInput): ClosePlan {
 	const close: RunClose = {
 		...(end.how === "succeeded" || end.how === "failed" ? { ordinal: history.ordinal } : {}),
 		...(end.how === "succeeded" || end.how === "failed" || end.how === "stopped" ? { fired: row.run.started_at } : {}),
+		...(row.payload?.woken_ids?.length ? { followups: row.payload.woken_ids } : {}),
 	};
 	const steps: CloseStep[] = [{ write: "run-end", record }];
 	if (job && Object.keys(close).length) steps.push({ write: "clock", job: job.id, close });

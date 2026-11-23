@@ -77,8 +77,13 @@ export interface ClockIo {
 	readonly locked: <T>(lockPath: string, fn: () => T, opts?: LockOptions) => T;
 	readonly write: (file: string, data: string) => void;
 }
-export interface RunClose { readonly ordinal?: number; readonly fired?: string }
+export interface RunClose {
+	readonly ordinal?: number; readonly fired?: string;
+	/** The follow-ups the run's row carried (`woken_ids`): one still in the clock goes, as the tick's own take would have taken it. */
+	readonly followups?: readonly string[];
+}
 export interface Clock {
+	read(): ClockFile;
 	advance(move: CursorMove, holds?: () => boolean): Advance;
 	closeRun(job: string, close: RunClose): void;
 	reset(job: string, slot?: string): void;
@@ -211,6 +216,12 @@ export function validGate(value: unknown): GateClock | undefined {
 	return value as GateClock;
 }
 
+/** The follow-up goes, and a quiet whose time is not after `at` goes with it. */
+function dropFollowup(entry: JobClock, at: number): void {
+	delete entry.followup;
+	if (entry.quietUntil !== undefined && Date.parse(entry.quietUntil) <= at) { delete entry.quietUntil; delete entry.quietWhy; }
+}
+
 /** The clock file and its lock. Scheduling and lease decisions stay outside this store. */
 export class ClockStore implements Clock, GateClocks {
 	readonly paths: ClockPaths;
@@ -261,7 +272,9 @@ export class ClockStore implements Clock, GateClocks {
 		this.io.locked(this.paths.lock, () => {
 			const file = this.read();
 			const current = file.jobs[job] ?? { runs: 0 };
-			const next = { ...current, ...(close.ordinal === undefined ? {} : { runs: Math.max(current.runs, close.ordinal) }), ...(close.fired === undefined || (current.fired && Date.parse(current.fired) >= Date.parse(close.fired)) ? {} : { fired: close.fired }) };
+			const next: JobClock = { ...current, ...(close.ordinal === undefined ? {} : { runs: Math.max(current.runs, close.ordinal) }), ...(close.fired === undefined || (current.fired && Date.parse(current.fired) >= Date.parse(close.fired)) ? {} : { fired: close.fired }) };
+			// A tick that joined the follow-up to this row and died before it took it: the run took its place.
+			if (current.followup && close.followups?.includes(current.followup.id)) dropFollowup(next, Date.parse(current.followup.at));
 			if (JSON.stringify(next) !== JSON.stringify(current)) this.io.write(this.paths.file, JSON.stringify({ ...file, jobs: { ...file.jobs, [job]: next } }));
 		});
 	}
@@ -335,8 +348,7 @@ export class ClockStore implements Clock, GateClocks {
 			const current = file.jobs[job];
 			if (current?.followup?.id !== id) return "lost";
 			const next: JobClock = { ...current };
-			delete next.followup;
-			if (next.quietUntil !== undefined && Date.parse(next.quietUntil) <= now) { delete next.quietUntil; delete next.quietWhy; }
+			dropFollowup(next, now);
 			this.io.write(this.paths.file, JSON.stringify({ ...file, jobs: { ...file.jobs, [job]: next } }));
 			return "moved";
 		});
@@ -436,8 +448,9 @@ function decideFollowup(job: LoopJob, input: TickInput, slot: TickDecision): Fol
 	const data = view.read.get(job.id);
 	if (!lane || !data) return undefined;
 	const at = { do: "followup" as const, job: job.id, lane, followup };
-	// Its row is queued, or ran and left: the tick before wrote it and died before it took the follow-up (T2).
-	if (data.rows.some((row) => row.id === followup.id)) return { ...at, write: "none", why: "own-row" };
+	// Its row, or the row it joined, is queued or running, or its own row ran and left: the tick before
+	// wrote it and died before it took the follow-up (T2). A joined row's closing takes it (`closeRun`).
+	if (data.rows.some((row) => row.id === followup.id || row.payload?.woken_ids?.includes(followup.id))) return { ...at, write: "none", why: "own-row" };
 	if (data.history?.spent.has(followup.id)) return { ...at, write: "none", why: "spent" };
 	// The slot's collapse key: one run then has both reasons. A run that started already read its prompt.
 	if (slot.do === "row") return { ...at, write: "onto", onto: slot.row.id };
@@ -446,7 +459,7 @@ function decideFollowup(job: LoopJob, input: TickInput, slot: TickDecision): Fol
 	const history = data.history;
 	const wait = failurePause(history?.streak ?? 0);
 	const base = plainJobRow(job, followup.id, `cron:${job.id}`, "", view.self, view.now);
-	const row: UnclaimedRow = { ...base, lane, source: `wake:${job.id}`, mode: "unattended", payload: { ...base.payload!, woken: [followup.note] }, ...(wait && history?.failed ? { not_before: stamp(Date.parse(history.failed.at) + wait) } : {}) };
+	const row: UnclaimedRow = { ...base, lane, source: `wake:${job.id}`, mode: "unattended", payload: { ...base.payload!, woken: [followup.note], woken_ids: [followup.id] }, ...(wait && history?.failed ? { not_before: stamp(Date.parse(history.failed.at) + wait) } : {}) };
 	return { ...at, write: "row", row };
 }
 
@@ -503,13 +516,13 @@ function decideSlot(job: LoopJob, input: TickInput): TickDecision {
 	return { ...spend, do: "row", row, ...(refused ? { replaces: refused.id } : {}), ...(missed && view.catchUp && job.catchUp ? { missed } : {}) };
 }
 
-export interface TickStores { readonly requests: Pick<RequestStore, "appendIfAbsent" | "remove" | "addWoken"> & { collapse(lane: LaneId, id: string, slot: string, overlap?: boolean): "counted" | "counted-before" | "missing" }; readonly clock: Clock; heldEpoch(sessionId: string): number | undefined }
+export interface TickStores { readonly requests: Pick<RequestStore, "appendIfAbsent" | "remove" | "addFollowup"> & { collapse(lane: LaneId, id: string, slot: string, overlap?: boolean): "counted" | "counted-before" | "missing" }; readonly clock: Clock; heldEpoch(sessionId: string): number | undefined }
 export type T2 = "wrote" | "there" | "counted" | "counted-before" | "missing" | "nothing";
 const written: unique symbol = Symbol("written");
 export interface SlotWritten { readonly decision: SpendDecision; readonly t2: T2; readonly [written]: true }
 export type TickOutcome =
 	| { readonly job: string; readonly slot: string; readonly t2: T2; readonly t3: Advance | "not-written" }
-	| { readonly job: string; readonly followup: string; readonly t2: "wrote" | "there" | "added" | "missing" | "nothing"; readonly t3: "moved" | "lost" | "not-written" }
+	| { readonly job: string; readonly followup: string; readonly t2: FollowupT2; readonly t3: "moved" | "lost" | "not-written" }
 	| { readonly job: string; readonly decided: "disable" | "retire" | "pass" }
 	| { readonly job: string; readonly failed: string };
 /** Apply T2 under the request store's lane lock. */
@@ -532,16 +545,25 @@ export function commitSlot(slot: SlotWritten, stores: Pick<TickStores, "clock" |
 	const t3 = stores.clock.advance(cursorMove(decision), holds);
 	return { job: decision.job, slot: decision.slot, t2, t3 };
 }
+export type FollowupT2 = "wrote" | "there" | "added" | "gone" | "missing" | "nothing";
 /**
- * A follow-up's two writes: its row (or its note on the loop's queued row) under the lane's lock, then
- * the follow-up taken out of `clock.json`. A crash between leaves the follow-up, and the next tick
- * finds its row by its id, or its run in the log, and only takes it (the T2 case).
+ * A follow-up's two writes: its row (or its note and id on the loop's queued row) under the lane's
+ * lock, then the follow-up taken out of `clock.json`. A crash between leaves the follow-up, and the
+ * next tick finds its id on a row, or its own row's run in the log, and only takes it (the T2 case).
  */
-export function applyFollowup(decision: FollowupDecision, stores: Pick<TickStores, "requests" | "clock">, now: number): TickOutcome {
-	const t2 = decision.write === "row" ? (stores.requests.appendIfAbsent(decision.row) ? "wrote" : "there") : decision.write === "onto" ? stores.requests.addWoken(decision.lane, decision.onto, decision.followup.note) : "nothing";
-	// The row it was to join left before T2: the follow-up stays, and the next tick decides it again.
-	if (t2 === "missing") return { job: decision.job, followup: decision.followup.id, t2, t3: "not-written" };
+export function writeFollowup(decision: FollowupDecision, stores: Pick<TickStores, "requests" | "clock">): FollowupT2 {
+	if (decision.write === "none") return "nothing";
+	const { job, followup } = decision;
+	// Checked under the lane's lock: a tick that read before another tick or a closing took the follow-up writes nothing.
+	return stores.requests.addFollowup(decision.lane, followup, decision.write === "row" ? { row: decision.row } : { onto: decision.onto }, () => stores.clock.read().jobs[job]?.followup?.id === followup.id);
+}
+export function commitFollowup(decision: FollowupDecision, t2: FollowupT2, stores: Pick<TickStores, "clock">, now: number): TickOutcome {
+	// The row it was to join left before T2: the follow-up stays, and the next tick decides it again. A follow-up that is gone has nothing to take.
+	if (t2 === "missing" || t2 === "gone") return { job: decision.job, followup: decision.followup.id, t2, t3: "not-written" };
 	return { job: decision.job, followup: decision.followup.id, t2, t3: stores.clock.takeFollowup(decision.job, decision.followup.id, now) };
+}
+export function applyFollowup(decision: FollowupDecision, stores: Pick<TickStores, "requests" | "clock">, now: number): TickOutcome {
+	return commitFollowup(decision, writeFollowup(decision, stores), stores, now);
 }
 /** Apply each job's T2 and T3 in order. A failed job does not stop the others. */
 export function applyTick(decisions: readonly TickDecision[], stores: TickStores, now = Date.now()): TickOutcome[] {
@@ -564,7 +586,7 @@ export interface TickScope {
 export interface TickSources {
 	book(): Book;
 	history(): ReadonlyMap<string, JobHistory>;
-	readonly requests: Pick<RequestStore, "list" | "appendIfAbsent" | "remove" | "collapse" | "addWoken">;
+	readonly requests: Pick<RequestStore, "list" | "appendIfAbsent" | "remove" | "collapse" | "addFollowup">;
 	readonly clock: Clock;
 	proof(lane: LaneId): import("./engine.ts").Proof;
 	cwdExists(cwd: string): boolean;

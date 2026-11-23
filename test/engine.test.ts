@@ -2617,3 +2617,11 @@ test("bury leaves an ans- row for the answer protocol and drops a no- row as sta
 	assert.deepEqual(inbox.listNew(), [], "neither is a dead letter");
 	assert.equal(audit.listAudit(1, (r) => r.type === "request" && r.traceId === NO)[0]?.state, "stale");
 });
+
+test("[wake-me] a follow-up's row is its loop's row: it leaves as job-removed when the loop is removed, and it waits while the loop is disabled", () => {
+	const woke = row("fu-1", { lane: "@cron-j", wake: "turn", source: "wake:cron-j", mode: "unattended", payload: { text: "look at #12", cwd: "/" } });
+	const held = view({ kind: "held", mine: () => false });
+	assert.deepEqual(decideDrain("loop", [woke], none, { ...jobs, exists: (id: string) => id !== "cron-j" }, held, T0), [{ do: "exit", row: woke, exit: "job-removed" }]);
+	assert.deepEqual(decideDrain("loop", [woke], none, { ...jobs, enabled: (id: string) => id !== "cron-j" }, held, T0).map((a) => (a.do === "wait" ? a.why : a.do)), ["its job is disabled"]);
+	assert.deepEqual(decideDrain("loop", [woke], none, jobs, held, T0).map((a) => a.do), ["turn"], "an enabled loop's follow-up runs");
+});

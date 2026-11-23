@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { proofOf, landed, plainRunId } from "../src/engine.ts";
-import { ClockStore, applyFollowup, decideTick, writeSlot, commitSlot, type ClockFile, type Mine } from "../src/clock.ts";
+import { ClockStore, applyFollowup, applyTick, decideTick, writeFollowup, writeSlot, commitSlot, type ClockFile, type Mine, type TickInput } from "../src/clock.ts";
+import { closeLoopRun, type RunRecordM4b } from "../src/loop-run.ts";
+import { openStores } from "../src/stores.ts";
 import { withFileLockSync, writeFileAtomic } from "../src/lock.ts";
-import { RequestStore, type Row } from "../src/requests.ts";
+import { RequestStore, type ClaimedRow, type Row } from "../src/requests.ts";
 import { stamp } from "../src/schedule.ts";
 import { runEnd } from "../src/settle.ts";
 import type { LoopJob, RunRecord } from "../src/store.ts";
@@ -144,4 +146,61 @@ test("[scene-followup-T2] A tick writes a follow-up's row and dies before it tak
 		assert.deepEqual(requests.list(woke.lane).map((row) => row.id), ran ? [] : [woke.row.id], "one row, never two");
 		assert.equal(clock.read().jobs[job.id].followup, undefined);
 	}
+});
+
+test("[wake-collapse] A follow-up joins a queued slot row and the tick dies before it takes the follow-up: a tick while that row runs, or after it ran and left, writes no row, and the follow-up runs once.", async () => {
+	for (const when of ["running", "left"] as const) {
+		const stores = openStores(tmp("pi-loops-clock-scene-"));
+		writeFileAtomic(stores.jobs.jobsFile, JSON.stringify({ version: 3, jobs: [job] }));
+		stores.clock.seed({ [job.id]: { slot: stamp(base), fired: stamp(base), runs: 1 } });
+		stores.clock.setFollowup(job.id, { at: stamp(base + 30_000), note: "check CI on #12", set_by: "run-a" }, false, base - 600_000);
+		const view = (at: number, lane: string): TickInput["view"] => ({ now: at, startedAt: base, tickMs: 30_000, catchUp: true, budgetOver: false, kind: "background", self, mine: new Map<string, Mine>([[job.id, { kind: "loop" }]]), read: new Map([[job.id, { rows: stores.requests.list(lane), cwdMissing: false, history: stores.history().get(job.id) }]]) });
+		const lane = `@${job.id}`;
+		const [slot, woke] = decideTick({ jobs: [job], clock: stores.clock.read(), view: view(base + 60_000, lane) });
+		assert.ok(slot.do === "row" && woke?.do === "followup" && woke.write === "onto" && woke.onto === slot.row.id, "the follow-up joins the slot's row");
+		if (slot.do !== "row" || woke?.do !== "followup" || woke.write !== "onto") return;
+		assert.equal(commitSlot(writeSlot(slot, { requests: stores.requests }), { clock: stores.clock, heldEpoch: () => 1 }).t3, "moved");
+		// T2 of the follow-up, then the process dies: the follow-up is still in clock.json.
+		assert.equal(writeFollowup(woke, stores), "added");
+		assert.equal(stores.clock.read().jobs[job.id].followup?.id, woke.followup.id);
+		const started = base + 65_000;
+		assert.equal(stores.requests.claim(lane, slot.row.id, { id: slot.row.id, pid: self.pid, started_at: stamp(started) } as never), true);
+		if (when === "left") {
+			const claimed = stores.requests.list(lane)[0] as ClaimedRow;
+			const ended: RunRecordM4b = { ...record(slot.row.id, started), row: slot.row.id, cause: "wake", woken: claimed.payload?.woken, ordinal: 2 };
+			await closeLoopRun(claimed, {
+				stores,
+				engine: () => ({ jobs: { exists: () => true, enabled: () => true, goalActive: () => false }, inbox: stores.inbox, audit: stores.rules, ledger: stores.jobs, counts: () => ({ streak: 0, interrupted: 0 }), self: () => self }),
+				sinks: { started: () => undefined, finished: () => undefined, log: () => undefined },
+				holder: () => ({ pid: self.pid, procStart: undefined }),
+			}, started + 1_000, ended);
+			assert.deepEqual(stores.requests.list(lane), [], "the run left");
+		}
+		const at = base + 90_000;
+		applyTick(decideTick({ jobs: [job], clock: stores.clock.read(), view: view(at, lane) }), { requests: stores.requests, clock: stores.clock, heldEpoch: () => 1 }, at);
+		assert.deepEqual(stores.requests.list(lane).map((row) => row.id), when === "running" ? [slot.row.id] : [], `${when}: no second row for the follow-up`);
+		assert.equal(stores.clock.read().jobs[job.id].followup, undefined, `${when}: the follow-up is taken`);
+	}
+});
+
+test("[wake-collapse] Two tickers decide one follow-up from different reads: the first T2 puts it in a row and the second writes nothing; a T2 after that row's run took the follow-up writes nothing.", () => {
+	const { requests, clock } = fixture();
+	const lane = `@${job.id}`;
+	clock.seed({ [job.id]: { slot: stamp(base), fired: stamp(base), runs: 1 } });
+	clock.setFollowup(job.id, { at: stamp(base + 10_000), note: "check CI on #12", set_by: "run-a" }, false, base);
+	const tickAt = (at: number) => decideTick({ jobs: [job], clock: clock.read(), view: { now: at, startedAt: base, tickMs: 30_000, catchUp: true, budgetOver: false, kind: "background", self, mine: new Map<string, Mine>([[job.id, { kind: "loop" }]]), read: new Map([[job.id, { rows: requests.list(lane), cwdMissing: false, history: undefined }]]) } });
+	const [, stale] = tickAt(base + 30_000);
+	const [slot, fresh] = tickAt(base + 60_000);
+	assert.ok(stale?.do === "followup" && stale.write === "row" && slot.do === "row" && fresh?.do === "followup" && fresh.write === "onto", "the slow ticker writes the follow-up's own row, the other joins it to the slot's row");
+	if (stale?.do !== "followup" || slot.do !== "row" || fresh?.do !== "followup") return;
+	assert.equal(commitSlot(writeSlot(slot, { requests }), { clock, heldEpoch: () => 1 }).t3, "moved");
+	assert.equal(writeFollowup(fresh, { requests, clock }), "added");
+	assert.equal(writeFollowup(stale, { requests, clock }), "there");
+	assert.deepEqual(requests.list(lane).map((row) => [row.id, row.payload?.woken_ids]), [[slot.row.id, [fresh.followup.id]]], "one row carries the follow-up");
+	// The slot's row runs and its closing takes the follow-up; the slow ticker's T2 comes after.
+	requests.remove(lane, [slot.row.id]);
+	clock.closeRun(job.id, { fired: stamp(base + 61_000), followups: [fresh.followup.id] });
+	assert.equal(clock.read().jobs[job.id].followup, undefined);
+	assert.equal(writeFollowup(stale, { requests, clock }), "gone");
+	assert.deepEqual(requests.list(lane), []);
 });

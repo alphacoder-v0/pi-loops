@@ -494,3 +494,28 @@ test("[wake-me] wake_me is offered in a loop's run whatever the job's --tools sa
 		fake.kill();
 	}
 });
+
+test("[wake-collapse] a run whose row carries a follow-up records its id, and its closing takes that follow-up from the clock; a follow-up the run set for itself stays", async () => {
+	for (const setsItsOwn of [false, true]) {
+		const f = setup();
+		const job = await f.stores.jobs.add(makeJob());
+		const followup = { at: stamp(now - 60_000), note: "check CI on #12", set_by: "run-earlier" };
+		f.stores.clock.setFollowup(job.id, followup, false, now - 600_000);
+		const joined = f.stores.clock.read().jobs[job.id].followup!;
+		const id = "run-00000000000000000000000000000009";
+		const row: UnclaimedRow = {
+			v: 3, id, lane: `@${job.id}`, kind: "input", source: `cron:${job.id}`, mode: "unattended", wake: "turn",
+			payload: { text: `[Trigger ${id}] check changes`, cwd: process.cwd(), woken: [joined.note], woken_ids: [joined.id] }, collapse_key: `cron:${job.id}`, created_at: stamp(now), created_by: f.createdBy, attempts: 0,
+		};
+		f.stores.requests.append(row);
+		const claimed = f.runs.claim(f.stores.requests, row, { pid: process.pid, procStart: "self" }, { jobId: job.id, label: "check", promptPreview: "check", ctrl: new AbortController() }, now)!;
+		f.deps.runner = async () => {
+			if (setsItsOwn) f.stores.clock.setFollowup(job.id, { at: stamp(now + 3_600_000), note: "look again", set_by: id }, false, now);
+			return { ok: true, exitCode: 0, timedOut: false, text: "<loop-state>n</loop-state>", usage: { input: 1, output: 1, cost: 0, turns: 1 } };
+		};
+		await runLoop(claimed, job as LoopJob, f.deps);
+		assert.deepEqual(f.finished[0].woken_ids, [joined.id]);
+		assert.deepEqual(f.stores.requests.list(row.lane), [], "the row is closed");
+		assert.equal(f.stores.clock.read().jobs[job.id].followup?.note, setsItsOwn ? "look again" : undefined);
+	}
+});

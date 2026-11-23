@@ -621,7 +621,7 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 		if (current) {
 			// Main's rule: the grace counts from the first look that found the checkout missing (a mount
 			// that comes up after pi-loops is the common case), not from when the row was queued.
-			const row = stores.requests.list(lane.id).find((item) => item.kind === "input" && !item.run && item.source.startsWith("cron:"));
+			const row = stores.requests.list(lane.id).find((item) => item.kind === "input" && !item.run && (item.source.startsWith("cron:") || item.source.startsWith("wake:")));
 			if (row && current.enabled && !deps.cwdExists(current.cwd)) {
 				const marked = missingSince(current.id);
 				const since = Date.parse(marked ?? "") || now;
@@ -672,7 +672,7 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 				const jobId = lane.id.slice("@".length);
 				if (!stores.book().jobs.some((job) => job.id === jobId && job.stateful)) {
 					// A removed job's rows still need the drain that takes them out as `job-removed`; any other row in such a lane is not this executor's.
-					const removed = stores.requests.list(lane.id).some((row) => row.source.startsWith("cron:") || row.source.startsWith("cron-run:"));
+					const removed = stores.requests.list(lane.id).some((row) => row.source.startsWith("cron:") || row.source.startsWith("cron-run:") || row.source.startsWith("wake:"));
 					if (!removed) continue;
 				}
 				try { await drainLane(lane, now); }

@@ -84,6 +84,8 @@ interface RowBase {
 		finding?: string;
 		/** Why this run starts: the notes of the loop's follow-ups, one per follow-up, merged on collapse. */
 		woken?: string[];
+		/** The ids of those follow-ups: the proof a tick reads that a follow-up is in this row, and the ones its run's closing takes. */
+		woken_ids?: string[];
 	};
 	/** stop, cancel. Never "whatever runs next". */
 	target?: { id: string } | { current: true; started_before: string };
@@ -187,8 +189,7 @@ function readLine(line: string): { row: Row; version: 2 | 3 } | undefined {
 	if (typeof row.created_at !== "string" || (row.handed_at !== undefined && typeof row.handed_at !== "string")) return undefined;
 	const requires = row.payload?.requires;
 	if (requires !== undefined && (!Array.isArray(requires) || !requires.every((s) => typeof s === "string"))) return undefined;
-	const woken = row.payload?.woken as unknown;
-	if (woken !== undefined && (!Array.isArray(woken) || !woken.every((s) => typeof s === "string"))) return undefined;
+	for (const list of [row.payload?.woken, row.payload?.woken_ids] as unknown[]) if (list !== undefined && (!Array.isArray(list) || !list.every((s) => typeof s === "string"))) return undefined;
 	const target = row.target as unknown;
 	if (target !== undefined && !(target && typeof target === "object" && (typeof (target as { id?: unknown }).id === "string" || ((target as { current?: unknown }).current === true && typeof (target as { started_before?: unknown }).started_before === "string")))) return undefined;
 	// A claim of the wrong shape is not a free row: the line is kept, unread, as a newer one is. Only
@@ -378,22 +379,33 @@ export class RequestStore {
 	}
 
 	/**
-	 * Add a follow-up's note to queued row `id`'s `woken`, under the lane lock: `added`, `there` when
-	 * the note is in the list already (a tick that crashed before it removed the follow-up), or
-	 * `missing` when no unclaimed input row `id` is queued.
+	 * A follow-up's T2, under the lane lock: its own `row`, or its note and id on queued row `onto`.
+	 * `there` when a row of the lane carries its id already (a tick that crashed before it took the
+	 * follow-up, or another tick that wrote first), `gone` when `pending` says the follow-up left the
+	 * clock (taken by a tick or by the closing of the row that carried it, or replaced), `missing` when
+	 * no unclaimed input row `onto` is queued.
 	 */
-	addWoken(lane: LaneId, id: string, note: string, lock?: LockOptions): "added" | "there" | "missing" {
-		let result: "added" | "there" | "missing" = "missing";
-		this.rewrite(lane, (lines) => lines.map(({ raw, row, version }) => {
-			if (!row || row.id !== id || row.run || row.kind !== "input" || !row.payload) return { raw, row };
-			const woken = row.payload.woken ?? [];
-			if (woken.includes(note)) {
+	addFollowup(lane: LaneId, followup: { readonly id: string; readonly note: string }, write: { readonly row: UnclaimedRow } | { readonly onto: string }, pending: () => boolean, lock?: LockOptions): "wrote" | "added" | "there" | "gone" | "missing" {
+		let result: "wrote" | "added" | "there" | "gone" | "missing" = "missing";
+		this.rewrite(lane, (lines) => {
+			if (lines.some(({ row }) => row?.id === followup.id || row?.payload?.woken_ids?.includes(followup.id))) {
 				result = "there";
-				return { raw, row };
+				return lines;
 			}
-			result = "added";
-			return { raw: rowLine({ ...row, payload: { ...row.payload, woken: [...woken, note] } }, version), row };
-		}), lock);
+			if (!pending()) {
+				result = "gone";
+				return lines;
+			}
+			if ("row" in write) {
+				result = "wrote";
+				return [...lines, { raw: rowLine(write.row) }];
+			}
+			return lines.map(({ raw, row, version }) => {
+				if (!row || row.id !== write.onto || row.run || row.kind !== "input" || !row.payload) return { raw, row };
+				result = "added";
+				return { raw: rowLine({ ...row, payload: { ...row.payload, woken: [...row.payload.woken ?? [], followup.note], woken_ids: [...row.payload.woken_ids ?? [], followup.id] } }, version), row };
+			});
+		}, lock);
 		return result;
 	}
 
