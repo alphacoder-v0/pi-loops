@@ -86,10 +86,14 @@ is read on every run, and a package on it is not updated at any level and not re
 
 ## Notes for the next run
 
-`watermark=<ISO with offset>` · `advisories: <id> <id> …` · `majors-reported: <package>@<major> …`
-· `attempted: <package> ×<n> …` · `open-pr=<url or none>` · `worktree=<path or none>`. Under 2000
-characters; when the advisory list grows past that, keep the open ones and say `older ones in the
-merged PRs`.
+`watermark=<ISO with offset>` · `advisories: <id> <id> …` · `attempted: <package> ×<n> …`
+· `open-pr=<url or none>` · `worktree=<path or none>`. Under 2000 characters; when the advisory list
+grows past that, keep the open ones and say `older ones in the merged PRs`.
+
+The majors you reported are not in these notes. The `[reported]` block lists what you reported in the
+last 14 days; a major can wait longer than that, so keep the list in a file `majors.md` in your notes
+directory (the prompt says where), one `<package>@<major>` a line, and read it before you report a
+major.
 
 ## Never
 

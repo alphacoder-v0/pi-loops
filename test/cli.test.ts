@@ -288,6 +288,24 @@ test("[thread] pi-loops inbox --json shows re, the root of a reply's thread, aft
 	assert.equal("re" in findings.find((f: any) => f.id === question.id), false);
 });
 
+test("[reported] a finding filed 20 days ago and claimed from the command line today is under [reported]: the claim writes its time", async () => {
+	const root = tmp("pi-loops-inbox-cli-reported-");
+	const loops = path.join(root, "loops");
+	const inbox = new Inbox(loops);
+	const old = await inbox.append({ source: "cron:watch", text: "a TODO went stale", run_id: "run-1", job_id: "cron-1", cwd: root });
+	const file = path.join(loops, "inbox.jsonl");
+	const filed = stamp(Date.now() - 20 * 86_400_000);
+	fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace(old.created_at, filed));
+	assert.equal(inbox.list()[0].created_at, filed);
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: "off" }, async () => {
+		assert.equal(await runCli(["inbox", "claim", old.id], () => undefined), 0);
+	});
+	const lines = reportedFor(inbox.list(), "cron-1", Date.now());
+	assert.equal(lines.length, 1, "listed, so the loop does not file it again");
+	assert.match(lines[0], /claimed: a TODO went stale$/);
+	assert.equal(lines[0].slice(2, 7), stamp().slice(5, 10), "dated by the claim, not the filing");
+});
+
 test("pi-loops inbox claim is a claim alone and runs nothing; on a question it says so; cancel takes back a yes that waits and refuses one too late", async () => {
 	const root = tmp("pi-loops-inbox-cli-");
 	const project = path.join(root, "project");

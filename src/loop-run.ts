@@ -24,7 +24,12 @@ export interface LoopSinks {
 	log(message: string, level?: "info" | "warning", job?: Pick<LoopJob, "cwd">): void;
 }
 
-export type RunRecordM4b = RunRecord & { row?: string; stop?: ProcessStop };
+export type RunRecordM4b = RunRecord & {
+	row?: string;
+	stop?: ProcessStop;
+	/** Findings the run reported that the repeat rule did not file again: a `new` finding of the loop has the same text. Absent when there were none. */
+	repeats?: number;
+};
 export type { ProcessStop } from "./store.ts";
 
 export interface LoopRunDeps {
@@ -128,6 +133,7 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 			reviewed = outcome.reviewed;
 		}
 		const findings: string[] = [];
+		let repeats = 0;
 		if (stillThere && result.ok) {
 			for (const finding of reviewed) {
 				try {
@@ -139,6 +145,7 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 						transcript: result.sessionFile, transcript_id: result.sessionId, lane: row.lane,
 					}, { unlessRepeat: true });
 					if (filed) findings.push(finding.text);
+					else repeats++;
 				} catch (error) { deps.sinks.log(`loop ${job.id}: inbox append failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }
 			}
 		}
@@ -152,6 +159,7 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 			exitCode: result.exitCode,
 			error: result.ok ? undefined : byPerson ? STOPPED_BY_PERSON : redact(result.errorMessage ?? "unknown error"),
 			findings: findings.length, droppedFindings: parsed.droppedFindings, stateUpdated,
+			...(repeats ? { repeats } : {}),
 			...(notesCut ? { notesCut } : {}),
 			model: result.model ?? model, usage: result.usage, warning: result.warning,
 			retries: result.retries, compactions: result.compactions,

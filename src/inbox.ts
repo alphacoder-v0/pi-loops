@@ -57,6 +57,8 @@ export interface InboxEntry {
 	/** The session that created the loop that filed this finding. */
 	session_id?: string;
 	claimed_by?: string;
+	/** When a person claimed it from the command line (YC), which writes no answer: what decides how long `[reported]` shows it to the loop. */
+	claimed_at?: string;
 	/** Checker's reason when it kept a finding, if it gave one. */
 	verified_reason?: string;
 	/** When it was dismissed: what decides how long `[reported]` shows it to the loop. */
@@ -477,6 +479,7 @@ function readFinding(raw: any): InboxEntry | undefined {
 		job_id: str("job_id", "jobId"),
 		session_id: str("session_id", "sessionId"),
 		claimed_by: str("claimed_by", "claimedBy"),
+		...(typeof raw.claimed_at === "string" ? { claimed_at: raw.claimed_at } : {}),
 		verified_reason: str("verified_reason", "verifiedReason"),
 		dismissed_at: str("dismissed_at"),
 		transcript: str("transcript"),

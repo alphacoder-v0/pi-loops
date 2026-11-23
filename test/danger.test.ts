@@ -759,9 +759,11 @@ test("[own-notes-dir] a loop's run may read, write, edit and list inside its own
 	assert.equal(pathToolReason({ toolName: "write", input: { path: "prs.md", content: "x" } }, notes, loops, undefined, job), undefined, "a relative path from a cwd inside it");
 });
 
-test("[own-notes-dir] the exception is not folded for case: on a platform that folds, cron-AAAA gets no way into state/cron-aaaa", () => {
+test("[own-notes-dir] the exception is not folded for case: on a platform that folds, cron-AAAA gets no way into state/cron-aaaa", (t) => {
 	const { loops, proj } = pathWorld();
 	fs.mkdirSync(path.join(loops, "state", "cron-AAAA"), { recursive: true });
+	// The defect needs two directories that differ by case alone. A volume that ignores case (APFS by default) has one.
+	if (fs.existsSync(path.join(loops, "state", "cron-aaaa"))) return void t.skip("the temporary directory's volume ignores letter case: state/cron-AAAA and state/cron-aaaa are one directory there");
 	fs.mkdirSync(path.join(loops, "state", "cron-aaaa"), { recursive: true });
 	const into = (p: string) => pathToolReason({ toolName: "write", input: { path: p, content: "x" } }, proj, loops, "darwin", "cron-AAAA");
 	assert.equal(into(path.join(loops, "state", "cron-aaaa", "x.md")), OWN_FILES, "another loop's notes, by case");

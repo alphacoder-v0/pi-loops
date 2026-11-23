@@ -40,9 +40,11 @@ spelling.
    pushed since), `answered` (the author pushed or replied after a review and no reviewer has
    returned in a day). Take the first that applies, in that order.
 
-3. Compare with your notes. A finding is due only when a pull request's state **changed** since
-   the last run, or when it is `awaiting-review` / `changes-requested` / `answered` and has been so
-   for a whole number of days more than when you last reported it (day 2, day 3 …, never hourly).
+3. Compare with your notes and with the `[reported]` block of your prompt, which lists what you
+   reported in the last 14 days and what a person did with it. A finding is due only when a pull
+   request's state **changed** since the last run, or when it is `awaiting-review` /
+   `changes-requested` / `answered` and has been so for a whole number of days more than its newest
+   line in `[reported]` says (day 2, day 3 …, never hourly).
    A new pull request is a change from nothing. A closed or merged one is a change too: one line
    saying so, then forget it.
 
@@ -60,9 +62,9 @@ spelling.
 
 ## Notes for the next run
 
-One line per open pull request: `#<n> <state> since=<ISO with offset> reported-day=<k>
-nudged=<yes|no>`. Drop merged and closed ones after reporting them. Under 2000 characters; with
-more than forty open pull requests keep the ones that are not `green`.
+One line per open pull request: `#<n> <state> since=<ISO with offset> nudged=<yes|no>`. Do not
+keep what you reported: `[reported]` lists it. Drop merged and closed ones after reporting them.
+Under 2000 characters; with more than forty open pull requests keep the ones that are not `green`.
 
 ## Never
 

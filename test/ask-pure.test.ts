@@ -133,9 +133,9 @@ test("[Y2] a yes with no lane: claimed, not_run and its news in one write", () =
 	assert.equal(write.beside?.entry.lane, LOOP);
 });
 
-test("[YC] a yes from the command line: claimed by the cli, no answer and no news", () => {
+test("[YC] a yes from the command line: claimed by the cli at its time, no answer and no news", () => {
 	const write = holdsRow("YC", { to: "none" });
-	assert.deepEqual(write.set, { status: "claimed", answered_by: "cli" });
+	assert.deepEqual(write.set, { status: "claimed", answered_by: "cli", claimed_at: LATER });
 	assert.equal(write.beside, undefined);
 });
 

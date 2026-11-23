@@ -369,13 +369,17 @@ test("[failed-run-keeps-index] a failed or timed-out run does not change the ind
 	}
 });
 
-test("[repeat-rule] a loop run's finding with the words of a new finding of the same loop is not filed again, and the record counts what was filed", async () => {
+test("[repeat-rule] a loop run's finding with the words of a new finding of the same loop is not filed again, and the record counts what was filed and what repeated", async () => {
 	const f = setup();
 	const job = await f.stores.jobs.add(makeJob({ name: "watch" })) as LoopJob;
 	const first = await oneRun(f, job, "run-00000000000000000000000000000001", "<inbox>PR #12 has failing CI</inbox><inbox>PR #12 has failing CI</inbox><inbox>main is behind</inbox><loop-state>s</loop-state>");
-	assert.equal(first.record.findings, 2);
+	assert.deepEqual([first.record.findings, first.record.repeats], [2, 1]);
 	const second = await oneRun(f, job, "run-00000000000000000000000000000002", "<inbox>PR #12 has failing CI</inbox><inbox>PR #13 is new</inbox><loop-state>s</loop-state>");
-	assert.equal(second.record.findings, 1, "only the new words are filed");
+	assert.deepEqual([second.record.findings, second.record.repeats], [1, 1], "only the new words are filed; the repeat is counted apart");
+	const third = await oneRun(f, job, "run-00000000000000000000000000000003", "<inbox>PR #13 is new</inbox><loop-state>s</loop-state>");
+	assert.deepEqual([third.record.findings, third.record.repeats], [0, 1], "a run whose findings all repeat filed none, and says it found them");
+	const quiet = await oneRun(f, job, "run-00000000000000000000000000000004", "<loop-state>s</loop-state>");
+	assert.equal("repeats" in quiet.record, false, "a run with no repeat writes no count");
 	assert.deepEqual(f.stores.inbox.list().map((e) => e.text), ["PR #12 has failing CI", "main is behind", "PR #13 is new"]);
 });
 

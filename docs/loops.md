@@ -208,8 +208,9 @@ A block with nothing to list is left out. Then:
 - up to 16 `<inbox>` tags (each ≤500 characters) are appended to the inbox; extras are counted as dropped
   — the count is exact up to the first 1000 tags, past which a reply is a runaway rather than a report;
 - a finding whose text is the same as a `new` finding of the same loop is not filed again, and is
-  not counted in the run's findings. When you claim or dismiss that finding, the same words are filed
-  again the next time the loop reports them;
+  not counted in the run's findings: the run log counts it as a repeat. The run that goes on after
+  your yes to the loop's question files its findings by the same rule. When you claim or dismiss that
+  finding, the same words are filed again the next time the loop reports them;
 - missing or malformed tags never fail a run: the state stays untouched, nothing enters the inbox;
 - a run that is still going when the next tick arrives is skipped and counted (`skipped overlaps`).
 
@@ -242,7 +243,8 @@ reaches the directory is a question, as before (see "When something looks wrong"
 The `[reported]` block lists what the loop already told a person and what that person did: its `new`
 findings (the newest 12) and its findings that a person claimed or dismissed in the last 14 days (the
 newest 12), newest first. Each line has the date, the status, the reason of a dismiss, and the text
-cut at 200 characters. pi-loops builds the block from the inbox, so the loop does not keep ids of
+cut at 200 characters. The date of a claimed or dismissed finding is the day of the claim or the
+dismiss, from the page, a terminal or `pi-loops inbox`. pi-loops builds the block from the inbox, so the loop does not keep ids of
 what it reported in its notes. Its questions about a call are in the `[asked]` block instead.
 
 `/cron gc --purge` and `/cron remove --purge` remove the notes directory with the notes.
@@ -688,7 +690,8 @@ findings are all dismissed is noise at any price; one whose findings are all cla
 keep. `/cron cost` shows the same counts beside each job's spend, for its own window, so
 `$0.410  28 run(s)  pr-watch  —  6 findings · 6 dismissed` is a line that answers itself.
 
-`[quiet ×12]` means the twelve newest runs found nothing, whatever the window. It is not a fault —
+`[quiet ×12]` means the twelve newest runs found nothing, whatever the window. A run that reported
+only findings that are open already is not quiet: it found them again. It is not a fault —
 a watch on a quiet thing is supposed to be quiet — and pi-loops does not slow the job down for it:
 the schedule is the schedule. It is the number to read before deciding that a fifteen-minute
 watch could be hourly (`/cron set <ref> --schedule "0 * * * *"`), or that the loop is looking at

@@ -50,6 +50,13 @@ test("a run its process took down is not part of the quiet streak: it looked at 
 	assert.equal(loopSignal("j", [run(5, 0), down(3), run(2, 0), down(1)], [], now - 30 * DAY).quiet, 2);
 });
 
+test("a run whose findings were all repeats of an open finding filed none, and is not quiet: it ends the streak", () => {
+	const repeated = (daysAgo: number) => ({ ...run(daysAgo, 0), repeats: 1 });
+	const twelve = Array.from({ length: 12 }, (_, i) => repeated(12 - i));
+	assert.equal(loopSignal("j", twelve, [], now - 30 * DAY).quiet, 0, "twelve runs that each found the open finding again");
+	assert.equal(loopSignal("j", [run(5, 0), repeated(3), run(2, 0), run(1, 0)], [], now - 30 * DAY).quiet, 2);
+});
+
 test("a loop with no findings yet has no summary; one with only findings says just that", () => {
 	assert.equal(signalSummary(loopSignal("j", [run(1, 0)], [], 0)), undefined);
 	assert.equal(signalSummary(loopSignal("j", [run(1, 1)], [entry(1, "new")], 0)), "1 finding");

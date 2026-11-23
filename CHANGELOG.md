@@ -102,7 +102,11 @@ All notable changes to pi-loops are documented here. The format follows
   `[dismissed]`, which showed a dismiss reason to one run only, and the prompt no longer asks the
   loop to keep "ids already seen" in its notes.
 - **A loop's finding is not filed twice.** A finding whose text is the same as a `new` finding of
-  the same loop is not filed again and is not counted in the run's findings.
+  the same loop is not filed again and is not counted in the run's findings. The run that goes on
+  after a yes to the loop's question files by the same rule. The run log counts such a finding as a
+  repeat (`repeats`), and a run with a repeat does not count toward `quiet ×N`.
+- **A claim from `pi-loops inbox claim` records its time.** `[reported]` dates the finding by the
+  claim, so a finding filed more than 14 days ago and claimed today is in the block.
 
 - **A watch the agent sets up in your own turn waits for your yes.** `cron_create` and
   `new_trigger` in your own turn in a pi with a UI, and `new_trigger` in a scheduled turn, now write a proposal: the

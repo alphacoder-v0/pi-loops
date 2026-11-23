@@ -21,8 +21,9 @@ GitHub spelling; if the file describes local Markdown files, read them the way i
 
 ## What to look at
 
-Take each in turn; note what you find, one line each. Your notes from the last run say what you
-already reported, so a thing you reported yesterday and that has not changed is not news today.
+Take each in turn; note what you find, one line each. The `[reported]` block of your prompt lists
+what you reported in the last 14 days and what a person did with it, so a thing you reported
+yesterday and that has not changed is not news today.
 
 1. **The tracker.** Items opened or updated since your notes' watermark; items in a state that
    waits on a person (`needs-triage`, `ready-for-human`, `agent-blocked`, `in-review`) and how long
@@ -55,9 +56,9 @@ looked at.
 
 ## Notes for the next run
 
-`watermark=<ISO timestamp with offset of this run>` · `reported: <one short line per thing you
-reported today, with its identifier>` · `quiet-days: <count of consecutive quiet days>`. Under
-2000 characters; drop yesterday's `reported` lines once they are two days old.
+`watermark=<ISO timestamp with offset of this run>` · `quiet-days: <count of consecutive quiet
+days>`. Under 2000 characters. Do not list what you reported: `[reported]` lists it, and a finding
+with the words of one that is still open is not filed again.
 
 ## Never
 

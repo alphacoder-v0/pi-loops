@@ -69,11 +69,13 @@ export function notesWrite(text: string, cap = LOOP_STATE_MAX_CHARS): NotesWrite
 	return { index: kept.length ? `${keptText}\n${last}` : last, overflow: text, cut: { from, to } };
 }
 
-/** When a decided finding was decided: the dismiss, or the answer to a claim; its filing when neither says. */
+/** When a decided finding was decided: the dismiss, the answer to a claim, or a claim from the command line. */
 function decidedAt(f: InboxEntry): string {
 	if (f.status === "dismissed" && f.dismissed_at) return f.dismissed_at;
 	const answer = f.answer;
 	if (answer && "at" in answer && typeof answer.at === "string") return answer.at;
+	if (f.status === "claimed" && f.claimed_at) return f.claimed_at;
+	// An older version wrote no time for a claim from the command line. Its filing is the nearest time such a finding has.
 	return f.created_at;
 }
 

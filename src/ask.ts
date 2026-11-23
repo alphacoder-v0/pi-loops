@@ -384,7 +384,7 @@ export interface AnswerWrite {
 	readonly step: AnswerStepId;
 	readonly id: string;
 	/** `answer` is always an arm of `Answer`: no step writes an `UnreadableAnswer`. `lane` only at Y1, on a finding that has none. */
-	readonly set: Partial<Pick<Finding, "status" | "claimed_by" | "answered_by" | "dismissed_at" | "dismiss_reason" | "lane">> & { readonly answer?: Answer };
+	readonly set: Partial<Pick<Finding, "status" | "claimed_by" | "claimed_at" | "answered_by" | "dismissed_at" | "dismiss_reason" | "lane">> & { readonly answer?: Answer };
 	/** Only V1 and K2: the fields taken off, after `set`. */
 	readonly unset?: typeof REOPENED;
 	/** Filed in the same rewrite, unless a finding has its id already. */
@@ -441,7 +441,7 @@ export function answerStep<K extends AnswerStepId>(step: K, finding: Finding | u
 		case "Y2":
 			return write({ status: "claimed", claimed_by: s.input.claimed_by, answered_by: s.input.by, answer: { state: "not_run", why: s.input.why, at: ctx.at } }, "not-run", notRunNews(finding, s.input.why));
 		case "YC":
-			return write({ status: "claimed", answered_by: "cli" });
+			return write({ status: "claimed", answered_by: "cli", claimed_at: ctx.at });
 		case "N1": {
 			const reason = s.input.reason?.replace(/\s+/g, " ").trim();
 			return write({ status: "dismissed", answered_by: s.input.by, dismissed_at: ctx.at, dismiss_reason: reason ? capChars(reason, INBOX_TEXT_MAX_CHARS) : undefined });
