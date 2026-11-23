@@ -30,7 +30,7 @@ type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
 /** A decision a ticker read and has not finished writing: a slot's T2 and T3, or a follow-up's. */
 export type Pending = { decision: SpendDecision; written?: SlotWritten; t2?: undefined } | { decision: FollowupDecision; written?: undefined; t2?: FollowupT2 };
 export interface Ticker { readonly pid: number; readonly kind: "background" | "window"; alive: boolean; startedAt: number; pending: Pending[] }
-export interface SlotLedger { ids: Set<string>; appends: number; spent: number; commits: number; fires: number; collapses: number; exit?: "delivered" | "stopped" | "dead" | "cancelled" }
+export interface SlotLedger { ids: Set<string>; appends: number; spent: number; commits: number; fires: number; collapses: number; exit?: "delivered" | "stopped" | "parked" | "dead" | "cancelled" }
 /** A follow-up a run set (`wake_me`), keyed by its id: the rows a tick put it in. Its runs are read from the records. */
 export interface FollowupLedger { readonly job: string; readonly rows: Set<string>; replaced?: true }
 export interface ClockWorld { now: number; readonly jobs: readonly LoopJob[]; readonly tickers: Ticker[]; lease: { holder?: number; epoch: number }; readonly records: RunRecord[]; readonly entries: unknown[]; readonly ledger: Map<string, SlotLedger>; readonly followups: Map<string, FollowupLedger> }
@@ -286,6 +286,9 @@ export async function play(dir: string, random: Random, steps: number, subject: 
 		if (dies === undefined) {
 			try { await closeLoopRun(row, closeDeps, world.now, record); }
 			catch (error) { if (!(error instanceof ClockNewer)) throw error; }
+			// The exit the real closing wrote, as the cut path below marks it: a loop's row parked at its third interrupted attempt is one.
+			const last = plan[plan.length - 1];
+			if (last.write === "row" && !requests.list(row.lane).some((item) => item.id === row.id)) { if (last.fate.do === "leave") markExit(row.id, last.fate.exit); else if (last.fate.do === "dead") markExit(row.id, "dead"); }
 			out.seen.add(`end ${how}`);
 			out.steps.push(`closing ${row.id} as ${how}`);
 			return;

@@ -79,6 +79,8 @@ export interface ClockIo {
 }
 export interface RunClose {
 	readonly ordinal?: number; readonly fired?: string;
+	/** The last slot that collapsed onto the run's row (`collapsed_slot`): the cursor moves to it when it stands before it. */
+	readonly slot?: string;
 	/** The follow-ups the run's row carried (`woken_ids`): one still in the clock goes, as the tick's own take would have taken it. */
 	readonly followups?: readonly string[];
 }
@@ -273,6 +275,9 @@ export class ClockStore implements Clock, GateClocks {
 			const file = this.read();
 			const current = file.jobs[job] ?? { runs: 0 };
 			const next: JobClock = { ...current, ...(close.ordinal === undefined ? {} : { runs: Math.max(current.runs, close.ordinal) }), ...(close.fired === undefined || (current.fired && Date.parse(current.fired) >= Date.parse(close.fired)) ? {} : { fired: close.fired }) };
+			// A tick that collapsed a slot onto this row and did not move the cursor (it died, or its T3 lost to
+			// this closing's `fired`): once the row leaves, nothing else holds that the slot was decided.
+			if (close.slot !== undefined && (current.slot === undefined || Date.parse(close.slot) > Date.parse(current.slot))) next.slot = close.slot;
 			// A tick that joined the follow-up to this row and died before it took it: the run took its place.
 			if (current.followup && close.followups?.includes(current.followup.id)) dropFollowup(next, Date.parse(current.followup.at));
 			if (JSON.stringify(next) !== JSON.stringify(current)) this.io.write(this.paths.file, JSON.stringify({ ...file, jobs: { ...file.jobs, [job]: next } }));

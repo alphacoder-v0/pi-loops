@@ -278,7 +278,7 @@ export function ensureRecord(row: ClaimedRow, deps: Pick<LoopRunDeps, "stores" |
 	return existing ?? (deps.stores.jobs.listRuns().find((record) => record.runId === row.run.id && Date.parse(record.startedAt) >= Date.parse(row.run.started_at)) as RunRecordM4b);
 }
 
-export interface RunClose { readonly ordinal?: number; readonly fired?: string }
+export interface RunClose { readonly ordinal?: number; readonly fired?: string; readonly slot?: string }
 export type Fate =
 	| { readonly do: "leave"; readonly exit: "delivered" | "stopped" | "parked" }
 	| { readonly do: "owed" }
@@ -302,6 +302,7 @@ export function closeSteps(input: CloseInput): ClosePlan {
 		...(end.how === "succeeded" || end.how === "failed" ? { ordinal: history.ordinal } : {}),
 		...(end.how === "succeeded" || end.how === "failed" || end.how === "stopped" ? { fired: row.run.started_at } : {}),
 		...(row.payload?.woken_ids?.length ? { followups: row.payload.woken_ids } : {}),
+		...(row.collapsed_slot === undefined ? {} : { slot: row.collapsed_slot }),
 	};
 	const steps: CloseStep[] = [{ write: "run-end", record }];
 	if (job && Object.keys(close).length) steps.push({ write: "clock", job: job.id, close });
@@ -337,9 +338,13 @@ export async function closeLoopRun(row: ClaimedRow, deps: Pick<LoopRunDeps, "sto
 	// A run whose record could not be written still counts, as main counts it in its own field.
 	try { history = (recorded ? deps.stores.history() : runHistory([...deps.stores.jobs.allRuns(), record])).get(jobId) ?? history; }
 	catch (error) { fail("run history read", error); }
+	// The row as the lane holds it now: a slot that collapsed onto it while it ran is on this copy only.
+	let current = row;
+	try { current = (deps.stores.requests.list(row.lane).find((item) => item.id === row.id && item.run?.started_at === row.run.started_at) as ClaimedRow | undefined) ?? row; }
+	catch (error) { fail("row read", error); }
 	let outcome: ClosedM4b["outcome"] = "waiting";
 	let closedJob = job;
-	for (const step of closeSteps({ row, job, record, history, self: deps.engine().self(), now })) {
+	for (const step of closeSteps({ row: current, job, record, history, self: deps.engine().self(), now })) {
 		if (step.write === "row") {
 			outcome = await applyFate(deps.stores.requests, deps.engine(), row, step.fate, now);
 			continue;

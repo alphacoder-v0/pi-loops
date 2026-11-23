@@ -183,6 +183,65 @@ test("[wake-collapse] A follow-up joins a queued slot row and the tick dies befo
 	}
 });
 
+function sceneDeps(stores: ReturnType<typeof openStores>) {
+	return {
+		stores,
+		engine: () => ({ jobs: { exists: () => true, enabled: () => true, goalActive: () => false }, inbox: stores.inbox, audit: stores.rules, ledger: stores.jobs, counts: () => ({ streak: 0, interrupted: 0 }), self: () => self }),
+		sinks: { started: () => undefined, finished: () => undefined, log: () => undefined },
+		holder: () => ({ pid: self.pid, procStart: undefined }),
+	};
+}
+
+test("[collapse-once] A slot collapses onto a going run, and that run closes and leaves before the tick's T3 (T3 lost, or the tick dies): the slot is not counted again on the follow-up's row.", async () => {
+	for (const t3 of ["lost", "never"] as const) {
+		const stores = openStores(tmp("pi-loops-clock-scene-"));
+		writeFileAtomic(stores.jobs.jobsFile, JSON.stringify({ version: 3, jobs: [job] }));
+		const lane = `@${job.id}`;
+		const tick = (at: number) => decideTick({ jobs: [job], clock: stores.clock.read(), view: { now: at, startedAt: base, tickMs: 30_000, catchUp: true, budgetOver: false, kind: "background", self, mine: new Map<string, Mine>([[job.id, { kind: "loop" }]]), read: new Map([[job.id, { rows: stores.requests.list(lane), cwdMissing: false, history: stores.history().get(job.id) }]]) } });
+		const [first] = tick(base);
+		assert.ok(first.do === "row", "the first slot writes its row");
+		if (first.do !== "row") return;
+		assert.equal(commitSlot(writeSlot(first, stores), { clock: stores.clock, heldEpoch: () => 1 }).t3, "moved");
+		const started = base + 5_000;
+		assert.equal(stores.requests.claim(lane, first.row.id, { id: first.row.id, pid: self.pid, started_at: stamp(started) } as never), true);
+		// The run closes on the row as it claimed it, as runLoop does: a collapse while it goes is not on this copy.
+		const claimed = stores.requests.list(lane)[0] as ClaimedRow;
+		stores.clock.setFollowup(job.id, { at: stamp(base + 60_000), note: "look again", set_by: first.row.id }, false, started);
+		const [slot, woke] = tick(base + 70_000);
+		assert.ok(slot.do === "collapse" && slot.overlap && woke?.do === "followup" && woke.write === "row", "the next slot collapses onto the going run; the follow-up gets its own row");
+		if (slot.do !== "collapse" || woke?.do !== "followup") return;
+		const collapsed = writeSlot(slot, stores);
+		assert.equal(collapsed.t2, "counted");
+		await closeLoopRun(claimed, sceneDeps(stores), started + 70_000, { ...record(first.row.id, started), row: first.row.id, ordinal: 1 });
+		assert.deepEqual(stores.requests.list(lane), [], "the run left");
+		if (t3 === "lost") commitSlot(collapsed, { clock: stores.clock, heldEpoch: () => 1 });
+		assert.equal(applyFollowup(woke, stores, base + 75_000).t2, "wrote");
+		const counted = applyTick(tick(base + 80_000), { requests: stores.requests, clock: stores.clock, heldEpoch: () => 1 }, base + 80_000).filter((outcome) => "slot" in outcome && outcome.slot === slot.slot && outcome.t2 === "counted");
+		assert.deepEqual(counted, [], `${t3}: slot ${slot.slot} is counted once`);
+	}
+});
+
+test("[dead-slot-exit] A committed slot's run is interrupted three times: the closing parks the job and removes its row, an exit that holds the slot.", async () => {
+	const stores = openStores(tmp("pi-loops-clock-scene-"));
+	writeFileAtomic(stores.jobs.jobsFile, JSON.stringify({ version: 3, jobs: [job] }));
+	const lane = `@${job.id}`;
+	const decision = decide(base);
+	assert.ok(decision.do === "row");
+	if (decision.do !== "row") return;
+	assert.equal(commitSlot(writeSlot(decision, stores), { clock: stores.clock, heldEpoch: () => 1 }).t3, "moved");
+	const outcomes: string[] = [];
+	for (let attempt = 0; attempt < 3; attempt++) {
+		const started = base + (attempt + 1) * 10_000;
+		assert.equal(stores.requests.claim(lane, decision.row.id, { id: decision.row.id, pid: self.pid, started_at: stamp(started) } as never), true, `claim ${attempt + 1}`);
+		const claimed = stores.requests.list(lane)[0] as ClaimedRow;
+		const ended: RunRecordM4b = { ...record(decision.row.id, started), row: decision.row.id, ok: false, interrupted: true };
+		outcomes.push((await closeLoopRun(claimed, sceneDeps(stores), started + 1_000, ended)).outcome);
+	}
+	assert.deepEqual(outcomes, ["failed", "failed", "removed"]);
+	assert.deepEqual(stores.requests.list(lane), [], "the row left, parked");
+	assert.equal(stores.jobs.load().find((item) => item.id === job.id)?.disabled?.code, "interrupted");
+});
+
 test("[wake-collapse] Two tickers decide one follow-up from different reads: the first T2 puts it in a row and the second writes nothing; a T2 after that row's run took the follow-up writes nothing.", () => {
 	const { requests, clock } = fixture();
 	const lane = `@${job.id}`;
