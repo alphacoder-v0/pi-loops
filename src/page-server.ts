@@ -1126,6 +1126,17 @@ async function startConversation(pool: ChildPool, cwd: string, piArgs: string[])
 	return { error: `pi did not say which conversation it is in ${key === undefined ? "before it exited" : "within 15 s"}${words ? `: ${words}` : ""}` };
 }
 
+/**
+ * A loop's or a rule's row for the page, cleaned at the sink: every string in it, at any depth, has
+ * each line through `plainLine`, so no field beside a gate (a name, a prompt, an error, a wake note)
+ * carries a control, bidi or invisible character, including a field added later. Line breaks stay.
+ */
+function cleanRow<T>(row: T): T {
+	const clean = (v: unknown): unknown =>
+		typeof v === "string" ? v.split("\n").map(plainLine).join("\n") : Array.isArray(v) ? v.map(clean) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, clean(x)])) : v;
+	return clean(row) as T;
+}
+
 export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const LOOPS_DIR = opts.dir;
 	const TOKEN = opts.token;
@@ -1243,7 +1254,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			}
 			return jobClaim(j.id, rows)?.run;
 		};
-		const jobs = allJobs.filter(inThisProject).map((j: any) => ({
+		const jobs = allJobs.filter(inThisProject).map((j: any) => cleanRow({
 			id: j.id,
 			name: j.name,
 			label: loopLabel({ id: String(j.id), name: typeof j.name === "string" ? j.name : undefined }),
@@ -1295,7 +1306,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const allRules = readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? [];
 		const rules = allRules
 			.filter(inThisProject)
-			.map((r: any) => ({ id: r.id, condition: maskSecrets(r.condition), action: maskSecrets(r.action), enabled: !!r.enabled, proposed: !!r.proposed, fireOnce: !!r.fireOnce, firedAt: r.firedAt, ...ruleWait(r) }));
+			.map((r: any) => cleanRow({ id: r.id, condition: maskSecrets(r.condition), action: maskSecrets(r.action), enabled: !!r.enabled, proposed: !!r.proposed, fireOnce: !!r.fireOnce, firedAt: r.firedAt, ...ruleWait(r) } as Record<string, unknown>));
 		// Two counts, not one. They used to be added together, and `/cron` counts jobs only — so the
 		// panel's number disagreed with the command's whenever a rule lived somewhere else, and the line
 		// that exists to say "your job is not gone, it is elsewhere" pointed at `/cron all`, where a

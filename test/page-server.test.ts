@@ -2543,18 +2543,24 @@ test("GET /inbox draws a question's card from its ask: the command whole in its 
 	}
 });
 
-test("[clean-at-sink] the page's wake and quiet notes carry no control, bidi or invisible character", { timeout: 20_000 }, async () => {
+test("[clean-at-sink] the page's loop and rule rows carry no control, bidi or invisible character in any string, line breaks kept", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-wake-clean-");
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
 	try {
 		fs.mkdirSync(page.loops, { recursive: true });
-		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [loopJob(dir)] }));
+		const nasty = "\u001b[8m\u202e\u200b\u009b";
+		const job = { ...loopJob(dir), name: `n${nasty}`, prompt: `line one${nasty}\nline two` };
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [job] }));
+		fs.writeFileSync(path.join(page.loops, "triggers.json"), JSON.stringify({ version: 1, rules: [{ id: "dyn-" + "a".repeat(32), condition: `c${nasty}`, action: `a${nasty}`, cwd: dir, enabled: true, fireOnce: true, createdAt: stamp(Date.now()) }] }));
 		convertStores(page.loops);
 		const at = stamp(Date.now() + 3_600_000);
-		clockStore(page.loops).setFollowup("cron-aaaaaaaa", { at, note: "look\u001b[8m\u202eagain\u200b", set_by: "run-a" }, true, Date.now());
+		clockStore(page.loops).setFollowup("cron-aaaaaaaa", { at, note: `look${nasty}again`, set_by: "run-a" }, true, Date.now());
 		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
-		const row = (await page.get("c/s1/state")).body.automation.jobs.find((j: any) => j.id === "cron-aaaaaaaa");
-		for (const text of [row.wake.note, row.quiet.why]) assert.equal(/[\p{Cc}\p{Cf}]/u.test(text), false, JSON.stringify(text));
+		const auto = (await page.get("c/s1/state")).body.automation;
+		const row = auto.jobs.find((j: any) => j.id === "cron-aaaaaaaa");
+		const strings = (v: unknown): string[] => (typeof v === "string" ? [v] : Array.isArray(v) ? v.flatMap(strings) : v && typeof v === "object" ? Object.values(v).flatMap(strings) : []);
+		for (const text of [...strings(row), ...strings(auto.rules)]) assert.equal(/[\p{Cc}\p{Cf}]/u.test(text.replace(/\n/g, "")), false, JSON.stringify(text));
+		assert.match(row.prompt, /line one.*\nline two/, "a prompt keeps its line breaks");
 		assert.match(row.wake.note, /look.*again/);
 	} finally {
 		await page.stop();
