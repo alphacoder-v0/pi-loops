@@ -31,7 +31,7 @@ import { loopSignal, signalSummary } from "./job-signal.ts";
 import { LoopsLog, pruneLogs } from "./log.ts";
 import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
 import { McpPool } from "./mcp-pool.ts";
-import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
+import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { capRedacted, plainLine, previewRedacted, redact, screenText } from "./redact.ts";
 import { CANCELLED_LINE, answerLine, answerWho, cancelRefusal, cardLines, cardOrigin, clearLeftTail, dismissOutcome, dismissTail, inboxCard, noQuestionLine, questionActions, threadOrder, threadedLines, threads, yesTerminalLine } from "./inbox-card.ts";
 import { type Answers, conversationFile, createAnswers } from "./answers.ts";
@@ -74,9 +74,11 @@ import { askHost, noticesToShow, renderHostSnapshot, ringHost, type HostSnapshot
 import { HOST_LOG, crashPaused, crashPauseText, decideEviction, ensureHost, evictHost, heartbeatFresh, hostPushWork, hostServiceAlive, LEAVE_WAIT_MS, RESTART_WAIT_LINE, piPackageDir, readHostService, readSpawnLog, type HostServiceRecord } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
-import { promotionToInbox, checkSessionDir } from "./check-run.ts";
+import { type PromoteTarget, promotionToInbox, checkSessionDir } from "./check-run.ts";
+import { EventLog, type RawEvent } from "./events.ts";
+import { deliveryOf, injectPush, pushTrigger, rawPush } from "./push.ts";
 import { scheduleAudit } from "./job-tune.ts";
-import { auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTrigger, resolveRuleRef } from "./triggers.ts";
+import { type Trigger, auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTrigger, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ConfirmTurn, type ToolHost, automationTools, checkJobName, confirmControlPlane, controlTarget, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
 import { claimPageChild } from "./page-children.ts";
 import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
@@ -308,6 +310,49 @@ export default function piLoops(pi: ExtensionAPI) {
 	/* ---------------------------------------------------------- triggers */
 
 	let config = loadConfig(dir);
+	/**
+	 * A rule's result is a request addressed to a conversation (src/engine.ts promotionTarget): the
+	 * creating one while a window holds it, else one a window holds in the rule's project, this one
+	 * included, else the closed creating one; delivered here when this window holds the target, by the
+	 * holding window or the background process otherwise. A rule with no cwd of its own is this project's.
+	 */
+	const windowPromote = async (content: string, trigger: Trigger, forSession?: string): Promise<PromoteTarget> => {
+		const here = binding.here();
+		const route = promotionTarget(forSession, promotionView(binding.store, trigger.cwd ?? session.cwd));
+		if (route.to === "inbox") {
+			// The check decided this result's finding already (src/check-run.ts); a push with no rule did not.
+			await promotionToInbox(stores.inbox, stores.rules, content, trigger, { cwd: trigger.cwd ?? session.cwd, sessionId: route.sessionId });
+			refreshBadge();
+			return "inbox";
+		}
+		const target = route.sessionId;
+		requests.append(ruleResultRow(target, content, { ...trigger, cwd: trigger.cwd ?? session.cwd }, createdBy()));
+		if (target !== here.sessionId || !here.holds) {
+			// Another window's conversation drains on its own watcher; a closed one is the background
+			// process's, which hears this instead of waiting for its tick. Never awaited: the row is
+			// on disk, and a lost ring costs one tick.
+			void ringHost(dir, `request:${target}`).catch(() => undefined);
+			return "queued";
+		}
+		const result = await drainRequests();
+		return result?.removed.includes(trigger.traceId) ? "chat" : "queued";
+	};
+	/** A push that injects and runs: a row like a plain job's, so pi gets it while idle; another project's goes to the inbox. */
+	const windowInjectAndRun = async (prompt: string, trigger: Trigger): Promise<PromoteTarget> => {
+		if (trigger.cwd && !sameProject(trigger.cwd, session.cwd)) {
+			await stores.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: prompt.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd, lane: checkLane(trigger.cwd) });
+			refreshBadge();
+			return "inbox";
+		}
+		const { written, result } = await handOver(pushRunRow(prompt, trigger, rowAddress()));
+		return handOverTarget(written, result, trigger.traceId);
+	};
+	/** The pushes this window received, stored before it acts on any (design 3.4). */
+	const windowEvents = new EventLog(dir, "window");
+	const triggerLog = (msg: string): void => {
+		log.info(`triggers: ${msg}`);
+		if (lastCtx?.hasUI) lastCtx.ui.notify(`[triggers] ${msg}`, /failed|disabled|not run/.test(msg) ? "warning" : "info");
+	};
 	const triggers: TriggerRuntime = new TriggerRuntime({
 		store: stores.rules,
 		jobStore: stores.jobs,
@@ -323,42 +368,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		inbox: stores.inbox,
 		hop,
 		hooks: {
-			onPromote: async (content, trigger, forSession) => {
-				// A rule's result is a request addressed to a conversation (src/engine.ts promotionTarget):
-				// the creating one while a window holds it, else one a window holds in the rule's project,
-				// this one included, else the closed creating one; delivered here when this window holds the
-				// target, by the holding window or the background process otherwise. A rule with no cwd of its
-				// own is this project's.
-				const here = binding.here();
-				const route = promotionTarget(forSession, promotionView(binding.store, trigger.cwd ?? session.cwd));
-				if (route.to === "inbox") {
-					// The check decided this result's finding already (TriggerRuntime's inbox); a push with no rule did not.
-					await promotionToInbox(stores.inbox, triggers.store, content, trigger, { cwd: trigger.cwd ?? session.cwd, sessionId: route.sessionId });
-					refreshBadge();
-					return "inbox";
-				}
-				const target = route.sessionId;
-				requests.append(ruleResultRow(target, content, { ...trigger, cwd: trigger.cwd ?? session.cwd }, createdBy()));
-				if (target !== here.sessionId || !here.holds) {
-					// Another window's conversation drains on its own watcher; a closed one is the background
-					// process's, which hears this instead of waiting for its tick. Never awaited: the row is
-					// on disk, and a lost ring costs one tick.
-					void ringHost(dir, `request:${target}`).catch(() => undefined);
-					return "queued";
-				}
-				const result = await drainRequests();
-				return result?.removed.includes(trigger.traceId) ? "chat" : "queued";
-			},
-			onInjectAndRun: async (prompt, trigger) => {
-				if (trigger.cwd && !sameProject(trigger.cwd, session.cwd)) {
-					await stores.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: prompt.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd, lane: checkLane(trigger.cwd) });
-					refreshBadge();
-					return "inbox";
-				}
-				// The turn is a row like a plain job's: pi gets it while idle, Esc has nothing of ours to drop.
-				const { written, result } = await handOver(pushRunRow(prompt, trigger, rowAddress()));
-				return handOverTarget(written, result, trigger.traceId);
-			},
+			onPromote: windowPromote,
+			onInjectAndRun: windowInjectAndRun,
 			onStarted: () => refreshBadge(),
 			onFinished: (outcome) => {
 				refreshBadge();
@@ -366,10 +377,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			},
 			// Trigger diagnostics carry failures, dedup and deferral decisions: the log always, and a
 			// notification for the ones a user would otherwise never learn about.
-			log: (msg) => {
-				log.info(`triggers: ${msg}`);
-				if (lastCtx?.hasUI) lastCtx.ui.notify(`[triggers] ${msg}`, /failed|disabled|not run/.test(msg) ? "warning" : "info");
-			},
+			log: triggerLog,
 		},
 	});
 	// Trigger audit is kept as session custom entries (trigger / trigger_result / trigger_promotion),
@@ -480,17 +488,9 @@ export default function piLoops(pi: ExtensionAPI) {
 			const source = new McpSource(cfg, {
 				onConnected: (src) => registerMcpTools(src),
 				onNotification: (n) => {
-					// A window handles only the inject_* pushes for the conversation it holds; the
-					// machine-wide dedup window (dedup.json) makes a push that several processes see count
-					// once. Rule pushes are the host's (below).
-					const trigger = mapNotification(cfg.name, n);
-					if (!trigger) {
-						source.status.droppedCount++;
-						source.status.lastError = droppedNotificationMessage(n.method);
-						return;
-					}
-					trigger.cwd = session.cwd;
-					const delivery = cfg.injectAndRun ? "inject_and_run" : cfg.injectSummary ? "inject_summary" : "sub_agent";
+					// A window handles only the inject_* pushes for the conversation it holds, each deduped
+					// against the pushes this window received. Rule pushes are the background's (below).
+					const delivery = deliveryOf(cfg);
 					// Rules are evaluated by the host alone, on its own connection to the server. It connects a
 					// project's own servers only once pi has saved trust for that directory: before that, this
 					// push reaches no rule, and the source says so rather than dropping it without a word.
@@ -508,10 +508,28 @@ export default function piLoops(pi: ExtensionAPI) {
 						source.status.lastError = "this window shows an older copy of its conversation; /resume it to take pushes again";
 						return;
 					}
-					void triggers
-						.handle(trigger, delivery)
+					// Stored first (design 3.4), then mapped: a push with no dedup key stays in the log only.
+					let event: RawEvent;
+					try {
+						event = windowEvents.append(`mcp:${cfg.name}`, rawPush(n));
+					} catch (err: any) {
+						triggerLog(`push from ${cfg.name} not acted on: it could not be stored first (${err?.message ?? err})`);
+						return;
+					}
+					const stored = pushTrigger(event);
+					if (!stored) {
+						source.status.droppedCount++;
+						source.status.lastError = droppedNotificationMessage(n.method);
+						return;
+					}
+					const trigger: Trigger = { ...stored, cwd: session.cwd };
+					injectPush({ events: windowEvents, audit: stores.rules, budget: () => budgetState(stores.jobs, config.dailyBudgetUsd, Date.now()), promote: windowPromote, injectAndRun: windowInjectAndRun, log: triggerLog, now: Date.now }, event, trigger, delivery)
 						.then((out) => {
 							if (!out) source.status.dedupedCount++;
+							else {
+								refreshBadge();
+								if (lastCtx?.hasUI) showTriggerCard(lastCtx, out);
+							}
 						})
 						.catch((err) => {
 							try {

@@ -5,7 +5,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { JobStore } from "../src/store.ts";
-import { MAX_PENDING_PUSHES, TriggerRuntime } from "../src/trigger-runtime.ts";
+import { TriggerRuntime } from "../src/trigger-runtime.ts";
+import { deliverInjectSummary } from "../src/push.ts";
 import { triggerSessionKey } from "../src/check-run.ts";
 import { checkLane, parseLane } from "../src/lane.ts";
 import { type Trigger, TriggerStore, buildPeriodicCheckTrigger, extractDynamicRuleIds } from "../src/triggers.ts";
@@ -109,7 +110,7 @@ test("a rule can be checked now, without waiting for its poll slot", async () =>
 	}
 });
 
-test("quiet check, dedup, inject_summary and inject_and_run deliveries", async () => {
+test("quiet check and dedup", async () => {
 	const { dir, rt, promoted, injected, finished } = setup();
 	await rt.store.add({ condition: "c", action: "d", cwd: dir });
 	process.env.FAKE_PI_REPLY = "no dynamic trigger rule matched";
@@ -121,14 +122,7 @@ test("quiet check, dedup, inject_summary and inject_and_run deliveries", async (
 		assert.equal(rt.lastPoll?.outcome, "no match");
 		assert.equal(await rt.handle({ ...t, traceId: "other" }, "sub_agent"), undefined, "same idempotency key inside the window is deduped");
 		assert.equal(rt.dedupedCount, 1);
-		const mcp = { ...t, traceId: "m1", idempotencyKey: "mcp:x:tools", sourceLabel: "mcp:x", eventLabel: "notifications/tools/listChanged", payloadSummary: "tool list changed", cwd: undefined };
-		await rt.handle(mcp, "inject_summary");
-		assert.equal(promoted.length, 1);
-		assert.equal(promoted[0], "[Trigger m1] tool list changed", "inject_summary injects the bare payload summary");
-		await rt.handle({ ...mcp, traceId: "m2", idempotencyKey: "mcp:x:custom:k" }, "inject_and_run");
-		assert.equal(injected.length, 1);
-		assert.equal(injected[0], "[Trigger m2] tool list changed");
-		assert.equal(finished.length, 3);
+		assert.equal(finished.length, 1);
 	} finally {
 		delete process.env.FAKE_PI_REPLY;
 		await rt.stop();
@@ -159,10 +153,6 @@ test("promotion routed to the inbox is audited as redirected; checks carry the r
 		assert.equal(fake.calls[0].hop, 1);
 		assert.equal(fake.calls[0].parentSessionId, "s", "sub-agents know the session that runs them (plain cron jobs they create bind to it)");
 		assert.equal(fake.calls[0].kind, "trigger");
-		const mcp = { ...buildPeriodicCheckTrigger(dir, 1), traceId: "m9", idempotencyKey: "mcp:y:tools", sourceLabel: "mcp:y", eventLabel: "e", payloadSummary: "s", cwd: "/elsewhere" };
-		const o2 = await rt.handle(mcp, "inject_and_run");
-		assert.equal(o2?.promoted, false);
-		assert.equal((rt.store.listAudit(1)[0].details as any).to, "inbox");
 	} finally {
 		delete process.env.FAKE_PI_REPLY;
 		await rt.stop();
@@ -199,7 +189,8 @@ test("persistence failures never reject handle()/tick(): audit is best-effort, d
 	const store = new TriggerStore(dir);
 	const rt = new TriggerRuntime({ store, jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(), pollIntervalSecs: 1, hooks: { onPromote: (c) => { promoted.push(c); return "chat"; }, log: (m) => void logs.push(m) } });
 	const t = { ...buildPeriodicCheckTrigger(dir, 1), traceId: "m1", idempotencyKey: "mcp:x:tools", sourceLabel: "mcp:x", eventLabel: "e", payloadSummary: "s", cwd: undefined };
-	const out = await rt.handle(t, "inject_summary");
+	// An injecting push is delivered outside the runtime (src/push.ts); the runtime still reports the store's failure.
+	const out = await deliverInjectSummary({ audit: store, budget: () => ({ spent: 0, cap: 0, over: false }), promote: (c) => { promoted.push(c); return "chat"; }, now: Date.now }, t);
 	assert.equal(out?.ok, true, "delivery happens even when the audit file cannot be written");
 	assert.equal(promoted.length, 1);
 	assert.match(store.lastPersistenceError ?? "", /EISDIR/);
@@ -272,32 +263,6 @@ test("a project a pi-loops 0.22 window has just checked is skipped, and so are t
 		assert.deepEqual(finished[0]?.matchedRules.map((r: any) => r.id), [mine.id], "the old window's session rules are left to it");
 	} finally {
 		await host.stop();
-	}
-});
-
-test("injected pushes reach every window that has the server; rule-evaluated pushes are evaluated once machine-wide", async () => {
-	const dir = tmp("pi-loops-trt-");
-	const promoted: string[] = [];
-	const finished: any[] = [];
-	const mk = (name: string) =>
-		new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: name, cwd: dir }), runner: fakeRunner(), dedupFile: path.join(dir, "dedup.json"), hooks: { onPromote: (c) => { promoted.push(`${name}:${c}`); return "chat"; }, onFinished: (o) => void (o.delivery === "sub_agent" && finished.push(name)) } });
-	const w1 = mk("w1"), w2 = mk("w2");
-	process.env.FAKE_PI_REPLY = "no dynamic trigger rule matched";
-	try {
-		await w1.store.add({ condition: "c", action: "a", cwd: dir });
-		const push = { ...buildPeriodicCheckTrigger(dir, 1), source: { kind: "mcp" as const, serverName: "hub", method: "notifications/x" }, sourceKind: "mcp" as const, sourceLabel: "mcp:hub", eventLabel: "notifications/x", payloadSummary: "deploy finished", idempotencyKey: "mcp:hub:custom:k1", cwd: dir };
-		await w1.handle({ ...push, traceId: "t1" }, "inject_summary");
-		await w2.handle({ ...push, traceId: "t2" }, "inject_summary");
-		assert.deepEqual(promoted, ["w1:[Trigger t1] deploy finished", "w2:[Trigger t2] deploy finished"], "both windows inject (per-process dedup only)");
-		assert.equal(await w1.handle({ ...push, traceId: "t1b" }, "inject_summary"), undefined, "the same push twice in one process is deduplicated");
-		const evalPush = { ...push, idempotencyKey: "mcp:hub:custom:k2" };
-		assert.equal((await w1.handle({ ...evalPush, traceId: "e1" }, "sub_agent"))?.ok, true);
-		assert.equal(await w2.handle({ ...evalPush, traceId: "e2" }, "sub_agent"), undefined, "a second evaluation of the same push is deduplicated");
-		assert.deepEqual(finished, ["w1"]);
-	} finally {
-		delete process.env.FAKE_PI_REPLY;
-		await w1.stop();
-		await w2.stop();
 	}
 });
 
@@ -378,124 +343,6 @@ function pushTrigger(dir: string, over: Partial<Trigger> = {}): Trigger {
 		...over,
 	};
 }
-
-test("a push refused while the machine is busy is retried on the next tick; a periodic check is not", async () => {
-	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
-	const runner = gatedRunner();
-	const finished: any[] = [];
-	const rt = new TriggerRuntime({
-		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner,
-		pollIntervalSecs: 3600, maxConcurrent: 1, hooks: { onFinished: (o) => void finished.push(o) },
-	});
-	try {
-		await rt.store.add({ condition: "c", action: "a", cwd: dir, fireOnce: false });
-		await rt.tick(Date.now(), true);
-		await until(() => runner.calls.length === 1, "the periodic check took the only slot");
-
-		const push = pushTrigger(dir, { traceId: "push-1", receivedAt: new Date(Date.now() - 2000).toISOString() });
-		assert.equal(await rt.handle(push, "sub_agent"), undefined, "no slot free: nothing is delivered now");
-		assert.equal(rt.pendingPushCount, 1, "but the event is kept: no server sends it twice");
-		assert.equal((rt.store.listAudit(20).find((a) => a.state === "deferred")!.details as any).queued, "queued");
-
-		// A periodic check refused in the same moment is dropped on purpose: the next poll looks at
-		// the world again and reaches the same conclusion.
-		assert.equal(await rt.handle(buildPeriodicCheckTrigger(dir, 1, new Date(), "other"), "sub_agent"), undefined);
-		assert.equal(rt.pendingPushCount, 1, "only pushes are held");
-
-		runner.open();
-		await until(() => finished.length === 1, "the blocking check finished");
-		await rt.tick(Date.now(), true);
-		await until(() => finished.length === 2, "the deferred push was retried on the next tick");
-		assert.equal(rt.pendingPushCount, 0);
-		const retried = runner.calls[1];
-		assert.match(retried.prompt, /deploy 41 finished/, "the retry is the push, not another periodic check");
-		assert.ok(retried.prompt.includes(push.receivedAt), "and it carries the timestamp of when the event actually happened");
-		assert.match(retried.prompt, /held \d+s while other checks were running/, "so the check can weigh how stale it is");
-		// A deferral, not a bypass: the retry is audited and deduped like any other arrival.
-		assert.ok(rt.store.listAudit(50).some((a) => a.state === "accepted" && a.traceId === "push-1"));
-		assert.equal(await rt.handle({ ...push, traceId: "push-1b" }, "sub_agent"), undefined, "the retry claimed the dedup key");
-	} finally {
-		await rt.stop();
-	}
-});
-
-test("the pending push list is bounded: the oldest event is dropped and audited, never held forever", async () => {
-	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
-	const runner = gatedRunner();
-	const rt = new TriggerRuntime({
-		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner,
-		pollIntervalSecs: 3600, maxConcurrent: 1,
-	});
-	try {
-		await rt.store.add({ condition: "c", action: "a", cwd: dir, fireOnce: false });
-		await rt.tick(Date.now(), true);
-		await until(() => runner.calls.length === 1, "the periodic check took the only slot");
-
-		const t0 = Date.now() - 600_000;
-		for (let i = 0; i <= MAX_PENDING_PUSHES; i++) {
-			await rt.handle(pushTrigger(dir, { traceId: `p${i}`, idempotencyKey: `mcp:hub:custom:k${i}`, receivedAt: new Date(t0 + i * 1000).toISOString() }), "sub_agent");
-		}
-		assert.equal(rt.pendingPushCount, MAX_PENDING_PUSHES, "a server pushing while we are busy cannot grow the list without bound");
-		const dropped = rt.store.listAudit(200).find((a) => a.state === "dropped")!;
-		assert.equal(dropped.traceId, "p0", "the oldest event goes, not the newest");
-		assert.match(String((dropped.details as any).reason), /already waiting/);
-
-		await rt.handle(pushTrigger(dir, { traceId: "again", idempotencyKey: "mcp:hub:custom:k5" }), "sub_agent");
-		assert.equal(rt.pendingPushCount, MAX_PENDING_PUSHES, "the same event pushed again while busy collapses into the one waiting");
-		assert.equal((rt.store.listAudit(1)[0].details as any).queued, "collapsed");
-	} finally {
-		runner.open();
-		await rt.stop();
-	}
-});
-
-test("an injected summary still arrives when the day is over budget: it costs nothing", async () => {
-	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
-	const promoted: string[] = [];
-	const rt = new TriggerRuntime({
-		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(),
-		pollIntervalSecs: 3600, budget: () => ({ spent: 12, cap: 10, over: true }),
-		hooks: { onPromote: (c) => { promoted.push(c); return "chat"; } },
-	});
-	try {
-		// The cap exists to stop model calls. This delivery makes none — it puts the push's own text
-		// in the chat — so refusing it is refusing the thing you most want on the day work stopped.
-		const outcome = await rt.handle(pushTrigger(dir, { traceId: "free" }), "inject_summary");
-		assert.equal(outcome?.ok, true);
-		assert.equal(outcome?.cost, 0);
-		assert.equal(promoted.length, 1, "it reached the chat");
-		const done = rt.store.listAudit(20).find((r) => r.type === "trigger_result" && r.state === "completed");
-		assert.ok(done, "a completed row, not a budget_exceeded one");
-		// Otherwise "everything else stopped today, why did this run" has no answer anywhere.
-		assert.equal((done?.details as any).over_budget, true);
-
-		// A delivery that does spend is still refused.
-		assert.equal(await rt.handle(pushTrigger(dir, { traceId: "paid" }), "sub_agent"), undefined);
-		assert.equal(rt.store.listAudit(1)[0].state, "budget_exceeded");
-	} finally {
-		await rt.stop();
-	}
-});
-
-test("over budget a push is dropped, not queued: the cap can last until midnight", async () => {
-	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
-	const runner = gatedRunner();
-	const rt = new TriggerRuntime({
-		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner,
-		pollIntervalSecs: 3600, budget: () => ({ spent: 12, cap: 10, over: true }),
-	});
-	try {
-		await rt.store.add({ condition: "c", action: "a", cwd: dir, fireOnce: false });
-		assert.equal(await rt.handle(pushTrigger(dir, { traceId: "over" }), "sub_agent"), undefined);
-		assert.equal(rt.store.listAudit(1)[0].state, "budget_exceeded");
-		assert.equal(rt.pendingPushCount, 0, "queueing it for eight hours and acting then is worse than dropping it");
-		await rt.tick(Date.now(), true);
-		await new Promise((r) => setTimeout(r, 50));
-		assert.equal(runner.calls.length, 0, "and nothing is retried");
-	} finally {
-		await rt.stop();
-	}
-});
 
 test("a rule whose check keeps failing is polled with a widening gap instead of at every interval", async () => {
 	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
@@ -592,29 +439,6 @@ test("every audit row of one delivery carries the same cwd, even when the sessio
 		const rows = rt.store.listAudit(20, (r) => r.traceId === "trace-one");
 		assert.ok(rows.length >= 4, `expected the whole trace, got ${rows.map((r) => `${r.type}:${r.state}`).join(", ")}`);
 		assert.deepEqual([...new Set(rows.map((r) => r.cwd))], [dir]);
-	} finally {
-		await rt.stop();
-	}
-});
-
-test("a push collapsed onto a queued one is audited as collapsed", async () => {
-	const dir = tmp("pi-loops-trt-");
-	const rt = new TriggerRuntime({
-		store: new TriggerStore(dir),
-		jobStore: new JobStore(dir),
-		getSession: () => ({ sessionId: "s", cwd: dir }),
-		runner: fakeRunner(),
-		pollIntervalSecs: 1,
-		// The window found an earlier push with the same collapse key still queued and wrote nothing (src/engine.ts handOverTarget).
-		hooks: { onInjectAndRun: () => "collapsed" },
-	});
-	try {
-		const mcp: Trigger = { source: { kind: "mcp", serverName: "x", method: "notifications/tools/listChanged" }, sourceKind: "mcp", sourceLabel: "mcp:x", eventLabel: "notifications/tools/listChanged", payloadSummary: "tool list changed", idempotencyKey: "mcp:x:tools", replacementPolicy: "latest_replaces", traceId: "c1", receivedAt: new Date().toISOString() };
-		const out = await rt.handle(mcp, "inject_and_run");
-		assert.equal(out?.ok, true);
-		const result = rt.store.listAudit(20, (r) => r.type === "trigger_result" && r.traceId === "c1");
-		assert.equal(result.length, 1);
-		assert.equal((result[0].details as any).to, "collapsed", "the audit says the push was not written, not that it waits");
 	} finally {
 		await rt.stop();
 	}

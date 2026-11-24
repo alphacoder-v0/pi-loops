@@ -10,7 +10,7 @@ import { type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
 import type { LoopsConfig } from "./config.ts";
 import { HookRunner, runEndEvent, runStartEvent } from "./hooks.ts";
-import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
+import { type McpNotification, PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { redact } from "./redact.ts";
 import { keepNotice, parseRingNote, type Notice } from "./host-control-channel.ts";
 import type { SubagentRequest, SubagentRunner } from "./runner.ts";
@@ -44,7 +44,8 @@ import { checkSessionDir, promotionToInbox } from "./check-run.ts";
 import { auditCronFinish, auditCronStart, controlPlanePreflight } from "./triggers.ts";
 import { shortSessionId } from "./session-head.ts";
 import { DEAD_SESSION_MARKER } from "./convert-v2.ts";
-import { EventLog } from "./events.ts";
+import { EventLog, type RawEvent } from "./events.ts";
+import { type DeriveDeps, type InjectDeps, PUSH_WINDOW_MS, type PushDelivery, derivePush, injectPush, pushTrigger, rawPush } from "./push.ts";
 
 export interface HostRuntimeDeps {
 	dir: string;
@@ -91,6 +92,10 @@ export interface HostRuntime {
 	riders: Riders<(typeof RUNTIME_RIDERS)[number]>;
 	tick(): Promise<void>;
 	triggers: TriggerRuntime;
+	/** One push as it arrives: stored raw first, then its rows or its delivery. False when it maps to no trigger. */
+	receivePush(server: string, delivery: PushDelivery, n: McpNotification, cwd?: string, inject?: boolean): boolean;
+	/** At start: the rows of the last five minutes' pushes that a crash kept from being written. Returns how many lanes got one. */
+	rederivePushes(subAgent: (server: string) => boolean): number;
 	/** The tools a sub-session started by this host gets (its cwd and model, not the host's). */
 	customTools: (req: SubagentRequest) => Promise<ToolDefinition<any, any>[]>;
 	/** What a control-plane call would change, for the runner's guard (`GuardDeps.controlTarget`, src/tools.ts `controlTarget`). */
@@ -332,6 +337,18 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		holder: () => ({ pid: process.pid, procStart: ownStart }),
 		log: (message) => log(redact(message)),
 	});
+	/** What a push becomes here (src/push.ts): its rows, or its delivery into a chat. */
+	const pushDeps: DeriveDeps = { requests: stores.requests, events, rules: stores.rules, runs: () => stores.jobs.allRuns(), createdBy: () => createdBy() };
+	const injectDeps: InjectDeps = {
+		events,
+		audit: stores.rules,
+		budget: () => budgetState(stores.jobs, deps.config().dailyBudgetUsd, Date.now()),
+		promote: (content, trigger) => promote(content, trigger),
+		// A push that injects and runs reaches pi-loops in the background only when no window has its server (host.ts): the inbox.
+		injectAndRun: (prompt, trigger) => toInbox(prompt, trigger),
+		log: (message) => log(redact(message)),
+		now: Date.now,
+	};
 	/** A check lane's transcripts: where its checks keep them (`checkSessionDir`, the one source). */
 	const checkDir = (cwd: string): string => checkSessionDir(stores.jobs, cwd);
 	/** The answer protocol over this directory's stores (src/answers.ts). */
@@ -686,6 +703,50 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			}
 		},
 		triggers,
+		/**
+		 * One push as it arrives (design 3.4, raw first): appended to `events.jsonl` before anything maps
+		 * it, then a row in each project's check lane (`sub_agent`), or put in a chat (`inject_*`, unless
+		 * a window that has the server does it: `inject` false). `cwd` is a project's own server's project.
+		 * Returns false when the push maps to no trigger (a custom one with no dedup key): it stays in the log.
+		 */
+		receivePush: (server: string, delivery: PushDelivery, n: McpNotification, cwd?: string, inject = true): boolean => {
+			let event: RawEvent;
+			try { event = events.append(`mcp:${server}`, rawPush(n)); }
+			catch (error) {
+				log(`push from ${server} not acted on: it could not be stored first (${error instanceof Error ? error.message : String(error)})`);
+				return true;
+			}
+			const stored = pushTrigger(event);
+			if (!stored) return false;
+			const trigger = cwd ? { ...stored, cwd } : stored;
+			if (delivery === "sub_agent") {
+				for (const lane of derivePush(pushDeps, event, trigger, Date.now())) {
+					checks.drain(lane, Date.now()).catch((error) => log(`check lane ${lane}: ${error instanceof Error ? error.message : String(error)}`));
+				}
+				return true;
+			}
+			if (!inject) return true;
+			injectPush(injectDeps, event, trigger, delivery)
+				.then((outcome) => { if (outcome) log(`trigger ${trigger.traceId.slice(0, 8)} ${delivery} ok`); })
+				.catch((error) => log(`trigger ${trigger.traceId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
+			return true;
+		},
+		/**
+		 * At start: the pushes of the last five minutes this process stored and whose rows a crash may have
+		 * kept from being written. Only a user-level server's (`subAgent` says which are checked): the log
+		 * does not say which project a project's own server pushed for.
+		 */
+		rederivePushes: (subAgent: (server: string) => boolean): number => {
+			let queued = 0;
+			const now = Date.now();
+			for (const event of events.since(now - PUSH_WINDOW_MS)) {
+				if (event.receiver.kind !== "background" || !event.source.startsWith("mcp:") || !subAgent(event.source.slice("mcp:".length))) continue;
+				const trigger = pushTrigger(event);
+				if (!trigger) continue;
+				queued += derivePush(pushDeps, event, trigger, now, true).length;
+			}
+			return queued;
+		},
 		notice,
 		notices: () => [...kept],
 		ring,

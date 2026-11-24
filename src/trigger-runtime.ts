@@ -7,7 +7,6 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { realpathish } from "./paths.ts";
 import { withinProject } from "./paths.ts";
 import { previewRedacted } from "./redact.ts";
 import type { SubagentRunner } from "./runner.ts";
@@ -32,7 +31,7 @@ import {
 	TriggerStore,
 	buildPeriodicCheckTrigger,
  newTraceId } from "./triggers.ts";
-import { DEFAULT_TRIGGER_RUN_TIMEOUT_MS, type GateLet, type PromoteTarget, checkCap, envelopeOf, promotionBody, runCheck } from "./check-run.ts";
+import { DEFAULT_TRIGGER_RUN_TIMEOUT_MS, type GateLet, type PromoteTarget, checkCap, envelopeOf, runCheck } from "./check-run.ts";
 
 /** Bounded, display-only status of a periodic check. */
 export type LastPoll = { at: string; cwd: string; outcome: string; traceId: string; sourceLabel: string; eventLabel: string; summary: string };
@@ -133,15 +132,6 @@ interface RuleLook {
 /** The ticker's interval, which `tick` here runs on (src/ticker.ts, 30 s): no poll comes sooner. */
 const POLL_TICK_MS = 30_000;
 
-/**
- * Pushes held while every slot is busy. Retries drain at most `maxConcurrent` (3) per scheduler
- * tick (30s), so 32 is about five minutes of backlog — the width of the dedup window that defines
- * a push's identity. Past that the held events are older than the window they would collapse in,
- * and holding more of them only delays the moment we admit the machine cannot keep up: the oldest
- * is dropped, with an audit row, instead of the list growing until the process dies.
- */
-export const MAX_PENDING_PUSHES = 32;
-
 export class TriggerRuntime {
 	readonly store: TriggerStore;
 	private readonly jobStore: JobStore;
@@ -151,14 +141,11 @@ export class TriggerRuntime {
 	private readonly now: () => number;
 	private readonly dedup: DedupWindow;
 	/** Pushes that inject into this window are deduplicated here only: every window reacts. */
-	private readonly localDedup = new DedupWindow();
 	private readonly ledger: PollLedger;
 	private readonly hop: number;
 	/** Mutable so a config reload at session start takes effect. */
 	runTimeoutMs: number;
 	private readonly running = new Map<string, RunningTrigger>();
-	/** Pushes refused for want of a slot, waiting for the next tick to retry them (see `queuePush`). */
-	private readonly pending = new Map<string, { trigger: Trigger; delivery: TriggerDelivery }>();
 	/** Every sub-agent this process starts takes a slot from here, loop runs included. */
 	readonly slots: SubagentSlots;
 	private readonly budget: () => { spent: number; cap: number; over: boolean };
@@ -230,10 +217,6 @@ export class TriggerRuntime {
 	}
 
 	/** Pushes waiting for a free slot: work that is late, not work that was lost. */
-	get pendingPushCount(): number {
-		return this.pending.size;
-	}
-
 	abort(traceId: string): boolean {
 		const r = this.running.get(traceId);
 		if (!r) return false;
@@ -276,7 +259,6 @@ export class TriggerRuntime {
 	 */
 	async tick(now: number): Promise<void> {
 		// Before raising new work: the pushes this process refused while it was busy.
-		this.retryPending();
 		const host = os.hostname();
 		const rules = this.store.load().filter((r) => r.enabled && !this.inBackoff(r, now));
 		if (!rules.length) return;
@@ -430,14 +412,6 @@ export class TriggerRuntime {
 			return undefined;
 		}
 		try {
-			if (trigger.source.kind === "mcp" && delivery === "sub_agent" && !trigger.cwd && !this.getSession().cwd) {
-				// No project of our own (the headless host): evaluate the push once per project that has
-				// rules, each in that project, as tick() does — never all rules at once in $HOME.
-				const cwds = [...new Set(this.store.load().filter((r) => r.enabled).map((r) => r.cwd))];
-				if (!cwds.length) return await this.admit(trigger, delivery); // audited as no_rules
-				const outcomes = await Promise.all(cwds.map((cwd, i) => this.admit({ ...trigger, cwd, traceId: i ? newTraceId() : trigger.traceId }, delivery)));
-				return outcomes.find(Boolean);
-			}
 			return await this.admit(trigger, delivery, rules, opts);
 		} catch (err: any) {
 			const message = err?.message ?? String(err);
@@ -455,11 +429,7 @@ export class TriggerRuntime {
 		// `inject_summary` puts the push's own text into the chat and runs no model call — its audit
 		// row records `cost_usd: 0`. Refusing a free delivery for want of budget is backwards, and
 		// the day the cap trips is the day you still want to be told what is arriving.
-		const budget = this.budget();
-		const gate = delivery === "inject_summary" ? { over: false, spent: budget.spent, cap: budget.cap } : budget;
-		// Said out loud, because otherwise "why did this one arrive when everything else stopped" has
-		// no answer anywhere.
-		if (delivery === "inject_summary" && budget.over) this.log(`trigger ${trigger.traceId.slice(0, 8)} injected despite today's $${budget.cap.toFixed(2)} budget: an injected summary runs no model call`);
+		const gate = this.budget();
 		if (gate.over) {
 			// Not held: being too busy clears in minutes, but the daily cap can last until midnight,
 			// and acting on this morning's deploy event at 23:59 is worse than not acting at all.
@@ -474,31 +444,16 @@ export class TriggerRuntime {
 		if (delivery === "sub_agent") {
 			slot = this.slots.acquire();
 			if (!slot) {
-				// Only a push is kept. Re-queueing a periodic check would be wrong: the next poll evaluates
-				// every rule against the world as it is then, so a held one could only run the same check
-				// twice. (`handle` has already fanned a project-less push out per project, so each entry
-				// here is one event for one project.)
-				const queued = trigger.source.kind === "mcp" ? this.queuePush(trigger, delivery) : undefined;
+				// Not re-queued: the next poll evaluates every rule against the world as it is then, so a
+				// held check could only run the same check twice. A push waits as a row (src/push.ts).
 				const { inUseCount, limit } = this.slots;
-				this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "deferred", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { ...envelopeOf(trigger), delivery, reason: `${inUseCount} sub-agent(s) already in flight (max ${limit})`, ...(queued ? { queued, pending: this.pending.size } : {}) } });
-				this.log(`trigger ${trigger.traceId.slice(0, 8)} deferred: ${inUseCount} sub-agent(s) already in flight${queued ? " (queued for the next tick)" : ""}`);
+				this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "deferred", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { ...envelopeOf(trigger), delivery, reason: `${inUseCount} sub-agent(s) already in flight (max ${limit})` } });
+				this.log(`trigger ${trigger.traceId.slice(0, 8)} deferred: ${inUseCount} sub-agent(s) already in flight`);
 				return undefined;
 			}
 		}
 		try {
-			let prev: Awaited<ReturnType<DedupWindow["check"]>>;
-			if (trigger.source.kind === "mcp" && delivery === "sub_agent") {
-				// A push evaluated against dynamic rules: by the host alone, once per project machine-wide.
-				const cwd = trigger.cwd ?? this.getSession().cwd;
-				rules = this.rulesFor(cwd);
-				prev = await this.dedup.check(`${trigger.idempotencyKey}@${os.hostname()}:${realpathish(cwd)}`, trigger.traceId, this.now(), trigger.replacementPolicy);
-			} else if (trigger.source.kind === "mcp") {
-				// A push injected into the chat: every window that has the server reacts (every
-				// session), so the dedup window is this process's own.
-				prev = await this.localDedup.check(trigger.idempotencyKey, trigger.traceId, this.now(), trigger.replacementPolicy);
-			} else {
-				prev = await this.dedup.check(trigger.idempotencyKey, trigger.traceId, this.now(), trigger.replacementPolicy);
-			}
+			const prev = await this.dedup.check(trigger.idempotencyKey, trigger.traceId, this.now(), trigger.replacementPolicy);
 			if (prev) {
 				this.dedupedCount++;
 				this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "deduped", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { previous_trace_id: prev.traceId, ...envelopeOf(trigger), replacement_policy: prev.replacementPolicy ?? trigger.replacementPolicy } });
@@ -510,66 +465,11 @@ export class TriggerRuntime {
 			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "accepted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery, evaluator_decision: { outcome: "accept", permission: "allow" }, ...envelopeOf(trigger) } });
 			// `return await`, not `return`: a bare return inside a try/finally hands the promise back and
 			// runs the finally at once, which would release the slot the moment the sub-agent started.
-			if (delivery === "inject_summary") return await this.deliverInjectSummary(trigger);
-			if (delivery === "inject_and_run") return await this.deliverInjectAndRun(trigger);
 			return await this.deliverSubAgent(trigger, rules, opts);
 		} finally {
 			// Held for the whole delivery, `deliverSubAgent` included, and released on every path out of
 			// it — a torn dedup file, a runner that rejects, an abort — or the pool leaks a slot.
 			slot?.release();
-		}
-	}
-
-	/** When the event happened, which is what "oldest first" means for a push; `now` if the source sent us an unparseable stamp. */
-	private eventTimeOf(trigger: Trigger): number {
-		const at = Date.parse(trigger.receivedAt);
-		return Number.isNaN(at) ? this.now() : at;
-	}
-
-	/**
-	 * Hold a push that found no free slot. Keyed by idempotency key and project, so a server pushing
-	 * the same event again while we are busy collapses into the one already waiting instead of filling
-	 * the list; which copy survives is the envelope's own replacement policy, as in the dedup window.
-	 */
-	private queuePush(trigger: Trigger, delivery: TriggerDelivery): "queued" | "replaced" | "collapsed" {
-		const cwd = trigger.cwd ?? this.getSession().cwd;
-		const key = `${trigger.idempotencyKey}@${cwd}`;
-		const waiting = this.pending.get(key);
-		if (waiting) {
-			if (trigger.replacementPolicy !== "latest_replaces") return "collapsed";
-			this.pending.set(key, { trigger, delivery });
-			return "replaced";
-		}
-		if (this.pending.size >= MAX_PENDING_PUSHES) {
-			const oldest = [...this.pending.entries()].sort((a, b) => this.eventTimeOf(a[1].trigger) - this.eventTimeOf(b[1].trigger))[0];
-			this.pending.delete(oldest[0]);
-			const lost = oldest[1].trigger;
-			// The drop leaves a row of its own: "my webhook fired and nothing happened" must stay
-			// answerable from the audit, and the answer here is that the machine never caught up.
-			this.store.appendAudit({ cwd: lost.cwd ?? cwd, type: "trigger", traceId: lost.traceId, state: "dropped", sourceLabel: lost.sourceLabel, eventLabel: lost.eventLabel, summary: lost.payloadSummary, details: { ...envelopeOf(lost), delivery: oldest[1].delivery, reason: `${MAX_PENDING_PUSHES} pushes already waiting for a free slot` } });
-			this.log(`trigger ${lost.traceId.slice(0, 8)} dropped: ${MAX_PENDING_PUSHES} pushes already waiting for a free slot`);
-		}
-		this.pending.set(key, { trigger, delivery });
-		return "queued";
-	}
-
-	/**
-	 * Retry the held pushes, oldest event first, as many as there are free slots. Each goes back
-	 * through `handle`, so it is deduped, audited and delivered exactly as if it had just arrived —
-	 * a deferral, not a bypass — and carries how long it waited so the check can weigh its age.
-	 */
-	private retryPending(): void {
-		// A bound on how many are dequeued at once, not the admission test: `admit` reserves the slot
-		// itself, so a push dequeued past the free count is simply audited and queued again.
-		let slots = this.slots.free;
-		if (slots <= 0 || !this.pending.size) return;
-		for (const [key, entry] of [...this.pending.entries()].sort((a, b) => this.eventTimeOf(a[1].trigger) - this.eventTimeOf(b[1].trigger))) {
-			if (slots-- <= 0) break;
-			this.pending.delete(key);
-			const trigger: Trigger = { ...entry.trigger, deferredMs: Math.max(0, this.now() - this.eventTimeOf(entry.trigger)) };
-			// `handle` is documented not to reject; the catch is what makes that true rather than
-			// merely intended, since nothing above a tick would survive one.
-			void this.handle(trigger, entry.delivery).catch((err: any) => this.log(`deferred push ${trigger.traceId.slice(0, 8)} failed: ${err?.message ?? err}`));
 		}
 	}
 
@@ -611,34 +511,6 @@ export class TriggerRuntime {
 		const worst = Math.max(...backing.map((r) => r.consecutiveFailures ?? 0));
 		this.store.appendAudit({ cwd, type: "trigger", traceId: newTraceId(), state: "backoff", sourceLabel: "local:dynamic", eventLabel: backing.map((r) => r.id).join(" "), summary: `${backing.length} rule(s) checked with a widening gap after ${worst} failed check(s) in a row`, details: { rule_ids: backing.map((r) => r.id), consecutive_failures: worst } });
 		this.log(`${backing.length} trigger rule(s) failed ${worst} checks in a row; polling them with a widening gap`);
-	}
-
-	private async deliverInjectSummary(trigger: Trigger): Promise<TriggerOutcome> {
-		const start = this.now();
-		const summary = trigger.payloadSummary ?? "";
-		let promoted = false;
-		if (summary) {
-			const target = (await this.hooks.onPromote?.(promotionBody(trigger, summary), trigger)) ?? "chat";
-			promoted = target !== "inbox";
-			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger_promotion", traceId: trigger.traceId, state: target === "inbox" ? "redirected" : "promoted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { prefix_injected: true, delivery: "inject_summary", to: target, ...envelopeOf(trigger) } });
-		}
-		// `over_budget` on a completed row is the audit's answer to "everything else stopped today —
-		// why did this run": because it cost nothing.
-		const spend = this.budget();
-		this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger_result", traceId: trigger.traceId, state: "completed", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { delivery: "inject_summary", cost_usd: 0, ...(spend.over ? { over_budget: true } : {}), ...envelopeOf(trigger) } });
-		const outcome: TriggerOutcome = { trigger, delivery: "inject_summary", ok: true, matchedRules: [], summary, durationMs: this.now() - start, cost: 0, promoted };
-		this.hooks.onFinished?.(outcome);
-		return outcome;
-	}
-
-	private async deliverInjectAndRun(trigger: Trigger): Promise<TriggerOutcome> {
-		const start = this.now();
-		const prompt = `[Trigger ${trigger.traceId}] ${trigger.payloadSummary ?? `${trigger.sourceLabel} fired: ${trigger.eventLabel}`}`;
-		const target = (await this.hooks.onInjectAndRun?.(prompt, trigger)) ?? "chat";
-		this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger_result", traceId: trigger.traceId, state: "completed", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery: "inject_and_run", prefix_injected: true, cost_usd: 0, to: target, ...envelopeOf(trigger) } });
-		const outcome: TriggerOutcome = { trigger, delivery: "inject_and_run", ok: true, matchedRules: [], summary: trigger.payloadSummary ?? "", durationMs: this.now() - start, cost: 0, promoted: target !== "inbox" };
-		this.hooks.onFinished?.(outcome);
-		return outcome;
 	}
 
 	/**

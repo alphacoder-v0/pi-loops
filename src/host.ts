@@ -34,7 +34,8 @@ import { rotateInPlace } from "./log.ts";
 import { createHostRuntime } from "./host-runtime.ts";
 import { Ticker, HOST_RIDERS, BACKGROUND_RIDERS, type Riders } from "./ticker.ts";
 import { McpPool } from "./mcp-pool.ts";
-import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv, type McpNotification, type McpServerConfig } from "./mcp.ts";
+import { deliveryOf } from "./push.ts";
+import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mcpToolDefinitions, mcpTokenFromEnv, type McpNotification, type McpServerConfig } from "./mcp.ts";
 import { failingJobs } from "./job-health.ts";
 import { jobRuns, listedJobs } from "./job-status.ts";
 import { loopLabel } from "./job-lines.ts";
@@ -236,16 +237,12 @@ const host = createHostRuntime({
  * window has that server.
  */
 function onPush(cfg: McpServerConfig, n: McpNotification, source: McpSource, cwd?: string): void {
-	const trigger = mapNotification(cfg.name, n);
-	if (!trigger) {
+	const delivery = deliveryOf(cfg);
+	// Stored first whatever becomes of it (design 3.4); a push that maps to no trigger stays in the log only.
+	if (!host.receivePush(cfg.name, delivery, n, cwd, delivery === "sub_agent" || !someWindowInjects(cfg.name, cwd))) {
 		source.status.droppedCount++;
 		source.status.lastError = droppedNotificationMessage(n.method);
-		return;
 	}
-	if (cwd) trigger.cwd = cwd;
-	const delivery = cfg.injectAndRun ? "inject_and_run" : cfg.injectSummary ? "inject_summary" : "sub_agent";
-	if (delivery !== "sub_agent" && someWindowInjects(cfg.name, cwd)) return;
-	void host.triggers.handle(trigger, delivery).catch((err) => log(`trigger: ${err?.message ?? err}`));
 }
 
 /** Every minute: the trusted projects with enabled rules keep their push servers connected. */
@@ -814,6 +811,11 @@ parentModel = await defaultModel().catch((err) => {
 log(`default model: ${parentModel ? `${parentModel.provider}/${parentModel.id}` : "none (jobs must pin one)"}`);
 startMcpSources();
 host.start();
+// A push stored just before a crash, whose rows were not written yet: written now (a row there already is left).
+{
+	const lanes = host.rederivePushes((server) => mcpLoaded.servers.some((cfg) => cfg.name === server && deliveryOf(cfg) === "sub_agent"));
+	if (lanes) log(`pushes: ${lanes} row(s) written again for pushes stored before a stop`);
+}
 ticker.start();
 // As in the minute timer below: a rules file that cannot be read must cost its rules, not every loop.
 try {

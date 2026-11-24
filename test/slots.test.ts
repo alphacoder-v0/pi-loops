@@ -90,13 +90,10 @@ test("a loop run and a trigger check share one limit: together they exhaust max_
 		assert.deepEqual(waiting.map((row) => row.waiting), ["deferred: 2 sub-agent(s) already in flight (max 2)"]);
 		assert.equal(calls.length, 2, "and no third sub-agent started");
 
-		// The trigger runtime's refusal, which is deliberately a different one: a push is held,
-		// a periodic check is dropped because the next poll re-asks the same question.
-		assert.equal(await host.triggers.handle(pushTrigger(dir, { traceId: "push-1" }), "sub_agent"), undefined, "no slot free: nothing is delivered now");
-		assert.equal(host.triggers.pendingPushCount, 1, "the event is kept: no server sends it twice");
+		// The trigger runtime's refusal, which is deliberately a different one: a periodic check is
+		// dropped because the next poll re-asks the same question. (A push waits as a row: test/check-lanes.test.ts.)
 		assert.equal(await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1, new Date(), "other"), "sub_agent"), undefined);
-		assert.equal(host.triggers.pendingPushCount, 1, "only pushes are held");
-		assert.equal(calls.length, 2, "and neither started a sub-agent");
+		assert.equal(calls.length, 2, "and it started no sub-agent");
 
 		// Both sides hand their slot back when their sub-agent returns.
 		for (const release of held.splice(0)) release();

@@ -186,8 +186,8 @@ test("the host runs loops and queues a promotion for the creating session when a
 		await host.triggers.store.add({ condition: "c2", action: "a2", cwd: other });
 		await host.triggers.store.add({ condition: "c3", action: "a3", cwd: proj }); // the first proj rule fired once and is disabled
 		const before = fake.calls.length;
-		const push = mapNotification("srv", { method: "notifications/resources/updated", params: { uri: "file:///x" } })!;
-		await host.triggers.handle(push, "sub_agent");
+		assert.equal(host.receivePush("srv", "sub_agent", { method: "notifications/resources/updated", params: { uri: "file:///x" } }), true);
+		await host.drain(5000);
 		const pushRuns = fake.calls.slice(before).map((c) => c.cwd).sort();
 		assert.deepEqual(pushRuns, [other, proj].sort(), "one evaluation per project, each in its own directory — never in $HOME");
 
