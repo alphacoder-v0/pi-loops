@@ -27,7 +27,8 @@ import { RunList } from "./run-list.ts";
 import type { OwnerView, SessionSnapshot } from "./job-owner.ts";
 import { DEFAULT_RUN_TIMEOUT_MS } from "./loop-run.ts";
 import { stamp } from "./schedule.ts";
-import { budgetState, jobCounts } from "./job-status.ts";
+import { budgetState, jobCounts, runHistory } from "./job-status.ts";
+import { createCheckTick } from "./check-tick.ts";
 import { SubagentSlots } from "./slots.ts";
 import { type LoopJob, type RunRecord, newId } from "./store.ts";
 import { RUNTIME_RIDERS, type Riders, type TickFacts } from "./ticker.ts";
@@ -41,7 +42,7 @@ import { type ToolHost, automationTools, controlTarget, createLoopJob } from "./
 import type { GuardSeats } from "./guard.ts";
 import { TriggerRuntime } from "./trigger-runtime.ts";
 import { checkSessionDir, promotionToInbox } from "./check-run.ts";
-import { auditCronFinish, auditCronStart, controlPlanePreflight } from "./triggers.ts";
+import { PollLedger, auditCronFinish, auditCronStart, controlPlanePreflight } from "./triggers.ts";
 import { shortSessionId } from "./session-head.ts";
 import { DEAD_SESSION_MARKER } from "./convert-v2.ts";
 import { EventLog, type RawEvent } from "./events.ts";
@@ -337,6 +338,19 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		holder: () => ({ pid: process.pid, procStart: ownStart }),
 		log: (message) => log(redact(message)),
 	});
+	/** Each project's periodic check, as a row of its check lane (src/check-tick.ts): what `rule-checks` runs at each tick. */
+	const checkTick = createCheckTick({
+		rules: stores.rules,
+		requests: stores.requests,
+		clock: stores.clock,
+		events,
+		gatePolicy,
+		ledger: new PollLedger(path.join(dir, "polls.json")),
+		pollIntervalSecs: () => deps.config().triggerPollIntervalSecs,
+		history: () => runHistory(stores.jobs.allRuns()),
+		createdBy: () => createdBy(),
+		log: (message) => log(redact(message)),
+	});
 	/** What a push becomes here (src/push.ts): its rows, or its delivery into a chat. */
 	const pushDeps: DeriveDeps = { requests: stores.requests, events, rules: stores.rules, runs: () => stores.jobs.allRuns(), createdBy: () => createdBy() };
 	const injectDeps: InjectDeps = {
@@ -502,6 +516,16 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	 * fs.watch can miss events and is best-effort by design; the tick still delivers, so a watcher
 	 * that fails to start, or fails later, is logged and not restarted.
 	 */
+	/** A row written into a check lane (a window's `/triggers run`, a push): run now, one drain of a lane at a time, as its own writes ring again. */
+	const checkDraining = new Set<LaneId>();
+	function drainCheckLane(lane: LaneId): void {
+		if (checkDraining.has(lane)) return;
+		checkDraining.add(lane);
+		checks.drain(lane, Date.now())
+			.catch((error) => log(`check lane ${lane}: ${error instanceof Error ? error.message : String(error)}`))
+			.finally(() => checkDraining.delete(lane))
+			.catch((error) => log(`check lane ${lane}: ${error instanceof Error ? error.message : String(error)}`));
+	}
 	const watchers: fs.FSWatcher[] = [];
 	function watch(): void {
 		if (watchers.length) return;
@@ -516,6 +540,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				const watcher = fs.watch(where, (_event, name) => {
 					const file = String(name ?? "");
 					if (!file.endsWith(ext)) return;
+					const lane = kind === "request" ? parseLane(file.slice(0, -ext.length)) : undefined;
+					if (lane?.kind === "check") return drainCheckLane(lane.id);
 					const note = parseRingNote(`${kind}:${file.slice(0, -ext.length)}`);
 					if (note) ring(note.sessionId);
 				});
@@ -624,7 +650,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const riders: Riders<(typeof RUNTIME_RIDERS)[number]> = {
 		"stray-leases": (now) => releaseStrayLeases(now),
 		"closed-conversations": () => deliverToClosed(),
-		"rule-checks": async (now) => { await triggers.tick(now); },
+		"rule-checks": (now) => checkTick.tick(now),
 		"removed-jobs": () => { abortRemovedJobs(runs, (id) => stores.jobs.load().some((job) => job.id === id), log); },
 		"dead-sessions": async (now) => {
 			if (!deps.sessionExists || now - lastDeadSessionScan < 10 * 60_000) return;

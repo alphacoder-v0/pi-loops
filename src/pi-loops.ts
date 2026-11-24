@@ -77,6 +77,7 @@ import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
 import { type PromoteTarget, promotionToInbox, checkSessionDir } from "./check-run.ts";
 import { EventLog, type RawEvent } from "./events.ts";
 import { deliveryOf, injectPush, pushTrigger, rawPush } from "./push.ts";
+import { checkRow, ruleLook } from "./check-tick.ts";
 import { scheduleAudit } from "./job-tune.ts";
 import { type Trigger, auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTrigger, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ConfirmTurn, type ToolHost, automationTools, checkJobName, confirmControlPlane, controlTarget, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
@@ -2493,12 +2494,11 @@ export default function piLoops(pi: ExtensionAPI) {
 							ctx.ui.notify(`trigger ${rule.id} belongs to ${rule.cwd} — run it from a pi open in that project`, "warning");
 							return;
 						}
-						const trigger = buildPeriodicCheckTrigger(rule.cwd, 1, new Date(), `${process.pid}-run-now`);
-						// Never awaited: a check runs a sub-agent and can take minutes. `handle` is
-						// documented not to reject, and the catch is there because pi installs no
-						// unhandledRejection handler.
-						void triggers.handle(trigger, "sub_agent", [rule]).catch((err: any) => log.warn(`run-now failed: ${err?.message ?? err}`));
-						show(ctx, `checking trigger ${rule.id} now (trace ${trigger.traceId.slice(0, 8)})`, [
+						// A row of the project's check lane, with this rule only and no gate: pi-loops in the
+						// background runs it as it runs every check (src/check-tick.ts), and hears the write.
+						const row = checkRow(rule.cwd, [rule.id], createdBy(), Date.now());
+						requests.appendIfAbsent(row);
+						show(ctx, `checking trigger ${rule.id} now (trace ${row.id.slice(0, 8)})`, [
 							`  condition: ${previewRedacted(rule.condition, 120)}`,
 							"  the result appears here when the check finishes — /triggers running shows it meanwhile",
 						]);

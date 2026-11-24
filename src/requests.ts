@@ -45,6 +45,8 @@ export type RequestSource =
 	| `wake:${string}` // the follow-up a loop set for itself (`wake_me`)
 	| `rule:${string}`
 	| `push:${string}`
+	/** A project's periodic check, and `/triggers run` (src/check-tick.ts). */
+	| `check:${string}`
 	| "goal"
 	/** The row of a yes (`ans-`), and the row that tells a conversation of a no (`no-`): src/ask.ts. The receipt of a proposal's answer (`rcp-`): src/watch-plan.ts. */
 	| "answer"
@@ -87,8 +89,14 @@ interface RowBase {
 		woken?: string[];
 		/** The ids of those follow-ups: the proof a tick reads that a follow-up is in this row, and the ones its run's closing takes. */
 		woken_ids?: string[];
-		/** A push row only: the raw events (src/events.ts) it is for. */
+		/** A push row: the raw events (src/events.ts) it is for. A check row: the gate readings that opened it. */
 		events?: string[];
+		/** A check row only: the ids of the rules it evaluates. */
+		rules?: string[];
+		/** A check row only: the rules whose path gate found their path. */
+		prechecked?: string[];
+		/** A check row only: each command gate's reading, the rule's `seen` once the check does not fail. */
+		seen?: { rule: string; digest: string; at: string }[];
 	};
 	/** stop, cancel. Never "whatever runs next". */
 	target?: { id: string } | { current: true; started_before: string };
@@ -192,7 +200,9 @@ function readLine(line: string): { row: Row; version: 2 | 3 } | undefined {
 	if (typeof row.created_at !== "string" || (row.handed_at !== undefined && typeof row.handed_at !== "string")) return undefined;
 	const requires = row.payload?.requires;
 	if (requires !== undefined && (!Array.isArray(requires) || !requires.every((s) => typeof s === "string"))) return undefined;
-	for (const list of [row.payload?.woken, row.payload?.woken_ids, row.payload?.events] as unknown[]) if (list !== undefined && (!Array.isArray(list) || !list.every((s) => typeof s === "string"))) return undefined;
+	for (const list of [row.payload?.woken, row.payload?.woken_ids, row.payload?.events, row.payload?.rules, row.payload?.prechecked] as unknown[]) if (list !== undefined && (!Array.isArray(list) || !list.every((s) => typeof s === "string"))) return undefined;
+	const seen = row.payload?.seen as unknown;
+	if (seen !== undefined && (!Array.isArray(seen) || !seen.every((x) => x && typeof x === "object" && typeof x.rule === "string" && typeof x.digest === "string" && typeof x.at === "string"))) return undefined;
 	const target = row.target as unknown;
 	if (target !== undefined && !(target && typeof target === "object" && (typeof (target as { id?: unknown }).id === "string" || ((target as { current?: unknown }).current === true && typeof (target as { started_before?: unknown }).started_before === "string")))) return undefined;
 	// A claim of the wrong shape is not a free row: the line is kept, unread, as a newer one is. Only

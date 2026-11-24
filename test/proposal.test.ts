@@ -12,6 +12,7 @@ import { fakeRunner } from "./fake-runner.ts";
 import { loadConfig } from "../src/config.ts";
 import { createHostRuntime } from "../src/host-runtime.ts";
 import { ownerViewOf } from "../src/job-owner.ts";
+import { checkLane } from "../src/lane.ts";
 import { switchTargets } from "../src/job-status.ts";
 import { ruleLines } from "../src/rule-lines.ts";
 import { openStores, type Stores } from "../src/stores.ts";
@@ -323,12 +324,12 @@ test("a proposal never runs: the clock, the loop lanes and the rule checks pass 
 		const facts = { startedAt: 0, tickMs: 30_000 };
 		for (let i = 0; i < 3; i++) {
 			for (const name of RUNTIME_RIDERS) await host.riders[name](Date.now(), facts);
-			await host.triggers.tick(Date.now(), true);
 			await host.drain(2_000);
 		}
 		assert.ok(runner.calls.some((c) => c.kind === "loop"), "the enabled control loop runs");
 		assert.deepEqual(host.stores.requests.list("@cron-0000000000000000000000000000aaaa"), [], "no row for the proposal");
 		assert.equal(runner.calls.filter((c) => c.prompt.includes("dynamic trigger")).length, 0, "no rule check: the proposal is the only rule");
+		assert.deepEqual(host.stores.requests.list(checkLane(proj)!), [], "and no check row for its project");
 		assert.equal(runner.calls.filter((c) => c.kind === "loop").length, runner.calls.length, "every run is the control loop's");
 		assert.ok(host.stores.jobs.load().find((j) => j.name === "proposed")?.proposed, "still proposed");
 	} finally {

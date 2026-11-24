@@ -35,6 +35,7 @@ import { createHostRuntime } from "./host-runtime.ts";
 import { Ticker, HOST_RIDERS, BACKGROUND_RIDERS, type Riders } from "./ticker.ts";
 import { McpPool } from "./mcp-pool.ts";
 import { deliveryOf } from "./push.ts";
+import { ruleLook } from "./check-tick.ts";
 import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mcpToolDefinitions, mcpTokenFromEnv, type McpNotification, type McpServerConfig } from "./mcp.ts";
 import { failingJobs } from "./job-health.ts";
 import { jobRuns, listedJobs } from "./job-status.ts";
@@ -678,7 +679,7 @@ function bindPage(): Promise<PageServer | NodeJS.ErrnoException> {
 			heldTurn: (id) => host.heldTurn(id),
 			abortRun,
 			stopRun: stopRunFrom("person", false, stopHost),
-			ruleLook: (id) => host.triggers.ruleLook(id),
+			ruleLook: (id) => ruleLook(host.stores.clock, id, config.triggerPollIntervalSecs),
 			lastPage: () => readUiPrefs(dir).lastPage,
 			rememberPage: (id) => writeUiPref(dir, "lastPage", id),
 			background: hostStatus,

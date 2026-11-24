@@ -26,11 +26,11 @@ import type { SubagentSlot, SubagentSlots } from "./slots.ts";
 import type { JobStore, LoopJob, RunRecord } from "./store.ts";
 import { FAILING_AFTER, failurePause } from "./backoff.ts";
 import { loopLane, type LaneId } from "./lane.ts";
-import { type CheckDeps, runCheck } from "./check-run.ts";
+import { type CheckDeps, type GateLet, envelopeOf, runCheck } from "./check-run.ts";
 import type { EventLog } from "./events.ts";
 import { withinProject } from "./paths.ts";
 import { pushTrigger } from "./push.ts";
-import type { DynamicTriggerRule, TriggerStore } from "./triggers.ts";
+import { type DynamicTriggerRule, type Trigger, type TriggerStore, buildPeriodicCheckTrigger } from "./triggers.ts";
 import { runLoop, closeLoopRun, type LoopRunDeps } from "./loop-run.ts";
 import { budgetState, loopWait } from "./job-status.ts";
 
@@ -797,17 +797,33 @@ export function createCheckLanes(deps: CheckLaneDeps): CheckLanes {
 				const budget = deps.budget();
 				if (budget.over) return leave(row, "budget_exceeded", `today's automation has cost $${budget.spent.toFixed(2)} of the $${budget.cap.toFixed(2)} budget`, { spent_usd: budget.spent, cap_usd: budget.cap });
 				const cwd = row.payload?.cwd ?? "";
-				const eventId = row.payload?.events?.[0];
-				const event = eventId === undefined ? undefined : deps.events.get(eventId);
-				const stored = event === undefined ? undefined : pushTrigger(event);
-				if (!stored) return leave(row, "dead", eventId === undefined ? "the row names no stored event" : `its stored event ${eventId} is gone or is not a push`);
+				const periodic = row.source.startsWith("check:");
+				let trigger: Trigger;
+				let rules: DynamicTriggerRule[];
+				let gates: GateLet | undefined;
+				if (periodic) {
+					// A periodic check, or `/triggers run`: the rules it names that are still enabled, as the gates let them through.
+					const named = new Set(row.payload?.rules ?? []);
+					rules = rulesOf(cwd).filter((r) => named.has(r.id));
+					trigger = { ...buildPeriodicCheckTrigger(cwd, rules.length, new Date(Date.parse(row.created_at) || now), String(process.pid)), traceId: row.id };
+					const p = row.payload;
+					gates = { ...(p?.prechecked?.length ? { prechecked: p.prechecked } : {}), ...(p?.events?.length ? { events: p.events } : {}), ...(p?.seen?.length ? { seen: p.seen } : {}) };
+				} else {
+					const eventId = row.payload?.events?.[0];
+					const event = eventId === undefined ? undefined : deps.events.get(eventId);
+					const stored = event === undefined ? undefined : pushTrigger(event);
+					if (!stored) return leave(row, "dead", eventId === undefined ? "the row names no stored event" : `its stored event ${eventId} is gone or is not a push`);
+					trigger = { ...stored, traceId: row.id, cwd };
+					rules = rulesOf(cwd);
+				}
 				const permit = slots.acquire();
 				if (!permit) return "no-slot";
 				const claimed = runs.claim(requests, row, self, { jobId: lane, label: `the check of ${path.basename(cwd) || cwd}`, promptPreview: previewRedacted(row.payload?.text ?? "", 120), ctrl: new AbortController() }, now);
 				if (!claimed) { permit.release(); return "sent"; }
+				// A push's row was audited `accepted` when it was derived (src/push.ts); a periodic check is accepted as it starts.
+				if (periodic) deps.rules.appendAudit({ cwd, type: "trigger", traceId: row.id, state: "accepted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery: "sub_agent", evaluator_decision: { outcome: "accept", permission: "allow" }, row: row.id, ...envelopeOf(trigger) } });
 				const signal = runs.get(claimed.run.id)?.ctrl.signal ?? new AbortController().signal;
-				const trigger = { ...stored, traceId: row.id, cwd };
-				const task = runCheck(deps.check(), { trigger, rules: rulesOf(cwd), signal, run: { id: claimed.run.id, row: row.id, cause: "push" } })
+				const task = runCheck(deps.check(), { trigger, rules, ...(gates ? { gates } : {}), signal, run: { id: claimed.run.id, row: row.id, cause: periodic ? "check" : "push" } })
 					.then(async () => { await closeRun(requests, deps.engine(), claimed, proofOf(lane, () => [], deps.allRuns), Date.now()); })
 					.finally(() => { runs.remove(claimed.run.id); permit.release(); inFlight.delete(task); })
 					.catch((error) => deps.log(`check lane ${lane}: ${error instanceof Error ? error.message : String(error)}`));
