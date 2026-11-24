@@ -196,3 +196,53 @@ test("[push-rederive-on-start] a push derived before a rotation of events.jsonl 
 	assert.deepEqual(b.requests.list(b.lane), [], "the restart writes no row for it");
 });
 
+test("[push-rederive-on-start] two rotations that drop the cursor's own event do not bring back an older derived push the second one carried", async () => {
+	const b = await background();
+	const events = new EventLog(b.dir, "background");
+	const w = events.append("mcp:ci", JSON.stringify(note("w")));
+	assert.equal(b.host.rederivePushes((server) => server === "ci"), 1);
+	const x = events.append("mcp:ci", JSON.stringify(note("x")));
+	assert.equal(b.host.rederivePushes((server) => server === "ci"), 1, "the cursor is x");
+	// x's row leaves; w's still waits, so each rotation carries w and drops the generation that held x.
+	b.requests.remove(b.lane, [pushRowId(x.id, b.project)]);
+	const small = new EventLog(b.dir, "background", { maxBytes: 10, keep: () => new Set([w.id]) });
+	small.append("gate:x", "{}");
+	small.append("gate:x", "{}");
+	assert.equal(new EventLog(b.dir, "background").get(x.id), undefined, "x is gone from both generations");
+	// w's row then leaves with no run record, as a refused one does.
+	b.requests.remove(b.lane, [pushRowId(w.id, b.project)]);
+	assert.equal(b.start().rederivePushes((server) => server === "ci"), 0);
+	assert.deepEqual(b.requests.list(b.lane), [], "the restart writes no row for w");
+});
+
+/** A push from `ci` stored by hand: numbered `seq`, received at `ms`. */
+const storedPush = (id: string, seq: number, ms: number) => `${JSON.stringify({ id, received_at: new Date(ms).toISOString(), seq, source: "mcp:ci", receiver: { pid: process.pid, kind: "background" }, raw: JSON.stringify(note(id)) })}\n`;
+
+test("[push-rederive-on-start] a start derives the pushes numbered after the cursor and received in the last five minutes, whatever order the clock and the log put them in", async () => {
+	const b = await background();
+	const now = Date.now();
+	// The clock was set back after a; d and c are rotation copies above a and b, in no order; e is ten minutes old.
+	fs.writeFileSync(path.join(b.dir, "events.jsonl"), storedPush("evt-d", 4, now - 60_000) + storedPush("evt-c", 3, now - 4 * 60_000) + storedPush("evt-a", 1, now - 30_000) + storedPush("evt-b", 2, now - 3 * 60_000) + storedPush("evt-e", 5, now - 10 * 60_000));
+	fs.writeFileSync(path.join(b.dir, "events.seq"), "5\n");
+	b.host.stores.clock.derivePushed(2);
+	assert.equal(b.host.rederivePushes((server) => server === "ci"), 2);
+	assert.deepEqual(b.requests.list(b.lane).map((r) => r.id), [pushRowId("evt-c", b.project), pushRowId("evt-d", b.project)], "c and d, in the order stored; a and b are not after the cursor; e is too old");
+});
+
+test("[push-rederive-on-start] after a first start with an empty log, a push stored is derived at the next start, one stamped before that first start too", async () => {
+	const b = await background();
+	assert.equal(JSON.parse(fs.readFileSync(path.join(b.dir, "clock.json"), "utf8")).pushes.derived, 0, "the log was empty");
+	fs.writeFileSync(path.join(b.dir, "events.jsonl"), storedPush("evt-a", 1, Date.now() - 60_000));
+	assert.equal(b.host.rederivePushes((server) => server === "ci"), 1);
+	assert.deepEqual(b.requests.list(b.lane).map((r) => r.id), [pushRowId("evt-a", b.project)]);
+});
+
+test("[push-rederive-on-start] a cursor past the last number (events.seq and the log were removed) is no cursor: the start derives no push stored before it", async () => {
+	const b = await background();
+	const t = Date.now() - 1000;
+	fs.writeFileSync(path.join(b.dir, "events.jsonl"), storedPush("evt-a", 1, t) + storedPush("evt-b", 2, t + 1));
+	b.host.stores.clock.derivePushed(9);
+	assert.equal(b.host.rederivePushes((server) => server === "ci"), 0);
+	assert.deepEqual(b.requests.list(b.lane), []);
+	assert.equal(JSON.parse(fs.readFileSync(path.join(b.dir, "clock.json"), "utf8")).pushes.derived, 2, "the cursor starts again at the last number");
+});

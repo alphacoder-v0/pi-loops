@@ -153,8 +153,12 @@ All notable changes to pi-loops are documented here. The format follows
   `cycle_suppressed`. A check whose process died while it ran is recorded as interrupted and is not
   run again: it may already have acted (posted, deployed, fired a fire-once rule). A push that waited
   past a tick is checked with the note that it is not now. A push stored just before a crash gets
-  its rows when pi-loops starts again within five minutes; `clock.json` `pushes` holds the last push whose rows were written, so
-  a push that was refused, joined or replaced is never written again.
+  its rows when pi-loops starts again within five minutes of the push, while the log still holds it
+  (two rotations, about 4 MB of events, drop it). Each event in `events.jsonl`
+  has a number (`seq`), larger than any given before it, and `clock.json` `pushes` holds the number
+  of the last push whose rows were written; a start writes only pushes numbered after it, so a push
+  that was refused, joined or replaced is never written again, whatever a rotation of the log or the
+  system clock did. The five minutes are read from the time each push was received.
 - **A check writes a run record, so its cost counts toward `daily_budget_usd`.** `/cron cost`
   shows a project's checks as `checks of <directory>`.
 - **A failing project's checks are counted from the run log.** After three failed checks in a row,

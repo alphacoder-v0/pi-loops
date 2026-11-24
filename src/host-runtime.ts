@@ -359,11 +359,12 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const pushDeps: DeriveDeps = { requests: stores.requests, events, rules: stores.rules, runs: () => stores.jobs.allRuns(), createdBy: () => createdBy() };
 	/**
 	 * A stored push's rows are written: the clock says so before anything else can run (design 3.4).
-	 * A write that fails is logged; that push is derived once more at the next start.
+	 * A write that fails is logged; the next start derives that push once more, or, when no cursor was
+	 * ever written, none.
 	 */
-	const derived = (eventId: string): void => {
-		try { stores.clock.derivePushed(eventId); }
-		catch (error) { log(`push ${eventId} derived, but clock.json could not say so: ${error instanceof Error ? error.message : String(error)}`); }
+	const derived = (seq: number): void => {
+		try { stores.clock.derivePushed(seq); }
+		catch (error) { log(`push #${seq} derived, but clock.json could not say so: ${error instanceof Error ? error.message : String(error)}`); }
 	};
 	const injectDeps: InjectDeps = {
 		events,
@@ -736,7 +737,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			const trigger = cwd ? { ...stored, cwd } : stored;
 			if (delivery === "sub_agent") {
 				const lanes = derivePush(pushDeps, event, trigger, Date.now());
-				derived(event.id);
+				derived(event.seq);
 				for (const lane of lanes) {
 					checks.drain(lane, Date.now()).catch((error) => log(`check lane ${lane}: ${error instanceof Error ? error.message : String(error)}`));
 				}
@@ -749,7 +750,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			return true;
 		},
 		/**
-		 * At start: the pushes of the last five minutes stored after the last one whose rows were written
+		 * At start: the pushes of the last five minutes after the last one whose rows were written
 		 * (`clock.json` `pushes`), so a crash kept their rows from being written: those its server checked
 		 * (the event says so; `subAgent` answers for an event stored before it did), each in the project the
 		 * event names, or in every project with rules. A push whose rows were written is never derived
@@ -758,23 +759,24 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		rederivePushes: (subAgent: (server: string) => boolean): number => {
 			let queued = 0;
 			const now = Date.now();
-			const stored = events.since(now - PUSH_WINDOW_MS);
 			const cursor = stores.clock.pushesDerived();
-			// No cursor: the first start of this version, or a clock.json that was lost. What is stored was
+			const last = events.lastSeq();
+			// No cursor: the first start of this version, or a clock.json that was lost. A cursor past the
+			// last number: events.seq and the log were removed, and numbers start again. What is stored was
 			// derived by a process before it, or never will be: a push is lost before it runs twice.
-			if (cursor === undefined) {
-				derived(stored.at(-1)?.id ?? "");
+			if (cursor === undefined || cursor > last) {
+				derived(last);
 				return 0;
 			}
-			// A cursor not in the window (older than it, or edited by hand): every push in the window is derived.
-			for (const event of stored.slice(stored.findIndex((e) => e.id === cursor) + 1)) {
+			// By the number each event got when it was stored: neither a rotation's copy nor a wall clock changes it.
+			for (const event of events.after(cursor, now - PUSH_WINDOW_MS)) {
 				if (event.receiver.kind !== "background" || !event.source.startsWith("mcp:")) continue;
 				// What its server said when it arrived; an event stored before that was kept is a user-level server's, looked up by name.
 				if (event.delivery !== undefined ? event.delivery !== "sub_agent" : event.project !== undefined || !subAgent(event.source.slice("mcp:".length))) continue;
 				const trigger = pushTrigger(event);
 				if (!trigger) continue;
 				queued += derivePush(pushDeps, event, trigger, now, true).length;
-				derived(event.id);
+				derived(event.seq);
 			}
 			return queued;
 		},

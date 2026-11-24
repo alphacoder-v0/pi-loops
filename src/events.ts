@@ -5,11 +5,14 @@
  * parses or changes it, so a step that read it wrong can read it again. Past `maxBytes` the file is
  * renamed to `events.1.jsonl` (one generation, an older one replaced) and a new file starts with the
  * events a queued row still reads (`keep`), copied as they were; no file is ever rewritten in place.
+ * Each event gets a number under the lock, one more than the last one given (`events.seq` holds
+ * it; a failed append or a crash skips one):
+ * the order of the events stored here, which neither a rotation's copy nor a wall clock changes.
  */
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { withFileLockSync } from "./lock.ts";
+import { withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { stamp } from "./schedule.ts";
 
 export const EVENTS_ROTATE_BYTES = 2_000_000;
@@ -20,6 +23,8 @@ export type ReceiverKind = "background" | "window";
 export interface RawEvent {
 	id: string;
 	received_at: string;
+	/** Its place among the events stored here: larger than the number of any event stored before it. 0 for an event an earlier build stored without one. */
+	seq: number;
 	source: EventSource;
 	receiver: { pid: number; kind: ReceiverKind };
 	/** A push from a project's own server: that project. Absent for a user-level server's push and a gate's reading. */
@@ -33,6 +38,7 @@ export class EventLog {
 	private readonly file: string;
 	private readonly older: string;
 	private readonly lock: string;
+	private readonly counter: string;
 	private readonly maxBytes: number;
 	private readonly kind: ReceiverKind;
 	private readonly keep: () => ReadonlySet<string>;
@@ -44,21 +50,26 @@ export class EventLog {
 		this.file = path.join(dir, "events.jsonl");
 		this.older = path.join(dir, "events.1.jsonl");
 		this.lock = path.join(dir, "events.lock");
+		this.counter = path.join(dir, "events.seq");
 		this.maxBytes = opts.maxBytes ?? EVENTS_ROTATE_BYTES;
 	}
 
 	append(source: EventSource, raw: string, receipt: Pick<RawEvent, "project" | "delivery"> = {}): RawEvent {
-		const event: RawEvent = {
-			id: `evt-${randomBytes(16).toString("hex")}`,
-			received_at: stamp(),
-			source,
-			receiver: { pid: process.pid, kind: this.kind },
-			...(receipt.project !== undefined ? { project: receipt.project } : {}),
-			...(receipt.delivery !== undefined ? { delivery: receipt.delivery } : {}),
-			raw,
-		};
-		const line = `${JSON.stringify(event)}\n`;
-		withFileLockSync(this.lock, () => {
+		return withFileLockSync(this.lock, () => {
+			// The number is written before the event: a crash between the two skips a number, and never gives one twice.
+			const seq = this.lastSeq() + 1;
+			writeFileAtomic(this.counter, `${seq}\n`);
+			const event: RawEvent = {
+				id: `evt-${randomBytes(16).toString("hex")}`,
+				received_at: stamp(),
+				seq,
+				source,
+				receiver: { pid: process.pid, kind: this.kind },
+				...(receipt.project !== undefined ? { project: receipt.project } : {}),
+				...(receipt.delivery !== undefined ? { delivery: receipt.delivery } : {}),
+				raw,
+			};
+			const line = `${JSON.stringify(event)}\n`;
 			let size = 0;
 			try {
 				size = fs.statSync(this.file).size;
@@ -81,8 +92,26 @@ export class EventLog {
 			// A crash during an append leaves a line with no newline. Start on a new line, so the torn
 			// one stays one line that readers skip instead of swallowing this event.
 			fs.appendFileSync(this.file, size > 0 && !endsWithNewline(this.file, size) ? `\n${line}` : line, "utf8");
+			return event;
 		});
-		return event;
+	}
+
+	/** The last number given (0 when none was): `events.seq`, or, when that file is lost or unreadable, the largest in the log. */
+	lastSeq(): number {
+		let text: string | undefined;
+		try {
+			text = fs.readFileSync(this.counter, "utf8");
+		} catch (err: any) {
+			if (err?.code !== "ENOENT") throw err;
+		}
+		const last = Number(text?.trim());
+		if (text !== undefined && Number.isSafeInteger(last) && last >= 0) return last;
+		return this.all().reduce((max, e) => Math.max(max, e.seq), 0);
+	}
+
+	/** The events numbered after `seq`, received at or after `ms`, in the order they were stored. */
+	after(seq: number, ms: number): RawEvent[] {
+		return this.all().filter((e) => e.seq > seq && Date.parse(e.received_at) >= ms).sort((a, b) => a.seq - b.seq);
 	}
 
 	/** Events received at or after `ms`, oldest first, from both generations. */
@@ -125,7 +154,7 @@ function readEvents(file: string): RawEvent[] {
 		if (!line) continue;
 		try {
 			const event = JSON.parse(line);
-			if (typeof event?.id === "string" && typeof event.raw === "string") out.push(event);
+			if (typeof event?.id === "string" && typeof event.raw === "string") out.push(Number.isSafeInteger(event.seq) && event.seq >= 0 ? event : { ...event, seq: 0 });
 		} catch {
 			// A torn line: a crash cut an append short. The events around it are whole.
 		}
