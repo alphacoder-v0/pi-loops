@@ -44,6 +44,11 @@ export interface PushInput {
 	readonly done: (rowId: string) => boolean;
 	readonly createdBy: UnclaimedRow["created_by"];
 	readonly now: number;
+	/**
+	 * `pi-loops events replay`: the row's own id. The push runs again, so no identity window applies,
+	 * no `done` test, and a row that already carries the event does not hold it back.
+	 */
+	readonly replay?: string;
 }
 
 export type PushDecision =
@@ -65,11 +70,12 @@ function laneOf(project: string): string {
 export function decidePush(input: PushInput, rows: readonly Row[]): PushDecision {
 	const lane = laneOf(input.project);
 	const { event, project } = input;
-	const id = pushRowId(event.id, project);
-	if (input.done(id) || rows.some((r) => r.id === id || r.payload?.events?.includes(event.id))) return { kind: "there" };
+	const id = input.replay ?? pushRowId(event.id, project);
+	if (rows.some((r) => r.id === id)) return { kind: "there" };
+	if (input.replay === undefined && (input.done(id) || rows.some((r) => r.payload?.events?.includes(event.id)))) return { kind: "there" };
 
 	const at = Date.parse(event.received_at);
-	const window = input.earlier
+	const window = input.replay !== undefined ? [] : input.earlier
 		.filter((e) => e.key === input.key && e.id !== event.id && at - Date.parse(e.received_at) >= 0 && at - Date.parse(e.received_at) <= PUSH_WINDOW_MS)
 		.sort((a, b) => Date.parse(b.received_at) - Date.parse(a.received_at));
 	for (const e of window) {
@@ -186,10 +192,7 @@ export function derivePush(deps: DeriveDeps, event: RawEvent, trigger: Trigger, 
 			case "there":
 				break;
 			case "queued": {
-				const lost = decision.drop;
-				if (lost) {
-					deps.rules.appendAudit({ cwd: project, type: "trigger", traceId: lost.id, state: "dropped", sourceLabel: lost.source.slice("push:".length), summary: lost.payload?.text, details: { delivery: "sub_agent", row: lost.id, reason: `${MAX_PUSH_ROWS} pushes already waiting for a free slot` } });
-				}
+				if (decision.drop) auditDrop(deps.rules, project, decision.drop);
 				audit(project, decision.row.id, "accepted", { ...accepted, row: decision.row.id });
 				lanes.push(decision.row.lane);
 				break;
@@ -205,6 +208,28 @@ export function derivePush(deps: DeriveDeps, event: RawEvent, trigger: Trigger, 
 				if (!again) audit(project, pushRowId(event.id, project), "deduped", { previous_trace_id: pushRowId(decision.of, project) });
 				break;
 		}
+	}
+	return lanes;
+}
+
+function auditDrop(rules: Pick<TriggerStore, "appendAudit">, project: string, lost: Row): void {
+	rules.appendAudit({ cwd: project, type: "trigger", traceId: lost.id, state: "dropped", sourceLabel: lost.source.slice("push:".length), summary: lost.payload?.text, details: { delivery: "sub_agent", row: lost.id, reason: `${MAX_PUSH_ROWS} pushes already waiting for a free slot` } });
+}
+
+/**
+ * `pi-loops events replay`: the rows of one stored push again, in the projects `derivePush` checks it
+ * in, each with an id of its own (`tag` makes it), so they run although the first ones ran. Each is
+ * audited `accepted` with the event it replays. Returns the lanes it wrote a row in.
+ */
+export function replayPush(deps: Pick<DeriveDeps, "requests" | "rules" | "createdBy">, event: RawEvent, trigger: Trigger, now: number, tag: string): LaneId[] {
+	const lanes: LaneId[] = [];
+	for (const project of pushProjects(deps.rules.load(), trigger.cwd)) {
+		const replay = pushRowId(`${event.id}#replay-${tag}`, project);
+		const decision = writePush(deps.requests, { event, key: trigger.idempotencyKey, policy: trigger.replacementPolicy, label: `${trigger.sourceLabel} / ${trigger.eventLabel}`, sourceLabel: trigger.sourceLabel, project, earlier: [], done: () => false, createdBy: deps.createdBy(), now, replay });
+		if (decision.kind !== "queued") continue;
+		if (decision.drop) auditDrop(deps.rules, project, decision.drop);
+		deps.rules.appendAudit({ cwd: project, type: "trigger", traceId: replay, state: "accepted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery: "sub_agent", evaluator_decision: { outcome: "accept", permission: "allow" }, row: replay, replays: event.id, ...envelopeOf(trigger) } });
+		lanes.push(decision.row.lane);
 	}
 	return lanes;
 }

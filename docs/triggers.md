@@ -115,8 +115,9 @@ reading, and a look that fails, lets the rule through, stored first in `events.j
 that fails leaves it. A rule with a command gate has no `precheck`, so 0.24.2 checks it with the
 model each poll.
 
-Pushed MCP notifications (see [mcp.md](mcp.md)) enter the same runtime and are evaluated against
-the rules unless the server is configured as an `inject_summary` / `inject_and_run` feed.
+A pushed MCP notification (see [mcp.md](mcp.md)) is stored in `events.jsonl` first. Then it is a
+row in the check lane of each project with an enabled rule, and that check evaluates it against the
+rules, unless the server is configured as an `inject_summary` / `inject_and_run` feed.
 
 A rule whose check keeps failing is polled with a widening gap instead of at every interval: after
 three failed checks in a row it waits 1 minute, then 5 minutes, 30 minutes, 2 hours and 6 hours from
@@ -132,24 +133,28 @@ rule is not polled and is not marked. A rule that 0.24.2 wrote with `consecutive
 
 ## What happens when the machine is busy or over budget
 
-A trigger that finds every check slot taken (`[cron] max_concurrent_runs`, default 3) or the day over
-`[limits] daily_budget_usd` is refused before it claims the dedup key, and what happens next depends
-on what was refused:
+Every check is a row of its project's check lane, `requests/<lane>.jsonl`: a periodic check, a
+push and `/triggers run`. The row waits there on disk, so it survives pi-loops stopping and starting
+again.
 
-- A **periodic check** is dropped (`deferred`). The next poll looks at the world again and reaches
-  the same conclusion, so re-running the held one would only check twice.
-- A **push** refused for want of a slot is held in a bounded list (32 events, keyed by idempotency
-  key and project) and retried oldest first on the next scheduler tick — a push is an event that
-  happened once and no server re-sends it. Its audit row says `deferred` with `queued` (`queued`,
-  `replaced` when the envelope's `latest_replaces` policy supersedes one already waiting,
-  `collapsed` when it does not) and the current `pending` depth. The retry goes through dedup,
-  audit and the normal delivery, and its check prompt carries the event's original `received_at`
-  plus `deferred_ms` and a line saying how long it was held, so a time-sensitive rule can re-check
-  before acting. When 32 are already waiting, the **oldest** is dropped with its own `dropped` row.
-- A push refused because the day is **over budget** is dropped (`budget_exceeded`), not held: too
-  busy clears in minutes, but the cap can last until midnight, and acting on the morning's event at
-  23:59 is worse than not acting. The same applies to a held push whose retry finds the cap
-  exceeded. Held pushes live in memory, so they do not survive the process quitting.
+- While every check slot is taken (`[cron] max_concurrent_runs`, default 3), the row waits for a
+  free one. A **periodic check** that comes due while an earlier periodic check or `/triggers run`
+  of the same project waits or runs writes no second row: the next poll looks at the world again
+  and reaches the same conclusion.
+- A **push** waits as a row too, because a push is an event that happened once and no server
+  re-sends it. A second push with the same idempotency key inside five minutes joins the waiting
+  row (audited `deduped`), or takes its place when the envelope's policy is `latest_replaces`
+  (audited `accepted` with `replaces`). At most 32 pushes wait in one lane: when one more
+  arrives, the **oldest** waiting push is dropped with its own `dropped` row. The check prompt carries the event's original `received_at`, so a
+  time-sensitive rule can re-check before acting.
+- A row that would start while the day is **over budget** (`[limits] daily_budget_usd`) leaves its
+  lane with `budget_exceeded`, a push and a periodic check alike. Too busy clears in minutes, but
+  the cap can last until midnight, and acting on the morning's event at 23:59 is worse than not
+  acting.
+
+Each check writes a run record in `runs.jsonl`, so its cost counts toward today's budget, and
+`/cron cost` shows a project's checks as `checks of <directory>`. `pi-loops events replay <id>`
+makes the row of a stored push or gate reading again ([cli.md](cli.md#events)).
 
 ## Promotion and audit
 
@@ -181,9 +186,8 @@ the longest of the project's rules (`--timeout`), else `[triggers] run_timeout_s
 session entries (`trigger`, `trigger_result`, `trigger_promotion`); `/triggers audit [N] [--all]`
 shows this project's rows with decisions and transcript paths. The complete set of states:
 
-- admission — `accepted`, `deduped`, `deferred` (no slot), `dropped` (the held list was full),
-  `budget_exceeded`,
-  `cycle_suppressed` (it reached a sub-agent), `backoff`, `disabled` (the rule's project is gone),
+- admission — `accepted`, `deduped`, `dropped` (32 pushes already waited in the lane),
+  `budget_exceeded`, `backoff`, `disabled` (the rule's project is gone),
   `waiting` (a rule's path is absent: no model call until it exists) and `appeared` (it is back);
 - the run — `running`, then `completed` / `failed` / `aborted`, or `no_rules`;
 - promotion — `promoted` (into this chat, or queued for the conversation), `appended` (pi-loops wrote
@@ -214,8 +218,9 @@ A proposed rule leaves `trigger` rows with the operation as the state too: `add`
 proposes it (source `tool`), `enable` when the person sets it up, and `remove` when the person
 cancels it (source `slash` or `page`).
 
-A 5-minute dedup window collapses repeated events with the same idempotency key (per project for
-rule evaluation, per window for injected pushes).
+A 5-minute identity window collapses repeated pushes with the same idempotency key: per project
+for rule evaluation, per process for injected pushes. For rule evaluation it is read from
+`events.jsonl` and the lane, so it holds across a restart.
 
 ```text
 /triggers             this project's rules; the same as /triggers rules  (--all for every project)
@@ -237,9 +242,10 @@ is stopped through a request (`stop` in `requests/<session>.jsonl`), which that 
 a tick whether or not its socket answers: `/triggers abort <run-id>` says `requested stop for
 <run-id> (session <id>)`. Loop runs and checks, and `--all`, are asked of it over the socket as before.
 
-`/triggers run <id>` takes the same path a periodic check takes — dedup, audit, the check
-sub-agent, promotion — and skips only the poll ledger, which is what running it now means. The
-poll interval is unaffected: the next scheduled check happens when it would have anyway.
+`/triggers run <id>` writes a check row for that one rule in its project's check lane, and pi-loops
+in the background runs it as it runs every check: audit, the check sub-agent, promotion. It skips
+only the wait for the next poll, which is what running it now means. The poll interval is
+unaffected: the next scheduled check happens when it would have anyway.
 
 ## Cycle safety
 
@@ -251,9 +257,8 @@ needs a person, and a sub-agent has nobody to ask. The other
 prompt-class operations — re-enabling a trigger or a cron job — are denied fail-closed in
 sub-agents (no control-plane prompt channel there). `cron_create` works there, and so does disabling a job of the sub-agent's own
 project; the control-plane audit records `actor: sub-agent`. Re-enabling a job and
-touching another project's job are denied there like the other prompt-class operations. Sub-agents never handle triggers themselves: they ignore MCP pushes, and the
-runtime audits anything reaching hop ≥ 1 as `cycle_suppressed` (hops are counted per trace, but the
-bound that matters is structural: a sub-agent session never acts on a trigger at all).
+touching another project's job are denied there like the other prompt-class operations. Sub-agents never handle triggers themselves: they ignore MCP pushes, and a sub-agent
+session never acts on a trigger at all, so the bound is structural.
 
 ## Command output, approvals, promotion
 

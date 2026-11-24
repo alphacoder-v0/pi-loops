@@ -122,3 +122,21 @@ test("[push-cap] a lane holding the most waiting pushes drops its oldest waiting
 	assert.ok(ids.includes(pushRowId("evt-new", a)));
 	assert.equal(ids.length, MAX_PUSH_ROWS + 2);
 });
+
+test("[events-replay] a replay's row has its own id and is written although the event's row is there, its run ended, and a same-key push ran inside the window", () => {
+	const store = new RequestStore(tmp());
+	const a = tmp("push-a-");
+	const lane = checkLane(a)!;
+	const ev = event("evt-1");
+	const earlier = event("evt-old", MIN);
+	writePush(store, push(ev, a));
+	const ran = claimed(queuedRow(push(earlier, a)));
+	fs.appendFileSync(store.file(lane), `${JSON.stringify(ran)}\n`);
+	const replay = pushRowId(`${ev.id}#replay-${stamp(NOW)}`, a);
+	const input = push(ev, a, { replay, done: () => true, earlier: [{ id: earlier.id, key: "build-red", received_at: earlier.received_at }] });
+	assert.equal(writePush(store, input).kind, "queued");
+	const row = store.list(lane).find((r) => r.id === replay);
+	assert.deepEqual([row?.source, row?.payload?.events, row?.payload?.text.startsWith(`[Trigger ${replay}] `)], ["push:ci", [ev.id], true]);
+	assert.deepEqual(writePush(store, input), { kind: "there" }, "the same replay twice is one row");
+	assert.equal(store.list(lane).length, 3);
+});

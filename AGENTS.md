@@ -47,7 +47,9 @@ src/settle.ts               how a plain job's turn ends, as one table: what beco
 src/loop-run.ts              one loop run, its stop record, and its ordered closing writes
 src/ticker.ts               one process timer and its typed, ordered riders
 src/stores.ts               stores of a loops directory, opened once, and job removal
-src/trigger-runtime.ts      dynamic-rule evaluation, deliveries, promotion, audit
+src/push.ts                 what a stored push becomes: a row in each project's check lane, decided over the event log and the lane under its lock, or a delivery into a chat; its replay
+src/check-run.ts            one check of a project's rules: the sub-agent run, its audit rows and findings, its run record in the check lane, its promotions
+src/check-tick.ts           a project's periodic check as a row: the poll interval, the rules' gates, then one `check:` row in the check lane
 src/gate.ts                 a gate: a look before a model is asked (a path's `stat`, a command's digest) and whether it wakes; `pathOnlyCondition`
 src/triggers.ts             rule store, parsing, prompt, dedup window
 src/goal.ts                 /goal: the stop-condition state machine, evaluator prompts, continuation budget
@@ -140,6 +142,9 @@ test/                       node --test; test/fake-runner.ts and test/fake-mcp-s
 test/downstream/            the contract in docs/downstream.md checked from the outside: sh + jq driving `pi-loops`, a loop run in the background against fake-model.mjs, no import of src/; upgrade.sh starts a directory 0.24.2 left
 test/journey/               the journeys J1-J14 (`npm run journey -- J1 …`), `boot.mjs` and `terminal.mjs`, a sandboxed page with a stand-in model (a journey's seed may script it with `answer`)
 test/sim/                   the seeded simulation of the request engine that test/sim.test.ts runs: world.ts (the real engine and stores around a simulated pi, lease, clock and crashes, and what that leaves out), schedule.ts (the steps a seed draws), invariants.ts (what is checked after every step), prng.ts; claims.ts (a lane the background runs: rows a run claims, runs that end in every way, a process that dies at any write), which test/sim-claims.test.ts runs; held.ts (a held turn in a closed conversation: the real closing and settle table around a simulated runner, a window that takes the conversation, a process that dies at any write), which test/sim-held.test.ts runs; clock.ts (interleaved ticker decisions and T2/T3 writes, crashes, row proofs and loop settlement; checks I1: one row per job and slot), which test/sim-clock.test.ts runs
+test/check-lanes.test.ts    the background running a check lane's rows: one record per row, a dead row, the budget, one run at a time, a claim whose process died
+test/push-wiring.test.ts    a push in the background: stored raw first, its rows written again at start, an injecting push deduped against its own process
+test/check-tick.test.ts     the periodic check: one row per project and poll, the collapse onto an active check, the gates, the failure backoff, promotion
 test/tmp.ts                 every test's temporary directory: removed when the test passes, kept and named when it fails (PI_LOOPS_KEEP_TMP=1 keeps all), strays it started ended
 scripts/                    typecheck.mjs, lint.mjs, check-docs.mjs — TypeScript comes through npx, nothing is a dependency
 ```

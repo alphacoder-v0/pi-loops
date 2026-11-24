@@ -86,6 +86,10 @@ All notable changes to pi-loops are documented here. The format follows
   still reads the path and still makes no model call while it is absent. 0.24.2 keeps the `gate`
   field when it writes the file. 0.24.2 ignores a gate that is not a path: such a rule costs it one
   model call each poll, as a rule with no gate does.
+- **A rule's failure count from 0.24.2 is not carried over.** This version counts a project's
+  failed checks in `runs.jsonl`, and 0.24.2 wrote no record for a check. A rule that 0.24.2 marked
+  `[failing ×N]` starts again from zero, and `consecutive_failures` and `last_check_failed_at` in
+  `triggers.json` are ignored.
 
 ### Added
 
@@ -127,8 +131,33 @@ All notable changes to pi-loops are documented here. The format follows
   slot, and checks a rule with a command gate with the model each poll. `CONTRACT.md` 2.2 lists
   `gate` among a recipe job's optional keys. See docs/loops.md, "A gate: no model call while nothing
   changed".
+- **`pi-loops events replay <id>` runs a stored push or gate reading again.** It makes the rows of
+  one event in `events.jsonl` again, with ids of their own: a push gets a check in each project with
+  an enabled rule, a rule's gate reading a check of that rule, and a loop's gate reading a run of
+  that loop. pi-loops in the background runs them. An unknown id, an event that is neither a push nor
+  a gate reading, a push that no enabled rule checks, and a gate whose rule or job is gone are each
+  refused in one line. See docs/cli.md, "events".
 
 ### Changed
+
+- **Pushes and checks wait on disk in each project's check lane, and survive a restart.** A push
+  is stored in `events.jsonl` before anything acts on it, then waits as a row of the check lane of
+  each project with an enabled rule. At most 32 pushes wait in one lane; when one more arrives, the
+  oldest waiting push is dropped with a `dropped` audit row. A periodic check is a row of the same
+  lane, and `/triggers run` writes one, which pi-loops in the background runs. Before, a push that
+  waited for a slot was held in memory and lost when the process quit, and a periodic check that
+  found no slot was dropped as `deferred`. The audit no longer writes `deferred` or
+  `cycle_suppressed`.
+- **A check writes a run record, so its cost counts toward `daily_budget_usd`.** `/cron cost`
+  shows a project's checks as `checks of <directory>`.
+- **A failing project's checks are counted from the run log.** After three failed checks in a row,
+  the project's next checks wait 1 minute, 5 minutes, 30 minutes, 2 hours, then 6 hours: the one
+  table that loops use. `[failing ×N]` in `/triggers rules` counts the project's failed checks.
+  Before, each rule kept its own count in `triggers.json`.
+- **`polls.json` and `dedup.json` are removed at start.** A project's last poll is in `clock.json`,
+  and the five-minute identity window of a push is read from `events.jsonl`.
+- **`/triggers status` no longer shows "cycles stopped".** Nothing writes `cycle_suppressed` now:
+  a sub-agent never acts on a push.
 
 - **A rule that waits for a path keeps its last look in `clock.json`.** How many looks found the
   path absent, and the last look, are no longer in the memory of the process. A restart of pi-loops
