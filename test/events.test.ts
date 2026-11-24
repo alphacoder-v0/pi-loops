@@ -125,3 +125,31 @@ test("[event-log] a torn last line is skipped, and the next append starts a line
 	assert.deepEqual(log.since(0), [whole, after], "the event after the torn line is whole");
 	assert.deepEqual(log.get(after.id), after);
 });
+
+test("[push-crash-none-lost] a rotation carries the events a queued row still names into the new file; a flood of pushes does not take them", () => {
+	const dir = tmp("pi-loops-events-keep-");
+	const kept = new Set<string>();
+	const log = new EventLog(dir, "background", { maxBytes: 2_000, keep: () => kept });
+	const waiting = log.append("mcp:ci", "a push whose row waits for a slot");
+	kept.add(waiting.id);
+	const other = log.append("mcp:ci", "a push already checked");
+	for (let i = 0; i < 40; i++) log.append("mcp:flood", "x".repeat(200));
+	assert.equal(log.get(waiting.id)?.raw, "a push whose row waits for a slot", "still readable after many rotations");
+	assert.equal(log.get(other.id), undefined, "an event no row names goes with its generation");
+	const lines = fs.readFileSync(path.join(dir, "events.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+	assert.equal(lines.filter((e) => e.id === waiting.id).length, 1, "carried once, as it was");
+	assert.deepEqual(lines.find((e) => e.id === waiting.id), JSON.parse(JSON.stringify(waiting)));
+	kept.clear();
+	for (let i = 0; i < 40; i++) log.append("mcp:flood", "x".repeat(200));
+	assert.equal(log.get(waiting.id), undefined, "once no row names it, it ages out");
+});
+
+test("[event-log] a push's receipt is stored beside it: the project its own server pushed for, and its delivery", () => {
+	const dir = tmp("pi-loops-events-receipt-");
+	const log = new EventLog(dir, "background");
+	const own = log.append("mcp:repo", "{}", { project: "/work/a", delivery: "sub_agent" });
+	const plain = log.append("gate:dyn-1", "reading");
+	assert.deepEqual([log.get(own.id)?.project, log.get(own.id)?.delivery], ["/work/a", "sub_agent"]);
+	assert.equal("project" in (log.get(plain.id) ?? {}), false);
+	assert.equal("delivery" in (log.get(plain.id) ?? {}), false);
+});

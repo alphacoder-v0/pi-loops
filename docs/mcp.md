@@ -96,8 +96,9 @@ dropped with a `dropped` audit row. A push with the same idempotency key as one 
 minutes counts once: per project for rule evaluation, and per process for an injected push. The
 window is read from `events.jsonl`, not kept beside it. When pi-loops starts in the background, it
 writes the rows again for the pushes it stored in the last 5 minutes whose rows a stop or a crash
-kept from being written. It does that for user-level servers only: a project's own server's push is
-not written again, because the log does not say which project it was for. `pi-loops events replay
+kept from being written: each stored push names the project its own server pushed for, and whether
+its server checks it or injects it, so only that project's rules see it and an injecting push is never
+checked. While a row waits, the event it names stays in the log, whatever else arrives. `pi-loops events replay
 <id>` runs a stored push again ([cli.md](cli.md#events)). A rule's result goes to the conversation
 that created it (see [triggers.md](triggers.md)). Crashed stdio servers are reconnected with
 exponential backoff, 20 attempts by default, each distinct error reported once (rather than marking them

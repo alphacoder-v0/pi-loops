@@ -615,7 +615,8 @@ async function eventsCommand(positional: string[], loopsDir: string, out: (line:
 		const { loadMcpConfigFiles } = await import("./mcp.ts");
 		const server = event.source.slice("mcp:".length);
 		const cfg = loadMcpConfigFiles({ dir: loopsDir, projectTrusted: false }).servers.find((s) => s.name === server);
-		if (event.receiver.kind === "window" || (cfg && deliveryOf(cfg) !== "sub_agent")) return refuse(`event ${shown} is a push from ${plainLine(server)} that injects into a chat: a replay writes no row for it`);
+		const injected = event.delivery !== undefined ? event.delivery !== "sub_agent" : event.receiver.kind === "window" || (cfg !== undefined && deliveryOf(cfg) !== "sub_agent");
+		if (injected) return refuse(`event ${shown} is a push from ${plainLine(server)} that injects into a chat: a replay writes no row for it`);
 		const lanes = replayPush({ requests: stores.requests, rules: stores.rules, createdBy: () => by }, event, trigger, now, at);
 		if (!lanes.length) return refuse(`event ${shown}: no project has an enabled rule that checks a push`);
 		return said(lanes);

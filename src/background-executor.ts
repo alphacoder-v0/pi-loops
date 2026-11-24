@@ -813,7 +813,9 @@ export function createCheckLanes(deps: CheckLaneDeps): CheckLanes {
 					const event = eventId === undefined ? undefined : deps.events.get(eventId);
 					const stored = event === undefined ? undefined : pushTrigger(event);
 					if (!stored) return leave(row, "dead", eventId === undefined ? "the row names no stored event" : `its stored event ${eventId} is gone or is not a push`);
-					trigger = { ...stored, traceId: row.id, cwd };
+					// Held past one tick: the model is told the event is not now (src/triggers.ts `deferredMs`).
+					const waited = now - Date.parse(event!.received_at);
+					trigger = { ...stored, traceId: row.id, cwd, ...(waited >= 30_000 ? { deferredMs: waited } : {}) };
 					rules = rulesOf(cwd);
 				}
 				if (!rules.length) {

@@ -3,8 +3,8 @@
  *
  * One JSON line per event, appended under `events.lock`. `raw` is the text as given: nothing here
  * parses or changes it, so a step that read it wrong can read it again. Past `maxBytes` the file is
- * renamed to `events.1.jsonl` (one generation, an older one replaced) and a new file starts; no
- * file is ever rewritten in place.
+ * renamed to `events.1.jsonl` (one generation, an older one replaced) and a new file starts with the
+ * events a queued row still reads (`keep`), copied as they were; no file is ever rewritten in place.
  */
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
@@ -22,6 +22,10 @@ export interface RawEvent {
 	received_at: string;
 	source: EventSource;
 	receiver: { pid: number; kind: ReceiverKind };
+	/** A push from a project's own server: that project. Absent for a user-level server's push and a gate's reading. */
+	project?: string;
+	/** What the receiving server's config said to do with a push, when it arrived. */
+	delivery?: "sub_agent" | "inject_summary" | "inject_and_run";
 	raw: string;
 }
 
@@ -31,21 +35,26 @@ export class EventLog {
 	private readonly lock: string;
 	private readonly maxBytes: number;
 	private readonly kind: ReceiverKind;
+	private readonly keep: () => ReadonlySet<string>;
 
-	constructor(dir: string, kind: ReceiverKind, opts: { maxBytes?: number } = {}) {
+	/** `keep`: the ids of the events a queued row still names; a rotation carries them into the new file. */
+	constructor(dir: string, kind: ReceiverKind, opts: { maxBytes?: number; keep?: () => ReadonlySet<string> } = {}) {
 		this.kind = kind;
+		this.keep = opts.keep ?? (() => new Set());
 		this.file = path.join(dir, "events.jsonl");
 		this.older = path.join(dir, "events.1.jsonl");
 		this.lock = path.join(dir, "events.lock");
 		this.maxBytes = opts.maxBytes ?? EVENTS_ROTATE_BYTES;
 	}
 
-	append(source: EventSource, raw: string): RawEvent {
+	append(source: EventSource, raw: string, receipt: Pick<RawEvent, "project" | "delivery"> = {}): RawEvent {
 		const event: RawEvent = {
 			id: `evt-${randomBytes(16).toString("hex")}`,
 			received_at: stamp(),
 			source,
 			receiver: { pid: process.pid, kind: this.kind },
+			...(receipt.project !== undefined ? { project: receipt.project } : {}),
+			...(receipt.delivery !== undefined ? { delivery: receipt.delivery } : {}),
 			raw,
 		};
 		const line = `${JSON.stringify(event)}\n`;
@@ -57,8 +66,17 @@ export class EventLog {
 				if (err?.code !== "ENOENT") throw err;
 			}
 			if (size > 0 && size + Buffer.byteLength(line, "utf8") > this.maxBytes) {
+				// The events a waiting row still names go on in the new file: a row whose event is gone
+				// can only leave dead, and a flood of pushes must not cost the ones already queued.
+				const kept = this.keep();
+				const carried = kept.size ? readEvents(this.file).filter((e) => kept.has(e.id)) : [];
 				fs.renameSync(this.file, this.older);
 				size = 0;
+				if (carried.length) {
+					const text = carried.map((e) => `${JSON.stringify(e)}\n`).join("");
+					fs.appendFileSync(this.file, text, "utf8");
+					size = Buffer.byteLength(text, "utf8");
+				}
 			}
 			// A crash during an append leaves a line with no newline. Start on a new line, so the torn
 			// one stays one line that readers skip instead of swallowing this event.

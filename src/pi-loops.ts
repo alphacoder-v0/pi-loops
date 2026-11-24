@@ -75,7 +75,7 @@ import { HOST_LOG, crashPaused, crashPauseText, decideEviction, ensureHost, evic
 import { summarizeSessionFile } from "./transcript.ts";
 import { type PromoteTarget, promotionToInbox, checkSessionDir } from "./check-run.ts";
 import { EventLog, type RawEvent } from "./events.ts";
-import { type TriggerOutcome, deliveryOf, injectPush, pushTrigger, rawPush } from "./push.ts";
+import { type TriggerOutcome, deliveryOf, eventsInRows, injectPush, pushTrigger, rawPush } from "./push.ts";
 import { checkRow, ruleLook } from "./check-tick.ts";
 import { scheduleAudit } from "./job-tune.ts";
 import { type Trigger, auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTrigger, resolveRuleRef } from "./triggers.ts";
@@ -348,7 +348,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		return handOverTarget(written, result, trigger.traceId);
 	};
 	/** The pushes this window received, stored before it acts on any (design 3.4). */
-	const windowEvents = new EventLog(dir, "window");
+	const windowEvents = new EventLog(dir, "window", { keep: () => eventsInRows(requests) });
 	const triggerLog = (msg: string): void => {
 		log.info(`triggers: ${msg}`);
 		if (lastCtx?.hasUI) lastCtx.ui.notify(`[triggers] ${msg}`, /failed|disabled|not run/.test(msg) ? "warning" : "info");
@@ -497,7 +497,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					// Stored first (design 3.4), then mapped: a push with no dedup key stays in the log only.
 					let event: RawEvent;
 					try {
-						event = windowEvents.append(`mcp:${cfg.name}`, rawPush(n));
+						event = windowEvents.append(`mcp:${cfg.name}`, rawPush(n), { delivery });
 					} catch (err: any) {
 						triggerLog(`push from ${cfg.name} not acted on: it could not be stored first (${err?.message ?? err})`);
 						return;
@@ -2474,9 +2474,10 @@ export default function piLoops(pi: ExtensionAPI) {
 						// background runs it as it runs every check (src/check-tick.ts), and hears the write.
 						const row = checkRow(rule.cwd, [rule.id], createdBy(), Date.now());
 						requests.appendIfAbsent(row);
-						show(ctx, `checking trigger ${rule.id} now (trace ${row.id.slice(0, 8)})`, [
+						const running = !!liveHostRecord();
+						show(ctx, running ? `checking trigger ${rule.id} now (trace ${row.id.slice(0, 8)})` : `trigger ${rule.id} will be checked when pi-loops runs in the background (trace ${row.id.slice(0, 8)})`, [
 							`  condition: ${previewRedacted(rule.condition, 120)}`,
-							"  the result appears here when the check finishes — /triggers running shows it meanwhile",
+							running ? "  the result appears here when the check finishes — /triggers running shows it meanwhile" : "  pi-loops is not running in the background: pi-loops start runs it",
 						]);
 						return;
 					}

@@ -90,6 +90,9 @@ All notable changes to pi-loops are documented here. The format follows
   failed checks in `runs.jsonl`, and 0.24.2 wrote no record for a check. A rule that 0.24.2 marked
   `[failing ×N]` starts again from zero, and `consecutive_failures` and `last_check_failed_at` in
   `triggers.json` are ignored.
+- **The first poll after the upgrade checks every project with enabled rules at once.** 0.24.2 kept
+  each project's last poll in `polls.json`, which is removed, not read: one model call per project,
+  even when 0.24.2 checked it a minute before.
 
 ### Added
 
@@ -147,7 +150,9 @@ All notable changes to pi-loops are documented here. The format follows
   lane, and `/triggers run` writes one, which pi-loops in the background runs. Before, a push that
   waited for a slot was held in memory and lost when the process quit, and a periodic check that
   found no slot was dropped as `deferred`. The audit no longer writes `deferred` or
-  `cycle_suppressed`.
+  `cycle_suppressed`. A check whose process died while it ran is recorded as interrupted and is not
+  run again: it may already have acted (posted, deployed, fired a fire-once rule). A push that waited
+  past a tick is checked with the note that it is not now.
 - **A check writes a run record, so its cost counts toward `daily_budget_usd`.** `/cron cost`
   shows a project's checks as `checks of <directory>`.
 - **A failing project's checks are counted from the run log.** After three failed checks in a row,

@@ -1456,7 +1456,10 @@ export async function closeRun(store: RequestStore, sinks: EngineSinks, row: Cla
 	const closed = end;
 	// Whether the prompt is in the conversation. A run that ended spends its slot either way (the
 	// table of `settle`); a run that did not end is delivered only when its prompt is there.
-	const written = landed(row, proof);
+	// A check lane's run counts as written once claimed: its sub-agent may already have acted (posted,
+	// deployed, fired a fire-once rule), so a run its process lost is recorded and never asked again, as
+	// main lost such a push rather than run it twice.
+	const written = parseLane(row.lane)?.kind === "check" || landed(row, proof);
 	const named = jobId === undefined ? undefined : sinks.ledger.load().find((j) => j.id === jobId);
 	const settlement = settle(named, closed, written, jobId === undefined ? { streak: 0, interrupted: 0 } : sinks.counts(jobId));
 	const job = named && settlement.disable ? (await sinks.ledger.disable(named.id, settlement.disable)) ?? named : named;

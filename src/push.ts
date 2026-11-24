@@ -141,7 +141,8 @@ export function pushTrigger(event: RawEvent): Trigger | undefined {
 	if (!n || typeof n !== "object" || typeof (n as { method?: unknown }).method !== "string") return undefined;
 	const { method, params } = n as { method: string; params?: unknown };
 	const trigger = mapNotification(event.source.slice("mcp:".length), { method, params });
-	return trigger && { ...trigger, traceId: event.id, receivedAt: event.received_at };
+	// A project's own server pushed for that project only (`project`, stored with the event).
+	return trigger && { ...trigger, traceId: event.id, receivedAt: event.received_at, ...(event.project !== undefined ? { cwd: event.project } : {}) };
 }
 
 /** The pushes among `events` with their keys, for `PushInput.earlier`: an event that maps to no trigger is left out. */
@@ -159,6 +160,8 @@ export interface DeriveDeps {
 	/** The run log: a row whose run has a record is done. */
 	readonly runs: () => readonly RunRecord[];
 	readonly createdBy: () => UnclaimedRow["created_by"];
+	/** Whether a row of this id was written once (its `accepted` audit row): a start's derivation leaves it, however it left its lane. */
+	readonly written?: (rowId: string) => boolean;
 }
 
 /** The projects a push is checked in: `cwd` for a project's own server, else every project with an enabled rule. */
@@ -186,6 +189,9 @@ export function derivePush(deps: DeriveDeps, event: RawEvent, trigger: Trigger, 
 	const done = (rowId: string): boolean => (records ??= deps.runs()).some((r) => r.runId === rowId);
 	const lanes: LaneId[] = [];
 	for (const project of projects) {
+		// Again at start: a row that was written once is not written twice. It may have left refused
+		// (over budget, dropped, dead) with no run record to prove it.
+		if (again && deps.written?.(pushRowId(event.id, project))) continue;
 		const decision = writePush(deps.requests, { event, key: trigger.idempotencyKey, policy: trigger.replacementPolicy, label: `${trigger.sourceLabel} / ${trigger.eventLabel}`, sourceLabel: trigger.sourceLabel, project, earlier, done, createdBy: deps.createdBy(), now });
 		const accepted = { delivery: "sub_agent", evaluator_decision: { outcome: "accept", permission: "allow" } };
 		switch (decision.kind) {
@@ -313,4 +319,11 @@ export async function deliverInjectAndRun(deps: Pick<InjectDeps, "audit" | "inje
 	const target = await deps.injectAndRun(prompt, trigger);
 	deps.audit.appendAudit({ cwd: trigger.cwd ?? "", type: "trigger_result", traceId: trigger.traceId, state: "completed", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery: "inject_and_run", prefix_injected: true, cost_usd: 0, to: target, ...envelopeOf(trigger) } });
 	return { trigger, delivery: "inject_and_run", ok: true, matchedRules: [], summary: trigger.payloadSummary ?? "", durationMs: deps.now() - start, cost: 0, promoted: target !== "inbox" };
+}
+
+/** The ids of the stored events a row of any lane still names (`payload.events`): what a rotation of `events.jsonl` keeps. */
+export function eventsInRows(requests: Pick<RequestStore, "lanes" | "list">): ReadonlySet<string> {
+	const ids = new Set<string>();
+	for (const lane of requests.lanes()) for (const row of requests.list(lane.id)) for (const id of row.payload?.events ?? []) ids.add(id);
+	return ids;
 }

@@ -115,3 +115,21 @@ test("[events-replay] an unknown id, an event that is no push or gate reading, a
 	for (const [id, line] of cases) assert.deepEqual(await s.replay(id), { code: 1, lines: [line] }, id);
 	assert.deepEqual(fs.readdirSync(s.dir).filter((f) => f.startsWith("requests")).flatMap((d) => fs.readdirSync(path.join(s.dir, d))), [], "nothing written");
 });
+
+test("[events-replay] a project's own server's push is replayed in that project only; one its server injected is refused", async () => {
+	const s = shell();
+	const a = path.join(s.dir, "a");
+	const b = path.join(s.dir, "b");
+	fs.mkdirSync(a);
+	fs.mkdirSync(b);
+	const rules = new TriggerStore(s.dir);
+	await rules.add({ condition: "c", action: "x", cwd: a });
+	await rules.add({ condition: "c", action: "x", cwd: b });
+	const own = s.events.append("mcp:repo", note("k1"), { project: a, delivery: "sub_agent" });
+	const fed = s.events.append("mcp:repo", note("k2"), { project: a, delivery: "inject_summary" });
+	const out = await s.replay(own.id);
+	assert.equal(out.code, 0, out.lines.join("\n"));
+	assert.equal(new RequestStore(s.dir).list(checkLane(a)!).length, 1);
+	assert.deepEqual(new RequestStore(s.dir).list(checkLane(b)!), [], "the other project's rules never see it");
+	assert.deepEqual(await s.replay(fed.id), { code: 1, lines: [`event ${fed.id} is a push from repo that injects into a chat: a replay writes no row for it`] });
+});

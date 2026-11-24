@@ -208,7 +208,7 @@ export function renderDynamicTriggerPrompt(trigger: Trigger, rules: DynamicTrigg
 	const held =
 		trigger.deferredMs === undefined
 			? ""
-			: `This event was held ${Math.round(trigger.deferredMs / 1000)}s while other checks were running: \`received_at\` is when it happened, which is not now. Re-check anything time-sensitive before acting on it.\n\n`;
+			: `This event was held ${Math.round(trigger.deferredMs / 1000)}s before this check (other checks were running, or pi-loops was stopped): \`received_at\` is when it happened, which is not now. Re-check anything time-sensitive before acting on it.\n\n`;
 	return (
 		`A trigger check event arrived.\n\nEvent:\n${triggerJson}\n\n${held}Dynamic trigger rules:\n${rulesJson}\n\n` +
 		"Evaluate each rule's natural-language condition. For source-specific events, compare the rule against the event. For `local:dynamic` periodic checks, inspect current local or remote state with the available tools whenever the condition depends on filesystem state, paths, environment variables, shell expansion, command output, clock time, network/API state, or any fact not already present in the Event JSON. Do not report no match for those conditions until after the needed inspection. " +

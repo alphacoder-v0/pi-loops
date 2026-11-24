@@ -92,7 +92,7 @@ test("[push-crash-none-lost] a crash after the row is written and before a claim
 	noneLost(s, next, 1);
 });
 
-test("[push-crash-none-lost] a crash after the claim and before a record: the row closes interrupted, waits its backoff, then runs once", async () => {
+test("[push-crash-none-lost] a crash after the claim and before a record: the row closes interrupted and is never run again, since its sub-agent may have acted", async () => {
 	const s = await crashed();
 	s.writeRow(s.event);
 	const started = new Date(Date.now() - 60_000).toISOString();
@@ -100,13 +100,10 @@ test("[push-crash-none-lost] a crash after the claim and before a record: the ro
 	const next = restart(s);
 	await settle(s, next);
 	const interrupted = next.host.stores.jobs.allRuns().filter((r) => r.runId === s.rowId);
-	assert.deepEqual(interrupted.map((r) => [r.jobId, r.startedAt, r.ok, r.interrupted]), [[s.lane, started, false, true]], "one interrupted record under the lane");
-	const [waiting] = s.requests.list(s.lane);
-	assert.deepEqual([waiting?.id, waiting?.run, waiting?.attempts, waiting?.not_before !== undefined], [s.rowId, undefined, 1, true], "the push waits its backoff");
-	assert.equal(next.calls.length, 0, "not before its backoff");
-	assert.ok(s.requests.update(s.lane, s.rowId, { not_before: new Date(Date.now() - 1000).toISOString() }));
+	assert.deepEqual(interrupted.map((r) => [r.jobId, r.startedAt, r.ok, r.interrupted]), [[s.lane, started, false, true]], "one interrupted record under the lane: the project's failure streak counts it");
+	assert.deepEqual(s.requests.list(s.lane), [], "the row left its lane");
 	await settle(s, next);
-	noneLost(s, next, 1);
+	assert.equal(next.calls.length, 0, "never run again: a check that started may have posted, deployed or fired a fire-once rule");
 });
 
 test("[push-crash-none-lost] a crash after the run's ok record and before the row is removed: the row leaves with no second run", async () => {

@@ -90,3 +90,55 @@ test("[push-window-inject] an injecting push is stored with its receiver, delive
 	assert.equal(inboxed?.promoted, false);
 	assert.equal((audit.listAudit(10, (r) => r.traceId === fifth.id && r.type === "trigger_result")[0]?.details as any)?.to, "inbox");
 });
+
+test("[push-rederive-on-start] a project's own server's push is written again in that project only, and an injecting one is never checked", async () => {
+	const b = await background();
+	const other = path.join(b.dir, "other");
+	fs.mkdirSync(other);
+	await b.host.stores.rules.add({ condition: "something else", action: "x", cwd: other });
+	const events = new EventLog(b.dir, "background");
+	const own = events.append("mcp:repo", JSON.stringify(note("k1")), { project: b.project, delivery: "sub_agent" });
+	events.append("mcp:repo", JSON.stringify(note("k2")), { project: b.project, delivery: "inject_summary" });
+	// No user-level server is named "repo": the event says what it is.
+	assert.equal(b.host.rederivePushes(() => false), 1);
+	assert.deepEqual(b.requests.list(b.lane).map((r) => r.id), [pushRowId(own.id, b.project)]);
+	assert.deepEqual(b.requests.list(checkLane(other)!), [], "another project's rules never see it");
+});
+
+test("[push-crash-none-lost] through receivePush: a project's push is stored with its project, and a flood of large pushes leaves the event of a row that still runs readable", async () => {
+	const dir = tmp("pi-loops-push-flood-");
+	const project = path.join(dir, "project");
+	fs.mkdirSync(project, { recursive: true });
+	let release!: () => void;
+	const held = new Promise<void>((resolve) => (release = resolve));
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: async () => { await held; return { ok: true, exitCode: 0, timedOut: false, text: "nothing matched", usage: USAGE }; }, mcpTools: () => [], log: () => undefined });
+	await host.stores.rules.add({ condition: "a build fails", action: "say so", cwd: project });
+	const events = new EventLog(dir, "background");
+	try {
+		assert.equal(host.receivePush("repo", "sub_agent", note("k1"), project), true);
+		const [first] = events.since(0);
+		assert.deepEqual([first.project, first.delivery], [project, "sub_agent"], "the receipt is stored with the push");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const lane = checkLane(project)!;
+		assert.equal(new RequestStore(dir).list(lane).filter((r) => r.run).length, 1, "its check runs and holds its row");
+		// A server with no rule pushing 3 MB: two rotations of a 2 MB log.
+		for (let i = 0; i < 6; i++) host.receivePush("noisy", "sub_agent", { method: "x/y", params: { _meta: { pi_dedup_key: `n${i}` }, data: "x".repeat(500_000) } });
+		assert.equal(events.get(first.id)?.raw, JSON.stringify(note("k1")), "the running row's event survived the flood");
+	} finally {
+		release();
+		await host.drain(5000);
+	}
+});
+
+test("[push-rederive-on-start] a push whose row was written once and left refused (over budget, dropped, dead) is not written again at start", async () => {
+	const b = await background();
+	const events = new EventLog(b.dir, "background");
+	const refused = events.append("mcp:ci", JSON.stringify(note("k9")), { delivery: "sub_agent" });
+	const rowId = pushRowId(refused.id, b.project);
+	// As derivePush audits a row it wrote; the row then left with `budget_exceeded`, which writes no run record.
+	b.host.stores.rules.appendAudit({ cwd: b.project, type: "trigger", traceId: rowId, state: "accepted", sourceLabel: "mcp:ci", details: { row: rowId } });
+	b.host.stores.rules.appendAudit({ cwd: b.project, type: "trigger", traceId: rowId, state: "budget_exceeded", sourceLabel: "mcp:ci", details: { row: rowId } });
+	assert.equal(b.host.rederivePushes(() => true), 0);
+	assert.deepEqual(b.requests.list(b.lane), []);
+});
+

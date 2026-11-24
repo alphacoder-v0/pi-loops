@@ -123,7 +123,7 @@ test("[check-lanes-removed-jobs] the removed-jobs rider leaves a check lane's ru
 	assert.equal(ctrl.signal.aborted, false);
 });
 
-test("[check-lanes-interrupted] a push row claimed by a process that died is closed with an interrupted record under its lane, and waits its backoff to run again", async () => {
+test("[check-lanes-interrupted] a push row claimed by a process that died is closed with an interrupted record under its lane, and is not run again", async () => {
 	const s = await scene();
 	const { rowId } = s.push();
 	const [row] = s.requests.list(s.lane);
@@ -131,9 +131,21 @@ test("[check-lanes-interrupted] a push row claimed by a process that died is clo
 	await s.tick();
 	const interrupted = s.host.stores.jobs.allRuns().find((r) => r.runId === rowId && r.interrupted);
 	assert.equal(interrupted?.jobId, s.lane, "the project's failure streak counts it");
-	const [again] = s.requests.list(s.lane);
-	assert.equal(again?.id, rowId, "the push is not lost");
-	assert.deepEqual([again.run, again.attempts, again.not_before !== undefined], [undefined, 1, true], "unclaimed, one attempt, waiting its backoff");
-	assert.equal(s.calls.length, 0, "not before its backoff");
+	assert.deepEqual(s.requests.list(s.lane), [], "the row left its lane: its check may have acted before the process died");
+	await s.tick();
+	assert.equal(s.calls.length, 0, "never run a second time");
+});
+
+test("[check-lanes-run] a push that waited past a tick is checked with the note that it is not now", async () => {
+	const s = await scene();
+	s.push();
+	const [row] = s.requests.list(s.lane);
+	const file = path.join(s.dir, "events.jsonl");
+	const old = new Date(Date.now() - 10 * 60_000).toISOString();
+	fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace(/"received_at":"[^"]+"/, `"received_at":"${old}"`));
+	assert.ok(row);
+	await s.tick();
+	assert.equal(s.calls.length, 1);
+	assert.match(s.calls[0].prompt, /This event was held \d+s before this check/);
 });
 

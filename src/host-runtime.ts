@@ -46,7 +46,7 @@ import { auditCronFinish, auditCronStart, controlPlanePreflight } from "./trigge
 import { shortSessionId } from "./session-head.ts";
 import { DEAD_SESSION_MARKER } from "./convert-v2.ts";
 import { EventLog, type RawEvent } from "./events.ts";
-import { type DeriveDeps, type InjectDeps, PUSH_WINDOW_MS, type PushDelivery, derivePush, injectPush, pushTrigger, rawPush } from "./push.ts";
+import { type DeriveDeps, type InjectDeps, PUSH_WINDOW_MS, type PushDelivery, derivePush, eventsInRows, injectPush, pushTrigger, rawPush } from "./push.ts";
 
 export interface HostRuntimeDeps {
 	dir: string;
@@ -290,7 +290,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	};
 	const loopLog = (message: string, level?: "info" | "warning", job?: Pick<LoopJob, "cwd">): void => { log(redact(message)); if (level !== "info") notice(message, job?.cwd); };
 	/** What arrived from outside, stored before anything reads it: a loop's or a rule's gate reading. */
-	const events = new EventLog(dir, "background");
+	const events = new EventLog(dir, "background", { keep: () => eventsInRows(stores.requests) });
 	/** A gate's command is judged as an unattended run's is: this loops directory, and the allowlist the guard reads. */
 	const gatePolicy = (): GatePolicy => ({ loopsDir: dir, allowCommands: deps.config().allowCommands });
 	// One for the process: a look whose time could not be written is held here for its minute.
@@ -356,7 +356,10 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		log: (message) => log(redact(message)),
 	});
 	/** What a push becomes here (src/push.ts): its rows, or its delivery into a chat. */
-	const pushDeps: DeriveDeps = { requests: stores.requests, events, rules: stores.rules, runs: () => stores.jobs.allRuns(), createdBy: () => createdBy() };
+	const pushDeps: DeriveDeps = {
+		requests: stores.requests, events, rules: stores.rules, runs: () => stores.jobs.allRuns(), createdBy: () => createdBy(),
+		written: (rowId) => stores.rules.listAudit(Number.MAX_SAFE_INTEGER, (r) => r.traceId === rowId && r.state === "accepted").length > 0,
+	};
 	const injectDeps: InjectDeps = {
 		events,
 		audit: stores.rules,
@@ -718,7 +721,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		 */
 		receivePush: (server: string, delivery: PushDelivery, n: McpNotification, cwd?: string, inject = true): boolean => {
 			let event: RawEvent;
-			try { event = events.append(`mcp:${server}`, rawPush(n)); }
+			try { event = events.append(`mcp:${server}`, rawPush(n), { ...(cwd ? { project: cwd } : {}), delivery }); }
 			catch (error) {
 				log(`push from ${server} not acted on: it could not be stored first (${error instanceof Error ? error.message : String(error)})`);
 				return true;
@@ -740,14 +743,16 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		},
 		/**
 		 * At start: the pushes of the last five minutes this process stored and whose rows a crash may have
-		 * kept from being written. Only a user-level server's (`subAgent` says which are checked): the log
-		 * does not say which project a project's own server pushed for.
+		 * kept from being written: those its server checked (the event says so; `subAgent` answers for an
+		 * event stored before it did), each in the project the event names, or in every project with rules.
 		 */
 		rederivePushes: (subAgent: (server: string) => boolean): number => {
 			let queued = 0;
 			const now = Date.now();
 			for (const event of events.since(now - PUSH_WINDOW_MS)) {
-				if (event.receiver.kind !== "background" || !event.source.startsWith("mcp:") || !subAgent(event.source.slice("mcp:".length))) continue;
+				if (event.receiver.kind !== "background" || !event.source.startsWith("mcp:")) continue;
+				// What its server said when it arrived; an event stored before that was kept is a user-level server's, looked up by name.
+				if (event.delivery !== undefined ? event.delivery !== "sub_agent" : event.project !== undefined || !subAgent(event.source.slice("mcp:".length))) continue;
 				const trigger = pushTrigger(event);
 				if (!trigger) continue;
 				queued += derivePush(pushDeps, event, trigger, now, true).length;
