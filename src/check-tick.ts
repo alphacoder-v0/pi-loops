@@ -6,10 +6,9 @@
  */
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { failurePause } from "./backoff.ts";
-import type { GateClocks } from "./clock.ts";
+import type { ClockStore, GateClocks } from "./clock.ts";
 import { modeOf } from "./engine.ts";
 import type { EventLog } from "./events.ts";
 import { type CommandGate, GATE_LOOK_EVERY_MS, type GatePolicy, type PathGate, type PathState, PathLooks, gateDecision, gateOf, lookCommand, pathReading } from "./gate.ts";
@@ -18,7 +17,7 @@ import { type LaneId, checkLane } from "./lane.ts";
 import { plainLine, redact } from "./redact.ts";
 import type { RequestStore, UnclaimedRow } from "./requests.ts";
 import { stamp } from "./schedule.ts";
-import { type DynamicTriggerRule, type PollLedger, type TriggerStore, newTraceId } from "./triggers.ts";
+import { type DynamicTriggerRule, type TriggerStore, newTraceId } from "./triggers.ts";
 
 /** The ticker's interval (src/ticker.ts, 30 s): no poll comes sooner. */
 export const POLL_TICK_MS = 30_000;
@@ -29,11 +28,10 @@ export const CHECK_SOURCE = "check:local:dynamic";
 export interface CheckTickDeps {
 	readonly rules: Pick<TriggerStore, "load" | "setEnabled" | "appendAudit">;
 	readonly requests: Pick<RequestStore, "appendIfAbsent">;
-	readonly clock: GateClocks;
+	/** The gates' readings, and each project's poll (`clock.json` `checks`). */
+	readonly clock: GateClocks & Pick<ClockStore, "claimCheck">;
 	readonly events: Pick<EventLog, "append">;
 	readonly gatePolicy: () => GatePolicy;
-	/** The poll interval's claim per project (`polls.json`). */
-	readonly ledger: Pick<PollLedger, "claim">;
 	readonly pollIntervalSecs: () => number;
 	/** The run log folded per job: a project's checks are under its lane (src/check-run.ts). */
 	readonly history: () => ReadonlyMap<string, JobHistory>;
@@ -150,7 +148,6 @@ export function createCheckTick(deps: CheckTickDeps): CheckTick {
 
 	return {
 		async tick(now) {
-			const host = os.hostname();
 			const rules = deps.rules.load().filter((r) => r.enabled && !r.proposed);
 			if (!rules.length) return;
 			const byCwd = new Map<string, DynamicTriggerRule[]>();
@@ -178,7 +175,7 @@ export function createCheckTick(deps: CheckTickDeps): CheckTick {
 					}
 					continue;
 				}
-				if (!(await deps.ledger.claim(`${host}:${cwd}`, now, deps.pollIntervalSecs() * 1000))) continue;
+				if (!deps.clock.claimCheck(lane, now, deps.pollIntervalSecs() * 1000)) continue;
 				// After the claim, so a gated rule is looked at once per poll, as a model check would be.
 				const gated = await Promise.all(group.map((r) => lookGate(cwd, r, now)));
 				const due = group.filter((_, i) => gated[i]?.decision !== "hold");

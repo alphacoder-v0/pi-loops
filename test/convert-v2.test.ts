@@ -34,7 +34,7 @@ function seeded(): { dir: string; kept: Record<string, string> } {
 }
 
 test("The files that older versions left are next-runs.json, scheduler.json and presence.", () => {
-	assert.deepEqual([...RETIRED_FILES].sort(), ["next-runs.json", "presence", "scheduler.json"]);
+	assert.deepEqual([...RETIRED_FILES].sort(), ["next-runs.json", "polls.json", "presence", "scheduler.json"]);
 });
 
 test("convertStores removes every retired file and says which ones it removed.", () => {
@@ -76,7 +76,7 @@ test("convertStores does not throw when the loops directory cannot be read: it r
 	} finally {
 		fs.chmodSync(dir, 0o700);
 	}
-	assert.equal(said.length, 3);
+	assert.equal(said.length, RETIRED_FILES.length, "one line for each retired name");
 	assert.equal(fs.existsSync(path.join(dir, "scheduler.json")), true);
 });
 

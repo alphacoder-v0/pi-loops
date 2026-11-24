@@ -42,7 +42,7 @@ import { type ToolHost, automationTools, controlTarget, createLoopJob } from "./
 import type { GuardSeats } from "./guard.ts";
 import { TriggerRuntime } from "./trigger-runtime.ts";
 import { checkSessionDir, promotionToInbox } from "./check-run.ts";
-import { PollLedger, auditCronFinish, auditCronStart, controlPlanePreflight } from "./triggers.ts";
+import { auditCronFinish, auditCronStart, controlPlanePreflight } from "./triggers.ts";
 import { shortSessionId } from "./session-head.ts";
 import { DEAD_SESSION_MARKER } from "./convert-v2.ts";
 import { EventLog, type RawEvent } from "./events.ts";
@@ -345,7 +345,6 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		clock: stores.clock,
 		events,
 		gatePolicy,
-		ledger: new PollLedger(path.join(dir, "polls.json")),
 		pollIntervalSecs: () => deps.config().triggerPollIntervalSecs,
 		history: () => runHistory(stores.jobs.allRuns()),
 		createdBy: () => createdBy(),

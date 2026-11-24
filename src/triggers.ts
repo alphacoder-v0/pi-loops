@@ -564,54 +564,6 @@ export function resolveRuleRef(rules: DynamicTriggerRule[], ref: string, opts?: 
 /** A slot nobody has claimed for a day is a session that is gone; drop it on the next write. */
 export const POLL_LEDGER_TTL_MS = 24 * 60 * 60_000;
 
-/**
- * When each project was last checked, shared by every pi process on the machine so a check
- * runs once per poll interval no matter which process owns the project at that moment.
- */
-export class PollLedger {
-	private readonly file?: string;
-	private readonly mem = new Map<string, number>();
-	constructor(file?: string) {
-		this.file = file;
-	}
-
-	/**
-	 * True (and the slot is taken) when `key` has not been claimed inside `intervalMs`. The key is a
-	 * composite ownership key, not a directory: host, project and — when the creating session is
-	 * still open — that session, so two windows in one repo each check their own rules once per
-	 * interval while a hand-over of a project's own rules still never double-checks.
-	 */
-	async claim(key: string, now: number, intervalMs: number): Promise<boolean> {
-		if (!this.file) return this.claimMap(this.mem, key, now, intervalMs);
-		const file = this.file;
-		return withFileLock(`${file}.lock`, () => {
-			let map = new Map<string, number>();
-			try {
-				map = new Map(Object.entries(JSON.parse(fs.readFileSync(file, "utf8"))).map(([k, v]) => [k, Number(v)]));
-			} catch {
-				/* fresh */
-			}
-			const ok = this.claimMap(map, key, now, intervalMs);
-			if (ok) {
-				// Slots embed the creating session id, so every session that ever owned a rule left a
-				// permanent entry in a file that is read, parsed and rewritten on every tick.
-				for (const [k, v] of map) if (now - v > POLL_LEDGER_TTL_MS) map.delete(k);
-				writeFileAtomic(file, JSON.stringify(Object.fromEntries(map)));
-			}
-			return ok;
-		});
-	}
-
-	private claimMap(map: Map<string, number>, key: string, now: number, intervalMs: number): boolean {
-		// A stamp from the future (a corrected clock, another machine on a synced $HOME) would block
-		// every future poll; treat it as "just now" so the next interval is honoured and no more.
-		const last = clampFuture(map.get(key), now);
-		if (last !== undefined && now - last < intervalMs) return false;
-		map.set(key, now);
-		return true;
-	}
-}
-
 /* ------------------------------------------------------------- dedup */
 
 /**

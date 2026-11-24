@@ -25,7 +25,6 @@ import {
 	DEFAULT_TRIGGER_POLL_INTERVAL_SECS,
 	DedupWindow,
 	NO_MATCH_SENTINEL,
-	PollLedger,
 	type DynamicTriggerRule,
 	type Trigger,
 	TriggerStore,
@@ -141,7 +140,6 @@ export class TriggerRuntime {
 	private readonly now: () => number;
 	private readonly dedup: DedupWindow;
 	/** Pushes that inject into this window are deduplicated here only: every window reacts. */
-	private readonly ledger: PollLedger;
 	private readonly hop: number;
 	/** Mutable so a config reload at session start takes effect. */
 	runTimeoutMs: number;
@@ -179,7 +177,6 @@ export class TriggerRuntime {
 		this.now = opts.now ?? Date.now;
 		this.pollIntervalSecs = opts.pollIntervalSecs ?? DEFAULT_TRIGGER_POLL_INTERVAL_SECS;
 		this.dedup = new DedupWindow(undefined, opts.dedupFile);
-		this.ledger = new PollLedger(opts.dedupFile ? path.join(path.dirname(opts.dedupFile), "polls.json") : undefined);
 		this.hop = opts.hop ?? 0;
 		this.runTimeoutMs = opts.runTimeoutMs ?? DEFAULT_TRIGGER_RUN_TIMEOUT_MS;
 		this.slots = opts.slots ?? new SubagentSlots(opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT_CHECKS);

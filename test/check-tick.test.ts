@@ -15,7 +15,7 @@ import { LeaseStore } from "../src/lease.ts";
 import type { RunnerResult, SubagentRequest, SubagentRunner } from "../src/runner.ts";
 import { stamp } from "../src/schedule.ts";
 import { clockStore, openStores } from "../src/stores.ts";
-import { PollLedger, TriggerStore, extractDynamicRuleIds } from "../src/triggers.ts";
+import { TriggerStore, extractDynamicRuleIds } from "../src/triggers.ts";
 
 const USAGE = { input: 1, output: 1, cost: 0, turns: 1 };
 const BY = { pid: process.pid, instance: "test", version: "0" };
@@ -268,7 +268,7 @@ test("a persistence failure in the periodic part never rejects the tick: an audi
 	const logs: string[] = [];
 	stores.rules.onPersistenceError = (m) => void logs.push(m);
 	const rule = await stores.rules.add({ condition: `${path.join(project, "build.done")} appears`, action: "tell me", cwd: project });
-	const tick = createCheckTick({ rules: stores.rules, requests: stores.requests, clock: stores.clock, events: new EventLog(dir, "background"), gatePolicy: () => ({ loopsDir: dir, allowCommands: [] }), ledger: new PollLedger(), pollIntervalSecs: () => 1, history: () => runHistory(stores.jobs.allRuns()), createdBy: () => BY, log: (m) => void logs.push(m) });
+	const tick = createCheckTick({ rules: stores.rules, requests: stores.requests, clock: stores.clock, events: new EventLog(dir, "background"), gatePolicy: () => ({ loopsDir: dir, allowCommands: [] }), pollIntervalSecs: () => 1, history: () => runHistory(stores.jobs.allRuns()), createdBy: () => BY, log: (m) => void logs.push(m) });
 	await tick.tick(Date.now());
 	assert.match(stores.rules.lastPersistenceError ?? "", /EISDIR/, "the waiting row was not written");
 	assert.equal(ruleLook(stores.clock, rule.id, 1)?.look, "absent", "the look is counted all the same");
@@ -355,7 +355,7 @@ test("a look that cannot answer (a hung mount) asks the model, as before there w
 	const rule = await stores.rules.add({ condition: `${file} appears`, action: "tell me", cwd: project, fireOnce: false });
 	const tick = createCheckTick({
 		rules: stores.rules, requests: stores.requests, clock: stores.clock, events: new EventLog(dir, "background"), gatePolicy: () => ({ loopsDir: dir, allowCommands: [] }),
-		ledger: new PollLedger(), pollIntervalSecs: () => 1, history: () => runHistory(stores.jobs.allRuns()), createdBy: () => BY, log: () => undefined,
+		pollIntervalSecs: () => 1, history: () => runHistory(stores.jobs.allRuns()), createdBy: () => BY, log: () => undefined,
 		stat: () => Promise.reject(Object.assign(new Error("EACCES"), { code: "EACCES" })),
 	});
 	await tick.tick(Date.now());
@@ -479,12 +479,13 @@ test("[gate-held-count] a rule's command gate is looked at once a minute even wh
 			readGate: (id: string) => (fail === "read" ? broken() : real.readGate(id)),
 			noteGate: (id: string, last: Parameters<typeof real.noteGate>[1], held: boolean) => (fail === "write" ? broken() : real.noteGate(id, last, held)),
 			seeGate: (id: string, seen: { digest: string; at: string }) => real.seeGate(id, seen),
+			claimCheck: (lane: string, at: number, ms: number) => real.claimCheck(lane, at, ms),
 		};
 		const log = new EventLog(dir, "background");
 		const events = { append: (source: Parameters<typeof log.append>[0], raw: string) => (fail === "event" ? broken() : log.append(source, raw)) };
 		const rules = new TriggerStore(dir);
 		const stores = openStores(dir);
-		const tick = createCheckTick({ rules, requests: stores.requests, clock, events, gatePolicy: () => ({ loopsDir: dir, allowCommands: [] }), ledger: new PollLedger(), pollIntervalSecs: () => 1, history: () => new Map(), createdBy: () => BY, log: () => undefined });
+		const tick = createCheckTick({ rules, requests: stores.requests, clock, events, gatePolicy: () => ({ loopsDir: dir, allowCommands: [] }), pollIntervalSecs: () => 1, history: () => new Map(), createdBy: () => BY, log: () => undefined });
 		await rules.add({ condition: "a new pull request is opened", action: "review it", cwd: project, fireOnce: false, gate: { kind: "command", command: "echo x >> looks.txt; echo 1" } });
 		let now = Date.now();
 		const poll = async (step: number) => {
