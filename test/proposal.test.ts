@@ -17,7 +17,6 @@ import { switchTargets } from "../src/job-status.ts";
 import { ruleLines } from "../src/rule-lines.ts";
 import { openStores, type Stores } from "../src/stores.ts";
 import { type ToolHost, GATE_NEEDS_PERSON, RULE_GATE_NEEDS_PERSON, automationTools, confirmControlPlane, createLoopJob } from "../src/tools.ts";
-import { TriggerRuntime } from "../src/trigger-runtime.ts";
 import { RUNTIME_RIDERS } from "../src/ticker.ts";
 import { type AnswerContext, type Proposal, answerProposal, askProposal, askTitle, planCard, planOf, proposalCard, receiptRowId, watchChoice, watchOptions } from "../src/watch-plan.ts";
 import type { LoopJob } from "../src/store.ts";
@@ -31,12 +30,12 @@ function world(opts: { scheduled?: boolean; hop?: number } = {}) {
 	fs.mkdirSync(mine);
 	const stores = openStores(dir);
 	const runner = fakeRunner();
-	const triggers = new TriggerRuntime({ store: stores.rules, jobStore: stores.jobs, getSession: () => ({ sessionId: "s", cwd: mine }), runner, dedupFile: path.join(dir, "dedup.json") });
 	const audits: string[] = [];
 	const host: ToolHost = {
 		stores,
 		owner: () => ownerViewOf({ sessionId: "s", cwd: mine }, undefined),
-		triggers,
+		rules: stores.rules,
+		pollSecs: () => 600,
 		session: () => ({ sessionId: "s", cwd: mine, model: "p/m", thinking: "high" }),
 		createJob: (input, scope) => createLoopJob(host, input, scope),
 		cronControlAudit: (op, _actor, before, after) => {
@@ -52,7 +51,7 @@ function world(opts: { scheduled?: boolean; hop?: number } = {}) {
 	const ctx = (over: Partial<AnswerContext> = {}): AnswerContext => ({ now: Date.now, by: BY, actor: "slash", auditJob: (op, before) => void audits.push(`${op} ${before.id}`), ...over });
 	const receipts = () => stores.requests.list("s").filter((r) => r.id.startsWith("rcp-"));
 	const jobsFile = () => (fs.existsSync(stores.jobs.jobsFile) ? fs.readFileSync(stores.jobs.jobsFile, "utf8") : "absent");
-	return { dir, mine, stores, runner, triggers, audits, host, call, ctx, receipts, jobsFile };
+	return { dir, mine, stores, runner, audits, host, call, ctx, receipts, jobsFile };
 }
 
 const job = (w: { stores: Stores }, id: string) => w.stores.jobs.load().find((j) => j.id === id);

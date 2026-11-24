@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { JobStore } from "../src/store.ts";
 import { Inbox } from "../src/inbox.ts";
 import { attentionFrom } from "../src/activity.ts";
-import { type CheckDeps, type CheckInput, DEFAULT_TRIGGER_RUN_TIMEOUT_MS, TRIGGER_SESSIONS_KEPT, checkCap, checkSessionDir, promotionSummaryBody, promotionToInbox, runCheck, triggerSessionKey } from "../src/check-run.ts";
+import { type CheckDeps, type CheckInput, DEFAULT_TRIGGER_RUN_TIMEOUT_MS, TRIGGER_SESSIONS_KEPT, checkCap, checkSessionDir, lastChecks, promotionSummaryBody, promotionToInbox, runCheck, triggerSessionKey } from "../src/check-run.ts";
 import { checkLane } from "../src/lane.ts";
 import { runHistory } from "../src/job-status.ts";
 import { clockStore } from "../src/stores.ts";
@@ -396,5 +396,76 @@ test("[check-lane-finding] a finding a check files carries the project's check l
 		assert.deepEqual(inbox.list().map((f) => f.lane), [checkLane(dir)]);
 	} finally {
 		delete process.env.FAKE_PI_REPLY;
+	}
+});
+
+test("promotion routed to the inbox is audited as redirected; checks carry the rule's model and a hop", async () => {
+	const dir = tmp("pi-loops-trt-");
+	const fake = fakeRunner();
+	const { store, check } = checks(dir, { runner: fake, promote: () => "inbox", session: { sessionId: "s", cwd: dir, model: "leader/model" } });
+	try {
+		const r = await store.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true, model: "creator/model", thinking: "high" });
+		process.env.FAKE_PI_REPLY = `matched ${r.id}`;
+		const out = await check();
+		assert.equal(out.promoted, false);
+		assert.equal(store.listAudit(1)[0].state, "redirected");
+		assert.equal(fake.calls[0].model, "creator/model", "check ran with the rule creator's model, not the timer owner's");
+		assert.equal(fake.calls[0].thinking, "high");
+		assert.equal(fake.calls[0].hop, 1);
+		assert.equal(fake.calls[0].parentSessionId, "s", "sub-agents know the session that runs them (plain cron jobs they create bind to it)");
+		assert.equal(fake.calls[0].kind, "trigger");
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+	}
+});
+
+test("every audit row of one check carries the same cwd: the envelope's, else the session's", async () => {
+	const dir = fs.realpathSync(tmp("pi-loops-trt-cwd-"));
+	const { store, check } = checks(dir, { runner: matchingRunner() });
+	await store.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true });
+	// No cwd on the envelope, so every row falls back to the session's.
+	const trigger: Trigger = { ...buildPeriodicCheckTrigger(dir, 1), cwd: undefined, traceId: "trace-one" };
+	await check(trigger);
+	const rows = store.listAudit(20, (r) => r.traceId === "trace-one");
+	assert.ok(rows.length >= 3, `expected the whole trace, got ${rows.map((r) => `${r.type}:${r.state}`).join(", ")}`);
+	assert.deepEqual([...new Set(rows.map((r) => r.cwd))], [dir]);
+});
+
+test("[last-checks] lastChecks: each project's newest periodic check from the run log, as no match, matched N, failed or aborted", async () => {
+	const one = fs.realpathSync(tmp("pi-loops-last-a-"));
+	const two = fs.realpathSync(tmp("pi-loops-last-b-"));
+	const a = checks(one);
+	const b = checks(two, { jobs: a.jobs });
+	try {
+		const rule = await a.store.add({ condition: "c", action: "a", cwd: one, fireOnce: false });
+		await b.store.add({ condition: "c", action: "a", cwd: two, fireOnce: false });
+		process.env.FAKE_PI_REPLY = "no dynamic trigger rule matched";
+		const quiet = buildPeriodicCheckTrigger(one, 1);
+		await a.check(quiet);
+		assert.deepEqual(lastChecks(a.jobs.allRuns()).map((p) => [p.cwd, p.outcome, p.traceId, p.sourceLabel, p.eventLabel, p.summary]), [[one, "no match", quiet.traceId, "local:dynamic", "dynamic periodic check", "no dynamic trigger rule matched"]]);
+		process.env.FAKE_PI_REPLY = `matched ${rule.id}`;
+		const matched = buildPeriodicCheckTrigger(one, 2);
+		await a.check(matched);
+		process.env.FAKE_PI_FAIL = "1";
+		const failed = buildPeriodicCheckTrigger(two, 1);
+		await b.check(failed, { rules: b.store.load().filter((r) => r.cwd === two) });
+		delete process.env.FAKE_PI_FAIL;
+		const byCwd = new Map(lastChecks(a.jobs.allRuns()).map((p) => [p.cwd, p]));
+		assert.deepEqual([byCwd.get(one)?.outcome, byCwd.get(one)?.traceId], ["matched 1", matched.traceId], "the newest check of the project");
+		assert.deepEqual([byCwd.get(two)?.outcome, byCwd.get(two)?.summary], ["failed", "boom"]);
+		// A push's check is not a poll, and an aborted one says so.
+		await a.check(buildPeriodicCheckTrigger(one, 3), { run: { id: "push-1", cause: "push" } });
+		assert.equal(new Map(lastChecks(a.jobs.allRuns()).map((p) => [p.cwd, p])).get(one)?.traceId, matched.traceId, "a push's check is not the last poll");
+		process.env.FAKE_PI_SLEEP = "5";
+		const ctrl = new AbortController();
+		const stopped = buildPeriodicCheckTrigger(one, 4);
+		const running = a.check(stopped, { signal: ctrl.signal });
+		setTimeout(() => ctrl.abort(), 50);
+		await running;
+		assert.equal(new Map(lastChecks(a.jobs.allRuns()).map((p) => [p.cwd, p])).get(one)?.outcome, "aborted");
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		delete process.env.FAKE_PI_FAIL;
+		delete process.env.FAKE_PI_SLEEP;
 	}
 });

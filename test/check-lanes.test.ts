@@ -61,6 +61,21 @@ test("[check-lanes-run] the background runs a check lane's push row once with ru
 	assert.equal(s.calls.length, 1, "never twice");
 });
 
+test("a proposed rule is never checked by a push: a project whose only rule is proposed runs no model", async () => {
+	const s = await scene();
+	await s.host.stores.rules.update(s.rule.id, (r) => {
+		r.enabled = false;
+		r.proposed = { at: new Date().toISOString(), session: "s" };
+	});
+	const { rowId } = s.push();
+	await s.tick();
+	assert.equal(s.calls.length, 0, "no sub-agent was asked");
+	assert.equal(s.host.stores.rules.load()[0].enabled, false);
+	assert.deepEqual(s.requests.list(s.lane), [], "the row left its lane: nothing to evaluate is no failure to retry");
+	assert.ok(s.audit(rowId).includes("no_rules"), JSON.stringify(s.audit(rowId)));
+	assert.equal(s.host.stores.jobs.allRuns().some((r) => r.runId === rowId), false, "no run, so no record");
+});
+
 test("[check-lanes-dead] a push row whose stored event is gone leaves the lane dead, with no model call", async () => {
 	const s = await scene();
 	const { rowId } = s.push();

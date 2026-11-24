@@ -11,7 +11,7 @@ import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { type ResolvedCap, resolveCap } from "./ask.ts";
 import type { JobStore, RunRecord } from "./store.ts";
 import type { Inbox } from "./inbox.ts";
-import { checkLane } from "./lane.ts";
+import { checkLane, parseLane } from "./lane.ts";
 import { stamp } from "./schedule.ts";
 import type { GateClocks } from "./clock.ts";
 import {
@@ -306,4 +306,34 @@ function writeRecord(deps: CheckDeps, input: CheckInput, done: { lane: string; c
 		deps.log(`trigger ${input.trigger.traceId.slice(0, 8)}: its run record was not written: ${err?.message ?? err}`);
 		return undefined;
 	}
+}
+
+/** Bounded, display-only status of a project's latest periodic check, as `/triggers status` and the page read it. */
+export interface LastPoll {
+	at: string;
+	cwd: string;
+	outcome: string;
+	traceId: string;
+	sourceLabel: string;
+	eventLabel: string;
+	summary: string;
+}
+
+/**
+ * The newest periodic check of each project, from the run log: the last record with cause `check` in
+ * each check lane. The outcome is what the check came to: `aborted`, `failed`, `matched N` (the rule
+ * ids its record's summary names) or `no match`.
+ */
+export function lastChecks(records: readonly RunRecord[]): LastPoll[] {
+	const newest = new Map<string, RunRecord>();
+	for (const record of records) {
+		if (record.cause !== "check" || parseLane(record.jobId)?.kind !== "check") continue;
+		const seen = newest.get(record.jobId);
+		if (!seen || record.finishedAt >= seen.finishedAt) newest.set(record.jobId, record);
+	}
+	return [...newest.values()].map((record) => {
+		const matched = extractDynamicRuleIds(record.summary ?? "").length;
+		const outcome = record.aborted ? "aborted" : !record.ok ? "failed" : matched ? `matched ${matched}` : "no match";
+		return { at: record.finishedAt, cwd: record.cwd, outcome, traceId: record.runId, sourceLabel: "local:dynamic", eventLabel: "dynamic periodic check", summary: previewRedacted(record.ok ? record.summary || NO_MATCH_SENTINEL : (record.error ?? ""), 160) };
+	});
 }

@@ -92,7 +92,7 @@ export function fromV2(job: V2Job): { job: LoopJob; clock: JobClock } {
 }
 
 /** Private files of older versions that nothing reads now. */
-export const RETIRED_FILES: readonly string[] = ["next-runs.json", "scheduler.json", "presence", "polls.json"];
+export const RETIRED_FILES: readonly string[] = ["next-runs.json", "scheduler.json", "presence", "polls.json", "dedup.json"];
 
 /**
  * A job as `sidecars/cron.json` carries it. The file stays `version: 1` and its jobs keep 0.24.2's

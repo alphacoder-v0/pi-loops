@@ -17,6 +17,8 @@ export interface RuleLinesOptions {
 	cwd: string;
 	home: string;
 	sameProject: (a: string, b: string) => boolean;
+	/** The run log folded by lane (`runHistory`): a rule whose project's checks keep failing is marked. Omitted, no rule is. */
+	history?: ReadonlyMap<string, { readonly streak: number }>;
 }
 
 /**
@@ -29,7 +31,7 @@ export function ruleLines(rules: readonly DynamicTriggerRule[], opts: RuleLinesO
 	return rules.flatMap((r, i): string[] => {
 		const marks = [r.proposed ? "proposed: waits for your yes" : r.enabled ? "" : "disabled", r.fireOnce ? "" : "every time", r.promoteToChat ? "" : "to inbox", r.firedAt ? `fired ${formatLocal(Date.parse(r.firedAt))}` : ""].filter(Boolean).join(", ");
 		const head = opts.numbered ? `${String(i + 1).padStart(2)}. ` : "  - ";
-		const failing = ruleFailureMark(r);
+		const failing = opts.history ? ruleFailureMark(r, opts.history) : undefined;
 		const elsewhere = opts.sameProject(r.cwd, opts.cwd) ? "" : `  (${projectLabel(r.cwd, opts.home)})`;
 		const other = r.createdBy?.sessionId && r.createdBy.sessionId !== opts.sessionId ? `  (session ${shortSessionId(r.createdBy.sessionId)})` : "";
 		const line = `${head}${r.id}${marks ? ` [${marks}]` : ""}${failing ? ` ${failing}` : ""} when ${previewRedacted(r.condition, 80)} -> ${previewRedacted(r.action, 80)}${elsewhere}${other}`;
@@ -50,7 +52,6 @@ export interface TriggerStatusInput {
 	sources: { total: number; connected: number; attention: number };
 	runningCount: number;
 	deduplicated: number;
-	cyclesStopped: number;
 	rulesFile: string;
 	auditFile: string;
 	persistenceError?: string;
@@ -65,7 +66,7 @@ export function triggerStatusLines(i: TriggerStatusInput): string[] {
 		i.lastCheck ? `Last check: ${formatLocal(Date.parse(i.lastCheck.at)).slice(11)} in ${projectLabel(i.lastCheck.cwd, i.home)} — ${i.lastCheck.outcome}` : "Last check: none yet",
 		`MCP push sources: ${i.pushSources}${i.configError ? ` (config error: ${i.configError})` : ""}`,
 		`Sources: ${i.sources.total}, ${i.sources.connected} connected${i.sources.attention ? `, ${i.sources.attention} need attention` : ""}`,
-		`Running ${i.runningCount} · deduplicated ${i.deduplicated} · cycles stopped ${i.cyclesStopped}`,
+		`Running ${i.runningCount} · deduplicated ${i.deduplicated}`,
 		`Files: ${projectLabel(i.rulesFile, i.home)}, ${projectLabel(i.auditFile, i.home)} (/triggers audit [N])`,
 		...(i.persistenceError ? [`  ! ${i.persistenceError}`] : []),
 	];

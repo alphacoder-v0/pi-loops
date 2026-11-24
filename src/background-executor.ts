@@ -816,9 +816,15 @@ export function createCheckLanes(deps: CheckLaneDeps): CheckLanes {
 					trigger = { ...stored, traceId: row.id, cwd };
 					rules = rulesOf(cwd);
 				}
+				if (!rules.length) {
+					// Nothing left to evaluate (the rules were disabled, removed or proposed since): the row leaves, with the audit row a check writes for this, and no run.
+					requests.remove(lane, [row.id]);
+					deps.rules.appendAudit({ cwd, type: "trigger_result", traceId: row.id, state: "no_rules", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery: "sub_agent", row: row.id, ...envelopeOf(trigger) } });
+					return "sent";
+				}
 				const permit = slots.acquire();
 				if (!permit) return "no-slot";
-				const claimed = runs.claim(requests, row, self, { jobId: lane, label: `the check of ${path.basename(cwd) || cwd}`, promptPreview: previewRedacted(row.payload?.text ?? "", 120), ctrl: new AbortController() }, now);
+				const claimed = runs.claim(requests, row, self, { jobId: lane, label: `the check of ${path.basename(cwd) || cwd}`, promptPreview: previewRedacted(row.payload?.text ?? "", 120), ctrl: new AbortController(), check: { cwd, sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel } }, now);
 				if (!claimed) { permit.release(); return "sent"; }
 				// A push's row was audited `accepted` when it was derived (src/push.ts); a periodic check is accepted as it starts.
 				if (periodic) deps.rules.appendAudit({ cwd, type: "trigger", traceId: row.id, state: "accepted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery: "sub_agent", evaluator_decision: { outcome: "accept", permission: "allow" }, row: row.id, ...envelopeOf(trigger) } });

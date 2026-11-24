@@ -121,12 +121,14 @@ the rules unless the server is configured as an `inject_summary` / `inject_and_r
 A rule whose check keeps failing is polled with a widening gap instead of at every interval: after
 three failed checks in a row it waits 1 minute, then 5 minutes, 30 minutes, 2 hours and 6 hours from
 the seventh failure on. Loops and rule checks use the same table in `src/backoff.ts`.
-The count lives on the rule (`consecutive_failures`,
-`last_check_failed_at`), a check that completes clears it — including `/triggers run <id>`, which is
-the way to retry a backed-off rule now — and entering the backoff is audited as `backoff` with the
-rule ids and the failure count. Pushes are unaffected: an event is worth one attempt. While a rule
-is in that state `/triggers rules` marks it `[failing ×N]` after its state bracket; a disabled rule
-is not polled and is not marked.
+The count is the project's checks in the run log (`runs.jsonl`, the records of the project's check
+lane), not a field on the rule: one check covers every rule of the project, so the count is the
+project's. A check that completes ends it — including `/triggers run <id>`, which still retries a
+backed-off rule now — and entering the backoff is audited as `backoff` with the rule ids and the
+failure count. Pushes are unaffected: an event is worth one attempt. While a project is in that
+state `/triggers rules` marks each of its rules `[failing ×N]` after its state bracket; a disabled
+rule is not polled and is not marked. A rule that 0.24.2 wrote with `consecutive_failures` and
+`last_check_failed_at` is read as it is, and those two fields are ignored.
 
 ## What happens when the machine is busy or over budget
 

@@ -312,7 +312,6 @@ const UNSHOWN_CHAR = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 test("[gate-person-only] a table: every hostile gate is refused or dropped on every path that sets one", async () => {
 	const { gateShown } = await import("../src/gate.ts");
 	const { openStores } = await import("../src/stores.ts");
-	const { TriggerRuntime } = await import("../src/trigger-runtime.ts");
 	const { automationTools, createLoopJob } = await import("../src/tools.ts");
 	const { ownerViewOf } = await import("../src/job-owner.ts");
 	const { applyJobEdit } = await import("../src/job-edit.ts");
@@ -325,8 +324,7 @@ test("[gate-person-only] a table: every hostile gate is refused or dropped on ev
 		const mine = path.join(dir, "mine");
 		fs.mkdirSync(mine);
 		const stores = openStores(dir);
-		const triggers = new TriggerRuntime({ store: stores.rules, jobStore: stores.jobs, getSession: () => ({ sessionId: "s", cwd: mine }), runner: async () => ({ ok: true, exitCode: 0, timedOut: false, text: "", usage: { input: 0, output: 0, cost: 0, turns: 0 } }) });
-		const host: any = { stores, triggers, owner: () => ownerViewOf({ sessionId: "s", cwd: mine }, undefined), session: () => ({ sessionId: "s", cwd: mine, model: "p/m" }), createJob: (input: any, scope: any) => createLoopJob(host, input, scope), cronControlAudit: () => "a", confirmTool: async () => undefined, refreshBadge: () => undefined };
+		const host: any = { stores, rules: stores.rules, pollSecs: () => 600, owner: () => ownerViewOf({ sessionId: "s", cwd: mine }, undefined), session: () => ({ sessionId: "s", cwd: mine, model: "p/m" }), createJob: (input: any, scope: any) => createLoopJob(host, input, scope), cronControlAudit: () => "a", confirmTool: async () => undefined, refreshBadge: () => undefined };
 		const tools = automationTools({ hop: 0, actor: "tool" }, host);
 		const call = (name: string, args: Record<string, unknown>) => tools.find((t) => t.name === name)!.execute("i", args, undefined, undefined, { hasUI: true } as any);
 		const job = await call("cron_create", { schedule: "every 10m", action: "look", gate: command });

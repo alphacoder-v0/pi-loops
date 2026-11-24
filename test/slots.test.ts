@@ -8,10 +8,7 @@ import { createHostRuntime } from "../src/host-runtime.ts";
 import { RUNTIME_RIDERS } from "../src/ticker.ts";
 import { SubagentSlots } from "../src/slots.ts";
 import { checkLane } from "../src/lane.ts";
-import { TriggerRuntime } from "../src/trigger-runtime.ts";
-import { type Trigger, TriggerStore, buildPeriodicCheckTrigger } from "../src/triggers.ts";
 import type { RunnerResult, SubagentRequest } from "../src/runner.ts";
-import { fakeRunner } from "./fake-runner.ts";
 import type { LoopJob } from "../src/store.ts";
 
 function makeJob(cwd: string, over: Partial<LoopJob> = {}): LoopJob {
@@ -30,35 +27,10 @@ function makeJob(cwd: string, over: Partial<LoopJob> = {}): LoopJob {
 	};
 }
 
-/** A trigger runner that blocks its first call until `open()`, so a check can be held in flight. */
-function gatedRunner() {
-	const calls: SubagentRequest[] = [];
-	let unblock!: () => void;
-	const gate = new Promise<void>((r) => (unblock = r));
-	const run = async (req: SubagentRequest): Promise<RunnerResult> => {
-		calls.push(req);
-		if (calls.length === 1) await gate;
-		return { ok: true, exitCode: 0, timedOut: false, text: "no match", usage: { input: 1, output: 1, cost: 0, turns: 1 } };
-	};
-	return Object.assign(run, { calls, open: () => unblock() });
-}
-
 async function until(cond: () => boolean, what: string): Promise<void> {
 	const end = Date.now() + 5000;
 	while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
 	assert.ok(cond(), what);
-}
-
-function pushTrigger(cwd: string, over: Partial<Trigger> = {}): Trigger {
-	return {
-		...buildPeriodicCheckTrigger(cwd, 1),
-		source: { kind: "mcp", serverName: "hub", method: "notifications/deploy" },
-		sourceKind: "mcp",
-		sourceLabel: "mcp:hub",
-		eventLabel: "deploy finished",
-		payloadSummary: "deploy 41 finished",
-		...over,
-	};
 }
 
 test("a loop run and a trigger check share one limit: together they exhaust max_concurrent_runs = 2", async () => {

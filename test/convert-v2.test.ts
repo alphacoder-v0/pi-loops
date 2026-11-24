@@ -18,6 +18,7 @@ function seeded(): { dir: string; kept: Record<string, string> } {
 	fs.writeFileSync(path.join(dir, "scheduler.json"), '{"pid":1,"kind":"service"}\n');
 	fs.mkdirSync(path.join(dir, "presence"));
 	fs.writeFileSync(path.join(dir, "presence", "box-41-w22.json"), '{"pid":41}\n');
+	fs.writeFileSync(path.join(dir, "dedup.json"), '{"mcp:ci:42":{"at":1,"traceId":"t"}}\n');
 	// Names that only look like a retired one stay, with the stores.
 	const kept: Record<string, string> = {
 		"jobs.json": '{"version":3,"jobs":[]}\n',
@@ -33,13 +34,13 @@ function seeded(): { dir: string; kept: Record<string, string> } {
 	return { dir, kept };
 }
 
-test("The files that older versions left are next-runs.json, scheduler.json and presence.", () => {
-	assert.deepEqual([...RETIRED_FILES].sort(), ["next-runs.json", "polls.json", "presence", "scheduler.json"]);
+test("The files that older versions left are next-runs.json, scheduler.json, presence, polls.json and dedup.json.", () => {
+	assert.deepEqual([...RETIRED_FILES].sort(), ["dedup.json", "next-runs.json", "polls.json", "presence", "scheduler.json"]);
 });
 
 test("convertStores removes every retired file and says which ones it removed.", () => {
 	const { dir } = seeded();
-	assert.deepEqual([...convertStores(dir).removed].sort(), ["next-runs.json", "presence", "scheduler.json"]);
+	assert.deepEqual([...convertStores(dir).removed].sort(), ["dedup.json", "next-runs.json", "presence", "scheduler.json"]);
 	for (const name of RETIRED_FILES) assert.equal(fs.existsSync(path.join(dir, name)), false, `${name} is gone`);
 });
 

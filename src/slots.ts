@@ -14,7 +14,7 @@
  * inside every tick to bound a resource (this process's memory and sockets) that is not shared.
  *
  * What a refusal *means* is deliberately not decided here. The scheduler leaves the tick owed and
- * retries; the trigger runtime queues a push and drops a periodic check. Admission is one question
+ * retries; a check lane leaves its row for its next drain. Admission is one question
  * with one answer; what to do with a "no" belongs to the pipeline that asked.
  */
 

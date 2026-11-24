@@ -96,7 +96,7 @@ function scene(script: (req: any, call: number) => any, over: Partial<Parameters
 		rows: () => requests.list(sessionId),
 		/** How many times a prompt of this job is in the conversation. */
 		prompts: () => SessionManager.open(file).getEntries().filter((e: any) => e.type === "message" && e.message?.role === "user" && String(e.message.content).includes("] remind me")).length,
-		requestAudit: () => host.triggers.store.listAudit(20, (r) => r.type === "request").map((r) => r.state),
+		requestAudit: () => host.stores.rules.listAudit(20, (r) => r.type === "request").map((r) => r.state),
 	};
 }
 type Scene = ReturnType<typeof scene>;
@@ -732,7 +732,7 @@ test("a drain stops where a window takes the conversation: the result it wrote s
 		const by = { pid: 1, instance: "w1", version: "0" };
 		for (const id of ["t-first", "t-second"]) s.requests.append(ruleResultRow(s.sessionId, `[Trigger ${id}] look at ${id}`, { traceId: id, sourceLabel: "x", cwd: s.dir }, by));
 		// The window arrives after the first result is written: at the audit line of its delivery.
-		const audit = s.host.triggers.store;
+		const audit = s.host.stores.rules;
 		const append = audit.appendAudit.bind(audit);
 		let taken = false;
 		audit.appendAudit = ((record: any) => {

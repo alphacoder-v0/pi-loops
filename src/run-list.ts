@@ -26,6 +26,8 @@ export interface Running {
 	readonly turn?: { readonly sessionId: ConversationId; readonly epoch: number; readonly sessionFile: string; readonly cwd?: string; readonly label: string };
 	/** The run of an answer row: the lane it runs in and the finding it answers. */
 	readonly answer?: { readonly lane: LaneId; readonly finding: string };
+	/** The run of a check lane's row: the project it checks and the trigger it checks for. */
+	readonly check?: { readonly cwd: string; readonly sourceLabel: string; readonly eventLabel: string };
 }
 
 /** The list. A caller gets it as a parameter; nothing reaches it through module state. */

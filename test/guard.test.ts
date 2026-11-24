@@ -1171,7 +1171,7 @@ test("[M5b.9] the yes binds to the rules the person saw: remove_trigger all afte
 	fs.mkdirSync(proj);
 	const stores = openStores(dir);
 	const w = world();
-	const deps: GuardDeps = { ...w.deps, loopsDir: dir, controlTarget: (tool, input, cwd) => controlTarget({ stores, triggers: { store: stores.rules } } as any, tool, input, cwd ?? proj) };
+	const deps: GuardDeps = { ...w.deps, loopsDir: dir, controlTarget: (tool, input, cwd) => controlTarget({ stores, rules: stores.rules } as any, tool, input, cwd ?? proj) };
 	await stores.rules.add({ condition: "c1", action: "a", cwd: proj });
 	const conversation = "0a0b0c0d-0e0f-4a1b-8c2d-3e4f5a6b7c8d";
 	const seed = { lane: conversation, origin: { ...ORIGIN, session_id: conversation }, cap: capOf({ cwd: proj }) };

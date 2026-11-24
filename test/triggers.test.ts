@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import * as path from "node:path";
-import { AUDIT_USAGE, DedupWindow, TriggerStore, auditArgs, buildPeriodicCheckTrigger, controlPlanePreflight, extractDynamicRuleIds, looksLikeFixedScheduleRequest, parseTriggerRule, renderDynamicTriggerPrompt, resolveRuleRef } from "../src/triggers.ts";
+import { AUDIT_USAGE, TriggerStore, auditArgs, buildPeriodicCheckTrigger, controlPlanePreflight, extractDynamicRuleIds, looksLikeFixedScheduleRequest, parseTriggerRule, renderDynamicTriggerPrompt, resolveRuleRef } from "../src/triggers.ts";
 
 test("parseTriggerRule handles english and chinese markers", () => {
 	assert.deepEqual(parseTriggerRule("when ~/build.done exists, run cargo test"), { condition: "~/build.done exists", action: "cargo test" });
@@ -78,19 +78,6 @@ test("store: add/list/enable/remove/markFired/clear + audit", async () => {
 	assert.equal(audit.length, 2);
 	assert.equal(audit[0].type, "trigger_result", "newest first");
 	assert.ok(audit[1].summary?.includes("[REDACTED"));
-});
-
-test("dedup window: in-memory and shared across processes through a file", async () => {
-	const d = new DedupWindow(1000);
-	assert.equal(await d.check("k", "t1", 0, "latest_replaces"), undefined);
-	assert.deepEqual(await d.check("k", "t2", 500, "drop"), { traceId: "t1", replacementPolicy: "latest_replaces" }, "reports the first arrival and its policy");
-	assert.equal(await d.check("k", "t3", 2000), undefined);
-	const file = path.join(tmp("pi-loops-dedup-"), "dedup.json");
-	const a = new DedupWindow(60_000, file);
-	const b = new DedupWindow(60_000, file); // a second pi process
-	assert.equal(await a.check("mcp:x:tools", "ta", 1000), undefined);
-	assert.equal((await b.check("mcp:x:tools", "tb", 1500))?.traceId, "ta", "the other process sees the first one's claim");
-	assert.equal(await b.check("mcp:x:tools", "tc", 70_000), undefined, "window expired");
 });
 
 test("controlPlanePreflight: sub-agents are denied fail-closed, no-UI processes are refused, interactive asks", () => {

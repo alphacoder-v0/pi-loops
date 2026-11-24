@@ -8,6 +8,7 @@
  */
 import { FAILING_AFTER } from "./backoff.ts";
 import type { ListedJob } from "./job-status.ts";
+import { checkLane } from "./lane.ts";
 import type { DynamicTriggerRule } from "./triggers.ts";
 
 /**
@@ -29,11 +30,14 @@ export function failingSummary(jobs: readonly ListedJob[]): string | undefined {
 }
 
 /**
- * `[failing ×N]` for a rule whose checks have failed often enough that the runtime polls it with a
- * widening gap, or undefined. The threshold is the runtime's own, so the listing and the poll cannot
- * disagree; a disabled rule is not polled, so it is not marked, as `failingJobs` skips a disabled job.
+ * `[failing ×N]` for a rule whose project's checks have failed often enough that its polls come with a
+ * widening gap, or undefined. N is the streak of the project's check lane in the run log
+ * (`runHistory(allRuns)`): a check covers every rule of its project, so each of them carries the mark.
+ * The threshold is the poll's own, so the listing and the poll cannot disagree; a disabled rule is not
+ * polled, so it is not marked, as `failingJobs` skips a disabled job.
  */
-export function ruleFailureMark(rule: Pick<DynamicTriggerRule, "enabled" | "consecutiveFailures">): string | undefined {
-	const n = rule.consecutiveFailures ?? 0;
+export function ruleFailureMark(rule: Pick<DynamicTriggerRule, "enabled" | "cwd">, history: ReadonlyMap<string, { readonly streak: number }>): string | undefined {
+	const lane = checkLane(rule.cwd);
+	const n = lane ? (history.get(lane)?.streak ?? 0) : 0;
 	return rule.enabled && n >= FAILING_AFTER ? `[failing ×${n}]` : undefined;
 }

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { failingJobs, failingSummary, ruleFailureMark } from "../src/job-health.ts";
 import { FAILING_AFTER } from "../src/backoff.ts";
 import type { ListedJob } from "../src/job-status.ts";
+import { checkLane } from "../src/lane.ts";
 import type { LoopJob } from "../src/store.ts";
 
 const job = ({ streak = 0, ...over }: Partial<LoopJob> & { streak?: number }): ListedJob => ({ id: "j-1", schedule: { kind: "every", everyMs: 60_000 } as any, stateful: true, prompt: "p", cwd: "/p", enabled: true, catchUp: true, createdAt: new Date().toISOString(), ...over, status: { runs: 0, collapsed: 0, streak } });
@@ -31,13 +32,16 @@ test("the failing summary names the worst loop and counts the rest", () => {
 	assert.equal(long, "1 loop failing (nightly-dependency-audi… ×5)");
 });
 
-test("a rule is marked failing in /triggers rules once its checks are being backed off, and not before", () => {
-	// The runtime polls a rule less often from FAILING_AFTER failures on; the listing
+test("a rule is marked failing in /triggers rules once its project's checks are being backed off, and not before", () => {
+	// The poll holds a project's checks back from FAILING_AFTER failures on; the listing
 	// used to read the same as a healthy rule's while its checks were backed off.
 	assert.equal(FAILING_AFTER, 3);
-	assert.equal(ruleFailureMark({ enabled: true, consecutiveFailures: 3 }), "[failing ×3]");
-	assert.equal(ruleFailureMark({ enabled: true, consecutiveFailures: 12 }), "[failing ×12]");
-	assert.equal(ruleFailureMark({ enabled: true, consecutiveFailures: 2 }), undefined, "a bad check or two is not a failing rule");
-	assert.equal(ruleFailureMark({ enabled: true }), undefined);
-	assert.equal(ruleFailureMark({ enabled: false, consecutiveFailures: 9 }), undefined, "a disabled rule is not polled, so it is not marked");
+	const lane = checkLane("/p")!;
+	const streak = (n: number) => new Map([[lane, { streak: n }]]);
+	assert.equal(ruleFailureMark({ enabled: true, cwd: "/p" }, streak(3)), "[failing ×3]");
+	assert.equal(ruleFailureMark({ enabled: true, cwd: "/p" }, streak(12)), "[failing ×12]");
+	assert.equal(ruleFailureMark({ enabled: true, cwd: "/p" }, streak(2)), undefined, "a bad check or two is not a failing rule");
+	assert.equal(ruleFailureMark({ enabled: true, cwd: "/p" }, new Map()), undefined);
+	assert.equal(ruleFailureMark({ enabled: true, cwd: "/elsewhere" }, streak(9)), undefined, "another project's checks are not this rule's");
+	assert.equal(ruleFailureMark({ enabled: false, cwd: "/p" }, streak(9)), undefined, "a disabled rule is not polled, so it is not marked");
 });

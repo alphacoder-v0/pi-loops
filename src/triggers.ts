@@ -9,13 +9,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
-import { clampFuture, stamp } from "./schedule.ts";
+import { stamp } from "./schedule.ts";
 import { withFileLock, writeFileAtomic } from "./lock.ts";
 import { capRedacted, previewRedacted } from "./redact.ts";
 import { type CommandGate, type PathGate, type Precheck, pathOnlyCondition, precheckOf } from "./gate.ts";
 
 export const DEFAULT_TRIGGER_POLL_INTERVAL_SECS = 10 * 60;
-export const DEDUP_WINDOW_MS = 5 * 60_000;
 export const SUMMARY_CAP_CHARS = 4096;
 /** Past this the audit is halved (docs/configuration.md). */
 export const AUDIT_ROTATE_BYTES = 2_000_000;
@@ -38,10 +37,6 @@ export interface DynamicTriggerRule {
 	/** Per-rule cap on the check/action sub-agent; default `[triggers] run_timeout_secs`. */
 	timeoutMs?: number;
 	createdBy?: { sessionId?: string };
-	/** Checks that failed in a row (a check covers every rule it evaluated). Cleared by one that completes; drives the poll backoff in the trigger runtime, as `JobStore`'s field of the same name drives the scheduler's. */
-	consecutiveFailures?: number;
-	/** When the last failing check ran: the backoff is measured from here, so a rule that has never been checked is never held back. */
-	lastCheckFailedAt?: string;
 	/**
 	 * Set when the condition is only "<path> exists / appears" (src/gate.ts): each poll `stat`s the
 	 * path first, and no model is asked while it is absent. Recorded at creation only; a rule with
@@ -232,7 +227,7 @@ export function extractDynamicRuleIds(text: string): string[] {
 /**
  * `evaluator` distinguishes the processes that check one project: a rule belongs to the session
  * that created it, so two pi windows in one repo each raise their own check and must not collapse
- * into one another in the shared dedup window when they land in the same millisecond.
+ * into one another when they land in the same millisecond.
  */
 export function buildPeriodicCheckTrigger(cwd: string, ruleCount: number, now = new Date(), evaluator = ""): Trigger {
 	return {
@@ -557,58 +552,4 @@ export function resolveRuleRef(rules: DynamicTriggerRule[], ref: string, opts?: 
 	if (exact) return exact;
 	const hits = rules.filter((r) => r.id.startsWith(t));
 	return hits.length === 1 ? hits[0] : undefined;
-}
-
-/* ------------------------------------------------------------- polls */
-
-/** A slot nobody has claimed for a day is a session that is gone; drop it on the next write. */
-export const POLL_LEDGER_TTL_MS = 24 * 60 * 60_000;
-
-/* ------------------------------------------------------------- dedup */
-
-/**
- * Dedup window: two events with the same idempotency key inside `DEDUP_WINDOW_MS` (five minutes)
- * are one event. With a `file`, the window is shared by every pi process on the machine, so a push
- * that several processes receive is handled exactly once.
- */
-export interface DedupHit {
-	traceId: string;
-	/** The FIRST arrival's policy; the audit reports what the winning entry declared. */
-	replacementPolicy?: ReplacementPolicy;
-}
-
-export class DedupWindow {
-	private readonly seen = new Map<string, { at: number; traceId: string; policy?: ReplacementPolicy }>();
-	private readonly windowMs: number;
-	private readonly file?: string;
-	constructor(windowMs: number = DEDUP_WINDOW_MS, file?: string) {
-		this.windowMs = windowMs;
-		this.file = file;
-	}
-
-	/** Returns the previous arrival when `key` was seen inside the window, else records this one. */
-	async check(key: string, traceId: string, now = Date.now(), policy?: ReplacementPolicy): Promise<DedupHit | undefined> {
-		if (!this.file) return this.checkMap(this.seen, key, traceId, now, policy);
-		const file = this.file;
-		return withFileLock(`${file}.lock`, () => {
-			let map = new Map<string, { at: number; traceId: string; policy?: ReplacementPolicy }>();
-			try {
-				map = new Map(Object.entries(JSON.parse(fs.readFileSync(file, "utf8"))));
-			} catch {
-				/* fresh */
-			}
-			const prev = this.checkMap(map, key, traceId, now, policy);
-			writeFileAtomic(file, JSON.stringify(Object.fromEntries(map)));
-			return prev;
-		});
-	}
-
-	private checkMap(map: Map<string, { at: number; traceId: string; policy?: ReplacementPolicy }>, key: string, traceId: string, now: number, policy?: ReplacementPolicy): DedupHit | undefined {
-		// A future stamp never ages out of the window on its own, so it would dedup its key forever.
-		for (const [k, v] of map) if (clampFuture(v.at, now) === undefined || now - v.at > this.windowMs) map.delete(k);
-		const prev = map.get(key);
-		if (prev) return { traceId: prev.traceId, replacementPolicy: prev.policy };
-		map.set(key, { at: now, traceId, policy });
-		return undefined;
-	}
 }

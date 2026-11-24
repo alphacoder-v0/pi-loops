@@ -333,7 +333,7 @@ export const LOOKS_IN_FLIGHT_MAX = 2;
  * Looks, with few in flight. A `stat` on a dead network mount can hang past its timeout and hold
  * one of libuv's four threads, so a look starts nothing and answers `unknown` while the same rule or
  * the same path has one out, or while `LOOKS_IN_FLIGHT_MAX` are out. The process has one of these:
- * its trigger runtime's.
+ * its poll's (src/check-tick.ts).
  */
 export class PathLooks {
 	private readonly rules = new Set<string>();

@@ -7,7 +7,9 @@ import * as path from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { createHostRuntime, type HostRuntime } from "../src/host-runtime.ts";
 import { mapNotification } from "../src/mcp.ts";
-import { buildPeriodicCheckTrigger } from "../src/triggers.ts";
+import { type DynamicTriggerRule, buildPeriodicCheckTrigger } from "../src/triggers.ts";
+import { deliverInjectSummary } from "../src/push.ts";
+import { checkRow } from "../src/check-tick.ts";
 import { fakeRunner } from "./fake-runner.ts";
 import { LeaseBinding, LeaseStore, procStart } from "../src/lease.ts";
 import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
@@ -23,6 +25,18 @@ import { RequestStore } from "../src/requests.ts";
 import { heldTurnFor, personRow, plainRunId, recipeRow, ruleResultRow, stopRow } from "../src/engine.ts";
 import { stopRunFrom } from "../src/host-control-channel.ts";
 import { RUNTIME_RIDERS, Ticker } from "../src/ticker.ts";
+
+/**
+ * One check of `rules` in project `cwd`, as `/triggers run` asks for one: a row of the project's check
+ * lane, run by the background's check lanes. Says whether a rule's result was promoted to a chat.
+ */
+async function checkNow(host: HostRuntime, cwd: string, rules: readonly DynamicTriggerRule[]): Promise<{ promoted: boolean }> {
+	const row = checkRow(cwd, rules.map((r) => r.id), { pid: process.pid, instance: "test", version: "0" }, Date.now());
+	host.stores.requests.appendIfAbsent(row);
+	await host.riders["check-lanes"](Date.now(), { startedAt: 0, tickMs: 30_000 });
+	await host.drain(5000);
+	return { promoted: host.stores.rules.listAudit(50, (r) => r.traceId === row.id && r.type === "trigger_promotion").some((r) => r.state === "promoted") };
+}
 
 async function tickHost(host: HostRuntime): Promise<void> {
 	const now = Date.now();
@@ -147,9 +161,9 @@ test("the host runs loops and queues a promotion for the creating session when a
 		assert.equal(fake.calls[0].model, "default/model", "an unpinned loop runs on the host's default model");
 		assert.equal(host.stores.inbox.listNew().length, 1, "findings still reach the inbox");
 
-		const rule = await host.triggers.store.add({ condition: "c", action: "a", cwd: proj, promoteToChat: true });
+		const rule = await host.stores.rules.add({ condition: "c", action: "a", cwd: proj, promoteToChat: true });
 		process.env.FAKE_PI_REPLY = `matched ${rule.id}: done`;
-		const out = await host.triggers.handle(buildPeriodicCheckTrigger(proj, 1), "sub_agent");
+		const out = await checkNow(host, proj, [rule]);
 		assert.equal(out?.promoted, false);
 		const promoted = host.stores.inbox.listNew().find((e) => e.source === "trigger:local:dynamic");
 		assert.ok(promoted, "no chat here: the promotion lands in the inbox");
@@ -157,16 +171,16 @@ test("the host runs loops and queues a promotion for the creating session when a
 
 		// A rule created in a conversation that a window holds: queued for that window, not the inbox.
 		new LeaseStore(dir).acquire("held", { kind: "terminal", pid: process.pid, instance: "w", acquiredAt: new Date().toISOString(), pushServers: [] });
-		const mine = await host.triggers.store.add({ condition: "c", action: "a", cwd: proj, promoteToChat: true, sessionId: "held" });
+		const mine = await host.stores.rules.add({ condition: "c", action: "a", cwd: proj, promoteToChat: true, sessionId: "held" });
 		process.env.FAKE_PI_REPLY = `matched ${mine.id}: for the window`;
-		const queued = await host.triggers.handle(buildPeriodicCheckTrigger(proj, 1), "sub_agent", [mine]);
+		const queued = await checkNow(host, proj, [mine]);
 		assert.equal(queued?.promoted, true);
 		assert.match(new RequestStore(dir).list("held")[0]?.payload?.text ?? "", /for the window/, "queued for the holding window");
 		// The same rule's conversation closed and its file unknown to pi-loops: nothing can ever take a
 		// row, so the inbox at once, marked for it, as 0.23 routed it.
-		const closed = await host.triggers.store.add({ condition: "c", action: "a", cwd: proj, promoteToChat: true, sessionId: "closed" });
+		const closed = await host.stores.rules.add({ condition: "c", action: "a", cwd: proj, promoteToChat: true, sessionId: "closed" });
 		process.env.FAKE_PI_REPLY = `matched ${closed.id}: for later`;
-		await host.triggers.handle(buildPeriodicCheckTrigger(proj, 1), "sub_agent", [closed]);
+		await checkNow(host, proj, [closed]);
 		assert.equal(host.stores.inbox.listNew().find((e) => e.text.includes("for later"))?.session_id, "closed");
 		assert.equal(new RequestStore(dir).list("closed").length, 0, "and no row waits for it");
 
@@ -179,12 +193,12 @@ test("the host runs loops and queues a promotion for the creating session when a
 		const created = host.stores.jobs.load().find((j) => j.prompt === "follow up")!;
 		assert.equal(created.cwd, proj);
 		assert.equal(created.model, "pinned/model");
-		assert.equal(host.triggers.store.listAudit(1)[0].type, "cron_control_plane", "control-plane operations by sub-agents are audited where /triggers audit shows them");
+		assert.equal(host.stores.rules.listAudit(1)[0].type, "cron_control_plane", "control-plane operations by sub-agents are audited where /triggers audit shows them");
 		// An MCP push reaching the host is evaluated once per project that has rules, in that project.
 		const other = path.join(dir, "other");
 		fs.mkdirSync(other);
-		await host.triggers.store.add({ condition: "c2", action: "a2", cwd: other });
-		await host.triggers.store.add({ condition: "c3", action: "a3", cwd: proj }); // the first proj rule fired once and is disabled
+		await host.stores.rules.add({ condition: "c2", action: "a2", cwd: other });
+		await host.stores.rules.add({ condition: "c3", action: "a3", cwd: proj }); // the first proj rule fired once and is disabled
 		const before = fake.calls.length;
 		assert.equal(host.receivePush("srv", "sub_agent", { method: "notifications/resources/updated", params: { uri: "file:///x" } }), true);
 		await host.drain(5000);
@@ -239,7 +253,7 @@ test("the host audits its cron runs, so /triggers audit is not blank for the una
 		await tickHost(host);
 		await host.drain(10_000);
 
-		const rows = host.triggers.store.listAudit(10).filter((r) => r.sourceLabel === "Cron");
+		const rows = host.stores.rules.listAudit(10).filter((r) => r.sourceLabel === "Cron");
 		assert.ok(rows.some((r) => r.state === "accepted"), "the run was admitted");
 		assert.ok(rows.some((r) => r.state === "running"));
 		const done = rows.find((r) => r.state === "completed");
@@ -366,11 +380,11 @@ test("[ticker-riders] The host rider table delivers a closed conversation and ch
 	try {
 		const { sessionId, file } = closedConversation(dir);
 		new RequestStore(dir).append(ruleResultRow(sessionId, "[Trigger trace] queued result", { sourceLabel: "local:dynamic", traceId: "trace", cwd: dir }, { pid: process.pid, instance: "test", version: "1" }));
-		const rule = await host.triggers.store.add({ condition: "c", action: "a", cwd: path.join(dir, "missing") });
+		const rule = await host.stores.rules.add({ condition: "c", action: "a", cwd: path.join(dir, "missing") });
 		const ticker = new Ticker({ names: RUNTIME_RIDERS, riders: host.riders, log: () => undefined });
 		await ticker.tick();
 		assert.ok((SessionManager.open(file).getEntries() as any[]).some((entry) => entry.type === "custom_message" && String(entry.content).includes("queued result")));
-		assert.equal(host.triggers.store.load().find((item) => item.id === rule.id)?.enabled, false, "the rule-check rider disabled its missing project");
+		assert.equal(host.stores.rules.load().find((item) => item.id === rule.id)?.enabled, false, "the rule-check rider disabled its missing project");
 	} finally {
 		await host.stop();
 	}
@@ -389,14 +403,35 @@ test("[ticker-rider-throws] A throwing ticker rider logs its name and lets the o
 	assert.deepEqual(logs, ["tick: throws failed: sync", "tick: rejects failed: async"]);
 });
 
+test("persistence failures never fail a delivery: the audit is best-effort, the delivery still happens, and the background says so once", async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	fs.mkdirSync(path.join(dir, "triggers-audit.jsonl")); // appendFileSync → EISDIR
+	const logs: string[] = [];
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: (m) => void logs.push(m) });
+	try {
+		const promoted: string[] = [];
+		const trigger = { ...buildPeriodicCheckTrigger(dir, 1), traceId: "m1", idempotencyKey: "mcp:x:tools", sourceLabel: "mcp:x", eventLabel: "e", payloadSummary: "s", cwd: undefined };
+		const deps = { audit: host.stores.rules, budget: () => ({ spent: 0, cap: 0, over: false }), promote: (c: string) => { promoted.push(c); return "chat" as const; }, now: Date.now };
+		const out = await deliverInjectSummary(deps, trigger);
+		assert.equal(out?.ok, true, "delivery happens even when the audit file cannot be written");
+		assert.equal(promoted.length, 1);
+		assert.match(host.stores.rules.lastPersistenceError ?? "", /EISDIR/);
+		await deliverInjectSummary(deps, { ...trigger, traceId: "m2" });
+		assert.equal(logs.filter((m) => /EISDIR/.test(m)).length, 1, `the failure is logged once per distinct error, got ${JSON.stringify(logs)}`);
+		assert.deepEqual(host.stores.rules.listAudit(5), [], "listAudit tolerates the broken file");
+	} finally {
+		await host.stop();
+	}
+});
+
 test("a rule's promotion for a closed creating conversation is appended to it, and the conversation is given back", async () => {
 	const dir = tmp("pi-loops-hostrt-");
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
 	try {
 		const { sessionId, file } = closedConversation(dir);
-		const rule = await host.triggers.store.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true, sessionId });
+		const rule = await host.stores.rules.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true, sessionId });
 		process.env.FAKE_PI_REPLY = `matched ${rule.id}: while you were away`;
-		const out = await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent", [rule]);
+		const out = await checkNow(host, dir, [rule]);
 		assert.equal(out?.promoted, true);
 		const entries = SessionManager.open(file).getEntries() as any[];
 		const appended = entries.find((e) => e.type === "custom_message" && e.customType === "pi-loops:trigger");
@@ -404,7 +439,7 @@ test("a rule's promotion for a closed creating conversation is appended to it, a
 		// Every match is also a finding (docs/triggers.md), and the delivery adds no second one.
 		assert.deepEqual(host.stores.inbox.listNew().map((e) => [e.job_id, e.session_id]), [[rule.id, sessionId]], "and one finding in the inbox, the check's own");
 		assert.equal(new LeaseStore(dir).read(sessionId)?.holder, null, "the host held it for that one write");
-		assert.equal(host.triggers.store.listAudit(50, (r) => r.state === "appended" && r.details?.session_id === sessionId).length, 1, "and the audit says so, for the since-you-looked count");
+		assert.equal(host.stores.rules.listAudit(50, (r) => r.state === "appended" && r.details?.session_id === sessionId).length, 1, "and the audit says so, for the since-you-looked count");
 	} finally {
 		delete process.env.FAKE_PI_REPLY;
 		await host.stop();
@@ -422,24 +457,24 @@ test("a rule's result for a closed creating conversation goes to the window open
 		windowB.bind("B", { sessionFile: path.join(dir, "b.jsonl"), cwd: dir });
 		// A `pi -p` run in the project holds its conversation and delivers nothing: never the target.
 		new LeaseBinding(new LeaseStore(dir), "wP", () => ({ kind: "terminal", pid: process.pid, mode: "print", pushServers: [] })).bind("P", { cwd: dir });
-		const rule = await host.triggers.store.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true, sessionId: a });
+		const rule = await host.stores.rules.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true, sessionId: a });
 		process.env.FAKE_PI_REPLY = `matched ${rule.id}: CI is red`;
-		const out = await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent", [rule]);
+		const out = await checkNow(host, dir, [rule]);
 		assert.equal(out?.promoted, true);
 		const requests = new RequestStore(dir);
 		assert.match(requests.list("B")[0]?.payload?.text ?? "", /CI is red/, "queued for the window open in the project");
 		assert.deepEqual([requests.list(a), requests.list("P")], [[], []], "not for the closed conversation, nor the pi -p run");
 		assert.deepEqual(host.stores.inbox.listNew().map((e) => e.session_id), [a], "one finding, for the conversation that made the rule");
 		// A rule nobody's conversation made (imported, or a loop's run): the same window.
-		const orphan = await host.triggers.store.add({ condition: "c2", action: "a2", cwd: dir, promoteToChat: true });
+		const orphan = await host.stores.rules.add({ condition: "c2", action: "a2", cwd: dir, promoteToChat: true });
 		process.env.FAKE_PI_REPLY = `matched ${orphan.id}: for whoever is here`;
-		await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent", [orphan]);
+		await checkNow(host, dir, [orphan]);
 		assert.equal(requests.list("B").length, 2, "an orphan rule's result reaches the project's window, not the inbox");
 		// The window closes: the next result is appended to the closed creating conversation.
 		windowB.release();
-		const again = await host.triggers.store.add({ condition: "c3", action: "a3", cwd: dir, promoteToChat: true, sessionId: a });
+		const again = await host.stores.rules.add({ condition: "c3", action: "a3", cwd: dir, promoteToChat: true, sessionId: a });
 		process.env.FAKE_PI_REPLY = `matched ${again.id}: nobody is open`;
-		await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent", [again]);
+		await checkNow(host, dir, [again]);
 		assert.ok((SessionManager.open(file).getEntries() as any[]).some((e) => e.type === "custom_message" && /nobody is open/.test(String(e.content))), "appended to the closed creating conversation");
 	} finally {
 		delete process.env.FAKE_PI_REPLY;
@@ -454,9 +489,9 @@ test("a rule's result for a closed conversation written moments ago waits in its
 		const { sessionId, file } = closedConversation(dir);
 		const now = new Date();
 		fs.utimesSync(file, now, now); // someone wrote it just now
-		const rule = await host.triggers.store.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true, sessionId });
+		const rule = await host.stores.rules.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true, sessionId });
 		process.env.FAKE_PI_REPLY = `matched ${rule.id}: the build is green`;
-		await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent", [rule]);
+		await checkNow(host, dir, [rule]);
 		assert.equal(host.stores.inbox.listNew().length, 1, "one finding, the check's: the queued row is not split off into a second");
 		assert.equal(new RequestStore(dir).list(sessionId).length, 1, "queued for the conversation");
 		const old = new Date(Date.now() - 10 * 60_000);
@@ -482,7 +517,7 @@ test("results queued for a conversation whose file is gone go to the inbox, mark
 		assert.equal(new RequestStore(dir).list(sessionId).length, 0);
 		const filed = host.stores.inbox.listNew();
 		assert.deepEqual(filed.map((e) => [e.text, e.session_id, e.source]), [["the deploy finished", sessionId, "trigger:local:dynamic"]]);
-		assert.equal(host.triggers.store.listAudit(10, (r) => r.type === "request" && r.state === "dead").length, 1, "and the audit says why");
+		assert.equal(host.stores.rules.listAudit(10, (r) => r.type === "request" && r.state === "dead").length, 1, "and the audit says why");
 	} finally {
 		await host.stop();
 	}
@@ -765,7 +800,7 @@ test("a stop row aborts the held turn running in that conversation", { timeout: 
 		assert.equal(await until(() => ended.length === 1, 5000), true, "the turn stopped on the bell, with the socket never asked");
 		await host.drain(5000);
 		assert.deepEqual(requests.list(sessionId), [], "the stop row is done");
-		assert.equal(host.triggers.store.listAudit(1, (r) => r.type === "request" && r.traceId === stop.id)[0]?.state, "done");
+		assert.equal(host.stores.rules.listAudit(1, (r) => r.type === "request" && r.traceId === stop.id)[0]?.state, "done");
 		assert.equal(host.stores.jobs.listRuns("cron-held")[0]?.ok, false, "the stopped turn is recorded");
 		assert.equal(leases.read(sessionId)?.holder, null, "and the conversation given back");
 	} finally {
@@ -809,7 +844,7 @@ test("Stop this run on a held turn: the stop goes through the conversation's que
 		await host.drain(5000);
 		const record = host.stores.jobs.listRuns("cron-held")[0];
 		assert.deepEqual([record?.runId, record?.aborted, record?.stoppedBy, record?.stoppedFrom, record?.error], [runId, true, "person", "page", "stopped by a person"]);
-		assert.equal(host.triggers.store.listAudit(1, (r) => r.type === "request" && r.traceId === rows[0].id)[0]?.state, "done", "the request audit row says the stop acted");
+		assert.equal(host.stores.rules.listAudit(1, (r) => r.type === "request" && r.traceId === rows[0].id)[0]?.state, "done", "the request audit row says the stop acted");
 		assert.deepEqual(stop(runId), { finished: true }, "a second stop finds nothing running");
 		assert.ok(logs.some((l) => l.includes("cron-held: turn stopped by you (from the page)")), logs.join("\n"));
 		assert.ok(!logs.some((l) => /turn FAILED/.test(l)), "a person's stop is not a failed turn in the log");
@@ -876,12 +911,12 @@ test("a stop read by the held turn's own first drain stops it", { timeout: 30_00
 		assert.equal(await until(() => stop !== undefined, 5000), true, "the turn began");
 		assert.ok(stop);
 		await host.drain(5000);
-		assert.equal(host.triggers.store.listAudit(1, (r) => r.type === "request" && r.traceId === stop.id)[0]?.state, "done", "the stop named the run");
+		assert.equal(host.stores.rules.listAudit(1, (r) => r.type === "request" && r.traceId === stop.id)[0]?.state, "done", "the stop named the run");
 		assert.equal(prompts.length, 0, "stopped before the model was asked");
 		assert.deepEqual(requests.list(sessionId), []);
 		const job = viewV2(host.stores, host.stores.jobs.load()[0].id);
 		assert.deepEqual([job.owedSlot, !!job.lastFiredAt, job.runCount, job.consecutiveFailures], [undefined, true, 1, undefined], "done, not owed: the slot is spent, and a stop is no failure");
-		assert.deepEqual(host.triggers.store.listAudit(5, (r) => r.type === "request" && r.state === "stopped").length, 1, "the row left as stopped, with its audit line");
+		assert.deepEqual(host.stores.rules.listAudit(5, (r) => r.type === "request" && r.state === "stopped").length, 1, "the row left as stopped, with its audit line");
 	} finally {
 		await host.stop();
 	}
@@ -898,7 +933,7 @@ test("the background process removes a person row for a conversation that is gon
 		await tickHost(host);
 		assert.deepEqual(store.list("nolease"), [], "the row is gone from the queue");
 		assert.deepEqual(host.stores.inbox.listNew(), [], "a person's message never goes to the inbox");
-		const audit = host.triggers.store.listAudit(5).find((a) => a.traceId === "p1");
+		const audit = host.stores.rules.listAudit(5).find((a) => a.traceId === "p1");
 		assert.deepEqual([audit?.state, (audit?.details as any)?.reason], ["stale", "its conversation is gone"]);
 	} finally {
 		await host.stop();

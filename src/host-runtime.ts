@@ -1,6 +1,6 @@
 /**
  * What the always-on host runs (see host.ts for the process shell): the ticker's riders, the loop
- * lanes and the TriggerRuntime, wired for a process that has no chat. It runs every loop and
+ * lanes and the check lanes, wired for a process that has no chat. It runs every loop and
  * checks every rule; a promotion is a request addressed to the conversation that created the rule
  * (src/requests.ts): its holder delivers it, and this process does when it is closed. Control-plane
  * operations by sub-agents are audited into `triggers-audit.jsonl`. Injected so it can be unit-tested.
@@ -40,8 +40,8 @@ import { FAILING_AFTER, failurePause } from "./backoff.ts";
 import { computeDue } from "./schedule.ts";
 import { type ToolHost, automationTools, controlTarget, createLoopJob } from "./tools.ts";
 import type { GuardSeats } from "./guard.ts";
-import { TriggerRuntime } from "./trigger-runtime.ts";
-import { checkSessionDir, promotionToInbox } from "./check-run.ts";
+import { checkCap, checkSessionDir, promotionToInbox } from "./check-run.ts";
+import { withinProject } from "./paths.ts";
 import { auditCronFinish, auditCronStart, controlPlanePreflight } from "./triggers.ts";
 import { shortSessionId } from "./session-head.ts";
 import { DEAD_SESSION_MARKER } from "./convert-v2.ts";
@@ -92,7 +92,6 @@ export interface HostRuntime {
 	drain(ms: number): Promise<void>;
 	riders: Riders<(typeof RUNTIME_RIDERS)[number]>;
 	tick(): Promise<void>;
-	triggers: TriggerRuntime;
 	/** One push as it arrives: stored raw first, then its rows or its delivery. False when it maps to no trigger. */
 	receivePush(server: string, delivery: PushDelivery, n: McpNotification, cwd?: string, inject?: boolean): boolean;
 	/** At start: the rows of the last five minutes' pushes that a crash kept from being written. Returns how many lanes got one. */
@@ -125,8 +124,14 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const notice = (text: string, cwd?: string) => {
 		noticeSeq = keepNotice(kept, noticeSeq, text, cwd, Date.now());
 	};
-	let triggers: TriggerRuntime;
 	const stores = deps.stores ?? openStores(dir, log);
+	// Audit writes are best-effort — a failed write never fails a trigger; say so once per distinct error.
+	let persistenceSaid: string | undefined;
+	stores.rules.onPersistenceError ??= (message) => {
+		if (message === persistenceSaid) return;
+		persistenceSaid = message;
+		log(redact(message));
+	};
 	const leases = new LeaseStore(dir);
 	const requests = stores.requests;
 	/** The host as a lease holder: it holds a closed conversation for one piece of work, then lets go. */
@@ -152,7 +157,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const ownerView: OwnerView = { holdsOwn: false, hostRuns: (sessionId) => canHold(sessionId) };
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
-	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: stores.inbox, audit: triggers.store, ledger: stores.jobs, counts: (id) => jobCounts(stores.history().get(id), stores.clock.read().jobs[id]?.cleared), self: createdBy });
+	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: stores.inbox, audit: stores.rules, ledger: stores.jobs, counts: (id) => jobCounts(stores.history().get(id), stores.clock.read().jobs[id]?.cleared), self: createdBy });
 
 	/* ------------------------------------------------------ lifecycle hooks */
 
@@ -206,8 +211,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const slots = new SubagentSlots(() => deps.config().maxConcurrentRuns);
 
 	const toInbox = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string) => {
-		// The check decided this result's finding already (TriggerRuntime's inbox); a push with no rule did not.
-		await promotionToInbox(stores.inbox, triggers.store, content, trigger, { cwd: trigger.cwd ?? "", sessionId: forSession });
+		// The check decided this result's finding already (`runCheck`'s inbox); a push with no rule did not.
+		await promotionToInbox(stores.inbox, stores.rules, content, trigger, { cwd: trigger.cwd ?? "", sessionId: forSession });
 		return "inbox" as const;
 	};
 
@@ -227,7 +232,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		appended: (row, into) => {
 			// Written into a closed conversation, so no screen showed it: the audit row says so. The
 			// "since you last looked" line counts the rule's finding in the inbox (src/seen.ts).
-			triggers.store.appendAudit({ cwd: row.payload?.cwd ?? "", type: "trigger_promotion", traceId: row.id, state: "appended", details: { session_id: into.sessionId } });
+			stores.rules.appendAudit({ cwd: row.payload?.cwd ?? "", type: "trigger_promotion", traceId: row.id, state: "appended", details: { session_id: into.sessionId } });
 			// And said in the project's open windows: the person is likely in another conversation of
 			// it now, where a rule's result used to land (0.22), and would not know to look there.
 			// Once an hour per conversation (keepNotice keeps one of each text an hour).
@@ -246,14 +251,14 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	/** `run_start` of a loop's run, a scheduled one or an answer's: its audit line, its log line, its hooks. */
 	const loopStarted = (job: LoopJob, row: ClaimedRow): void => {
 		// The latest slot the row owes, as main named the slot it fired: a slot counted onto a waiting row is the one that runs.
-		auditCronStart(triggers.store, job, row.run.id, row.collapsed_slot ?? row.payload?.slot);
+		auditCronStart(stores.rules, job, row.run.id, row.collapsed_slot ?? row.payload?.slot);
 		log(`loop ${job.name ?? job.id}: run ${row.run.id.slice(0, 12)} started`);
 		const hooks = hookRunnerFor(job, row.run.id);
 		if (hooks) void hooks.fire(runStartEvent(job, row.run.id)).catch((err: any) => log(`hooks: ${redact(err?.message ?? String(err))}`));
 	};
 	/** `run_end` of a loop's run, a scheduled one or an answer's (C2). */
 	const loopFinished = (record: RunRecord): void => {
-		auditCronFinish(triggers.store, { id: record.jobId, cwd: record.cwd }, record, !!record.aborted);
+		auditCronFinish(stores.rules, { id: record.jobId, cwd: record.cwd }, record, !!record.aborted);
 		log(`loop ${record.jobName ?? record.jobId}: ${record.ok ? "ok" : record.stoppedBy === "person" ? `stopped by you (from ${record.stoppedFrom === "page" ? "the page" : "a terminal"})` : `FAILED (${redact(record.error ?? "")})`} · ${record.findings} finding(s)${record.usage?.cost ? ` · $${record.usage.cost.toFixed(3)}` : ""}`);
 		const hooks = runHooks.get(record.runId);
 		if (hooks) void hooks.fire(runEndEvent({ id: record.jobId, name: record.jobName, cwd: record.cwd } as LoopJob, record)).then(() => runHooks.delete(record.runId), () => runHooks.delete(record.runId));
@@ -307,7 +312,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			finished: loopFinished,
 			filed: () => undefined,
 			retired: (job, reason) => {
-				triggers.store.appendAudit({ cwd: job.cwd, type: "cron_control_plane", traceId: newId("audit"), state: "remove", sourceLabel: "clock", eventLabel: job.id, summary: `${job.name ?? job.id}: ${reason}` });
+				stores.rules.appendAudit({ cwd: job.cwd, type: "cron_control_plane", traceId: newId("audit"), state: "remove", sourceLabel: "clock", eventLabel: job.id, summary: `${job.name ?? job.id}: ${reason}` });
 			},
 			log: loopLog,
 		},
@@ -402,10 +407,9 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		budgetCap: () => deps.config().dailyBudgetUsd,
 		cwdExists: fs.existsSync,
 		transcriptHeld,
-		checkRunning: (lane) => triggers.checkRunningIn(lane),
 		checkSessionDir: checkDir,
 		// The cap of a check's answer is the check's own, from the same function (`checkCap`).
-		checkCap: (cwd) => triggers.checkCapOf(cwd),
+		checkCap: (cwd) => checkCap(cwd, stores.rules.load().filter((r) => r.enabled && !r.proposed && withinProject(r.cwd, cwd)), deps.config().triggerRunTimeoutMs),
 		conversations: background.conversations,
 		started: loopStarted,
 		log: loopLog,
@@ -552,28 +556,6 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		}
 	}
 
-	triggers = new TriggerRuntime({
-		store: stores.rules,
-		jobStore: stores.jobs,
-		getSession: deps.session,
-		pollIntervalSecs: deps.config().triggerPollIntervalSecs,
-		runTimeoutMs: deps.config().triggerRunTimeoutMs,
-		runner: deps.runner,
-		dedupFile: path.join(dir, "dedup.json"),
-		slots,
-		budget: () => budgetState(stores.jobs, deps.config().dailyBudgetUsd, Date.now()),
-		inbox: stores.inbox,
-		events,
-		gatePolicy,
-		hooks: {
-			onPromote: promote,
-			// A push that injects and runs reaches the host only when no window has its server (host.ts): the inbox.
-			onInjectAndRun: (prompt, trigger) => toInbox(prompt, trigger),
-			onFinished: (o) => log(`trigger ${o.trigger.traceId.slice(0, 8)} ${o.delivery} ${o.ok ? "ok" : `FAILED (${redact(o.error ?? "")})`}${o.matchedRules.length ? ` matched ${o.matchedRules.length}` : ""}`),
-			log: (msg) => log(redact(msg)),
-		},
-	});
-
 	/** Whether `session` has a seat of the runner's guard in a conversation's lane. */
 	const conversationSeat = (session: object | undefined): boolean => {
 		const seat = deps.guardSeats?.of(session);
@@ -586,7 +568,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		const host: ToolHost = {
 			stores,
 			runs,
-			triggers,
+			rules: stores.rules,
+			pollSecs: () => deps.config().triggerPollIntervalSecs,
 			owner: () => ownerView,
 			// A job a run makes gets no more built-in tools than that run (createLoopJob trims to them), and no trust of its own.
 			// A held turn's session is the conversation it runs in; a loop's run has none.
@@ -596,7 +579,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			cronControlAudit: (op, actor, before, after) => {
 				const job = after ?? before;
 				const id = newId("audit");
-				triggers.store.appendAudit({ cwd: req.cwd, type: "cron_control_plane", traceId: id, state: op, sourceLabel: actor, eventLabel: job?.id, summary: job ? `${job.name ?? job.id}: ${job.prompt}` : undefined, details: { before_enabled: before?.enabled, after_enabled: after?.enabled } });
+				stores.rules.appendAudit({ cwd: req.cwd, type: "cron_control_plane", traceId: id, state: op, sourceLabel: actor, eventLabel: job?.id, summary: job ? `${job.name ?? job.id}: ${job.prompt}` : undefined, details: { before_enabled: before?.enabled, after_enabled: after?.enabled } });
 				log(`cron control plane: ${op} by ${actor} ${job?.id ?? ""}`);
 				return id;
 			},
@@ -727,7 +710,6 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				catch (error) { log(`tick: ${name} failed: ${error instanceof Error ? error.message : String(error)}`); }
 			}
 		},
-		triggers,
 		/**
 		 * One push as it arrives (design 3.4, raw first): appended to `events.jsonl` before anything maps
 		 * it, then a row in each project's check lane (`sub_agent`), or put in a chat (`inject_*`, unless
@@ -779,7 +761,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			const turn = runs.turnIn(sessionId);
 			return turn && { runId: turn.runId, label: turn.label };
 		},
-		controlTarget: (tool, input, cwd) => controlTarget({ stores, triggers }, tool, input, cwd ?? ""),
+		controlTarget: (tool, input, cwd) => controlTarget({ stores, rules: stores.rules }, tool, input, cwd ?? ""),
 		customTools: async (req) => {
 			const shared = deps.mcpTools();
 			// A held turn is the conversation's own turn, as in a window (hop 0, actor "tool"): the
@@ -792,7 +774,6 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		start: () => { watch(); },
 		stop: async () => {
 			for (const w of watchers.splice(0)) w.close();
-			await triggers.stop();
 			await answerLanes.stop(5_000);
 			await loops.stop(5_000);
 			await checks.stop(5_000);

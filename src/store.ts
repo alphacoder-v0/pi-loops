@@ -308,7 +308,7 @@ export function newId(prefix: string): string {
 /**
  * On-disk shape of `jobs.json`, bumped whenever a field becomes load-bearing, so an older pi-loops sharing this directory refuses
  * the file instead of silently rewriting it without that field. Version 2 added `verify`/`checkerModel`,
- * `timeoutMs` and `consecutiveFailures` (and a `host` that gated dispatch until 0.19.0: pi-loops runs
+ * `timeoutMs` and a job's failures in a row (and a `host` that gated dispatch until 0.19.0: pi-loops runs
  * on one machine, so the field is ignored when read and dropped when written). Version 3 holds
  * definitions only, with `disabled`: a job's cursor is in `clock.json`, its runs in `runs.jsonl` and
  * its going run on its row (src/convert-v2.ts converts a version 2 file at the start).

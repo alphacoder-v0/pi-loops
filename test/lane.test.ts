@@ -1,8 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
 import * as path from "node:path";
-import { laneFileName, loopLane, parseLane } from "../src/lane.ts";
+import { tmp } from "./tmp.ts";
+import { checkLane, laneFileName, loopLane, parseLane } from "../src/lane.ts";
 import { sessionFileName } from "../src/lease.ts";
+import { triggerSessionKey } from "../src/check-run.ts";
 
 const conversations = ["s1", "01a1dce4-8ad1-77c0-89b0-475ccfeaf683", "A", "a.b_c-d", "a".repeat(128)];
 const loops = ["@cron-0123456789abcdef0123456789abcdef", "@cron-a", `@cron-${"a".repeat(123)}`];
@@ -50,4 +53,32 @@ test("a loop's lane is @ and its job's id, and a job whose id makes no lane has 
 	assert.equal(loopLane("cron-0123456789abcdef0123456789abcdef"), "@cron-0123456789abcdef0123456789abcdef");
 	assert.deepEqual(parseLane(loopLane("cron-ab12")!), { kind: "loop", id: "@cron-ab12" });
 	for (const jobId of ["loop-ab12", "", "cron-", "cron-a/b", "cron-..", `cron-${"a".repeat(124)}`]) assert.equal(loopLane(jobId), undefined, JSON.stringify(jobId));
+});
+
+test("[check-lane-symlink] a project reached through a symlink has one check lane, named for the real directory", () => {
+	const root = fs.realpathSync(tmp("pi-loops-lane-link-"));
+	const real = path.join(root, "proj");
+	const link = path.join(root, "link");
+	fs.mkdirSync(real);
+	fs.symlinkSync(real, link);
+	assert.equal(checkLane(link), checkLane(real));
+	assert.match(checkLane(link)!, /^@check-proj-[0-9a-f]{8}$/);
+});
+
+test("a project's check lane is @check-, its directory's name and a digest of its path; two projects named alike have two lanes, and no project has none", () => {
+	const a = fs.realpathSync(tmp("pi-loops-lane-"));
+	const one = path.join(a, "one", "web");
+	const two = path.join(a, "two", "web");
+	fs.mkdirSync(one, { recursive: true });
+	fs.mkdirSync(two, { recursive: true });
+	assert.match(checkLane(one)!, /^@check-web-[0-9a-f]{8}$/);
+	assert.notEqual(checkLane(one), checkLane(two));
+	assert.equal(checkLane(one), checkLane(one), "stable for a project");
+	assert.equal(checkLane(one), `@check-${triggerSessionKey(one).slice("triggers-".length)}`, "the key of the project's check transcripts, without its prefix");
+	assert.equal(checkLane(""), undefined, "a rule with no project has no check lane");
+	// Whatever the directory is called, the lane is one the grammar takes.
+	for (const name of ["a b", "..", "a..b", "é", ".hidden", "x".repeat(250), "@cron-x"]) {
+		const lane = checkLane(path.join(a, name));
+		assert.equal(parseLane(lane!)?.kind, "check", `${name} -> ${lane}`);
+	}
 });

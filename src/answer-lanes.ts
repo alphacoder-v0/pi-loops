@@ -37,8 +37,6 @@ export interface AnswerLaneDeps {
 	cwdExists(cwd: string): boolean;
 	/** Whether a live pi has the transcript with this session id open. A transcript that is held is not resumed. */
 	transcriptHeld(sessionId: string): boolean;
-	/** Whether a rule check of the project whose check lane this is runs now (`TriggerRuntime.checkRunningIn`): a check's run is in no `RunList`. */
-	checkRunning(lane: LaneId): boolean;
 	/** Where a check lane's transcripts are: `checkSessionDir` of src/check-run.ts. */
 	checkSessionDir(cwd: string): string;
 	/** The cap of the check of project `cwd`, as its own run has it: `checkCap` of src/check-run.ts. */
@@ -111,7 +109,6 @@ export function createAnswerLanes(deps: AnswerLaneDeps): AnswerLanes {
 			if (lane.kind === "check" && rows.some((row) => row.run !== undefined && !isAnswerRow(row) && live(row as ClaimedRow))) return "a check of this project is running";
 			const going = runs.all().some((run) => (job !== undefined && run.jobId === job.id) || run.answer?.lane === lane.id || run.turn?.sessionId === lane.id) || rows.some((row) => row.run !== undefined && live(row as ClaimedRow));
 			if (going) return lane.kind === "loop" ? "another run of the loop is going" : lane.kind === "conversation" ? "another run of pi-loops is writing the conversation" : "another answer of this project is running";
-			if (lane.kind === "check" && deps.checkRunning(lane.id)) return "a check of this project is running";
 			return undefined;
 		};
 		return {

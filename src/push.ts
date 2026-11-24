@@ -15,7 +15,6 @@ import type { RequestStore, Row, UnclaimedRow } from "./requests.ts";
 import { stamp } from "./schedule.ts";
 import type { RunRecord } from "./store.ts";
 import type { DynamicTriggerRule, ReplacementPolicy, Trigger, TriggerStore } from "./triggers.ts";
-import type { TriggerDelivery, TriggerOutcome } from "./trigger-runtime.ts";
 import { type PromoteTarget, envelopeOf, promotionBody } from "./check-run.ts";
 
 export const PUSH_WINDOW_MS = 5 * 60_000;
@@ -94,7 +93,21 @@ export function writePush(store: RequestStore, input: PushInput): PushDecision {
 	return store.writePush(laneOf(input.project), (rows) => decidePush(input, rows));
 }
 
-export type PushDelivery = TriggerDelivery;
+export type PushDelivery = "sub_agent" | "inject_summary" | "inject_and_run";
+
+/** What one delivery of a push came to, for the window's card and the logs. */
+export interface TriggerOutcome {
+	trigger: Trigger;
+	delivery: PushDelivery;
+	ok: boolean;
+	matchedRules: DynamicTriggerRule[];
+	summary: string;
+	error?: string;
+	durationMs: number;
+	cost: number;
+	promoted: boolean;
+	sessionFile?: string;
+}
 
 /** What a server's pushes do, from its config: run one turn, inject the summary, or be checked against the rules. */
 export function deliveryOf(cfg: Pick<McpServerConfig, "injectAndRun" | "injectSummary">): PushDelivery {

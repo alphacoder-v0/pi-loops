@@ -28,7 +28,6 @@ import { jobNameFrom } from "./job-name.ts";
 import { asleepNote, ownerSession, runsSomewhere, whereRuns, type OwnerView } from "./job-owner.ts";
 import { inProject } from "./inbox.ts";
 import { plural } from "./plural.ts";
-import type { TriggerRuntime } from "./trigger-runtime.ts";
 import { sameProject, withinProject } from "./paths.ts";
 import { type TriggerStore, auditRule, cleanCondition, controlPlanePreflight, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
@@ -51,7 +50,9 @@ export interface ControlPlaneRequest {
 export interface ToolHost {
 	stores: Stores;
 	runs?: RunList;
-	triggers: TriggerRuntime;
+	rules: TriggerStore;
+	/** How often the rules are checked, in seconds (`[triggers] poll_interval_secs`). */
+	pollSecs(): number;
 	session(): SessionSnapshot;
 	owner(): OwnerView;
 	createJob(input: CreateJobInput, scope?: JobScope): Promise<LoopJob>;
@@ -108,7 +109,7 @@ const TARGET_IDS_SHOWN = 5;
  * them all). The guard folds it into the call's identity (src/guard.ts `ToolCallFacts.target`), so
  * a yes runs only on the target the person saw. undefined for any other tool.
  */
-export function controlTarget(host: Pick<ToolHost, "stores" | "triggers">, tool: string, input: unknown, cwd: string): string | undefined {
+export function controlTarget(host: Pick<ToolHost, "stores" | "rules">, tool: string, input: unknown, cwd: string): string | undefined {
 	const params = (input ?? {}) as { ref?: unknown; id?: unknown; all?: unknown };
 	if (tool === "cron_remove" || tool === "set_cron_job_state") {
 		const job = typeof params.ref === "string" ? resolveJobRefScoped(jobsOf(host).load(), params.ref, cwd) : undefined;
@@ -120,13 +121,13 @@ export function controlTarget(host: Pick<ToolHost, "stores" | "triggers">, tool:
 		return `job ${job.id} "${job.name ?? job.id}" ${when}`;
 	}
 	if (tool === "remove_trigger" && params.all === true) {
-		const ids = host.triggers.store.load().filter((r) => sameProject(r.cwd, cwd)).map((r) => r.id).sort();
+		const ids = host.rules.load().filter((r) => sameProject(r.cwd, cwd)).map((r) => r.id).sort();
 		if (ids.length <= TARGET_IDS_SHOWN) return `${plural(ids.length, "rule")}${ids.length ? `: ${ids.join(", ")}` : ""}`;
 		const digest = createHash("sha256").update(ids.join("\n")).digest("hex").slice(0, 12);
 		return `${plural(ids.length, "rule")}: ${ids.slice(0, TARGET_IDS_SHOWN).join(", ")}, … (all ids sha256 ${digest})`;
 	}
 	if (tool === "remove_trigger" || tool === "set_trigger_state") {
-		const rule = typeof params.id === "string" ? resolveRuleRefScoped(host.triggers.store.load(), params.id, cwd) : undefined;
+		const rule = typeof params.id === "string" ? resolveRuleRefScoped(host.rules.load(), params.id, cwd) : undefined;
 		return rule ? `rule ${rule.id}` : "no rule matches";
 	}
 	return undefined;
@@ -403,19 +404,19 @@ function renderCronJobsForTool(jobs: readonly ListedJob[], host: Pick<ToolHost, 
 
 /** A rule made at once, as `new_trigger` made one before proposals: the person's own turn with no UI, after `confirmTool`. */
 async function addRule(host: ToolHost, input: Parameters<TriggerStore["add"]>[0]) {
-	const rule = await host.triggers.store.add(input);
+	const rule = await host.rules.add(input);
 	host.refreshBadge();
 	host.ensureHost?.();
 	return {
-		content: [{ type: "text" as const, text: `created dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}\nfire_once: ${rule.fireOnce}\npromote_to_chat: ${rule.promoteToChat}\n(checked every ${host.triggers.pollIntervalSecs}s by a sub-agent in the background)${pausedLine(ownerOf(host).hostPaused)}` }],
+		content: [{ type: "text" as const, text: `created dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}\nfire_once: ${rule.fireOnce}\npromote_to_chat: ${rule.promoteToChat}\n(checked every ${host.pollSecs()}s by a sub-agent in the background)${pausedLine(ownerOf(host).hostPaused)}` }],
 		details: { id: rule.id as string | undefined, condition: rule.condition, action: rule.action, enabled: rule.enabled, fire_once: rule.fireOnce, fired_at: rule.firedAt, promote_to_chat: rule.promoteToChat },
 	};
 }
 
 /** P1 for a rule (design 2.5): the proposal, one write under the store's lock, then the audit line `add`. `new_trigger` creates nothing else. */
 async function proposeRule(host: ToolHost, scope: ToolScope, input: Parameters<TriggerStore["add"]>[0]) {
-	const rule = await host.triggers.store.add(input);
-	auditRule(host.triggers.store, "add", scope.actor, rule);
+	const rule = await host.rules.add(input);
+	auditRule(host.rules, "add", scope.actor, rule);
 	host.refreshBadge();
 	return {
 		content: [{ type: "text" as const, text: proposedText(`dynamic trigger ${rule.id}`) }],
@@ -530,10 +531,10 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			// The store is machine-wide, so containment is this filter's job: a model sees its own
 			// project's rules unless a human asked for all of them.
 			const cwd = host.session().cwd;
-			const all = host.triggers.store.load();
+			const all = host.rules.load();
 			// A sub-agent never gets the machine-wide view: nobody is there to have asked for it.
 			const rules = params.all_projects && scope.hop === 0 ? all : all.filter((r) => sameProject(r.cwd, cwd));
-			return { content: [{ type: "text", text: renderTriggerRulesForTool(rules, host) }], details: { count: rules.length, scope: params.all_projects && scope.hop === 0 ? "machine" : cwd, rules, storage_path: host.triggers.store.rulesFile } };
+			return { content: [{ type: "text", text: renderTriggerRulesForTool(rules, host) }], details: { count: rules.length, scope: params.all_projects && scope.hop === 0 ? "machine" : cwd, rules, storage_path: host.rules.rulesFile } };
 		},
 	});
 	register({
@@ -549,17 +550,17 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			if (params.all) {
 				// Scoped to this run's project: a machine-wide wipe is not something a model can ask for.
 				const cwd = host.session().cwd;
-				const denied = await host.confirmTool(ctx, { label: "remove ALL dynamic triggers", tool: "remove_trigger", reason: "remove every dynamic trigger rule of this project (`all` flag)", preview: `${host.triggers.store.load().filter((r) => sameProject(r.cwd, cwd)).length} rule(s)`, args: params }, scope.hop);
+				const denied = await host.confirmTool(ctx, { label: "remove ALL dynamic triggers", tool: "remove_trigger", reason: "remove every dynamic trigger rule of this project (`all` flag)", preview: `${host.rules.load().filter((r) => sameProject(r.cwd, cwd)).length} rule(s)`, args: params }, scope.hop);
 				if (denied) return err(denied);
-				const n = await host.triggers.store.clear(cwd, sameProject);
+				const n = await host.rules.clear(cwd, sameProject);
 				return { content: [{ type: "text", text: `removed ${n} dynamic trigger rule(s)` }], details: { removed_count: n } };
 			}
 			if (!params.id) return err("missing required arg: id");
-			const rule = resolveRuleRefScoped(host.triggers.store.load(), params.id, host.session().cwd);
+			const rule = resolveRuleRefScoped(host.rules.load(), params.id, host.session().cwd);
 			if (!rule) return err(`no dynamic trigger rule with id '${params.id}'; list_triggers shows the ids`);
 			const denied = await host.confirmTool(ctx, { label: `remove dynamic trigger ${rule.id}`, tool: "remove_trigger", reason: "remove a dynamic trigger rule by `id`", preview: `when ${previewRedacted(rule.condition, 120)}`, args: params }, scope.hop);
 			if (denied) return err(denied);
-			await host.triggers.store.remove(rule.id);
+			await host.rules.remove(rule.id);
 			return { content: [{ type: "text", text: `removed dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}` }], details: { removed_count: 1 } };
 		},
 	});
@@ -573,7 +574,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const ruleCwd = host.session().cwd;
-			const rule = resolveRuleRefScoped(host.triggers.store.load(), params.id, ruleCwd);
+			const rule = resolveRuleRefScoped(host.rules.load(), params.id, ruleCwd);
 			if (!rule) return deny(`no dynamic trigger rule with id '${params.id}'; list_triggers shows the ids`);
 			if (rule.proposed) return deny(proposedRefusal(`dynamic trigger ${rule.id}`, `/triggers enable ${rule.id}`));
 			// Re-enabling is gated; pausing another project's rule is just as much a surprise, so it
@@ -582,7 +583,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 				const denied = await host.confirmTool(ctx, { label: `${params.enabled ? "re-enable" : "disable"} dynamic trigger ${rule.id}`, tool: "set_trigger_state", reason: params.enabled ? "re-enable a dynamic trigger rule (`enabled` = true); it will fire again" : "disable a dynamic trigger rule of another project", preview: `when ${previewRedacted(rule.condition, 120)}`, args: params }, scope.hop);
 				if (denied) return deny(denied);
 			}
-			const updated = (await host.triggers.store.setEnabled(rule.id, params.enabled)) ?? rule;
+			const updated = (await host.rules.setEnabled(rule.id, params.enabled)) ?? rule;
 			return {
 				content: [{ type: "text", text: `updated dynamic trigger ${updated.id}\nstate: ${updated.enabled ? "enabled" : "disabled"}\ncondition: ${updated.condition}\naction: ${updated.action}` }],
 				details: { id: updated.id as string | undefined, condition: updated.condition, action: updated.action, enabled: updated.enabled, fire_once: updated.fireOnce, fired_at: updated.firedAt, promote_to_chat: updated.promoteToChat },
