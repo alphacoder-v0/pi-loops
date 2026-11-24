@@ -34,6 +34,8 @@ async function crashed() {
 	await first.host.stores.rules.add({ condition: "a build fails", action: "say so", cwd: project });
 	const requests = new RequestStore(dir);
 	const lane = checkLane(project)!;
+	// The first process's start, as host.ts does it before any push arrives.
+	first.host.rederivePushes((server) => server === "ci");
 	const event = new EventLog(dir, "background").append("mcp:ci", JSON.stringify({ method: "ci/build", params: { _meta: { pi_dedup_key: "k1", pi_summary: "build red" } } }));
 	const rowId = pushRowId(event.id, project);
 	const writeRow = (stored: RawEvent) => {

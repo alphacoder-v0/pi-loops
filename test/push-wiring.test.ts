@@ -15,15 +15,23 @@ const USAGE = { input: 1, output: 1, cost: 0.01, turns: 1 };
 const note = (key: string | undefined, summary = "build red") => ({ method: "ci/build", params: { _meta: { ...(key ? { pi_dedup_key: key } : {}), pi_summary: summary } } });
 
 /** pi-loops in the background with one project that has a rule; its runner holds every check until `release`. */
-async function background() {
+async function background(over: { budget?: number; runner?: (req: any) => Promise<any> } = {}) {
 	const dir = tmp("pi-loops-push-wiring-");
 	const project = path.join(dir, "project");
 	fs.mkdirSync(project, { recursive: true });
+	if (over.budget !== undefined) fs.writeFileSync(path.join(dir, "config.toml"), `[limits]\ndaily_budget_usd = ${over.budget}\n`);
 	const calls: any[] = [];
-	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: async (req: any) => { calls.push(req); return { ok: true, exitCode: 0, timedOut: false, text: "nothing matched", usage: USAGE }; }, mcpTools: () => [], log: () => undefined });
+	const runner = async (req: any) => { calls.push(req); return over.runner ? over.runner(req) : { ok: true, exitCode: 0, timedOut: false, text: "nothing matched", usage: USAGE }; };
+	const start = () => {
+		const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined });
+		// As host.ts at start, before any push can arrive: this start's pushes are derived from here on.
+		host.rederivePushes((server) => server === "ci");
+		return host;
+	};
+	const host = start();
 	await host.stores.rules.add({ condition: "a build fails", action: "say so", cwd: project });
 	const lines = () => fs.readFileSync(path.join(dir, "events.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
-	return { dir, project, host, calls, lines, lane: checkLane(project)!, requests: new RequestStore(dir) };
+	return { dir, project, host, start, calls, lines, lane: checkLane(project)!, requests: new RequestStore(dir) };
 }
 
 test("[push-raw-first] a push reaches events.jsonl as received before any row names it; one that maps to no trigger stays there and makes no row", async () => {
@@ -130,15 +138,46 @@ test("[push-crash-none-lost] through receivePush: a project's push is stored wit
 	}
 });
 
-test("[push-rederive-on-start] a push whose row was written once and left refused (over budget, dropped, dead) is not written again at start", async () => {
-	const b = await background();
-	const events = new EventLog(b.dir, "background");
-	const refused = events.append("mcp:ci", JSON.stringify(note("k9")), { delivery: "sub_agent" });
-	const rowId = pushRowId(refused.id, b.project);
-	// As derivePush audits a row it wrote; the row then left with `budget_exceeded`, which writes no run record.
-	b.host.stores.rules.appendAudit({ cwd: b.project, type: "trigger", traceId: rowId, state: "accepted", sourceLabel: "mcp:ci", details: { row: rowId } });
-	b.host.stores.rules.appendAudit({ cwd: b.project, type: "trigger", traceId: rowId, state: "budget_exceeded", sourceLabel: "mcp:ci", details: { row: rowId } });
-	assert.equal(b.host.rederivePushes(() => true), 0);
-	assert.deepEqual(b.requests.list(b.lane), []);
+test("[push-rederive-on-start] a push that was derived is never derived again at start, whatever became of its row: refused, or joined or replaced into a row that was refused", async () => {
+	let release!: () => void;
+	const held = new Promise<void>((resolve) => (release = resolve));
+	const b = await background({ budget: 0.5, runner: async () => { await held; return { ok: true, exitCode: 0, timedOut: false, text: "nothing matched", usage: USAGE }; } });
+	const listChanged = { method: "notifications/tools/listChanged", params: {} };
+	b.host.receivePush("ci", "sub_agent", note("k1"));
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(b.requests.list(b.lane).filter((r) => r.run).length, 1, "the first push's check runs and holds the lane");
+	b.host.receivePush("ci", "sub_agent", note("k2"));
+	b.host.receivePush("ci", "sub_agent", note("k2"));
+	b.host.receivePush("ci", "sub_agent", listChanged);
+	b.host.receivePush("ci", "sub_agent", listChanged);
+	const [, k2, joined, tools, replacing] = b.lines();
+	assert.ok(b.host.stores.rules.listAudit(50, (r) => r.traceId === pushRowId(joined.id, b.project)).some((r) => r.state === "deduped"), "the second k2 joined the first one's row");
+	assert.deepEqual(b.requests.list(b.lane).filter((r) => !r.run).map((r) => r.id), [pushRowId(k2.id, b.project), pushRowId(tools.id, b.project)], "two rows wait; the second tools push replaced the first one's");
+	// The day goes over budget while they wait: both leave refused, with no run record.
+	b.host.stores.jobs.appendRun({ runId: "spent", jobId: "x", stateful: true, cwd: b.dir, pid: 1, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), ok: true, findings: 0, droppedFindings: 0, stateUpdated: false, usage: { ...USAGE, cost: 1 } });
+	release();
+	await b.host.drain(5000);
+	await b.host.riders["check-lanes"](Date.now(), { startedAt: 0, tickMs: 30_000 });
+	await b.host.drain(5000);
+	assert.deepEqual(b.requests.list(b.lane), [], "the waiting rows left refused");
+	const next = b.start();
+	assert.deepEqual(b.requests.list(b.lane), [], "the restart writes no row for any of them");
+	assert.equal(next.rederivePushes((server) => server === "ci"), 0);
+	assert.ok(replacing, "five pushes stored");
+});
+
+test("[push-rederive-on-start] the first start of this version, or a clock.json that was lost, derives no push stored before it: a push is lost before it runs twice", async () => {
+	const dir = tmp("pi-loops-push-first-start-");
+	const project = path.join(dir, "project");
+	fs.mkdirSync(project, { recursive: true });
+	await new TriggerStore(dir).add({ condition: "a build fails", action: "say so", cwd: project });
+	// Stored by 0.24.2, which ran it from memory.
+	new EventLog(dir, "background").append("mcp:ci", JSON.stringify(note("k1")));
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: async () => ({ ok: true, exitCode: 0, timedOut: false, text: "", usage: USAGE }), mcpTools: () => [], log: () => undefined });
+	assert.equal(host.rederivePushes((server) => server === "ci"), 0);
+	assert.deepEqual(new RequestStore(dir).list(checkLane(project)!), []);
+	const lost = new EventLog(dir, "background").append("mcp:ci", JSON.stringify(note("k2")));
+	assert.equal(host.rederivePushes((server) => server === "ci"), 1, "a push stored after that start is derived at the next");
+	assert.deepEqual(new RequestStore(dir).list(checkLane(project)!).map((r) => r.id), [pushRowId(lost.id, project)]);
 });
 

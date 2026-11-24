@@ -28,6 +28,7 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `seen.json` | when each project was last looked at (`/inbox`, or the page's Mark all seen), for the "since you last looked" line and the page's away card |
 | `*.lock` | short-lived locks around writes |
 | `clock.json` `checks` | when each project's rules were last checked, so a project is not checked twice in one interval (0.24.2 kept this in `polls.json`, and its push dedup window in `dedup.json`; pi-loops removes both at start) |
+| `clock.json` `pushes` | `derived`: the id of the last push in `events.jsonl` whose rows pi-loops in the background wrote. At start it writes the rows of the pushes after it in the last five minutes (a crash came between the two writes), and of no push before it, whatever became of that push's rows |
 | `web-token` | the browser page's token, mode 0600. It lives in a file rather than being made per start so the address stays the same one and a signed-in device stays signed in across restarts and upgrades. Delete it and run `pi-loops restart` to sign every device out. The first 0.24 start replaces a token from an earlier version once, and writes `web-token.v024` beside it to record that; a token you write into `web-token` after that is kept. A `web-token.v024` that is not a regular file (a symlink, even a dangling one) stops pi-loops from starting, as a `web-token` symlink does |
 
 Project-level: `<project>/.pi/mcp.toml` (trusted projects only) and `<project>/.pi/hooks.toml`

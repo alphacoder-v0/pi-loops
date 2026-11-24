@@ -53,7 +53,13 @@ export interface GateClock { looks: number; last?: GateLast; seen?: { digest: st
 /** The versioned clock file. Unknown job keys are preserved by writes; `rules` is there once a rule's gate was looked at. */
 /** A project's periodic check: when its check lane last got a row (src/check-tick.ts). */
 export interface CheckClock { fired: string }
-export interface ClockFile { v: 1; jobs: Record<string, JobClock>; rules?: Record<string, GateClock>; checks?: Record<string, CheckClock> }
+/**
+ * The stored pushes pi-loops in the background derived: `derived`, the id of the last event in
+ * `events.jsonl` whose rows were written ("" when the log had none). A start derives only the
+ * pushes after it (src/host-runtime.ts `rederivePushes`).
+ */
+export interface PushClock { derived: string }
+export interface ClockFile { v: 1; jobs: Record<string, JobClock>; rules?: Record<string, GateClock>; checks?: Record<string, CheckClock>; pushes?: PushClock }
 /** The cursor stamps as this ticker read them. */
 export interface CursorRead { readonly slot?: string; readonly fired?: string }
 export interface CursorMove {
@@ -286,7 +292,20 @@ export class ClockStore implements Clock, GateClocks {
 			}
 			out.checks = checks;
 		}
+		const derived = (file.pushes as { derived?: unknown } | undefined)?.derived;
+		if (typeof derived === "string") out.pushes = { derived };
 		return out;
+	}
+	/** The last stored push whose rows were written, or undefined when no start of this version wrote one. */
+	pushesDerived(): string | undefined {
+		return this.read().pushes?.derived;
+	}
+	/** The stored push `eventId` has its rows: written right after them, in the same synchronous step. */
+	derivePushed(eventId: string): void {
+		this.io.locked(this.paths.lock, () => {
+			const file = this.read();
+			this.io.write(this.paths.file, JSON.stringify({ ...file, pushes: { derived: eventId } }));
+		});
 	}
 	/**
 	 * A project's poll: true, and the time written, when its check lane's last row is `intervalMs` old

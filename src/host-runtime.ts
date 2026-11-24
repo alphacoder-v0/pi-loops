@@ -94,7 +94,7 @@ export interface HostRuntime {
 	tick(): Promise<void>;
 	/** One push as it arrives: stored raw first, then its rows or its delivery. False when it maps to no trigger. */
 	receivePush(server: string, delivery: PushDelivery, n: McpNotification, cwd?: string, inject?: boolean): boolean;
-	/** At start: the rows of the last five minutes' pushes that a crash kept from being written. Returns how many lanes got one. */
+	/** At start: the rows of the last five minutes' pushes that a crash kept from being written (after `clock.json`'s cursor). Returns how many lanes got one. */
 	rederivePushes(subAgent: (server: string) => boolean): number;
 	/** The tools a sub-session started by this host gets (its cwd and model, not the host's). */
 	customTools: (req: SubagentRequest) => Promise<ToolDefinition<any, any>[]>;
@@ -356,9 +356,14 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		log: (message) => log(redact(message)),
 	});
 	/** What a push becomes here (src/push.ts): its rows, or its delivery into a chat. */
-	const pushDeps: DeriveDeps = {
-		requests: stores.requests, events, rules: stores.rules, runs: () => stores.jobs.allRuns(), createdBy: () => createdBy(),
-		written: (rowId) => stores.rules.listAudit(Number.MAX_SAFE_INTEGER, (r) => r.traceId === rowId && r.state === "accepted").length > 0,
+	const pushDeps: DeriveDeps = { requests: stores.requests, events, rules: stores.rules, runs: () => stores.jobs.allRuns(), createdBy: () => createdBy() };
+	/**
+	 * A stored push's rows are written: the clock says so before anything else can run (design 3.4).
+	 * A write that fails is logged; that push is derived once more at the next start.
+	 */
+	const derived = (eventId: string): void => {
+		try { stores.clock.derivePushed(eventId); }
+		catch (error) { log(`push ${eventId} derived, but clock.json could not say so: ${error instanceof Error ? error.message : String(error)}`); }
 	};
 	const injectDeps: InjectDeps = {
 		events,
@@ -730,7 +735,9 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			if (!stored) return false;
 			const trigger = cwd ? { ...stored, cwd } : stored;
 			if (delivery === "sub_agent") {
-				for (const lane of derivePush(pushDeps, event, trigger, Date.now())) {
+				const lanes = derivePush(pushDeps, event, trigger, Date.now());
+				derived(event.id);
+				for (const lane of lanes) {
 					checks.drain(lane, Date.now()).catch((error) => log(`check lane ${lane}: ${error instanceof Error ? error.message : String(error)}`));
 				}
 				return true;
@@ -742,20 +749,32 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			return true;
 		},
 		/**
-		 * At start: the pushes of the last five minutes this process stored and whose rows a crash may have
-		 * kept from being written: those its server checked (the event says so; `subAgent` answers for an
-		 * event stored before it did), each in the project the event names, or in every project with rules.
+		 * At start: the pushes of the last five minutes stored after the last one whose rows were written
+		 * (`clock.json` `pushes`), so a crash kept their rows from being written: those its server checked
+		 * (the event says so; `subAgent` answers for an event stored before it did), each in the project the
+		 * event names, or in every project with rules. A push whose rows were written is never derived
+		 * again, whatever became of them.
 		 */
 		rederivePushes: (subAgent: (server: string) => boolean): number => {
 			let queued = 0;
 			const now = Date.now();
-			for (const event of events.since(now - PUSH_WINDOW_MS)) {
+			const stored = events.since(now - PUSH_WINDOW_MS);
+			const cursor = stores.clock.pushesDerived();
+			// No cursor: the first start of this version, or a clock.json that was lost. What is stored was
+			// derived by a process before it, or never will be: a push is lost before it runs twice.
+			if (cursor === undefined) {
+				derived(stored.at(-1)?.id ?? "");
+				return 0;
+			}
+			// A cursor older than the window is not in it: every push in the window came after it.
+			for (const event of stored.slice(stored.findIndex((e) => e.id === cursor) + 1)) {
 				if (event.receiver.kind !== "background" || !event.source.startsWith("mcp:")) continue;
 				// What its server said when it arrived; an event stored before that was kept is a user-level server's, looked up by name.
 				if (event.delivery !== undefined ? event.delivery !== "sub_agent" : event.project !== undefined || !subAgent(event.source.slice("mcp:".length))) continue;
 				const trigger = pushTrigger(event);
 				if (!trigger) continue;
 				queued += derivePush(pushDeps, event, trigger, now, true).length;
+				derived(event.id);
 			}
 			return queued;
 		},

@@ -160,8 +160,6 @@ export interface DeriveDeps {
 	/** The run log: a row whose run has a record is done. */
 	readonly runs: () => readonly RunRecord[];
 	readonly createdBy: () => UnclaimedRow["created_by"];
-	/** Whether a row of this id was written once (its `accepted` audit row): a start's derivation leaves it, however it left its lane. */
-	readonly written?: (rowId: string) => boolean;
 }
 
 /** The projects a push is checked in: `cwd` for a project's own server, else every project with an enabled rule. */
@@ -189,9 +187,6 @@ export function derivePush(deps: DeriveDeps, event: RawEvent, trigger: Trigger, 
 	const done = (rowId: string): boolean => (records ??= deps.runs()).some((r) => r.runId === rowId);
 	const lanes: LaneId[] = [];
 	for (const project of projects) {
-		// Again at start: a row that was written once is not written twice. It may have left refused
-		// (over budget, dropped, dead) with no run record to prove it.
-		if (again && deps.written?.(pushRowId(event.id, project))) continue;
 		const decision = writePush(deps.requests, { event, key: trigger.idempotencyKey, policy: trigger.replacementPolicy, label: `${trigger.sourceLabel} / ${trigger.eventLabel}`, sourceLabel: trigger.sourceLabel, project, earlier, done, createdBy: deps.createdBy(), now });
 		const accepted = { delivery: "sub_agent", evaluator_decision: { outcome: "accept", permission: "allow" } };
 		switch (decision.kind) {

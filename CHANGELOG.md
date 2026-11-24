@@ -152,7 +152,9 @@ All notable changes to pi-loops are documented here. The format follows
   found no slot was dropped as `deferred`. The audit no longer writes `deferred` or
   `cycle_suppressed`. A check whose process died while it ran is recorded as interrupted and is not
   run again: it may already have acted (posted, deployed, fired a fire-once rule). A push that waited
-  past a tick is checked with the note that it is not now.
+  past a tick is checked with the note that it is not now. A push stored just before a crash gets
+  its rows at the next start; `clock.json` `pushes` holds the last push whose rows were written, so
+  a push that was refused, joined or replaced is never written again.
 - **A check writes a run record, so its cost counts toward `daily_budget_usd`.** `/cron cost`
   shows a project's checks as `checks of <directory>`.
 - **A failing project's checks are counted from the run log.** After three failed checks in a row,
