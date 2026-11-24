@@ -147,7 +147,8 @@ export interface CheckInput {
 	readonly rules: readonly DynamicTriggerRule[];
 	readonly gates?: GateLet;
 	readonly signal: AbortSignal;
-	readonly run: { readonly id: string; readonly row?: string; readonly cause: "check" | "push" };
+	/** `since`: when this run's claim started. A row that is retried keeps its id, so a record of the same id from before it (an interrupted one) is another run's. */
+	readonly run: { readonly id: string; readonly row?: string; readonly cause: "check" | "push"; readonly since?: string };
 	readonly onStarted?: (promptPreview: string) => void;
 }
 
@@ -298,7 +299,8 @@ function writeRecord(deps: CheckDeps, input: CheckInput, done: { lane: string; c
 	let found: RunRecord | undefined;
 	try {
 		const written = deps.jobs.appendRunOnce((records) => {
-			found = records.find((r) => r.runId === fresh.runId);
+			const since = input.run.since === undefined ? -Infinity : Date.parse(input.run.since);
+			found = records.find((r) => r.runId === fresh.runId && Date.parse(r.startedAt) >= since);
 			return found ? undefined : fresh;
 		});
 		return written ?? found;

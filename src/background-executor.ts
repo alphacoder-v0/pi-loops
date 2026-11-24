@@ -829,7 +829,7 @@ export function createCheckLanes(deps: CheckLaneDeps): CheckLanes {
 				// A push's row was audited `accepted` when it was derived (src/push.ts); a periodic check is accepted as it starts.
 				if (periodic) deps.rules.appendAudit({ cwd, type: "trigger", traceId: row.id, state: "accepted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery: "sub_agent", evaluator_decision: { outcome: "accept", permission: "allow" }, row: row.id, ...envelopeOf(trigger) } });
 				const signal = runs.get(claimed.run.id)?.ctrl.signal ?? new AbortController().signal;
-				const task = runCheck(deps.check(), { trigger, rules, ...(gates ? { gates } : {}), signal, run: { id: claimed.run.id, row: row.id, cause: periodic ? "check" : "push" } })
+				const task = runCheck(deps.check(), { trigger, rules, ...(gates ? { gates } : {}), signal, run: { id: claimed.run.id, row: row.id, cause: periodic ? "check" : "push", since: claimed.run.started_at } })
 					.then(async () => { await closeRun(requests, deps.engine(), claimed, proofOf(lane, () => [], deps.allRuns), Date.now()); })
 					.finally(() => { runs.remove(claimed.run.id); permit.release(); inFlight.delete(task); })
 					.catch((error) => deps.log(`check lane ${lane}: ${error instanceof Error ? error.message : String(error)}`));
