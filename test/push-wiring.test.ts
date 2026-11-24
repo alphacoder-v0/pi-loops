@@ -171,7 +171,7 @@ test("[push-rederive-on-start] the first start of this version, or a clock.json 
 	const project = path.join(dir, "project");
 	fs.mkdirSync(project, { recursive: true });
 	await new TriggerStore(dir).add({ condition: "a build fails", action: "say so", cwd: project });
-	// Stored by 0.24.2, which ran it from memory.
+	// Stored before this version's first start: a process before it derived it, or never will.
 	new EventLog(dir, "background").append("mcp:ci", JSON.stringify(note("k1")));
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: async () => ({ ok: true, exitCode: 0, timedOut: false, text: "", usage: USAGE }), mcpTools: () => [], log: () => undefined });
 	assert.equal(host.rederivePushes((server) => server === "ci"), 0);
@@ -179,5 +179,20 @@ test("[push-rederive-on-start] the first start of this version, or a clock.json 
 	const lost = new EventLog(dir, "background").append("mcp:ci", JSON.stringify(note("k2")));
 	assert.equal(host.rederivePushes((server) => server === "ci"), 1, "a push stored after that start is derived at the next");
 	assert.deepEqual(new RequestStore(dir).list(checkLane(project)!).map((r) => r.id), [pushRowId(lost.id, project)]);
+});
+
+test("[push-rederive-on-start] a push derived before a rotation of events.jsonl is not derived again at start: the copy the rotation carried is the same push", async () => {
+	const b = await background();
+	b.host.receivePush("ci", "sub_agent", note("k1"));
+	const [k1] = b.lines();
+	const rowId = pushRowId(k1.id, b.project);
+	assert.deepEqual(b.requests.list(b.lane).map((r) => r.id), [rowId]);
+	// A gate's reading rotates the log while k1's row still waits, so k1 is carried into the new file.
+	new EventLog(b.dir, "background", { maxBytes: 10, keep: () => new Set([k1.id]) }).append("gate:x", "{}");
+	assert.ok(fs.existsSync(path.join(b.dir, "events.1.jsonl")));
+	// The row then leaves with no run record, as a refused one does.
+	b.requests.remove(b.lane, [rowId]);
+	b.start();
+	assert.deepEqual(b.requests.list(b.lane), [], "the restart writes no row for it");
 });
 

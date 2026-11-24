@@ -153,3 +153,16 @@ test("[event-log] a push's receipt is stored beside it: the project its own serv
 	assert.equal("project" in (log.get(plain.id) ?? {}), false);
 	assert.equal("delivery" in (log.get(plain.id) ?? {}), false);
 });
+
+test("[push-crash-none-lost] an event a rotation carried is read once, in the place it was first appended", () => {
+	const dir = tmp("pi-loops-events-carried-");
+	const kept = new Set<string>();
+	const log = new EventLog(dir, "background", { maxBytes: 600, keep: () => kept });
+	const waiting = log.append("mcp:ci", "a push whose row waits");
+	kept.add(waiting.id);
+	const after = log.append("mcp:ci", "a push after it");
+	const rotated = log.append("gate:x", "x".repeat(400));
+	assert.ok(fs.existsSync(path.join(dir, "events.1.jsonl")), "the log rotated");
+	assert.deepEqual(log.since(0).map((e) => e.id), [waiting.id, after.id, rotated.id], "each id once, oldest first");
+});
+

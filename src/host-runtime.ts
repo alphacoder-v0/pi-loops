@@ -766,7 +766,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				derived(stored.at(-1)?.id ?? "");
 				return 0;
 			}
-			// A cursor older than the window is not in it: every push in the window came after it.
+			// A cursor not in the window (older than it, or edited by hand): every push in the window is derived.
 			for (const event of stored.slice(stored.findIndex((e) => e.id === cursor) + 1)) {
 				if (event.receiver.kind !== "background" || !event.source.startsWith("mcp:")) continue;
 				// What its server said when it arrived; an event stored before that was kept is a user-level server's, looked up by name.

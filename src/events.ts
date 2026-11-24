@@ -94,8 +94,10 @@ export class EventLog {
 		return this.all().find((e) => e.id === id);
 	}
 
+	/** Both generations, each id once where it was first appended: a rotation carries a copy of an event a queued row names. */
 	private all(): RawEvent[] {
-		return [...readEvents(this.older), ...readEvents(this.file)];
+		const seen = new Set<string>();
+		return [...readEvents(this.older), ...readEvents(this.file)].filter((e) => !seen.has(e.id) && seen.add(e.id));
 	}
 }
 
