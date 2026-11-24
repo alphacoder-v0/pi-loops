@@ -100,7 +100,7 @@ test("[push-crash-none-lost] a crash after the claim and before a record: the ro
 	const next = restart(s);
 	await settle(s, next);
 	const interrupted = next.host.stores.jobs.allRuns().filter((r) => r.runId === s.rowId);
-	assert.deepEqual(interrupted.map((r) => [r.jobId, r.startedAt, r.ok, r.interrupted]), [[s.lane, started, false, true]], "one interrupted record under the lane: the project's failure streak counts it");
+	assert.deepEqual(interrupted.map((r) => [r.jobId, r.startedAt, r.ok, r.interrupted]), [[s.lane, started, false, true]], "one interrupted record under the lane (an interruption, not a failure: it adds nothing to the streak)");
 	assert.deepEqual(s.requests.list(s.lane), [], "the row left its lane");
 	await settle(s, next);
 	assert.equal(next.calls.length, 0, "never run again: a check that started may have posted, deployed or fired a fire-once rule");

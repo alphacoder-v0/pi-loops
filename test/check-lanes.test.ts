@@ -130,7 +130,7 @@ test("[check-lanes-interrupted] a push row claimed by a process that died is clo
 	s.requests.claim(s.lane, row.id, { id: rowId, pid: 999_999_999, procStart: "gone", started_at: new Date(Date.now() - 60_000).toISOString() } as any);
 	await s.tick();
 	const interrupted = s.host.stores.jobs.allRuns().find((r) => r.runId === rowId && r.interrupted);
-	assert.equal(interrupted?.jobId, s.lane, "the project's failure streak counts it");
+	assert.equal(interrupted?.jobId, s.lane, "recorded under the project's lane, as an interruption");
 	assert.deepEqual(s.requests.list(s.lane), [], "the row left its lane: its check may have acted before the process died");
 	await s.tick();
 	assert.equal(s.calls.length, 0, "never run a second time");
