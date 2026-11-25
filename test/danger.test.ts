@@ -426,13 +426,21 @@ test("the pi-loops refusal is linear: 200 KB of open parentheses, quotes, commen
 	// machine: up to 141 ms for the slowest unit under load. A pattern that is not linear takes seconds.
 	const size = 200 * 1024;
 	const fill = (unit: string) => unit.repeat(Math.ceil(size / unit.length));
-	for (const unit of ["( a ", '"', "'", '"a b" ', "'a b' ", "$'", '\\"', "pi-loops ", "pi-loops host ", "pi-loops -", "{,", "$IFS", "curl |", "wget | ", "# '", "chmod -", "dd ", "git push ", "git config a.b c ", "git init --x ", "cat .git/config > x ", "git -C ", "git config -f ", "git --git-dir ", "git clone -c ", "git config alias.x ", "(git ", "x=$(git ", "git --x config ", "git clone --x ", "git-config a.b ", "/x/git-init --x ", "$$'", "git push --force ", "git push --force\n", "dd of=/dev/x ", "reboot ", "grep halt | ", "grep 'halt' ", 'grep "halt" x; ', "grep halt 2>&1 "]) {
+	for (const unit of ["( a ", '"', "'", '"a b" ', "'a b' ", "$'", '\\"', "pi-loops ", "pi-loops host ", "pi-loops -", "{,", "$IFS", "curl |", "wget | ", "# '", "chmod -", "dd ", "git push ", "git config a.b c ", "git init --x ", "cat .git/config > x ", ".git/config >", "git -C ", "git config -f ", "git --git-dir ", "git clone -c ", "git config alias.x ", "(git ", "x=$(git ", "git --x config ", "git clone --x ", "git-config a.b ", "/x/git-init --x ", "$$'", "git push --force ", "git push --force\n", "dd of=/dev/x ", "reboot ", "grep halt | ", "grep 'halt' ", 'grep "halt" x; ', "grep halt 2>&1 "]) {
 		const command = fill(unit);
 		const started = process.cpuUsage();
 		dangerousCommandReason(command, HOME);
 		const used = process.cpuUsage(started);
 		const ms = (used.user + used.system) / 1000;
 		assert.ok(ms < 500, `${JSON.stringify(unit)} × ${command.length / unit.length}: ${ms.toFixed(0)} ms`);
+	}
+	// One git setup path, then a long run of `>`: each run of `>` is read once (`redirectsInto`).
+	for (const command of [`.git/config ${">".repeat(size)}`, `cat .git/config ${"> ".repeat(size / 2)}`]) {
+		const started = process.cpuUsage();
+		dangerousCommandReason(command, HOME);
+		const used = process.cpuUsage(started);
+		const ms = (used.user + used.system) / 1000;
+		assert.ok(ms < 500, `${JSON.stringify(command.slice(0, 16))}…: ${ms.toFixed(0)} ms`);
 	}
 });
 
@@ -1040,6 +1048,8 @@ test("[policy-rewritten-word] a word the rules read next to pi-loops or git that
 test("[policy-gh-cs] git takes a prefix of --upload-pack: its quoted value is a command, not text", () => {
 	assert.equal(reasonOf("git fetch --upl 'pi-loops stop' /path"), "pi-loops abort / stop / restart");
 	assert.equal(reasonOf("git fetch --upload-pack='pi-loops stop' /path"), "pi-loops abort / stop / restart");
+	// The shell joins `--upload-pack"="`, `''`, `\=` back into the option (bash and dash, measured).
+	for (const command of [`git fetch --upload-pack"="'pi-loops stop' /path`, "git fetch --upload-pack''='pi-loops stop' /path", "git fetch --upload-pack\\='pi-loops stop' /path", `git fetch --upload-pack"" 'pi-loops stop' /path`]) assert.equal(reasonOf(command), "pi-loops abort / stop / restart", command);
 	assert.equal(reasonOf("git log --oneline -1 --exec-path"), undefined);
 });
 

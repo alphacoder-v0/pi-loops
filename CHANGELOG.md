@@ -9,13 +9,18 @@ All notable changes to pi-loops are documented here. The format follows
 
 - **Some commands of an unattended run are now asked about or refused (the dangerous-command
   policy, #231 and #172).** Asked: `git config` of a setting that runs a program, in any scope
-  (`git config core.pager less` too); a shell write to a git setup file; a command of one line that
-  ends inside a quote (`echo it's`, `ls # don't`); a `$'…'` with a backslash; a verb after `pi-loops`
-  or a git key spelled with `$`, a brace or a backslash. Refused, since a card shows one line: such a
-  command over several lines, and a command over several lines whose quoted text names a pi-loops
-  stop or claim or the loops directory. Refused, nobody asked: pi's `write` or `edit` of a git setup
-  file. A loop that needs one of these can be given it with `[danger] allow` in `config.toml`. Nothing
-  is converted.
+  (`git config core.pager less` too); a template given to `git init` or `git clone`; a command that
+  names a git setup file (a git directory's `config`, `hooks`, `info/attributes`, `modules` or
+  `worktrees`, `.gitattributes`, `~/.gitconfig`, `~/.config/git/`) with a program that is not on the
+  policy's list of readers (`sed -n 1p .git/config`, `cp ~/.gitconfig /tmp/x`, a write); a command
+  whose last word is a git directory (`du -sh .git`, `rm -rf .git`, `tar czf a.tgz .git`, a copy onto
+  `.git/`); `git checkout -- .gitattributes`; a command of one line that ends inside a quote
+  (`echo it's`, `ls # don't`); a `$'…'` with a backslash; a verb after `pi-loops` or a git key spelled
+  with `$`, a brace or a backslash; a command with `${…}` whose quoted text names a pi-loops stop or
+  claim. Refused, since a card shows one line: such a command over several lines, and a command over
+  several lines whose quoted text names a pi-loops stop or claim or the loops directory. `[danger]
+  allow` in `config.toml` gives a loop one of these shell commands back. Refused, nobody asked, and no
+  `allow` entry changes it: pi's `write` or `edit` of a git setup file. Nothing is converted.
 
 - **The first start of this version converts `~/.pi/agent/loops/jobs.json` to version 3, which
   0.24.2 does not read.** The file holds each job's definition only: when a job last ran and how
@@ -158,9 +163,10 @@ All notable changes to pi-loops are documented here. The format follows
   `diff.external`, filters, `core.hooksPath`, an alias that starts with `!`, an `ext::` remote URL or
   url base, a trailer's or a tool's command, and the others `src/danger.ts` names), `git clone -c` of
   one, a template (`--template`, `-c init.templateDir`, `GIT_TEMPLATE_DIR`), a key or a sub-command
-  the shell rewrites (`git config $'core.pager' …`), a shell write to a git setup file (a git
+  the shell rewrites (`git config $'core.pager' …`), a command that names a git setup file (a git
   directory's `config`, `hooks`, `info/attributes`, `modules` or `worktrees`, `.gitattributes`,
-  `~/.gitconfig`, `~/.config/git/`) and a copy or move onto a whole `.git` are asked about; pi's
+  `~/.gitconfig`, `~/.config/git/`) with a program that is not on the policy's list of readers, and a
+  command whose last word is a git directory are asked about; pi's
   `write` and `edit` of such a file are refused. A setting or a hook that something other than an
   unattended run wrote is still run by a later unattended git call with nobody asked (docs/design.md
   decision 28).

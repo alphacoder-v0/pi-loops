@@ -186,7 +186,11 @@ const SUBCOMMANDS = /;|&&|\|\||\||&|\n/;
  */
 const TAKES_TEXT = new Set(["git", "grep", "egrep", "fgrep", "rg", "ag", "echo", "printf", "gh", "cat", "cd", "ls", "test", "[", "true", "false", "jq", "npm"]);
 const GIT_TEXT = new Set(["commit", "tag", "stash", "notes", "add", "status", "fetch", "log"]);
-/** git options that run a program they are handed: `--upload-pack`, `--receive-pack`, `--exec`. */
+/**
+ * git options that run a program they are handed: `--upload-pack`, `--receive-pack`, `--exec`, and any
+ * prefix git takes for them. Tested with quotes and backslashes removed, since the shell joins
+ * `--upload-pack"="` and `--upload-pack\\=` back into the option.
+ */
 const GIT_RUNS = /^--(?:u(?:p(?:l(?:o(?:a(?:d(?:-(?:p(?:a(?:c(?:k)?)?)?)?)?)?)?)?)?)?|r(?:e(?:c(?:e(?:i(?:v(?:e(?:-(?:p(?:a(?:c(?:k)?)?)?)?)?)?)?)?)?)?)?|e(?:x(?:e(?:c)?)?)?)(?:=|$)/;
 /** `git log` options that show a patch, which runs the diff drivers git is configured with. */
 const GIT_LOG_PATCH = /^(-[a-zA-Z]*[puc]|--(patch|ext-diff|textconv|cc|output|function-context))/;
@@ -203,7 +207,7 @@ function gitTakesText(words: string[]): boolean {
 	}
 	const sub = words[i] ?? "";
 	const rest = words.slice(i + 1);
-	if (!GIT_TEXT.has(sub) || rest.some((w) => GIT_RUNS.test(w))) return false;
+	if (!GIT_TEXT.has(sub) || rest.some((w) => GIT_RUNS.test(w.replace(/["'\\]/g, "")))) return false;
 	return sub !== "log" || !rest.some((w) => GIT_LOG_PATCH.test(w));
 }
 
