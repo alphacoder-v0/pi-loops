@@ -803,19 +803,32 @@ test("[policy-gh-cs] `gh cs` is `gh codespace`: its quoted text is a command, no
 	assert.equal(reasonOf("gh pr view 12 -q '.title words'"), undefined);
 });
 
-test("[policy-open-quote] a quote left open at the end of a line is asked about: the command cannot be read", () => {
-	assert.notEqual(reasonOf("git status # don't\npi-loops stop; git log 'a b'"), undefined);
-	assert.equal(reasonOf('echo "a\nb"'), UNREADABLE);
+test("[policy-open-quote] a command of one line that ends inside a quote is asked about; a command over several lines is read as written, every quote in it, so no pairing bash reads otherwise hides a command", () => {
 	assert.equal(reasonOf("echo it's"), UNREADABLE);
-	assert.equal(reasonOf("git status # don't worry"), UNREADABLE, "an apostrophe in a comment counts: #231's shape");
+	assert.equal(reasonOf("git status # don't worry"), UNREADABLE, "an apostrophe in a comment on one line: #231's shape");
 	assert.equal(reasonOf("git commit -m 'one line'"), undefined);
-	assert.equal(reasonOf("git commit -m 'one line'\ngit log --oneline -1 -- 'a b'"), undefined, "each quote closes on its line");
 	assert.equal(reasonOf("echo \\'"), undefined, "an escaped quote opens nothing");
-	assert.equal(reasonOf("echo 'a' \\\n'b c'"), undefined, "a line continuation joins the lines first");
 	assert.equal(reasonOf("echo it's", ["echo it's"]), undefined, "an allow entry permits it");
 	assert.equal(reasonOf("echo $$'a\\'"), undefined, "`$$` then a plain quote, closed");
-	assert.equal(reasonOf("git status # don't\\\npi-loops stop # '"), UNREADABLE, "a backslash in a comment does not join the lines: bash runs the second one");
-	assert.equal(reasonOf("git status # don't\\\ngit log # '"), UNREADABLE);
+	// Over several lines: what runs, and what each way of pairing the quotes would have hidden.
+	assert.equal(reasonOf('echo "a\nb"'), undefined);
+	assert.equal(reasonOf('git commit -m "line one\n\nline two, it\'s done"'), undefined, "a commit message over several lines runs");
+	assert.equal(reasonOf("git commit -F - <<EOF\nit's done\nEOF"), undefined, "a heredoc with an apostrophe runs");
+	assert.equal(reasonOf('git commit -m "$(cat <<\'EOF\'\nfix: it\'s done\nEOF\n)"'), undefined);
+	assert.equal(reasonOf("ls # it's\ngit status"), undefined, "a comment over several lines hides nothing: it is read as written");
+	const hidden = [
+		"git status # don't\npi-loops stop; git log 'a b'",
+		"git status # don't\\\npi-loops stop # '",
+		'git commit -m "a\npi-loops stop\nb"',
+		"cat <<true\necho it's\ntrue\necho 'x'; pi-loops stop; echo 'y'",
+		"echo a # \\' '\necho 'x'; pi-loops stop; echo 'y'",
+		'echo a # \'"\' "\necho "x"; pi-loops stop; echo "y"',
+		"echo a # \\' ' \\\npi-loops stop; echo 'b c'",
+		"echo a \\\n# \\' ' \\\npi-loops stop; echo 'b c'",
+		"cat <<'t\\'\necho it's \\\nt\\\npi-loops stop; echo 'b c'",
+	];
+	for (const command of hidden) assert.equal(reasonOf(command), "pi-loops abort / stop / restart", JSON.stringify(command));
+	assert.equal(reasonOf("git commit -m 'note'\ngit tag -m 'pi-loops stop retrying' v1"), "pi-loops abort / stop / restart", "the cost: a quoted message over several lines that names a stop is read as one");
 });
 
 test("[policy-ansi-path] a path after a `$'…'` string that a backslash kept open is read as a path: `$'x\\''` closes at its third quote", () => {
@@ -829,6 +842,7 @@ test("[policy-ansi-path] a path after a `$'…'` string that a backslash kept op
 	assert.equal(reach('cat "${x:-\'"\'}" ~/.pi/agent/loops/web-token # \''), OWN_FILES, "a quote inside `${…}` is not read as text");
 	assert.equal(reach("grep -rn $'it\\'s ~/.pi/agent/loops' docs"), undefined, "a path inside a `$'…'` string is text");
 	assert.equal(reach("grep -rn '~/.pi/agent/loops' docs"), undefined);
+	assert.equal(reach("cat <<true\necho it's\ntrue\ncat 'x' ~/.pi/agent/loops/web-token 'y'"), OWN_FILES, "a heredoc's apostrophe does not make a path after it look quoted");
 });
 
 test("[git-setting-write] a shell command that writes a git setting that runs a program, or writes a git setup file, is asked about; a read and a harmless setting are not", () => {
@@ -887,6 +901,9 @@ test("[git-setting-write] a shell command that writes a git setting that runs a 
 		"git config core.alternateRefsCommand x",
 		"git config gpg.ssh.defaultKeyCommand x",
 		"git config sendemail.sendmailCmd x",
+		"git config remote.origin.url 'ext::sh -c touch% x'",
+		"git config trailer.sob.cmd x",
+		"git config protocol.ext.allow always",
 		"echo x > .GIT/hooks/pre-commit",
 		// Round 2: a git call that reads does not vouch for another program; git's other spellings of an option.
 		"cp $(git ls-files hooks/) .git/hooks/",
@@ -927,6 +944,7 @@ test("[git-setting-write] a shell command that writes a git setting that runs a 
 		"git --no-pager log -p -- .gitattributes",
 		"git --attr-source=HEAD check-attr -a -- .gitattributes",
 		"git config --global --add safe.directory /srv/r",
+		"git config remote.origin.url https://example.com/r.git",
 		"git log --pretty=oneline -- .gitattributes",
 		"/usr/lib/git-core/git-config user.name x",
 		"git-lfs install --skip-repo",
@@ -953,6 +971,13 @@ test("[git-setting-write] the list of git settings that run a program: each list
 	assert.equal(gitSettingRunsProgram("alias.co", "checkout"), false);
 	assert.equal(gitSettingRunsProgram("submodule.x.update", "!sh"), true);
 	assert.equal(gitSettingRunsProgram("submodule.x.update", "rebase"), false);
+	// A review of the read layer (M9.3, withdrawn) found these run programs too (git 2.43 measured: ext::, trailer).
+	for (const key of ["trailer.sob.cmd", "trailer.sob.command", "mergetool.x.path", "difftool.x.path", "sendemail.toCmd", "sendemail.ccCmd", "sendemail.headerCmd", "protocol.ext.allow", "protocol.allow"]) assert.equal(gitSettingRunsProgram(key, "x"), true, key);
+	for (const key of ["remote.origin.url", "remote.origin.pushurl", "url.ext::sh.insteadOf", "url.x.pushInsteadOf"]) {
+		assert.equal(gitSettingRunsProgram(key, "ext::sh -c touch% x"), true, `${key} = ext::…`);
+		assert.equal(gitSettingRunsProgram(key, "https://example.com/r.git"), key === "url.ext::sh.insteadOf", `${key} = https://…`);
+		assert.equal(gitSettingRunsProgram(key, undefined), true, `${key} with a value not known`);
+	}
 	assert.equal(gitSettingRunsProgram("core.fsmonitor", "true"), false, "the built-in monitor runs no program");
 	assert.equal(gitSettingRunsProgram("core.fsmonitor", "false"), false);
 	for (const key of ["user.name", "core.autocrlf", "diff.x.binary", "pull.rebase", "includeif.x", "aliases.x"]) assert.equal(gitSettingRunsProgram(key, "!x"), false, key);

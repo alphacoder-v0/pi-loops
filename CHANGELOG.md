@@ -368,6 +368,21 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Fixed
 
+- **The dangerous-command policy reads `$$'`, `gh cs` and `$'…'` as the shell does (#231).** In an
+  unattended run, `echo $$'a\'; pi-loops stop; …` and `gh cs ssh -- 'pi-loops stop'` ran with nobody
+  asked, and so did a read of the loops directory after a `$'…'` string (`cat $'x\'' ~/.pi/agent/loops/web-token`).
+  Each is now asked about. A command of one line that ends inside a quote is asked about too, and a
+  command over several lines is read as written, every quote in it: a heredoc, a comment or a line
+  continuation can pair quotes in bash otherwise than the policy did, and hide a stop. A commit message
+  over several lines runs as before, unless its text names a pi-loops stop or claim or the loops
+  directory: then it is refused, since a card shows a command on one line.
+- **An unattended run is asked before it writes a git setting or a hook that runs a program
+  (#172).** `git config` of such a setting (`core.pager`, `diff.external`, a filter, a hook path, an
+  alias that starts with `!`, an `ext::` remote URL, and the others git documents) in any scope, `git clone -c` of one, a
+  template, and a shell write to `.git/`, `.gitattributes`, `~/.gitconfig` or `~/.config/git/` are
+  asked about; pi's `write` and `edit` of such a file are refused. A setting or a hook that something
+  other than an unattended run wrote is still run by a later unattended git call with nobody asked
+  (docs/design.md decision 28).
 - **Two messages with the same words from the page are both answered.** A message was proved by
   its words, so the second was taken for answered by the first. Every request now carries a mark
   that pi-loops writes into the message pi stores for it, and only that mark proves it.

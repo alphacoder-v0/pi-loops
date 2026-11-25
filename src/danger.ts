@@ -235,11 +235,11 @@ function quotesAreText(joined: string, blanked: string): boolean {
 /**
  * Blank every quoted string (`'…'`, `"…"`, `$'…'`) that holds whitespace, so a message that
  * mentions pi-loops (`git commit -m "pi-loops: stop retrying"`) is not read as the command. A quoted
- * single word stays, since the shell joins `"st"op` back into the verb. A quoted string across lines
- * stays, and so does a double-quoted string that substitutes a command (`$(…)` or a backtick), since
- * the shell runs it. A blanked phrase becomes `BLANKED`, so a sub-command can tell it held one. A
+ * single word stays, since the shell joins `"st"op` back into the verb. A double-quoted string that
+ * substitutes a command (`$(…)` or a backtick) stays, since the shell runs it. A blanked phrase becomes `BLANKED`, so a sub-command can tell it held one. A
  * backslash outside quotes escapes the next character. An unterminated quote leaves the rest as
- * written. One pass.
+ * written. A quoted string across lines stays as written. Only a command of one line is read this way
+ * (`flatCommand`). One pass.
  */
 function blankQuotedPhrases(s: string): string {
 	let out = "";
@@ -281,15 +281,14 @@ function blankQuotedPhrases(s: string): string {
 }
 
 /**
- * Whether a quote of `command` is still open at the end of a line, or at its end (#231). It scans as
- * `blankQuotedPhrases` does: a backslash outside quotes escapes the next character (so a line
- * continuation joins its lines), `'…'` has no escapes, `"…"` and `$'…'` take a backslash escape, and
- * `$$` opens nothing. It does not know `#` comments, so an apostrophe in a comment counts: a comment's
- * quote that pairs with one on the next line is how a stop was hidden. Lines are not joined first: in
- * a comment a backslash does not continue the line, and bash runs the next one. The cost: a quoted string over
- * several lines (a commit message, a heredoc with an apostrophe) is asked about. One pass.
+ * Whether a command of one line ends inside a quote (#231): bash cannot read it either, and the rules
+ * would read the rest as a quoted phrase. It scans as `blankQuotedPhrases` does: a backslash outside
+ * quotes escapes the next character, `'…'` has no escapes, `"…"` and `$'…'` take a backslash escape,
+ * and `$$` opens nothing. A command over several lines is read as written (`severalLines`), so it has
+ * nothing to hide here. One pass.
  */
 function quoteLeftOpen(s: string): boolean {
+	if (severalLines(s)) return false;
 	let i = 0;
 	while (i < s.length) {
 		const c = s[i];
@@ -310,10 +309,7 @@ function quoteLeftOpen(s: string): boolean {
 		const q = s[open];
 		const escapes = q === '"' || ansi;
 		let j = open + 1;
-		while (j < s.length && s[j] !== q) {
-			if (s[j] === "\n" || s[j] === "\r") return true;
-			j += escapes && s[j] === "\\" ? 2 : 1;
-		}
+		while (j < s.length && s[j] !== q) j += escapes && s[j] === "\\" ? 2 : 1;
 		if (j >= s.length) return true;
 		i = j + 1;
 	}
@@ -321,12 +317,25 @@ function quoteLeftOpen(s: string): boolean {
 }
 
 /**
+ * Whether `command` is over several lines. Such a command is read as written, every quote in it
+ * (#231): bash reads the lines in ways these rules would have to copy to set a quoted phrase aside (a
+ * heredoc's body, a comment, a backslash that continues one line and not another), and a quote paired
+ * otherwise than bash pairs it could hide a command. The cost: a command over several lines whose
+ * quoted text names what the rules look for (a pi-loops stop, a claim, the loops directory) is asked
+ * about or refused.
+ */
+function severalLines(command: string): boolean {
+	return /[\n\r]/.test(command);
+}
+
+/**
  * `command` as the pi-loops rules read it: one line, a quoted phrase given to a program that takes it
- * as text (`quotesAreText`) set aside, and the quotes that are left removed, since the shell joins
- * `"st"op` back into the verb.
+ * as text (`quotesAreText`) set aside in a command of one line (`severalLines`), and the quotes that
+ * are left removed, since the shell joins `"st"op` back into the verb.
  */
 function flatCommand(command: string): string {
 	const joined = command.replace(/\\\r?\n/g, ""); // a line continuation is one line to the shell
+	if (severalLines(command)) return dequote(joined).replace(/["']/g, "");
 	const blanked = blankQuotedPhrases(joined);
 	return dequote(quotesAreText(joined, blanked) ? blanked.replaceAll(BLANKED, " ") : joined).replace(/["']/g, "");
 }
@@ -519,8 +528,8 @@ function runsPi(command: string): boolean {
  */
 export const OWN_FILES = "reads or writes pi-loops' own files";
 
-/** Why a command with a quote left open at the end of a line is asked about (`quoteLeftOpen`): the rules above cannot read it with confidence. */
-export const UNREADABLE = "a quote is left open at the end of a line, so the command cannot be read";
+/** Why a command of one line that ends inside a quote is asked about (`quoteLeftOpen`): the rules above cannot read it with confidence. */
+export const UNREADABLE = "a quote is left open, so the command cannot be read";
 
 /** Why a write of a git setting that runs a program, or of a git setup file, is asked about or refused (#172). */
 export const GIT_SETUP = "changes a git setting or hook that can run a program";
@@ -531,8 +540,10 @@ export const GIT_SETUP = "changes a git setting or hook that can run a program";
  * `core.gitProxy`, `core.alternateRefsCommand`, `init.templateDir`, a remote's
  * `uploadpack`/`receivepack`, `uploadpack.packObjectsHook`, `interactive.diffFilter`, a merge or diff
  * tool's `cmd`, `sendemail.sendmailCmd`, `credential.<url>.helper`, `gpg.<format>.program`,
- * `gpg.ssh.defaultKeyCommand`). An `alias.*` and a `submodule.*.update` run one only when the value
- * starts with `!`; `core.fsmonitor` does not when it is a boolean (the built-in monitor).
+ * `gpg.ssh.defaultKeyCommand`, a trailer's `cmd`, a merge or diff tool's `path`, `sendemail`'s other
+ * `*Cmd` keys, `protocol.allow` and `protocol.ext.allow`). An `alias.*` and a `submodule.*.update` run
+ * one only when the value starts with `!`, a remote's URL only when it is `ext::`; `core.fsmonitor`
+ * does not when it is a boolean (the built-in monitor).
  */
 const GIT_RUNS_PROGRAM: readonly RegExp[] = [
 	/^diff\.external$/,
@@ -552,9 +563,14 @@ const GIT_RUNS_PROGRAM: readonly RegExp[] = [
 	/^uploadpack\.packobjectshook$/,
 	/^interactive\.difffilter$/,
 	/^(?:merge|diff)tool\..+\.cmd$/,
-	/^sendemail\.sendmailcmd$/,
+	/^sendemail\.(?:sendmailcmd|tocmd|cccmd|headercmd)$/,
+	/^trailer\..+\.(?:cmd|command)$/,
+	/^(?:merge|diff)tool\..+\.path$/,
+	/^protocol\.(?:ext\.)?allow$/,
 ];
 const GIT_RUNS_WITH_BANG = /^(?:alias\..+|submodule\..+\.update)$/;
+/** A remote's URL runs a program only through the `ext::` transport (with `protocol.ext.allow`, listed too). */
+const GIT_RUNS_WITH_EXT = /^(?:remote\..+\.(?:url|pushurl)|url\..+\.(?:insteadof|pushinsteadof))$/;
 const GIT_BOOLEAN = /^(?:true|false|yes|no|on|off|1|0)$/;
 
 /**
@@ -566,6 +582,9 @@ export function gitSettingRunsProgram(key: string, value: string | undefined): b
 	const k = key.toLowerCase();
 	const v = value?.trim();
 	if (GIT_RUNS_WITH_BANG.test(k)) return v === undefined || v.startsWith("!");
+	// `url.<base>.insteadOf` rewrites a URL to `<base>`: an `ext::` base runs a program whatever the value.
+	if (/^url\.ext::/i.test(k)) return true;
+	if (GIT_RUNS_WITH_EXT.test(k)) return v === undefined || /^ext::/i.test(v);
 	if (k === "core.fsmonitor" && v !== undefined && GIT_BOOLEAN.test(v.toLowerCase())) return false;
 	return GIT_RUNS_PROGRAM.some((re) => re.test(k));
 }
@@ -667,7 +686,8 @@ function readGitCall(words: string[], at: number): { writes: boolean; reads: boo
 	const [key] = positional;
 	// The value is not read from these words: the shell may cut it at a `;` or substitute into it, so
 	// `core.fsmonitor 'true;sh x'` is not the boolean it starts with. A value is judged only as git stores it.
-	return { writes: key !== undefined && gitSettingRunsProgram(key, GIT_RUNS_WITH_BANG.test(key.toLowerCase()) ? positional[1] : undefined), reads: false };
+	const judgedByValue = key !== undefined && (GIT_RUNS_WITH_BANG.test(key.toLowerCase()) || GIT_RUNS_WITH_EXT.test(key.toLowerCase()));
+	return { writes: key !== undefined && gitSettingRunsProgram(key, judgedByValue ? positional[1] : undefined), reads: false };
 }
 
 /** A path of a git setup: a `.git` directory or anything in one, a `.gitattributes`, a `.gitconfig`, or git's directory under `.config`; any letter case. */
@@ -683,9 +703,11 @@ const GIT_SETUP_READERS = new Set(["cat", "less", "more", "head", "tail", "grep"
  * read a command (`flatCommand`), so a quoted message given to a program that takes it as text is not
  * read. Known gaps: a path the shell builds at run time or reaches after a `cd`, a program that writes
  * the file from a name it is handed another way, and a setting given for one command (git's global
- * `-c`, `GIT_*` variables), which runs a program the way the run could run it itself. The read of a
- * repository's setup before an unattended git call (`src/repo-setup.ts`) sees a setting or a hook
- * however it was written.
+ * `-c`, `GIT_*` variables), which runs a program the way the run could run it itself. This sees only
+ * what an unattended turn writes: a setting or a hook that a person, another tool or a clone wrote is
+ * run by a later unattended git call with nobody asked (owner decision 4, option (b); docs/design.md
+ * decision 28). A read of the repository's setup before each git call was built and withdrawn: each
+ * review found programs git runs that the read did not see.
  */
 function writesGitSetup(command: string): boolean {
 	for (const sub of flatCommand(command).split(SUBCOMMANDS)) {
@@ -789,7 +811,8 @@ const INERT = "\u0002";
 /**
  * `s` with each `~` in quotes, and each `$` in single quotes or `$'…'`, replaced by `INERT`: the shell
  * expands neither. Quotes are read as `blankQuotedPhrases` reads them (`$$` opens nothing, `$'…'` takes a
- * backslash escape), so a path after them is not taken for quoted text. One pass.
+ * backslash escape), so a path after them is not taken for quoted text. Only a command of one line is
+ * read this way (`pathText`). One pass.
  */
 function inertQuotes(s: string): string {
 	let out = "";
@@ -831,11 +854,11 @@ function inertQuotes(s: string): string {
  * `command` as `reachesLoopsDir` reads it: dequoted, quotes removed. When every quoted text is
  * text (`quotesAreText`), a `~` in quotes and a `$` in single quotes are made inert first, since the
  * shell expands neither: `grep -rn '~/.pi/agent/loops' docs` names no directory. When a quote may be
- * run (`bash -c '…'`), all of it counts.
+ * run (`bash -c '…'`), or the command is over several lines (`severalLines`), all of it counts.
  */
 function pathText(command: string): string {
 	const joined = command.replace(/\\\r?\n/g, "");
-	const text = quotesAreText(joined, blankQuotedPhrases(joined)) ? inertQuotes(joined) : joined;
+	const text = !severalLines(command) && quotesAreText(joined, blankQuotedPhrases(joined)) ? inertQuotes(joined) : joined;
 	// `$'…'` and `$"…"` are quotes: their `$` goes with them, or a path in them reads as `$/…`.
 	return dequote(text.replace(/\$(?=['"])/g, "")).replace(/["']/g, "");
 }
