@@ -522,6 +522,221 @@ export const OWN_FILES = "reads or writes pi-loops' own files";
 /** Why a command with a quote left open at the end of a line is asked about (`quoteLeftOpen`): the rules above cannot read it with confidence. */
 export const UNREADABLE = "a quote is left open at the end of a line, so the command cannot be read";
 
+/** Why a write of a git setting that runs a program, or of a git setup file, is asked about or refused (#172). */
+export const GIT_SETUP = "changes a git setting or hook that can run a program";
+
+/**
+ * The git settings that run a program (design 8.3, #172), as patterns of the key in lower case: the
+ * design's list, and the settings of the same kind git documents (`sequence.editor`, `core.askPass`,
+ * `core.gitProxy`, `core.alternateRefsCommand`, `init.templateDir`, a remote's
+ * `uploadpack`/`receivepack`, `uploadpack.packObjectsHook`, `interactive.diffFilter`, a merge or diff
+ * tool's `cmd`, `sendemail.sendmailCmd`, `credential.<url>.helper`, `gpg.<format>.program`,
+ * `gpg.ssh.defaultKeyCommand`). An `alias.*` and a `submodule.*.update` run one only when the value
+ * starts with `!`; `core.fsmonitor` does not when it is a boolean (the built-in monitor).
+ */
+const GIT_RUNS_PROGRAM: readonly RegExp[] = [
+	/^diff\.external$/,
+	/^diff\..+\.(?:textconv|command)$/,
+	/^merge\..+\.driver$/,
+	/^filter\..+\.(?:clean|smudge|process)$/,
+	/^core\.(?:pager|editor|sshcommand|fsmonitor|hookspath|askpass|gitproxy|alternaterefscommand)$/,
+	/^pager\..+$/,
+	/^sequence\.editor$/,
+	/^credential\.(?:.+\.)?helper$/,
+	/^gpg\.(?:.+\.)?program$/,
+	/^gpg\.ssh\.defaultkeycommand$/,
+	/^include\.path$/,
+	/^includeif\..+\.path$/,
+	/^init\.templatedir$/,
+	/^remote\..+\.(?:uploadpack|receivepack)$/,
+	/^uploadpack\.packobjectshook$/,
+	/^interactive\.difffilter$/,
+	/^(?:merge|diff)tool\..+\.cmd$/,
+	/^sendemail\.sendmailcmd$/,
+];
+const GIT_RUNS_WITH_BANG = /^(?:alias\..+|submodule\..+\.update)$/;
+const GIT_BOOLEAN = /^(?:true|false|yes|no|on|off|1|0)$/;
+
+/**
+ * Whether the git setting `key` with `value` runs a program (`GIT_RUNS_PROGRAM`). A value not known
+ * (`undefined`) is taken as one that does, and so is one with a space before its `!` (git does not run
+ * that one: fail closed).
+ */
+export function gitSettingRunsProgram(key: string, value: string | undefined): boolean {
+	const k = key.toLowerCase();
+	const v = value?.trim();
+	if (GIT_RUNS_WITH_BANG.test(k)) return v === undefined || v.startsWith("!");
+	if (k === "core.fsmonitor" && v !== undefined && GIT_BOOLEAN.test(v.toLowerCase())) return false;
+	return GIT_RUNS_PROGRAM.some((re) => re.test(k));
+}
+
+/** Whether a shell word runs git: `git` or a path to it, after a `$(`, a `(`, a backtick, a `{` or an assignment. */
+function isGitWord(w: string): boolean {
+	return (w.replace(/^.*[=(`{]/, "").split("/").pop() ?? "") === "git";
+}
+
+/**
+ * A shell word that runs one of git's dashed programs (`/usr/lib/git-core/git-config`), read as the two
+ * words git would run: the word with `git-<sub>` cut to `git`, and `<sub>`. What comes before it stays
+ * (`X=git-log` becomes `X=git` and `log`), so an assignment is still skipped as one. Any other word is itself.
+ */
+function gitWords(w: string): string[] {
+	const dashed = /^git-([a-z][\w-]*)$/.exec(w.replace(/^.*[=(`{]/, "").split("/").pop() ?? "");
+	return dashed ? [w.replace(/git-[a-z][\w-]*$/, "git"), dashed[1]] : [w];
+}
+
+/**
+ * The options this policy understands, each a set of exact words, with the ones that take the next
+ * word as their value apart. git takes any unique prefix of a long option (`--templ` for
+ * `--template`) and a short option's value in the same word (`-ccore.pager=x`), so a list of what to
+ * refuse could not be complete: an option not in these sets is taken as one that may write (#172).
+ */
+const GIT_GLOBAL_FLAGS = new Set(["--no-pager", "-p", "--paginate", "-P", "--bare", "--no-replace-objects", "--no-lazy-fetch", "--literal-pathspecs", "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs", "--no-optional-locks", "--no-advice", "--exec-path", "--html-path", "--man-path", "--info-path"]);
+const GIT_GLOBAL_WITH_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix", "--attr-source", "--exec-path"]);
+const GIT_CONFIG_FLAGS = new Set(["--global", "--system", "--local", "--worktree", "--add", "--replace-all", "--all", "--bool", "--int", "--bool-or-int", "--path", "--expiry-date", "--no-type", "--null", "-z", "--name-only", "--show-origin", "--show-scope", "--includes", "--no-includes", "--fixed-value"]);
+const GIT_CONFIG_WITH_VALUE = new Set(["-f", "--file", "--blob", "--type", "-t", "--default", "--comment", "--value"]);
+const GIT_START_FLAGS = new Set(["-q", "--quiet", "-v", "--verbose", "--progress", "--no-progress", "-n", "--no-checkout", "--bare", "--mirror", "-l", "--local", "--no-local", "--no-hardlinks", "-s", "--shared", "--dissociate", "--single-branch", "--no-single-branch", "--tags", "--no-tags", "--recurse-submodules", "--recursive", "--shallow-submodules", "--no-shallow-submodules", "--remote-submodules", "--no-remote-submodules", "--sparse", "--reject-shallow", "--no-reject-shallow", "--also-filter-submodules"]);
+const GIT_START_WITH_VALUE = new Set(["-b", "--branch", "--initial-branch", "-o", "--origin", "--depth", "--shallow-since", "--shallow-exclude", "--reference", "--reference-if-able", "-j", "--jobs", "--filter", "--separate-git-dir", "--bundle-uri", "--server-option", "--object-format", "--ref-format", "--revision"]);
+/** `git config` options and sub-commands that only read, or remove a key (`get`/`list`/`unset` are git 2.46's). */
+const GIT_CONFIG_READS = /^(?:--get(?:-all|-regexp|-urlmatch|-color|-colorbool)?|-l|--list|--unset(?:-all)?|--remove-section|get|list|get-color|get-colorbool|unset|remove-section)$/;
+/** git sub-commands that read, or write only the index or the repository's objects, when no option has them write a file (`GIT_WRITES_FILE`). */
+const GIT_READS = new Set(["add", "status", "log", "diff", "show", "commit", "rm", "ls-files", "blame", "grep", "check-attr", "check-ignore", "rev-parse"]);
+/** Options that have a `GIT_READS` sub-command write a file it names: these and any prefix git would take for them. */
+const GIT_WRITES_FILE = /^(?:--p(?:r(?:e(?:f(?:ix?)?)?)?)?|--o(?:u(?:t(?:p(?:ut?)?)?)?)?|-o)(?:=|$)/;
+
+/** How an option word reads against a set of flags and a set of options with a value: known (and whether it takes the next word), or not known. */
+function optionOf(w: string, flags: ReadonlySet<string>, withValue: ReadonlySet<string>): "flag" | "value" | "attached" | "unknown" {
+	if (flags.has(w)) return "flag";
+	if (withValue.has(w)) return "value";
+	const eq = w.indexOf("=");
+	if (eq > 0 && (withValue.has(w.slice(0, eq)) || flags.has(w.slice(0, eq)))) return "attached";
+	return "unknown";
+}
+
+/**
+ * Reads one `git` call at `words[at]`, up to the next git word, so a long run of git calls stays
+ * linear. `writes`: it writes a setting that runs a program (`git config` in any scope, `git clone -c`
+ * or `--config`), opens the config in an editor, renames a section, starts a repository from a
+ * template (which copies its hooks), or has an option this policy does not know before what it is
+ * judged on (fail closed). `reads`: it is a `GIT_READS` sub-command with no `GIT_WRITES_FILE` option,
+ * so a git setup path it names is only read or staged.
+ */
+function readGitCall(words: string[], at: number): { writes: boolean; reads: boolean } {
+	let end = at + 1;
+	while (end < words.length && !isGitWord(words[end])) end++;
+	let i = at + 1;
+	for (; i < end && words[i].startsWith("-"); i++) {
+		const kind = optionOf(words[i], GIT_GLOBAL_FLAGS, GIT_GLOBAL_WITH_VALUE);
+		if (kind === "value") i++;
+		// `-cKEY=VALUE`, a one-command setting, is a known form; anything else could take the next word.
+		else if (kind === "unknown" && !/^-c./.test(words[i])) return { writes: words.slice(i + 1, end).some((w) => w === "config" || w === "init" || w === "clone"), reads: false };
+	}
+	const sub = words[i] ?? "";
+	const rest = words.slice(i + 1, end);
+	if (sub === "init" || sub === "clone") {
+		for (let j = 0; j < rest.length; j++) {
+			const w = rest[j];
+			if (!w.startsWith("-")) continue;
+			const pair = w === "-c" || w === "--config" ? rest[++j] : w.startsWith("--config=") ? w.slice(9) : /^-c./.test(w) ? w.slice(2) : undefined;
+			if (pair !== undefined) {
+				const eq = pair.indexOf("=");
+				if (gitSettingRunsProgram(eq === -1 ? pair : pair.slice(0, eq), eq === -1 ? undefined : pair.slice(eq + 1))) return { writes: true, reads: false };
+				continue;
+			}
+			const kind = optionOf(w, GIT_START_FLAGS, GIT_START_WITH_VALUE);
+			if (kind === "unknown") return { writes: true, reads: false }; // `--template`, `--upload-pack`, any prefix of them
+			if (kind === "value") j++;
+		}
+		return { writes: false, reads: false };
+	}
+	if (sub !== "config") return { writes: false, reads: GIT_READS.has(sub) && !rest.some((w) => GIT_WRITES_FILE.test(w)) };
+	const positional: string[] = [];
+	for (let j = 0; j < rest.length; j++) {
+		const w = rest[j];
+		if (w === "edit" || w === "rename-section") return { writes: true, reads: false };
+		if (GIT_CONFIG_READS.test(w)) return { writes: false, reads: true };
+		if (!w.startsWith("-")) {
+			positional.push(w);
+			continue;
+		}
+		const kind = optionOf(w, GIT_CONFIG_FLAGS, GIT_CONFIG_WITH_VALUE);
+		if (kind === "unknown") return { writes: true, reads: false }; // `-e`, `--edit`, `--rename-section`, any prefix git takes
+		if (kind === "value") j++;
+	}
+	if (positional[0] === "set") positional.shift();
+	const [key] = positional;
+	// The value is not read from these words: the shell may cut it at a `;` or substitute into it, so
+	// `core.fsmonitor 'true;sh x'` is not the boolean it starts with. A value is judged only as git stores it.
+	return { writes: key !== undefined && gitSettingRunsProgram(key, GIT_RUNS_WITH_BANG.test(key.toLowerCase()) ? positional[1] : undefined), reads: false };
+}
+
+/** A path of a git setup: a `.git` directory or anything in one, a `.gitattributes`, a `.gitconfig`, or git's directory under `.config`; any letter case. */
+const GIT_SETUP_PATH = /(?<![\w.-])(?:\.git|\.gitattributes|\.gitconfig|\.config\/git)(?![\w.-])/i;
+/** Programs that read the paths they are given, or only name them. `git` is judged by `readGitCall`. */
+const GIT_SETUP_READERS = new Set(["cat", "less", "more", "head", "tail", "grep", "egrep", "fgrep", "rg", "ag", "ls", "stat", "wc", "file", "test", "[", "diff", "cmp", "cd", "echo", "printf"]);
+
+/**
+ * Whether a shell command writes a git setting that runs a program, opens git's config in an editor,
+ * starts a repository from a template, or names a git setup file (`GIT_SETUP_PATH`) with a redirect, a
+ * substitution or a subshell, a first program that is not a reader, or a git call that is not `reads`
+ * (#172). Read as the pi-loops rules
+ * read a command (`flatCommand`), so a quoted message given to a program that takes it as text is not
+ * read. Known gaps: a path the shell builds at run time or reaches after a `cd`, a program that writes
+ * the file from a name it is handed another way, and a setting given for one command (git's global
+ * `-c`, `GIT_*` variables), which runs a program the way the run could run it itself. The read of a
+ * repository's setup before an unattended git call (`src/repo-setup.ts`) sees a setting or a hook
+ * however it was written.
+ */
+function writesGitSetup(command: string): boolean {
+	for (const sub of flatCommand(command).split(SUBCOMMANDS)) {
+		const words = sub.trim().split(/\s+/).filter(Boolean).flatMap(gitWords);
+		let gitReads = true;
+		let sawGit = false;
+		for (let i = 0; i < words.length; i++) {
+			if (!isGitWord(words[i])) continue;
+			sawGit = true;
+			const call = readGitCall(words, i);
+			if (call.writes) return true;
+			if (!call.reads) gitReads = false;
+		}
+		if (!GIT_SETUP_PATH.test(sub)) continue;
+		// A substitution or a subshell runs a program this does not place: fail closed.
+		if (/[`(]/.test(sub)) return true;
+		if (/>/.test(sub) && [...sub.matchAll(/>+\|?\s*([^\s;&|<>]+)/g)].some((m) => GIT_SETUP_PATH.test(m[1]))) return true;
+		const program = (words.find((w) => !BEFORE_PROGRAM.test(w)) ?? "").split("/").pop() ?? "";
+		if (!gitReads || !(GIT_SETUP_READERS.has(program) || (sawGit && program === "git"))) return true;
+	}
+	return false;
+}
+
+/**
+ * The reason a `write` or an `edit` of a git setup file is refused for an unattended run, or undefined
+ * (#172): a path in a `.git` directory, a `.gitattributes`, a `.gitconfig`, or under `.config/git`,
+ * read as `pathToolReason` reads a path, by its resolved path and by its realpath (a link that leads to a
+ * hook). A card cannot show what the write puts there, so it is refused, not asked (as for the loops
+ * directory). Reading one is not refused.
+ */
+export function gitSetupPathReason(call: { toolName: string; input?: unknown }, cwd: string | undefined): string | undefined {
+	if (call.toolName !== "write" && call.toolName !== "edit") return undefined;
+	const given = (call.input as { path?: unknown } | undefined)?.path;
+	if (typeof given !== "string" || !given) return undefined;
+	let p = given.replace(UNICODE_SPACES, " ");
+	if (p.startsWith("@")) p = p.slice(1);
+	if (p === "~") p = os.homedir();
+	else if (p.startsWith("~/")) p = path.join(os.homedir(), p.slice(2));
+	else if (/^file:\/\//.test(p)) {
+		try {
+			p = fileURLToPath(p);
+		} catch {
+			return GIT_SETUP; // a URL that pi's tool reads in a way this cannot: fail closed
+		}
+	}
+	const resolved = path.resolve(cwd ?? "/", p);
+	if (resolved.length > PATH_MAX) return undefined;
+	const setup = (q: string) => GIT_SETUP_PATH.test(q.split(path.sep).join("/"));
+	return setup(resolved) || setup(realpathish(resolved)) ? GIT_SETUP : undefined;
+}
+
 /** Whether the default file systems of `platform` ignore letter case (APFS, NTFS). */
 function foldsCase(platform: NodeJS.Platform): boolean {
 	return platform === "darwin" || platform === "win32";
@@ -838,5 +1053,6 @@ export function dangerousCommandReason(command: string, home: string = process.e
 	if (stopsPiLoops(command)) return PI_LOOPS_STOP;
 	if (answersForPerson(piLoopsPrograms(command)) || runsPi(command)) return ANSWERS;
 	if (loopsDir !== undefined && reachesLoopsDir(pathText(command), loopsDir, home || undefined, platform)) return OWN_FILES;
+	if (writesGitSetup(command)) return GIT_SETUP;
 	return rmRecursiveForceOnDangerousTarget(scanned, home || undefined) ?? (quoteLeftOpen(command) ? UNREADABLE : undefined);
 }

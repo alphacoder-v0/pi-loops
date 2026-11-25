@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { OWN_FILES, UNREADABLE, dangerousCommandReason, pathToolReason } from "../src/danger.ts";
+import { GIT_SETUP, OWN_FILES, UNREADABLE, dangerousCommandReason, gitSettingRunsProgram, gitSetupPathReason, pathToolReason } from "../src/danger.ts";
 import { openFileDir } from "../src/open-file.ts";
 import { tmp } from "./tmp.ts";
 
@@ -426,7 +426,7 @@ test("the pi-loops refusal is linear: 200 KB of open parentheses, quotes, commen
 	// machine: up to 141 ms for the slowest unit under load. A pattern that is not linear takes seconds.
 	const size = 200 * 1024;
 	const fill = (unit: string) => unit.repeat(Math.ceil(size / unit.length));
-	for (const unit of ["( a ", '"', "'", '"a b" ', "'a b' ", "$'", '\\"', "pi-loops ", "pi-loops host ", "pi-loops -", "{,", "$IFS", "curl |", "wget | ", "# '", "chmod -", "dd ", "git push ", "git push --force ", "git push --force\n", "dd of=/dev/x ", "reboot ", "grep halt | ", "grep 'halt' ", 'grep "halt" x; ', "grep halt 2>&1 "]) {
+	for (const unit of ["( a ", '"', "'", '"a b" ', "'a b' ", "$'", '\\"', "pi-loops ", "pi-loops host ", "pi-loops -", "{,", "$IFS", "curl |", "wget | ", "# '", "chmod -", "dd ", "git push ", "git config a.b c ", "git init --x ", "cat .git/config > x ", "git -C ", "git config -f ", "git --git-dir ", "git clone -c ", "git config alias.x ", "(git ", "x=$(git ", "git --x config ", "git clone --x ", "git-config a.b ", "/x/git-init --x ", "$$'", "git push --force ", "git push --force\n", "dd of=/dev/x ", "reboot ", "grep halt | ", "grep 'halt' ", 'grep "halt" x; ', "grep halt 2>&1 "]) {
 		const command = fill(unit);
 		const started = process.cpuUsage();
 		dangerousCommandReason(command, HOME);
@@ -829,4 +829,151 @@ test("[policy-ansi-path] a path after a `$'…'` string that a backslash kept op
 	assert.equal(reach('cat "${x:-\'"\'}" ~/.pi/agent/loops/web-token # \''), OWN_FILES, "a quote inside `${…}` is not read as text");
 	assert.equal(reach("grep -rn $'it\\'s ~/.pi/agent/loops' docs"), undefined, "a path inside a `$'…'` string is text");
 	assert.equal(reach("grep -rn '~/.pi/agent/loops' docs"), undefined);
+});
+
+test("[git-setting-write] a shell command that writes a git setting that runs a program, or writes a git setup file, is asked about; a read and a harmless setting are not", () => {
+	const asked = [
+		"git config core.pager 'sh -c x'",
+		"git config --global core.pager less",
+		"git config --local diff.foo.textconv ./x.sh",
+		"git config filter.lfs.smudge 'git-lfs smudge %f'",
+		"git config alias.x '!sh -c y'",
+		"git config --add include.path ../shared.inc",
+		"git config set core.hooksPath /tmp/h", // git 2.46's syntax
+		"git config -f .git/config core.pager x",
+		"git config --file ~/.gitconfig --add diff.external ./d.sh",
+		"git config -e",
+		"git config --edit",
+		"git -C repo config core.editor vim",
+		"git config CORE.PAGER x",
+		"git config credential.https://example.com.helper store",
+		"git config gpg.ssh.program /tmp/x",
+		"git config includeIf.gitdir:~/w/.path ~/w.inc",
+		"git config merge.ours.driver true",
+		"git config core.fsmonitor ./watch.sh",
+		"git config alias.y",
+		"cd repo && git config diff.external ./d.sh",
+		"echo '[core] pager = x' >> .git/config",
+		"printf '#!/bin/sh\\nx' > .git/hooks/pre-commit",
+		"cat x | tee .gitattributes",
+		"cp x ~/.gitconfig",
+		"bash -c 'echo x > .git/hooks/post-checkout'",
+		"sed -i s/a/b/ .git/config",
+		"chmod +x .git/hooks/pre-push",
+		"ln -s /tmp/x .git/hooks/pre-push",
+		"mkdir -p ~/.config/git && echo x > ~/.config/git/attributes",
+		"git init --template=/tmp/t repo",
+		"git clone --template /tmp/t https://example.com/r.git",
+		// A review's commands (M9.2 round 1): a redirect with no space, a value the shell cuts, git inside a
+		// substitution, clone's lasting `-c`, a git that writes into .git, and the keys of the same kind.
+		"printf x >.git/hooks/pre-commit",
+		"echo x >.gitattributes",
+		"echo x 1<>.git/hooks/pre-commit",
+		"echo x >| .git/config",
+		"git config core.fsmonitor 'true $(touch P)'",
+		"git config core.fsmonitor 'true;sh evil.sh'",
+		"git config core.fsmonitor true",
+		"echo $(git config core.pager evil)",
+		"x=$(git config --global core.hooksPath /tmp/h)",
+		"(git config core.pager x)",
+		"echo `git config core.pager x`",
+		"git clone -c core.hooksPath=/tmp/h r r2",
+		"git clone --config=core.pager=x r r2",
+		"git checkout-index --prefix=.git/hooks/ -- pre-commit",
+		"git --work-tree=.git/hooks checkout -- pre-commit",
+		"git show HEAD:hook --output=.git/hooks/pre-commit",
+		"git config mergetool.x.cmd y",
+		"git config difftool.x.cmd y",
+		"git config core.alternateRefsCommand x",
+		"git config gpg.ssh.defaultKeyCommand x",
+		"git config sendemail.sendmailCmd x",
+		"echo x > .GIT/hooks/pre-commit",
+		// Round 2: a git call that reads does not vouch for another program; git's other spellings of an option.
+		"cp $(git ls-files hooks/) .git/hooks/",
+		"cp hooks/pre-commit .git/hooks/pre-commit # see git log",
+		"cat hook $(cp evil .git/hooks/pre-commit)",
+		"echo `cp evil .git/hooks/pre-commit`",
+		"git clone -ccore.hooksPath=/tmp/h r r3",
+		"git init --templ=/tmp/t r4",
+		"git config --typ path core.pager evilpager",
+		"git --attr-source HEAD config core.editor evil",
+		"git --unknown-option config core.editor evil",
+		"git --new-option HEAD config core.editor evil",
+		"git clone --upload-pack=x r r2",
+		"git config --rename-sec foo core",
+		"git show HEAD:hook --outp=.git/hooks/pre-commit",
+		// Round 3: git's dashed programs are git.
+		"/usr/lib/git-core/git-config core.pager x",
+		"/usr/lib/git-core/git-init --template=/tmp/t r5",
+		"$(git-config core.editor x)",
+		"git-clone -c core.hooksPath=/tmp/h r r2",
+		"X=git-log cp evil .git/hooks/pre-commit",
+		"MSG=git-add cp evil .git/hooks/pre-commit",
+	];
+	for (const command of asked) assert.equal(reasonOf(command), GIT_SETUP, command);
+	const passed = [
+		"git config user.name 'A B'",
+		"git config --get core.pager",
+		"git config get core.pager", // git 2.46's syntax
+		"git config -l",
+		"git config --list --show-origin",
+		"git config alias.co checkout",
+		"git clone -c user.name=x r r2",
+		"git -C sub add .gitattributes",
+		"git --work-tree=. commit -m x .gitattributes",
+		"git clone --depth 1 --branch main https://example.com/r.git",
+		"git clone -cuser.name=x r r2",
+		"git clone --depth=1 -b main https://example.com/r.git dir",
+		"git --no-pager log -p -- .gitattributes",
+		"git --attr-source=HEAD check-attr -a -- .gitattributes",
+		"git config --global --add safe.directory /srv/r",
+		"git log --pretty=oneline -- .gitattributes",
+		"/usr/lib/git-core/git-config user.name x",
+		"git-lfs install --skip-repo",
+		"cat .git/config",
+		"grep -n hooksPath .git/config",
+		"ls -la .git/hooks",
+		"git add .gitattributes",
+		"git commit -m 'set core.pager in .git/config'",
+		"git log -p -- .gitattributes",
+		"git init repo",
+		"echo hi > .github/workflows/ci.yml",
+	];
+	for (const command of passed) assert.equal(reasonOf(command), undefined, command);
+});
+
+test("[git-setting-write] the list of git settings that run a program: each listed key, any letter case, and an alias or a submodule update only with `!`", () => {
+	for (const key of ["diff.external", "diff.x.textconv", "diff.x.command", "merge.x.driver", "filter.x.clean", "filter.x.smudge", "filter.x.process", "core.pager", "pager.log", "core.editor", "core.sshCommand", "core.fsmonitor", "core.hooksPath", "credential.helper", "credential.https://h.helper", "gpg.program", "gpg.ssh.program", "include.path", "includeIf.gitdir:/x/.path", "sequence.editor", "core.askPass", "core.gitProxy", "init.templateDir", "remote.origin.uploadpack", "remote.origin.receivepack", "uploadpack.packObjectsHook", "interactive.diffFilter", "mergetool.x.cmd", "difftool.x.cmd", "core.alternateRefsCommand", "gpg.ssh.defaultKeyCommand", "sendemail.sendmailCmd"]) {
+		assert.equal(gitSettingRunsProgram(key, "x"), true, key);
+		assert.equal(gitSettingRunsProgram(key.toUpperCase(), "x"), true, `${key} in upper case`);
+	}
+	assert.equal(gitSettingRunsProgram("alias.x", "!sh"), true);
+	assert.equal(gitSettingRunsProgram("alias.x", " !sh"), true, "git does not run this one (2.43 measured), but a space before `!` is taken as one that runs: fail closed");
+	assert.equal(gitSettingRunsProgram("alias.x", undefined), true, "a value not known is taken as one that runs");
+	assert.equal(gitSettingRunsProgram("alias.co", "checkout"), false);
+	assert.equal(gitSettingRunsProgram("submodule.x.update", "!sh"), true);
+	assert.equal(gitSettingRunsProgram("submodule.x.update", "rebase"), false);
+	assert.equal(gitSettingRunsProgram("core.fsmonitor", "true"), false, "the built-in monitor runs no program");
+	assert.equal(gitSettingRunsProgram("core.fsmonitor", "false"), false);
+	for (const key of ["user.name", "core.autocrlf", "diff.x.binary", "pull.rebase", "includeif.x", "aliases.x"]) assert.equal(gitSettingRunsProgram(key, "!x"), false, key);
+});
+
+test("[git-file-write] a write or an edit of a git setup file is refused for an unattended run; a read is not, and nor is a path that is not one", () => {
+	const cwd = "/r";
+	const call = (toolName: string, p: string) => ({ toolName, input: { path: p } });
+	for (const [tool, p] of [["write", ".git/config"], ["edit", ".gitattributes"], ["write", ".git/hooks/pre-commit"], ["write", "/r/sub/.git/modules/x/config"], ["write", "~/.gitconfig"], ["edit", "~/.config/git/config"], ["write", "a/b/.gitattributes"], ["write", ".git/info/attributes"], ["write", "./.git/../.git/config"]]) {
+		assert.equal(gitSetupPathReason(call(tool, p), cwd), GIT_SETUP, `${tool} ${p}`);
+	}
+	for (const [tool, p] of [["read", ".git/config"], ["write", "src/a.ts"], ["write", ".github/workflows/ci.yml"], ["write", ".gitignore"], ["write", "docs/.git-notes.md"], ["grep", ".git"]]) {
+		assert.equal(gitSetupPathReason(call(tool, p), cwd), undefined, `${tool} ${p}`);
+	}
+	assert.equal(gitSetupPathReason({ toolName: "write", input: { path: ".git/config" } }, undefined), GIT_SETUP, "a relative path with no cwd still names it");
+});
+
+test("[git-file-write] a write through a link that leads into a .git directory is refused: the path is read by its realpath too", () => {
+	const dir = tmp("pi-loops-git-link-");
+	fs.mkdirSync(path.join(dir, ".git", "hooks"), { recursive: true });
+	fs.symlinkSync(path.join(dir, ".git", "hooks"), path.join(dir, "h"));
+	assert.equal(gitSetupPathReason({ toolName: "write", input: { path: "h/pre-commit" } }, dir), GIT_SETUP);
+	assert.equal(gitSetupPathReason({ toolName: "write", input: { path: "notes.md" } }, dir), undefined);
 });

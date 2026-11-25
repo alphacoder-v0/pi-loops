@@ -1334,3 +1334,18 @@ test("[policy-open-quote] [policy-dollar-dollar] a scheduled turn asks before a 
 	assert.equal(await w.call({ toolName: "bash", input: { command: "git commit -m 'one line'" } }), undefined);
 	assert.deepEqual(w.filed(), []);
 });
+
+test("[git-file-write] [git-setting-write] judgeCall: a write or an edit of a git setup file is refused and nobody is asked; a shell command that sets a git setting that runs a program is a question; a read and a plain write are allowed", () => {
+	const proj = "/srv/p";
+	const t = turn();
+	const policy = { allowCommands: [] as string[] };
+	const GIT = "changes a git setting or hook that can run a program";
+	for (const call of [write(".git/config", proj), write(".gitattributes", proj, "edit"), write(".git/hooks/pre-commit", proj)]) {
+		assert.deepEqual(judgeCall(call, t, policy), { kind: "refuse", reason: GIT, whyNot: { why: "not-shown" } }, JSON.stringify(call.input));
+	}
+	for (const call of [write("src/a.ts", proj), { toolName: "read", toolCallId: "c", cwd: proj, input: { path: ".git/config" } }]) assert.deepEqual(judgeCall(call, t, policy), { kind: "allow" }, JSON.stringify(call));
+	const command = "git config core.pager 'sh -c x'";
+	assert.deepEqual(judgeCall(bash(command), t, policy), { kind: "question", ask: { kind: "call", call: { tool: "bash", tool_call_id: "call-1", command, input_sha256: inputHash({ command }), reason: GIT } } });
+	assert.deepEqual(judgeCall(bash("git config user.name x"), t, policy), { kind: "allow" });
+	assert.deepEqual(judgeCall(bash(command), t, { ...policy, allowCommands: [command] }), { kind: "allow" }, "an allow entry permits it");
+});
