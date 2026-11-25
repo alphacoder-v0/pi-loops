@@ -13,6 +13,13 @@ import { THINKING_LEVELS, requireThinkingLevel, thinkingLevelOrUndefined } from 
 
 const at = new Date().toISOString();
 
+/** An older process that has run a while: its command line names the entry. Just after spawn() it can read as empty under load, and an empty one is not ours. */
+async function standInStarted(pid: number): Promise<void> {
+	const rec: HostServiceRecord = { v: 1, pid, startedAt: new Date().toISOString(), entry: "src/host.ts", node: "node", dir: "", socket: "", token: "t", managed: "spawned" };
+	for (let i = 0; i < 100 && !hostServiceAlive(rec); i++) await new Promise((r) => setTimeout(r, 20));
+	assert.ok(hostServiceAlive(rec), `the stand-in (pid ${pid}) did not start`);
+}
+
 test("ensure: no loop, rule or push server means no host; any one of them is enough", () => {
 	const base = { auto: true, stopped: false, envOff: false, now: Date.now(), spawns: { attempts: [] }, myVersion: "0.23.0" };
 	const spawns = (automation: { loops: number; rules: number; pushServers: number }) => decideEnsure({ ...base, automation }).kind === "spawn";
@@ -262,6 +269,7 @@ test("an upgrade does not kill a process that is still starting and has not boun
 	// No heartbeat in the record: the process has not reached its first tick.
 	const old = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)", "src/host.ts"], { stdio: "ignore" });
 	try {
+		await standInStarted(old.pid!);
 		const rec: HostServiceRecord = { v: 1, pid: old.pid!, startedAt: new Date().toISOString(), version: "0.9.0", entry: "src/host.ts", node: "node", dir, socket: "", token: "t", managed: "spawned" };
 		fs.writeFileSync(path.join(dir, HOST_SERVICE_FILE), JSON.stringify(rec));
 		const off = process.env.PI_LOOPS_HOST;
@@ -286,6 +294,7 @@ test("an upgrade the removed socket cannot deliver stops the old process, starts
 	// The older process has ticked (its record has a heartbeat) and its control socket is not there.
 	const old = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)", "src/host.ts"], { stdio: "ignore" });
 	try {
+		await standInStarted(old.pid!);
 		const rec: HostServiceRecord = { v: 1, pid: old.pid!, startedAt: new Date().toISOString(), tickAt: new Date().toISOString(), version: "0.9.0", entry: "src/host.ts", node: "node", dir, socket: "", token: "t", managed: "spawned" };
 		fs.writeFileSync(path.join(dir, HOST_SERVICE_FILE), JSON.stringify(rec));
 		// `npm test` sets PI_LOOPS_HOST=off; this one must be able to stop the old one and start.
