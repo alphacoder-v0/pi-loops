@@ -614,26 +614,30 @@ machine. Everything here follows from that, and each one has a price.
 
 28. **The dangerous-command policy asks about what it cannot read, and about a git setup an
     unattended run writes.** A question costs one tap, so the policy stops a command it cannot read
-    with confidence: a command of one line that ends inside a quote is asked about (#231). A command
-    over several lines is read as written, every quote in it: bash reads lines in ways the policy
-    would have to copy to set a quoted phrase aside (a heredoc's body, a comment, a backslash that
-    continues one line and not another), and each copy missed one. A shell command that writes a
-    git setting that runs a program (`git config` in any scope, `git clone -c`, a template,
-    `git config --edit`), or that writes a file of a git setup (`.git/`, `.gitattributes`,
-    `~/.gitconfig`, `~/.config/git/`) with anything but a reader, is asked about. pi's `write` and
-    `edit` of such a file are refused, not asked: a card cannot show what the write puts there. git's
-    options are read against lists of the ones the policy knows, and an option it does not know is
-    taken as one that may write, since git takes any unique prefix of a long option. The cost:
-    `echo it's` and `git config core.pager less` are each one question; a command over several lines
-    whose quoted text names a pi-loops stop or claim or the loops directory (a commit message about
-    pi-loops' own commands) is refused, since a card shows a command on one line. What this does not
-    see (#172): a setting or a hook that something other than an unattended turn wrote (a person,
-    another tool, a clone), which a later unattended `git` call runs as you; a setting given for one
-    command (git's global `-c`, `GIT_*` variables), which runs a program the way the run could run it
-    itself; a path the shell builds at run time or reaches after a `cd`. Reading a repository's setup
-    before each unattended git call was built and withdrawn: five reviews each found programs git
-    runs that the read did not see (a hooksPath an `includeIf` sets, submodule hooks, `ext::` remote
-    URLs, the scripts a setting names). The policy
+    with confidence: a command of one line that ends inside a quote, a `$'…'` with a backslash (bash
+    and sh read it differently), and a verb after `pi-loops` or a git key or sub-command that the shell
+    rewrites (`$`, a brace, a backslash) are asked about (#231). A command over several lines is read
+    as written, every quote in it: bash reads lines in ways the policy would have to copy to set a
+    quoted phrase aside (a heredoc's body, a comment, a backslash that continues one line and not
+    another), and each copy missed one. A shell command that writes a git setting on the policy's list
+    (`git config` in any scope, `git clone -c`, a template, `git config --edit`), or that writes a git
+    setup file (a git directory's `config`, `hooks`, `info/attributes`, `modules`, `worktrees`;
+    `.gitattributes`; `~/.gitconfig`; `~/.config/git/`) with anything but a reader, is asked about.
+    pi's `write` and `edit` of such a file are refused, not asked: a card cannot show what the write
+    puts there. git's options are read against lists of the ones the policy knows, and an option it
+    does not know is taken as one that may write, since git takes any unique prefix of a long option.
+    The cost: `echo it's`, `ls # don't`, `git config core.pager less`, `git checkout -- .gitattributes`
+    and a command such as `du -sh .git` are each one question; a command over several lines that the
+    policy stops is refused, since a card shows one line, and so is one whose quoted text names a
+    pi-loops stop or claim or the loops directory. What this does not see (#172): a setting or a hook
+    that something other than an unattended turn wrote (a person, another tool, a clone), which a later
+    unattended `git` call runs as you; a setting given for one command (git's global `-c`, `GIT_*`
+    variables) other than a template, which runs a program the way the run could run it itself; a
+    path or a name the shell builds at run time or reaches after a `cd`; a program that runs git
+    another way; a setting the list does not name. Reading a repository's setup before each unattended
+    git call was built and withdrawn: four reviews each found programs git runs that the read did not
+    see (a hooksPath an `includeIf` sets, submodule hooks, `ext::` remote URLs, the scripts a setting
+    names). The policy
     is a guard against mistakes and a plain injection, not a sandbox.
 
 ## Where the browser front end came from

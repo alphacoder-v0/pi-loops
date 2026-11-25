@@ -187,7 +187,7 @@ const SUBCOMMANDS = /;|&&|\|\||\||&|\n/;
 const TAKES_TEXT = new Set(["git", "grep", "egrep", "fgrep", "rg", "ag", "echo", "printf", "gh", "cat", "cd", "ls", "test", "[", "true", "false", "jq", "npm"]);
 const GIT_TEXT = new Set(["commit", "tag", "stash", "notes", "add", "status", "fetch", "log"]);
 /** git options that run a program they are handed: `--upload-pack`, `--receive-pack`, `--exec`. */
-const GIT_RUNS = /^--(upload-pack|receive-pack|exec)/;
+const GIT_RUNS = /^--(?:u(?:p(?:l(?:o(?:a(?:d(?:-(?:p(?:a(?:c(?:k)?)?)?)?)?)?)?)?)?)?|r(?:e(?:c(?:e(?:i(?:v(?:e(?:-(?:p(?:a(?:c(?:k)?)?)?)?)?)?)?)?)?)?)?|e(?:x(?:e(?:c)?)?)?)(?:=|$)/;
 /** `git log` options that show a patch, which runs the diff drivers git is configured with. */
 const GIT_LOG_PATCH = /^(-[a-zA-Z]*[puc]|--(patch|ext-diff|textconv|cc|output|function-context))/;
 /** What `blankQuotedPhrases` leaves where a quoted phrase was. */
@@ -282,13 +282,16 @@ function blankQuotedPhrases(s: string): string {
 
 /**
  * Whether a command of one line ends inside a quote (#231): bash cannot read it either, and the rules
- * would read the rest as a quoted phrase. It scans as `blankQuotedPhrases` does: a backslash outside
+ * would read the rest as a quoted phrase. Or it holds a `$'…'` with a backslash, which bash and sh read
+ * differently. It scans as `blankQuotedPhrases` does: a backslash outside
  * quotes escapes the next character, `'…'` has no escapes, `"…"` and `$'…'` take a backslash escape,
  * and `$$` opens nothing. A command over several lines is read as written (`severalLines`), so it has
  * nothing to hide here. One pass.
  */
 function quoteLeftOpen(s: string): boolean {
 	if (severalLines(s)) return false;
+	// A `$'…'` that holds a backslash: bash reads an escape there, sh (dash, pi's fallback) does not.
+	if (/(?<!\$)\$'[^'\\]*\\/.test(s)) return true;
 	let i = 0;
 	while (i < s.length) {
 		const c = s[i];
@@ -345,9 +348,9 @@ function flatCommand(command: string): string {
  * path or a word of another program too: what `stopsPiLoops` reads. Sub-commands are cut at `;`,
  * `&&`, `||`, `|`, `&` and newlines.
  */
-function piLoopsInvocations(command: string): string[] {
+function piLoopsInvocations(flat: string): string[] {
 	const found: string[] = [];
-	for (const sub of flatCommand(command).split(SUBCOMMANDS)) {
+	for (const sub of flat.split(SUBCOMMANDS)) {
 		const at = sub.search(PI_LOOPS_NAME);
 		if (at !== -1) found.push(sub.slice(at));
 	}
@@ -365,8 +368,8 @@ function piLoopsInvocations(command: string): string[] {
  * the shell expands (`P=pi-loops; $P stop`), a verb read from input (`echo stop | xargs pi-loops`),
  * an alias or a function defined to run it, and stopping the process another way (`kill`).
  */
-function stopsPiLoops(command: string): boolean {
-	for (const rest of piLoopsInvocations(command)) {
+function stopsPiLoops(flat: string): boolean {
+	for (const rest of piLoopsInvocations(flat)) {
 		if (STOP_AFTER.test(rest)) return true;
 		if (expandedVerb(rest.split(/\s+/))) return true;
 	}
@@ -401,9 +404,9 @@ interface ProgramRun {
  * that has the name, given to another program (`npm --prefix ~/code/pi-loops start`, `find
  * ~/code/pi-loops -name import`), is not the program. One pass over the words.
  */
-function programRuns(command: string, anywhere: RegExp | undefined, basename: RegExp): ProgramRun[] {
+function programRuns(flat: string, anywhere: RegExp | undefined, basename: RegExp): ProgramRun[] {
 	const found: ProgramRun[] = [];
-	for (const sub of flatCommand(command).split(SUBCOMMANDS)) {
+	for (const sub of flat.split(SUBCOMMANDS)) {
 		const words = [...sub.matchAll(/\S+/g)];
 		let head = true; // a program may start at this word
 		let wrapped = false; // a wrapper's options and arguments may come before it
@@ -437,8 +440,8 @@ function programRuns(command: string, anywhere: RegExp | undefined, basename: Re
 }
 
 /** pi-loops' program, as `answersForPerson` reads it. */
-function piLoopsPrograms(command: string): ProgramRun[] {
-	return programRuns(command, PI_LOOPS_NAME, PROGRAM_BASENAME);
+function piLoopsPrograms(flat: string): ProgramRun[] {
+	return programRuns(flat, PI_LOOPS_NAME, PROGRAM_BASENAME);
 }
 
 /** A run answering a question, pairing a browser, installing jobs or bringing pi-loops up is a person's call, not a loop's. */
@@ -515,8 +518,8 @@ const PI_PRINTS_ONLY = new Set(["--version", "-v", "--help", "-h"]);
  * So every such pi is refused, not only one whose words name a command. Known gaps: pi started by
  * its script's path (`node …/pi-coding-agent/dist/cli.js`), and a name the shell expands.
  */
-function runsPi(command: string): boolean {
-	return programRuns(command, undefined, PI_BASENAME).some(({ rest }) => {
+function runsPi(flat: string): boolean {
+	return programRuns(flat, undefined, PI_BASENAME).some(({ rest }) => {
 		const words = rest.split(/\s+/).filter(Boolean).slice(1);
 		return !(words.length > 0 && words.every((w) => PI_PRINTS_ONLY.has(w)));
 	});
@@ -531,17 +534,40 @@ export const OWN_FILES = "reads or writes pi-loops' own files";
 /** Why a command of one line that ends inside a quote is asked about (`quoteLeftOpen`): the rules above cannot read it with confidence. */
 export const UNREADABLE = "a quote is left open, so the command cannot be read";
 
+/** Why a command whose verb after `pi-loops` the shell rewrites is asked about (`piLoopsWordRewritten`). */
+export const REWRITTEN = "a verb after pi-loops is spelled so the shell rewrites it, so the command cannot be read";
+
+/**
+ * Whether the verb or the sub-verb after a `pi-loops` (its first two words that are not flags or `host`)
+ * is one the shell rewrites (`literalWord`): `pi-loops st$'o'p` is a stop, `pi-loops inbox cl$'a'im` a
+ * claim. A later word is an argument (`pi-loops inbox list $FLAGS`).
+ */
+function piLoopsWordRewritten(flat: string): boolean {
+	for (const sub of flat.split(SUBCOMMANDS)) {
+		if (!PI_LOOPS_NAME.test(sub)) continue;
+		const words = sub.trim().split(/\s+/).filter(Boolean);
+		const at = words.findIndex((w) => PI_LOOPS_NAME.test(w));
+		if (at === -1) continue;
+		const verbs = words.slice(at + 1).filter((w) => !w.startsWith("-") && w !== "host").slice(0, 2);
+		if (verbs.some((w) => !literalWord(w))) return true;
+	}
+	return false;
+}
+
 /** Why a write of a git setting that runs a program, or of a git setup file, is asked about or refused (#172). */
 export const GIT_SETUP = "changes a git setting or hook that can run a program";
 
 /**
  * The git settings that run a program (design 8.3, #172), as patterns of the key in lower case: the
- * design's list, and the settings of the same kind git documents (`sequence.editor`, `core.askPass`,
+ * design's list, and others of the same kind that reviews found (`sequence.editor`, `core.askPass`,
  * `core.gitProxy`, `core.alternateRefsCommand`, `init.templateDir`, a remote's
  * `uploadpack`/`receivepack`, `uploadpack.packObjectsHook`, `interactive.diffFilter`, a merge or diff
  * tool's `cmd`, `sendemail.sendmailCmd`, `credential.<url>.helper`, `gpg.<format>.program`,
  * `gpg.ssh.defaultKeyCommand`, a trailer's `cmd`, a merge or diff tool's `path`, `sendemail`'s other
- * `*Cmd` keys, `protocol.allow` and `protocol.ext.allow`). An `alias.*` and a `submodule.*.update` run
+ * `*Cmd` keys and `smtpServer`, `protocol.allow` and `protocol.ext.allow`, a tar format's `command`,
+ * `imap.tunnel`, a man viewer's or a browser's `cmd`/`path`, the browser of `web`, `help` and `instaweb`,
+ * `instaweb.httpd`, a guitool's `cmd`). A setting git runs that this list does not name is a gap.
+ * An `alias.*` and a `submodule.*.update` run
  * one only when the value starts with `!`, a remote's URL only when it is `ext::`; `core.fsmonitor`
  * does not when it is a boolean (the built-in monitor).
  */
@@ -567,6 +593,13 @@ const GIT_RUNS_PROGRAM: readonly RegExp[] = [
 	/^trailer\..+\.(?:cmd|command)$/,
 	/^(?:merge|diff)tool\..+\.path$/,
 	/^protocol\.(?:ext\.)?allow$/,
+	/^tar\..+\.command$/,
+	/^imap\.tunnel$/,
+	/^(?:man|browser)\..+\.(?:cmd|path)$/,
+	/^(?:web|help|instaweb)\.browser$/,
+	/^instaweb\.httpd$/,
+	/^sendemail\.smtpserver$/,
+	/^guitool\..+\.cmd$/,
 ];
 const GIT_RUNS_WITH_BANG = /^(?:alias\..+|submodule\..+\.update)$/;
 /** A remote's URL runs a program only through the `ext::` transport (with `protocol.ext.allow`, listed too). */
@@ -623,6 +656,15 @@ const GIT_READS = new Set(["add", "status", "log", "diff", "show", "commit", "rm
 /** Options that have a `GIT_READS` sub-command write a file it names: these and any prefix git would take for them. */
 const GIT_WRITES_FILE = /^(?:--p(?:r(?:e(?:f(?:ix?)?)?)?)?|--o(?:u(?:t(?:p(?:ut?)?)?)?)?|-o)(?:=|$)/;
 
+/**
+ * Whether a word, as `flatCommand` leaves it (quotes removed), is what the shell passes on: no `$`
+ * (a variable, `$'…'`, `$(…)`), no backtick, no backslash, no brace (`{a,b}`). The rules read such a
+ * word as written, and bash would pass another (#231: `pi-loops st$'o'p` is a stop).
+ */
+function literalWord(w: string): boolean {
+	return !/[$`\\{}]/.test(w);
+}
+
 /** How an option word reads against a set of flags and a set of options with a value: known (and whether it takes the next word), or not known. */
 function optionOf(w: string, flags: ReadonlySet<string>, withValue: ReadonlySet<string>): "flag" | "value" | "attached" | "unknown" {
 	if (flags.has(w)) return "flag";
@@ -640,19 +682,26 @@ function optionOf(w: string, flags: ReadonlySet<string>, withValue: ReadonlySet<
  * judged on (fail closed). `reads`: it is a `GIT_READS` sub-command with no `GIT_WRITES_FILE` option,
  * so a git setup path it names is only read or staged.
  */
-function readGitCall(words: string[], at: number): { writes: boolean; reads: boolean } {
+function readGitCall(words: string[], at: number, templateEnv = false): { writes: boolean; reads: boolean } {
 	let end = at + 1;
 	while (end < words.length && !isGitWord(words[end])) end++;
 	let i = at + 1;
+	// A template given for one command still copies its hooks into the repository it starts.
+	let template = templateEnv;
 	for (; i < end && words[i].startsWith("-"); i++) {
 		const kind = optionOf(words[i], GIT_GLOBAL_FLAGS, GIT_GLOBAL_WITH_VALUE);
+		const pair = words[i] === "-c" || words[i] === "--config-env" ? words[i + 1] ?? "" : /^-c./.test(words[i]) ? words[i].slice(2) : words[i].startsWith("--config-env=") ? words[i].slice(13) : "";
+		if (/^init\.templatedir=/i.test(pair)) template = true;
 		if (kind === "value") i++;
 		// `-cKEY=VALUE`, a one-command setting, is a known form; anything else could take the next word.
 		else if (kind === "unknown" && !/^-c./.test(words[i])) return { writes: words.slice(i + 1, end).some((w) => w === "config" || w === "init" || w === "clone"), reads: false };
 	}
 	const sub = words[i] ?? "";
 	const rest = words.slice(i + 1, end);
+	// A sub-command the shell rewrites (`$'config'`) cannot be read: it may be `config`.
+	if (!literalWord(sub)) return { writes: true, reads: false };
 	if (sub === "init" || sub === "clone") {
+		if (template) return { writes: true, reads: false };
 		for (let j = 0; j < rest.length; j++) {
 			const w = rest[j];
 			if (!w.startsWith("-")) continue;
@@ -673,7 +722,9 @@ function readGitCall(words: string[], at: number): { writes: boolean; reads: boo
 	for (let j = 0; j < rest.length; j++) {
 		const w = rest[j];
 		if (w === "edit" || w === "rename-section") return { writes: true, reads: false };
-		if (GIT_CONFIG_READS.test(w)) return { writes: false, reads: true };
+		// A read mode is an option before the key, or git 2.46's sub-command in the key's place: a word
+		// after the key is a value or a pattern, and git stores the value (2.43, measured).
+		if (GIT_CONFIG_READS.test(w) && positional.length === 0) return { writes: false, reads: true };
 		if (!w.startsWith("-")) {
 			positional.push(w);
 			continue;
@@ -684,14 +735,23 @@ function readGitCall(words: string[], at: number): { writes: boolean; reads: boo
 	}
 	if (positional[0] === "set") positional.shift();
 	const [key] = positional;
+	// A key, or a value judged by its first character, that the shell rewrites cannot be read.
+	if (key !== undefined && (!literalWord(key) || (positional[1] !== undefined && !literalWord(positional[1]) && (GIT_RUNS_WITH_BANG.test(key.toLowerCase()) || GIT_RUNS_WITH_EXT.test(key.toLowerCase()))))) return { writes: true, reads: false };
 	// The value is not read from these words: the shell may cut it at a `;` or substitute into it, so
 	// `core.fsmonitor 'true;sh x'` is not the boolean it starts with. A value is judged only as git stores it.
 	const judgedByValue = key !== undefined && (GIT_RUNS_WITH_BANG.test(key.toLowerCase()) || GIT_RUNS_WITH_EXT.test(key.toLowerCase()));
 	return { writes: key !== undefined && gitSettingRunsProgram(key, judgedByValue ? positional[1] : undefined), reads: false };
 }
 
-/** A path of a git setup: a `.git` directory or anything in one, a `.gitattributes`, a `.gitconfig`, or git's directory under `.config`; any letter case. */
-const GIT_SETUP_PATH = /(?<![\w.-])(?:\.git|\.gitattributes|\.gitconfig|\.config\/git)(?![\w.-])/i;
+/**
+ * A path of a git setup, any letter case: in a git directory (`.git`, or a bare one such as `repo.git`)
+ * its `config`, `config.worktree`, `hooks`, `info/attributes`, `modules` and `worktrees`; a
+ * `.gitattributes`; a `.gitconfig`; git's directory under `.config`. Not the rest of a `.git` directory
+ * (`HEAD`, `index.lock`), nor `.git` as an exclude (`--exclude=.git`, `-not -path './.git/*'`).
+ */
+const GIT_SETUP_PATH = /(?<![\w.-])(?:[\w.-]*\.git\/(?:config(?:\.worktree)?|hooks|info\/attributes|modules|worktrees)|\.gitattributes|\.gitconfig|\.config\/git)(?![\w.-])/i;
+/** A whole git directory as the last word of a write (`cp -r payload/. .git/`, `mv x .git`): it may bring hooks with it. */
+const GIT_DIR_WORD = /^(?:\.\/)?[\w.-]*\.git\/?$/i;
 /** Programs that read the paths they are given, or only name them. `git` is judged by `readGitCall`. */
 const GIT_SETUP_READERS = new Set(["cat", "less", "more", "head", "tail", "grep", "egrep", "fgrep", "rg", "ag", "ls", "stat", "wc", "file", "test", "[", "diff", "cmp", "cd", "echo", "printf"]);
 
@@ -703,30 +763,55 @@ const GIT_SETUP_READERS = new Set(["cat", "less", "more", "head", "tail", "grep"
  * read a command (`flatCommand`), so a quoted message given to a program that takes it as text is not
  * read. Known gaps: a path the shell builds at run time or reaches after a `cd`, a program that writes
  * the file from a name it is handed another way, and a setting given for one command (git's global
- * `-c`, `GIT_*` variables), which runs a program the way the run could run it itself. This sees only
+ * `-c`, `GIT_*` variables), which runs a program the way the run could run it itself; a template given
+ * that way (`-c init.templateDir`, `GIT_TEMPLATE_DIR`) is the exception, since it copies hooks that
+ * stay, and is asked about. A word the shell rewrites in the key or the sub-command is asked about
+ * (`literalWord`). This sees only
  * what an unattended turn writes: a setting or a hook that a person, another tool or a clone wrote is
  * run by a later unattended git call with nobody asked (owner decision 4, option (b); docs/design.md
  * decision 28). A read of the repository's setup before each git call was built and withdrawn: each
  * review found programs git runs that the read did not see.
  */
-function writesGitSetup(command: string): boolean {
-	for (const sub of flatCommand(command).split(SUBCOMMANDS)) {
+function writesGitSetup(flat: string): boolean {
+	for (const sub of flat.split(SUBCOMMANDS)) {
+		// Every git call, git setup path and `.git` word holds `git`: a sub-command without it is not read word by word.
+		if (!/git/i.test(sub)) continue;
 		const words = sub.trim().split(/\s+/).filter(Boolean).flatMap(gitWords);
 		let gitReads = true;
 		let sawGit = false;
+		const templateEnv = words.some((w) => /^GIT_TEMPLATE_DIR=/.test(w));
 		for (let i = 0; i < words.length; i++) {
 			if (!isGitWord(words[i])) continue;
 			sawGit = true;
-			const call = readGitCall(words, i);
+			const call = readGitCall(words, i, templateEnv);
 			if (call.writes) return true;
 			if (!call.reads) gitReads = false;
 		}
-		if (!GIT_SETUP_PATH.test(sub)) continue;
+		const program = (words.find((w) => !BEFORE_PROGRAM.test(w)) ?? "").split("/").pop() ?? "";
+		const last = words[words.length - 1] ?? "";
+		if (!GIT_SETUP_PATH.test(sub)) {
+			if (GIT_DIR_WORD.test(last) && !GIT_SETUP_READERS.has(program) && program !== "git") return true;
+			continue;
+		}
 		// A substitution or a subshell runs a program this does not place: fail closed.
 		if (/[`(]/.test(sub)) return true;
-		if (/>/.test(sub) && [...sub.matchAll(/>+\|?\s*([^\s;&|<>]+)/g)].some((m) => GIT_SETUP_PATH.test(m[1]))) return true;
-		const program = (words.find((w) => !BEFORE_PROGRAM.test(w)) ?? "").split("/").pop() ?? "";
+		if (redirectsInto(sub)) return true;
 		if (!gitReads || !(GIT_SETUP_READERS.has(program) || (sawGit && program === "git"))) return true;
+	}
+	return false;
+}
+
+/** Whether a redirect of `sub` (`>`, `>>`, `>|`, `1<>`, `&>`) writes a git setup path. One pass: each run of `>` is read once. */
+function redirectsInto(sub: string): boolean {
+	let i = sub.indexOf(">");
+	while (i !== -1) {
+		let j = i;
+		while (sub[j] === ">" || sub[j] === "|") j++;
+		while (sub[j] === " " || sub[j] === "\t") j++;
+		let k = j;
+		while (k < sub.length && !/[\s;&|<>]/.test(sub[k])) k++;
+		if (k > j && GIT_SETUP_PATH.test(sub.slice(j, k))) return true;
+		i = sub.indexOf(">", Math.max(k, i + 1));
 	}
 	return false;
 }
@@ -1073,9 +1158,12 @@ export function dangerousCommandReason(command: string, home: string = process.e
 	if (allow.some((a) => allows(a, trimmed))) return undefined;
 	const scanned = dequote(command);
 	for (const [label, re] of PATTERNS) if (typeof re === "function" ? re(scanned, command) : re.test(scanned)) return label;
-	if (stopsPiLoops(command)) return PI_LOOPS_STOP;
-	if (answersForPerson(piLoopsPrograms(command)) || runsPi(command)) return ANSWERS;
+	// Read once (`flatCommand`) and given to every rule that reads the command's words.
+	const flat = flatCommand(command);
+	if (stopsPiLoops(flat)) return PI_LOOPS_STOP;
+	if (answersForPerson(piLoopsPrograms(flat)) || runsPi(flat)) return ANSWERS;
+	if (piLoopsWordRewritten(flat)) return REWRITTEN;
 	if (loopsDir !== undefined && reachesLoopsDir(pathText(command), loopsDir, home || undefined, platform)) return OWN_FILES;
-	if (writesGitSetup(command)) return GIT_SETUP;
+	if (writesGitSetup(flat)) return GIT_SETUP;
 	return rmRecursiveForceOnDangerousTarget(scanned, home || undefined) ?? (quoteLeftOpen(command) ? UNREADABLE : undefined);
 }
