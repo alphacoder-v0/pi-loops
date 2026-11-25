@@ -11,7 +11,7 @@ import * as path from "node:path";
 import { type AskOrigin, type Call, type DeclaredCap, type Grant, type ResolvedCap, askFindingId, askId, callKey, inputHash, questionFinding, recordedCap, resolveCap } from "../src/ask.ts";
 import { type CallVerdict, type GuardDeps, type GuardPolicy, type GuardSeed, type GuardTurn, type Question, type ToolCallFacts, CONTROL_PLANE_TOOLS, GuardSeats, READ_ONLY_AUTOMATION_TOOLS, SELF_GATED_AUTOMATION_TOOLS, capWords, guardCall, guardTurn, judgeCall, subagentGuardExtension, unhandledAsk } from "../src/guard.ts";
 import { Inbox, type InboxEntry, type InboxEntry as Finding, type NewFinding } from "../src/inbox.ts";
-import { dangerousCommandReason } from "../src/danger.ts";
+import { UNREADABLE, dangerousCommandReason } from "../src/danger.ts";
 import { decideDrain, goalRow, modeOf, personRow, plainJobRow, plainRunId, recipeRow, requestFingerprint, ringProduced } from "../src/engine.ts";
 import type { Row } from "../src/requests.ts";
 import { stamp } from "../src/schedule.ts";
@@ -1320,4 +1320,32 @@ test("[own-notes-dir] judgeCall and guardCall: a run in a loop's lane may use a 
 	const out = await handler({ toolName: inNotes.toolName, toolCallId: inNotes.toolCallId, input: inNotes.input }, { cwd: proj, sessionManager: { getSessionId: () => "s", getSessionFile: () => "/sessions/s.jsonl" } });
 	assert.equal(out?.block, true, "a window's scheduled turn gets no exception");
 	assert.equal(w.inbox.list().length, 0);
+});
+
+test("[policy-open-quote] [policy-dollar-dollar] a scheduled turn asks before a command the policy cannot read, and before a stop that `$$'` hid; a plain quoted message runs", async () => {
+	for (const [command, reason] of [["echo $$'a\\'; pi-loops stop; echo 'b c'", "pi-loops abort / stop / restart"], ["echo it's", UNREADABLE]]) {
+		const one = window();
+		one.clockFired();
+		assert.deepEqual(await one.call({ toolName: "bash", input: { command } }), { block: true, reason: askedWords(reason) }, command);
+		assert.equal(one.filed().length, 1, `${command}: asked`);
+	}
+	const w = window();
+	w.clockFired();
+	assert.equal(await w.call({ toolName: "bash", input: { command: "git commit -m 'one line'" } }), undefined);
+	assert.deepEqual(w.filed(), []);
+});
+
+test("[git-file-write] [git-setting-write] judgeCall: a write or an edit of a git setup file is refused and nobody is asked; a shell command that sets a git setting that runs a program is a question; a read and a plain write are allowed", () => {
+	const proj = "/srv/p";
+	const t = turn();
+	const policy = { allowCommands: [] as string[] };
+	const GIT = "changes a git setting or hook that can run a program";
+	for (const call of [write(".git/config", proj), write(".gitattributes", proj, "edit"), write(".git/hooks/pre-commit", proj)]) {
+		assert.deepEqual(judgeCall(call, t, policy), { kind: "refuse", reason: GIT, whyNot: { why: "not-shown" } }, JSON.stringify(call.input));
+	}
+	for (const call of [write("src/a.ts", proj), { toolName: "read", toolCallId: "c", cwd: proj, input: { path: ".git/config" } }]) assert.deepEqual(judgeCall(call, t, policy), { kind: "allow" }, JSON.stringify(call));
+	const command = "git config core.pager 'sh -c x'";
+	assert.deepEqual(judgeCall(bash(command), t, policy), { kind: "question", ask: { kind: "call", call: { tool: "bash", tool_call_id: "call-1", command, input_sha256: inputHash({ command }), reason: GIT } } });
+	assert.deepEqual(judgeCall(bash("git config user.name x"), t, policy), { kind: "allow" });
+	assert.deepEqual(judgeCall(bash(command), t, { ...policy, allowCommands: [command] }), { kind: "allow" }, "an allow entry permits it");
 });

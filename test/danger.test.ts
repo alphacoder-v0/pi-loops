@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { OWN_FILES, dangerousCommandReason, pathToolReason } from "../src/danger.ts";
+import { GIT_SETUP, OWN_FILES, UNREADABLE, dangerousCommandReason, gitSettingRunsProgram, gitSetupPathReason, pathToolReason } from "../src/danger.ts";
 import { openFileDir } from "../src/open-file.ts";
 import { tmp } from "./tmp.ts";
 
@@ -426,13 +426,21 @@ test("the pi-loops refusal is linear: 200 KB of open parentheses, quotes, commen
 	// machine: up to 141 ms for the slowest unit under load. A pattern that is not linear takes seconds.
 	const size = 200 * 1024;
 	const fill = (unit: string) => unit.repeat(Math.ceil(size / unit.length));
-	for (const unit of ["( a ", '"', "'", '"a b" ', "'a b' ", "$'", '\\"', "pi-loops ", "pi-loops host ", "pi-loops -", "{,", "$IFS", "curl |", "wget | ", "# '", "chmod -", "dd ", "git push ", "git push --force ", "git push --force\n", "dd of=/dev/x ", "reboot ", "grep halt | ", "grep 'halt' ", 'grep "halt" x; ', "grep halt 2>&1 "]) {
+	for (const unit of ["( a ", '"', "'", '"a b" ', "'a b' ", "$'", '\\"', "pi-loops ", "pi-loops host ", "pi-loops -", "{,", "$IFS", "curl |", "wget | ", "# '", "chmod -", "dd ", "git push ", "git config a.b c ", "git init --x ", "cat .git/config > x ", ".git/config >", "git -C ", "git config -f ", "git --git-dir ", "git clone -c ", "git config alias.x ", "(git ", "x=$(git ", "git --x config ", "git clone --x ", "git-config a.b ", "/x/git-init --x ", "$$'", "git push --force ", "git push --force\n", "dd of=/dev/x ", "reboot ", "grep halt | ", "grep 'halt' ", 'grep "halt" x; ', "grep halt 2>&1 "]) {
 		const command = fill(unit);
 		const started = process.cpuUsage();
 		dangerousCommandReason(command, HOME);
 		const used = process.cpuUsage(started);
 		const ms = (used.user + used.system) / 1000;
 		assert.ok(ms < 500, `${JSON.stringify(unit)} × ${command.length / unit.length}: ${ms.toFixed(0)} ms`);
+	}
+	// One git setup path, then a long run of `>`: each run of `>` is read once (`redirectsInto`).
+	for (const command of [`.git/config ${">".repeat(size)}`, `cat .git/config ${"> ".repeat(size / 2)}`]) {
+		const started = process.cpuUsage();
+		dangerousCommandReason(command, HOME);
+		const used = process.cpuUsage(started);
+		const ms = (used.user + used.system) / 1000;
+		assert.ok(ms < 500, `${JSON.stringify(command.slice(0, 16))}…: ${ms.toFixed(0)} ms`);
 	}
 });
 
@@ -781,4 +789,274 @@ test("[own-notes-dir] a notes directory that a link puts elsewhere gets no excep
 	fs.symlinkSync(elsewhere, path.join(loops, "state", "cron-c3"));
 	assert.equal(pathToolReason({ toolName: "write", input: { path: path.join(loops, "state", "cron-c3", "x.md"), content: "{}" } }, proj, loops, undefined, "cron-c3"), undefined, "a link that leads out of the loops directory is a path like any other outside it");
 	assert.equal(dangerousCommandReason(`echo x > ${path.join(loops, "state", "cron-a1", "prs.md")}`, undefined, [], loops), OWN, "a shell command into its notes directory is judged as before");
+});
+
+const STOP = "pi-loops abort / stop / restart";
+const reasonOf = (command: string, allow: string[] = []) => dangerousCommandReason(command, "/home/u", allow, undefined, "linux");
+
+test("[policy-dollar-dollar] `$$'` is the process id and a plain quote, not the start of `$'…'`", () => {
+	assert.equal(reasonOf('echo "${x:-\'"\'}"; pi-loops stop # \''), STOP, "a quote inside `${…}` is not text: bash runs the stop");
+	// bash runs the middle command: `$$` and then `'a\'` is a quote that a backslash does not escape.
+	assert.equal(reasonOf("echo $$'a\\'; pi-loops stop; echo 'b c'"), STOP);
+	assert.equal(reasonOf("echo $$'a b'"), undefined);
+	assert.equal(reasonOf('git commit -m "pid $$"'), undefined);
+	assert.equal(reasonOf("echo $'it\\'s'"), UNREADABLE, "a `$'…'` with a backslash is asked about: sh and bash read it differently");
+});
+
+test("[policy-gh-cs] `gh cs` is `gh codespace`: its quoted text is a command, not text", () => {
+	assert.equal(reasonOf("gh codespace ssh -- 'pi-loops stop now'"), STOP);
+	assert.equal(reasonOf("gh cs ssh -- 'pi-loops stop now'"), STOP);
+	for (const spelling of ['"cs"', "c\\s", "$'cs'", '$"cs"', "code\\space", "{cs,}"]) assert.equal(reasonOf(`gh ${spelling} ssh -- 'pi-loops stop now'`), STOP, `gh ${spelling} is read as a command`);
+	assert.equal(reasonOf("git commit -m 'stop pi-loops now'"), undefined, "a plain second word still takes its quotes as text");
+	assert.equal(reasonOf("gh pr view 12 -q '.title words'"), undefined);
+});
+
+test("[policy-open-quote] a command of one line that ends inside a quote is asked about; a command over several lines is read as written, every quote in it, so no pairing bash reads otherwise hides a command", () => {
+	assert.equal(reasonOf("echo it's"), UNREADABLE);
+	assert.equal(reasonOf("git status # don't worry"), UNREADABLE, "an apostrophe in a comment on one line: #231's shape");
+	assert.equal(reasonOf("git commit -m 'one line'"), undefined);
+	assert.equal(reasonOf("echo \\'"), undefined, "an escaped quote opens nothing");
+	assert.equal(reasonOf("echo it's", ["echo it's"]), undefined, "an allow entry permits it");
+	assert.equal(reasonOf("echo $$'a\\'"), undefined, "`$$` then a plain quote, closed");
+	// Over several lines: what runs, and what each way of pairing the quotes would have hidden.
+	assert.equal(reasonOf('echo "a\nb"'), undefined);
+	assert.equal(reasonOf('git commit -m "line one\n\nline two, it\'s done"'), undefined, "a commit message over several lines runs");
+	assert.equal(reasonOf("git commit -F - <<EOF\nit's done\nEOF"), undefined, "a heredoc with an apostrophe runs");
+	assert.equal(reasonOf('git commit -m "$(cat <<\'EOF\'\nfix: it\'s done\nEOF\n)"'), undefined);
+	assert.equal(reasonOf("ls # it's\ngit status"), undefined, "a comment over several lines hides nothing: it is read as written");
+	const hidden = [
+		"git status # don't\npi-loops stop; git log 'a b'",
+		"git status # don't\\\npi-loops stop # '",
+		'git commit -m "a\npi-loops stop\nb"',
+		"cat <<true\necho it's\ntrue\necho 'x'; pi-loops stop; echo 'y'",
+		"echo a # \\' '\necho 'x'; pi-loops stop; echo 'y'",
+		'echo a # \'"\' "\necho "x"; pi-loops stop; echo "y"',
+		"echo a # \\' ' \\\npi-loops stop; echo 'b c'",
+		"echo a \\\n# \\' ' \\\npi-loops stop; echo 'b c'",
+		"cat <<'t\\'\necho it's \\\nt\\\npi-loops stop; echo 'b c'",
+	];
+	for (const command of hidden) assert.equal(reasonOf(command), "pi-loops abort / stop / restart", JSON.stringify(command));
+	assert.equal(reasonOf("git commit -m 'note'\ngit tag -m 'pi-loops stop retrying' v1"), "pi-loops abort / stop / restart", "the cost: a quoted message over several lines that names a stop is read as one");
+});
+
+test("[policy-ansi-path] a path after a `$'…'` string that a backslash kept open is read as a path: `$'x\\''` closes at its third quote", () => {
+	const loops = "/home/u/.pi/agent/loops";
+	const reach = (command: string) => dangerousCommandReason(command, "/home/u", [], loops, "linux");
+	// bash reads `$'x\''` as x', then the path, unquoted, which `~` expands.
+	assert.equal(reach("cat $'x\\'' ~/.pi/agent/loops/web-token 'a b'"), OWN_FILES);
+	assert.equal(reach("cat $$'x\\' ~/.pi/agent/loops/web-token 'a b'"), OWN_FILES, "`$$` then a plain quote that a backslash does not escape");
+	assert.equal(reach("cat $'/home/u/.pi/agent/loops/web-token'"), OWN_FILES, "a `$'…'` path is a path");
+	assert.equal(reach('cat $"/home/u/.pi/agent/loops/web-token"'), OWN_FILES, "a `$\"…\"` path is a path");
+	assert.equal(reach('cat "${x:-\'"\'}" ~/.pi/agent/loops/web-token # \''), OWN_FILES, "a quote inside `${…}` is not read as text");
+	assert.equal(reach("grep -rn $'it\\'s ~/.pi/agent/loops' docs"), UNREADABLE, "a `$'…'` with a backslash is asked about: sh and bash read it differently");
+	assert.equal(reach("grep -rn '~/.pi/agent/loops' docs"), undefined);
+	assert.equal(reach("cat <<true\necho it's\ntrue\ncat 'x' ~/.pi/agent/loops/web-token 'y'"), OWN_FILES, "a heredoc's apostrophe does not make a path after it look quoted");
+});
+
+test("[git-setting-write] a shell command that writes a git setting that runs a program, or writes a git setup file, is asked about; a read and a harmless setting are not", () => {
+	const asked = [
+		"git config core.pager 'sh -c x'",
+		"git config --global core.pager less",
+		"git config --local diff.foo.textconv ./x.sh",
+		"git config filter.lfs.smudge 'git-lfs smudge %f'",
+		"git config alias.x '!sh -c y'",
+		"git config --add include.path ../shared.inc",
+		"git config set core.hooksPath /tmp/h", // git 2.46's syntax
+		"git config -f .git/config core.pager x",
+		"git config --file ~/.gitconfig --add diff.external ./d.sh",
+		"git config -e",
+		"git config --edit",
+		"git -C repo config core.editor vim",
+		"git config CORE.PAGER x",
+		"git config credential.https://example.com.helper store",
+		"git config gpg.ssh.program /tmp/x",
+		"git config includeIf.gitdir:~/w/.path ~/w.inc",
+		"git config merge.ours.driver true",
+		"git config core.fsmonitor ./watch.sh",
+		"git config alias.y",
+		"cd repo && git config diff.external ./d.sh",
+		"echo '[core] pager = x' >> .git/config",
+		"printf '#!/bin/sh\\nx' > .git/hooks/pre-commit",
+		"cat x | tee .gitattributes",
+		"cp x ~/.gitconfig",
+		"bash -c 'echo x > .git/hooks/post-checkout'",
+		"sed -i s/a/b/ .git/config",
+		"chmod +x .git/hooks/pre-push",
+		"ln -s /tmp/x .git/hooks/pre-push",
+		"mkdir -p ~/.config/git && echo x > ~/.config/git/attributes",
+		"git init --template=/tmp/t repo",
+		"git clone --template /tmp/t https://example.com/r.git",
+		// A review's commands (M9.2 round 1): a redirect with no space, a value the shell cuts, git inside a
+		// substitution, clone's lasting `-c`, a git that writes into .git, and the keys of the same kind.
+		"printf x >.git/hooks/pre-commit",
+		"echo x >.gitattributes",
+		"echo x 1<>.git/hooks/pre-commit",
+		"echo x >| .git/config",
+		"git config core.fsmonitor 'true $(touch P)'",
+		"git config core.fsmonitor 'true;sh evil.sh'",
+		"git config core.fsmonitor true",
+		"echo $(git config core.pager evil)",
+		"x=$(git config --global core.hooksPath /tmp/h)",
+		"(git config core.pager x)",
+		"echo `git config core.pager x`",
+		"git clone -c core.hooksPath=/tmp/h r r2",
+		"git clone --config=core.pager=x r r2",
+		"git checkout-index --prefix=.git/hooks/ -- pre-commit",
+		"git --work-tree=.git/hooks checkout -- pre-commit",
+		"git show HEAD:hook --output=.git/hooks/pre-commit",
+		"git config mergetool.x.cmd y",
+		"git config difftool.x.cmd y",
+		"git config core.alternateRefsCommand x",
+		"git config gpg.ssh.defaultKeyCommand x",
+		"git config sendemail.sendmailCmd x",
+		"git config remote.origin.url 'ext::sh -c touch% x'",
+		// PR 278's panel: a read option after the key stores the value (git 2.43, measured); keys the list missed; a template from -c or the environment.
+		"git config core.hooksPath get",
+		"git config set core.hooksPath get",
+		"git config core.pager /tmp/b --get",
+		"git config --global include.path list",
+		"git config tar.tar.gz.command /tmp/x.sh",
+		"git config man.v.cmd 'sh x.sh'",
+		"git config browser.b.cmd x",
+		"git config web.browser b",
+		"git config imap.tunnel x",
+		"git config --global sendemail.smtpServer /tmp/x.sh",
+		"git -c init.templateDir=/tmp/t init",
+		"git --config-env=init.templateDir=T init",
+		"GIT_TEMPLATE_DIR=/tmp/t git init",
+		"cp /tmp/h repo.git/hooks/pre-commit",
+		"cp -r payload/. .git/",
+		"git config trailer.sob.cmd x",
+		"git config protocol.ext.allow always",
+		"echo x > .GIT/hooks/pre-commit",
+		// Round 2: a git call that reads does not vouch for another program; git's other spellings of an option.
+		"cp $(git ls-files hooks/) .git/hooks/",
+		"cp hooks/pre-commit .git/hooks/pre-commit # see git log",
+		"cat hook $(cp evil .git/hooks/pre-commit)",
+		"echo `cp evil .git/hooks/pre-commit`",
+		"git clone -ccore.hooksPath=/tmp/h r r3",
+		"git init --templ=/tmp/t r4",
+		"git config --typ path core.pager evilpager",
+		"git --attr-source HEAD config core.editor evil",
+		"git --unknown-option config core.editor evil",
+		"git --new-option HEAD config core.editor evil",
+		"git clone --upload-pack=x r r2",
+		"git config --rename-sec foo core",
+		"git show HEAD:hook --outp=.git/hooks/pre-commit",
+		// Round 3: git's dashed programs are git.
+		"/usr/lib/git-core/git-config core.pager x",
+		"/usr/lib/git-core/git-init --template=/tmp/t r5",
+		"$(git-config core.editor x)",
+		"git-clone -c core.hooksPath=/tmp/h r r2",
+		"X=git-log cp evil .git/hooks/pre-commit",
+		"MSG=git-add cp evil .git/hooks/pre-commit",
+	];
+	for (const command of asked) assert.equal(reasonOf(command), GIT_SETUP, command);
+	const passed = [
+		"git config user.name 'A B'",
+		"git config --get core.pager",
+		"git config get core.pager", // git 2.46's syntax
+		"git config -l",
+		"git config --list --show-origin",
+		"git config alias.co checkout",
+		"git clone -c user.name=x r r2",
+		"git -C sub add .gitattributes",
+		"git --work-tree=. commit -m x .gitattributes",
+		"git clone --depth 1 --branch main https://example.com/r.git",
+		"git clone -cuser.name=x r r2",
+		"git clone --depth=1 -b main https://example.com/r.git dir",
+		"git --no-pager log -p -- .gitattributes",
+		"git --attr-source=HEAD check-attr -a -- .gitattributes",
+		"git config --global --add safe.directory /srv/r",
+		"git config remote.origin.url https://example.com/r.git",
+		// PR 278's panel: common commands that only name .git, or a .git file that runs nothing.
+		"find . -name '*.ts' -not -path './.git/*'",
+		"find . -path ./.git -prune -o -type f -print",
+		"tar czf /tmp/a.tgz --exclude=.git .",
+		"rsync -a --exclude .git . /tmp/x",
+		"rm -f .git/index.lock",
+		"awk 1 .git/HEAD",
+		"git config --get core.pager",
+		"git log --pretty=oneline -- .gitattributes",
+		"/usr/lib/git-core/git-config user.name x",
+		"git-lfs install --skip-repo",
+		"cat .git/config",
+		"grep -n hooksPath .git/config",
+		"ls -la .git/hooks",
+		"git add .gitattributes",
+		"git commit -m 'set core.pager in .git/config'",
+		"git log -p -- .gitattributes",
+		"git init repo",
+		"echo hi > .github/workflows/ci.yml",
+	];
+	for (const command of passed) assert.equal(reasonOf(command), undefined, command);
+});
+
+test("[git-setting-write] the list of git settings that run a program: each listed key, any letter case, and an alias or a submodule update only with `!`", () => {
+	for (const key of ["diff.external", "diff.x.textconv", "diff.x.command", "merge.x.driver", "filter.x.clean", "filter.x.smudge", "filter.x.process", "core.pager", "pager.log", "core.editor", "core.sshCommand", "core.fsmonitor", "core.hooksPath", "credential.helper", "credential.https://h.helper", "gpg.program", "gpg.ssh.program", "include.path", "includeIf.gitdir:/x/.path", "sequence.editor", "core.askPass", "core.gitProxy", "init.templateDir", "remote.origin.uploadpack", "remote.origin.receivepack", "uploadpack.packObjectsHook", "interactive.diffFilter", "mergetool.x.cmd", "difftool.x.cmd", "core.alternateRefsCommand", "gpg.ssh.defaultKeyCommand", "sendemail.sendmailCmd"]) {
+		assert.equal(gitSettingRunsProgram(key, "x"), true, key);
+		assert.equal(gitSettingRunsProgram(key.toUpperCase(), "x"), true, `${key} in upper case`);
+	}
+	assert.equal(gitSettingRunsProgram("alias.x", "!sh"), true);
+	assert.equal(gitSettingRunsProgram("alias.x", " !sh"), true, "git does not run this one (2.43 measured), but a space before `!` is taken as one that runs: fail closed");
+	assert.equal(gitSettingRunsProgram("alias.x", undefined), true, "a value not known is taken as one that runs");
+	assert.equal(gitSettingRunsProgram("alias.co", "checkout"), false);
+	assert.equal(gitSettingRunsProgram("submodule.x.update", "!sh"), true);
+	assert.equal(gitSettingRunsProgram("submodule.x.update", "rebase"), false);
+	// A review of the read layer (M9.3, withdrawn) found these run programs too (git 2.43 measured: ext::, trailer).
+	for (const key of ["trailer.sob.cmd", "trailer.sob.command", "mergetool.x.path", "difftool.x.path", "sendemail.toCmd", "sendemail.ccCmd", "sendemail.headerCmd", "protocol.ext.allow", "protocol.allow"]) assert.equal(gitSettingRunsProgram(key, "x"), true, key);
+	for (const key of ["remote.origin.url", "remote.origin.pushurl", "url.ext::sh.insteadOf", "url.x.pushInsteadOf"]) {
+		assert.equal(gitSettingRunsProgram(key, "ext::sh -c touch% x"), true, `${key} = ext::…`);
+		assert.equal(gitSettingRunsProgram(key, "https://example.com/r.git"), key === "url.ext::sh.insteadOf", `${key} = https://…`);
+		assert.equal(gitSettingRunsProgram(key, undefined), true, `${key} with a value not known`);
+	}
+	assert.equal(gitSettingRunsProgram("core.fsmonitor", "true"), false, "the built-in monitor runs no program");
+	assert.equal(gitSettingRunsProgram("core.fsmonitor", "false"), false);
+	for (const key of ["user.name", "core.autocrlf", "diff.x.binary", "pull.rebase", "includeif.x", "aliases.x"]) assert.equal(gitSettingRunsProgram(key, "!x"), false, key);
+});
+
+test("[git-file-write] a write or an edit of a git setup file is refused for an unattended run; a read is not, and nor is a path that is not one", () => {
+	const cwd = "/r";
+	const call = (toolName: string, p: string) => ({ toolName, input: { path: p } });
+	for (const [tool, p] of [["write", ".git/config"], ["edit", ".gitattributes"], ["write", ".git/hooks/pre-commit"], ["write", "/r/sub/.git/modules/x/config"], ["write", "~/.gitconfig"], ["edit", "~/.config/git/config"], ["write", "a/b/.gitattributes"], ["write", ".git/info/attributes"], ["write", "./.git/../.git/config"]]) {
+		assert.equal(gitSetupPathReason(call(tool, p), cwd), GIT_SETUP, `${tool} ${p}`);
+	}
+	for (const [tool, p] of [["read", ".git/config"], ["write", "src/a.ts"], ["write", ".github/workflows/ci.yml"], ["write", ".gitignore"], ["write", "docs/.git-notes.md"], ["grep", ".git"]]) {
+		assert.equal(gitSetupPathReason(call(tool, p), cwd), undefined, `${tool} ${p}`);
+	}
+	assert.equal(gitSetupPathReason({ toolName: "write", input: { path: ".git/config" } }, undefined), GIT_SETUP, "a relative path with no cwd still names it");
+});
+
+test("[git-file-write] a write through a link that leads into a .git directory is refused: the path is read by its realpath too", () => {
+	const dir = tmp("pi-loops-git-link-");
+	fs.mkdirSync(path.join(dir, ".git", "hooks"), { recursive: true });
+	fs.symlinkSync(path.join(dir, ".git", "hooks"), path.join(dir, "h"));
+	assert.equal(gitSetupPathReason({ toolName: "write", input: { path: "h/pre-commit" } }, dir), GIT_SETUP);
+	assert.equal(gitSetupPathReason({ toolName: "write", input: { path: "notes.md" } }, dir), undefined);
+});
+
+test("[policy-rewritten-word] a word the rules read next to pi-loops or git that the shell rewrites ($, a brace, a backslash, a backtick) is asked about: the policy cannot read it", () => {
+	const loops = "/home/u/.pi/agent/loops";
+	const reach = (command: string) => dangerousCommandReason(command, "/home/u", [], loops, "linux");
+	// PR 278's panel: bash runs each as a stop, a claim or a git write (stubs and git 2.43, measured).
+	for (const command of ["pi-loops st$'o'p", "pi-loops st$'\\x6f'p", "pi-loops s{t,t}op", "pi-loops st${u}op", "pi-loops inbox cl$'a'im abc", "git config $'core.pager' x", "git config core.pa$'g'er /tmp/x.sh", "git config {core.pager,} /tmp/x", "git $'config' --global core.pager 'sh x.sh'", "git config --global alias.lg \\!./x.sh", "git config --global alias.lg $'!./x.sh'"]) {
+		assert.notEqual(reach(command), undefined, command);
+	}
+	for (const command of ["pi-loops status --json", "pi-loops inbox list", "git log --format=%h -3", "git commit -m 'fix: done'", "git config user.name 'A B'", "ls ~/code/pi-loops/src"]) assert.equal(reach(command), undefined, command);
+});
+
+test("[policy-gh-cs] a word that starts with --upload-pack, as the shell may spell it, makes its quoted value a command, not text", () => {
+	assert.equal(reasonOf("git fetch --upload-pack='pi-loops stop' /path"), "pi-loops abort / stop / restart");
+	// The shell joins each back into --upload-pack (bash and dash, measured): main reads them all by the start of the word.
+	for (const command of [`git fetch --upload-pack"="'pi-loops stop' /path`, "git fetch --upload-pack''='pi-loops stop' /path", "git fetch --upload-pack\\='pi-loops stop' /path", `git fetch --upload-pack"" 'pi-loops stop' /path`, "git fetch --upload-pack$x='pi-loops stop' /path", "git fetch --upload-pack$@='pi-loops stop' /path", "git fetch --upload-pack$x 'pi-loops stop' /path", "git fetch --upload-pack$''='pi-loops stop' /path", "git fetch --upload-pack$'' 'pi-loops stop' /path", "git fetch --upload-pack{,}='pi-loops stop' /path"]) {
+		assert.equal(reasonOf(command), "pi-loops abort / stop / restart", command);
+	}
+	assert.equal(reasonOf("git log --oneline -1"), undefined);
+});
+
+test("[policy-dollar-dollar] a `$'…'` that holds a backslash is asked about: sh (dash, pi's fallback) and bash read it differently", () => {
+	assert.equal(reasonOf("echo $'a b\\'; pi-loops stop; echo \"'\"'\"'\\'"), UNREADABLE);
+	assert.equal(reasonOf("echo $'it\\'s'"), UNREADABLE);
+	assert.equal(reasonOf("echo $'plain'"), undefined);
+	assert.equal(reasonOf("echo $$'a\\'"), undefined, "`$$` then a plain quote is read alike by both");
 });

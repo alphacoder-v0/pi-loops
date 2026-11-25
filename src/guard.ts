@@ -12,7 +12,7 @@
  */
 import { createSyntheticSourceInfo, type Extension } from "@earendil-works/pi-coding-agent";
 import { type AskOrigin, type Call, ASK_COMMAND_MAX_CHARS, canonicalJson, ASKS_OPEN_PER_LANE, ASKS_PER_TURN, type Grant, NO_HOLDS_MS, type ResolvedCap, callKey, inputHash, questionFinding, questionOpen } from "./ask.ts";
-import { dangerousCommandReason, pathToolReason } from "./danger.ts";
+import { dangerousCommandReason, gitSetupPathReason, pathToolReason } from "./danger.ts";
 import type { Inbox, InboxEntry as Finding } from "./inbox.ts";
 import { cardText } from "./redact.ts";
 import { type LaneId, parseLane } from "./lane.ts";
@@ -143,7 +143,8 @@ function controlPlaneShown(call: Pick<ToolCallFacts, "toolName" | "input" | "tar
 /**
  * Why the policy needs a person for a call, or undefined when it may run, in this order: a path
  * tool into the loops directory (`pathToolReason`, its relative path against `cwd`), except a loop
- * run's into its own notes directory, which `lane` names; in a
+ * run's into its own notes directory, which `lane` names; a write or an edit of a git setup file
+ * (`gitSetupPathReason`); in a
  * conversation's unattended turn, a control-plane tool; a tool outside `declared`; a shell command
  * `dangerousCommandReason` refuses.
  */
@@ -152,6 +153,8 @@ function policyNeed(call: Pick<ToolCallFacts, "toolName" | "input" | "target">, 
 	const loop = lane === undefined ? undefined : parseLane(lane);
 	const own = cfg.loopsDir === undefined ? undefined : pathToolReason(call, cwd, cfg.loopsDir, undefined, loop?.kind === "loop" ? loop.id.slice(1) : undefined);
 	if (own !== undefined) return own;
+	const git = gitSetupPathReason(call, cwd);
+	if (git !== undefined) return git;
 	const shown = conversationTurn ? controlPlaneShown(call) : undefined;
 	if (shown !== undefined) return `changes what pi-loops runs: ${shown}`;
 	const tool = call.toolName;
