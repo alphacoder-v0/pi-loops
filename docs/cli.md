@@ -362,6 +362,7 @@ pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]
 pi-loops start [--foreground] | stop | restart | status [--url] | abort <run-id|trace-id|session-id>
 pi-loops recipe list | show <name|path> | add <name|path> [--cwd <dir>] [--level report|propose|act] [--overwrite]
 pi-loops inbox list [--all] [--cwd <dir>] | claim <id> | dismiss <id> [--reason <text>] | cancel <id>   [--json]
+pi-loops events replay <id>
 ```
 
 `-h` or `--help` anywhere in a subcommand's arguments before a `--` prints that subcommand's usage
@@ -373,8 +374,9 @@ A command typed wrong, such as a missing archive path, a flag the command does n
 prints `pi-loops: <what is wrong>` and that command's usage, and exits 2. Any other error prints only its line and exits 1. An unknown command
 names itself and the version you run, and exits 2.
 
-The command line reads, triages one finding at a time and moves sessions. It never creates or
-removes: there is no `cron remove`, no `recipe remove` and no `inbox clear`. Creating and removing
+The command line reads, triages one finding at a time, moves sessions and replays a stored event.
+It never creates or removes jobs, rules or recipes: there is no `cron remove`, no `recipe remove`
+and no `inbox clear`. Creating and removing
 jobs, rules and recipes are slash commands, because each asks a person first and records what it did
 in the session's control-plane audit.
 
@@ -592,3 +594,28 @@ the command line keeps of it. The JSON is fixed in [CONTRACT.md](../CONTRACT.md)
 the page a program should be written against. A news finding about an answer (a yes that could not
 be started, or did not finish) has one more field after the ten, `re`: the id of the finding the yes
 was to, the root of its thread ([loops.md](loops.md#the-inbox)).
+
+## events
+
+```sh
+pi-loops events replay evt-3f2a…              # run one stored push or gate reading again
+```
+
+Everything that arrives from outside is in `events.jsonl` in the loops directory before anything
+acts on it: an MCP server's push (source `mcp:<server>`) and a gate's reading (source
+`gate:<rule or job id>`). `replay` takes the full id of one event from that file and makes its rows
+again, each with an id of its own, so they run again even when the first ones ran:
+
+- A push: one row in the check lane of each project with an enabled rule. The five-minute identity
+  window does not apply.
+- A rule's gate reading: one check of that rule in its project's check lane.
+- A loop's gate reading: one run of that loop, as `/cron run` starts one, with the reading in its
+  `[gate]` block.
+
+It writes the rows and prints `replayed <id>: <n> row(s) in <lanes>`. pi-loops in the background
+sees the lane files change and runs the rows; while it is not running, the command says so and the
+rows wait. Each of these is refused in one line, with exit code 1: an id that is not in the file
+(`no event <id> in events.jsonl`), an event that is neither a push nor a gate reading, a push that no
+project's enabled rule checks, a push that was put in a chat (a window stored it, or `mcp.toml` marks its
+server `inject_summary` or `inject_and_run`), and a gate reading whose rule or job is gone. A replay costs what the
+first run cost: a check or a loop run is a model call.

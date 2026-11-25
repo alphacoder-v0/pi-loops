@@ -19,7 +19,9 @@ import { fileURLToPath } from "node:url";
 import { isRemoteTty, openFileTarget, openUrl, thisMachine } from "./browser-open.ts";
 import { GATES_HEAD, applyImport, automationOf, exportSession, defaultExportPath, importSession, importedGateLines, inspectArchive, offerToEnable, parseActivateMode } from "./archive.ts";
 import { API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, COPY_KEY_MS, askHost, hostSocketPath, openConversations, renderHostSnapshot, requestLines, requestQueues, ringHost } from "./host-control-channel.ts";
-import { heldTurnFor, stopRow } from "./engine.ts";
+import { heldTurnFor, modeOf, plainJobRow, plainRunId, stopRow } from "./engine.ts";
+import { EventLog } from "./events.ts";
+import { loopLane } from "./lane.ts";
 import { LeaseStore, procStart, sessionFileName } from "./lease.ts";
 import { RequestStore } from "./requests.ts";
 import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
@@ -147,6 +149,9 @@ const CLI_USAGE = [
 	"",
 	"pi-loops inbox list [--all] [--cwd <dir>] | claim <id> | dismiss <id> [--reason <text>] | cancel <id>   [--json]",
 	"    List, claim or dismiss findings with no pi open.",
+	"",
+	"pi-loops events replay <id>",
+	"    Make the rows of one stored push or gate reading again, so pi-loops in the background runs them once more.",
 ].join("\n");
 
 interface SessionFile {
@@ -311,6 +316,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	if (command === "uninstall-launcher") return uninstallLauncher(launcherDirFlag(flags), out);
 	if (command === "recipe") return recipeCommand(positional, { level: str("level"), overwrite: flags.has("overwrite") }, cwd, loopsDir, out);
 	if (command === "inbox") return inboxCommand(positional, { all: flags.has("all"), json: flags.has("json"), reason: flags.get("reason") }, cwd, loopsDir, out);
+	if (command === "events") return eventsCommand(positional, loopsDir, out);
 
 	if (command === "sessions") {
 		// A count, so anything that is not a whole number ≥ 1 would reach `slice` as NaN, a
@@ -444,7 +450,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 /** What runs loops while no pi is open, started, stopped and looked at by name. */
 const SERVICE_VERBS = new Set(["start", "stop", "restart", "status", "abort", "pair"]);
 
-const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "host", "recipe", "inbox", "web", "open", "upgrade", "install-launcher", "uninstall-launcher", "help"]);
+const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "host", "recipe", "inbox", "events", "web", "open", "upgrade", "install-launcher", "uninstall-launcher", "help"]);
 
 /**
  * `pi-loops inbox`: `/inbox list|claim|dismiss` for a shell with no pi open, and — with `--json` —
@@ -570,6 +576,70 @@ function findingJson(e: InboxEntry): Record<string, unknown> {
  * the setup script is shown to a person before it runs and the jobs are created after a
  * confirmation, both of which need the pi that `/recipe add` runs in. It finds the copies in place.
  */
+/**
+ * `pi-loops events replay <id>`: the rows of one event in `events.jsonl` made again, with ids of
+ * their own, so they run although the first ones ran. A push gets a check row in each project it is
+ * checked in, a rule's gate reading a check of that rule, a loop's gate reading a run of that loop
+ * (`cron-run:`, a run and not a slot). The id is looked up in the log, never used as a path. It
+ * writes rows only: pi-loops in the background hears the lane file and runs them.
+ */
+async function eventsCommand(positional: string[], loopsDir: string, out: (line: string) => void): Promise<number> {
+	const [verb, id] = positional;
+	if (verb !== "replay") throw new UsageError(verb === undefined ? "events needs a subcommand: replay <id>" : `events: unknown subcommand ${JSON.stringify(verb)}`);
+	if (!id) throw new UsageError("events replay needs an event id");
+	const refuse = (why: string): number => {
+		out(why);
+		return 1;
+	};
+	const shown = plainLine(id);
+	const event = new EventLog(loopsDir, "background").get(id);
+	if (!event) return refuse(`no event ${shown} in events.jsonl`);
+	// Loaded here: the push and check modules take a third of a second, and only this verb needs them.
+	const [{ pushTrigger, replayPush }, { checkRow }] = await Promise.all([import("./push.ts"), import("./check-tick.ts")]);
+	const stores = openStores(loopsDir);
+	const by = { pid: process.pid, instance: "cli", procStart: procStart(process.pid), version: PI_LOOPS_VERSION };
+	const now = Date.now();
+	const at = stamp(now);
+	const said = (lanes: readonly string[]): number => {
+		out(`replayed ${shown}: ${lanes.length} row(s) in ${lanes.join(", ")}`);
+		const rec = readHostService(loopsDir);
+		if (!rec || !hostServiceAlive(rec)) out("pi-loops is not running in the background: the rows run after pi-loops start");
+		return 0;
+	};
+	const source = plainLine(event.source);
+	if (event.source.startsWith("mcp:")) {
+		const trigger = pushTrigger(event);
+		if (!trigger) return refuse(`event ${shown} is a push from ${source.slice("mcp:".length)} that maps to no trigger: nothing checks it`);
+		// A push that injects into a chat was never a check: a window stores only those, and mcp.toml says which servers inject.
+		const { deliveryOf } = await import("./push.ts");
+		const { loadMcpConfigFiles } = await import("./mcp.ts");
+		const server = event.source.slice("mcp:".length);
+		const cfg = loadMcpConfigFiles({ dir: loopsDir, projectTrusted: false }).servers.find((s) => s.name === server);
+		const injected = event.delivery !== undefined ? event.delivery !== "sub_agent" : event.receiver.kind === "window" || (cfg !== undefined && deliveryOf(cfg) !== "sub_agent");
+		if (injected) return refuse(`event ${shown} is a push from ${plainLine(server)} that injects into a chat: a replay writes no row for it`);
+		const lanes = replayPush({ requests: stores.requests, rules: stores.rules, createdBy: () => by }, event, trigger, now, at);
+		if (!lanes.length) return refuse(`event ${shown}: no project has an enabled rule that checks a push`);
+		return said(lanes);
+	}
+	if (!event.source.startsWith("gate:")) return refuse(`event ${shown} is from ${source}: only a push (mcp:) or a gate reading (gate:) is replayed`);
+	const owner = event.source.slice("gate:".length);
+	const rule = stores.rules.load().find((r) => r.id === owner);
+	if (rule) {
+		const row = checkRow(rule.cwd, [rule.id], by, now, { events: [event.id] });
+		if (!stores.requests.appendIfAbsent(row)) return refuse(`event ${shown}: its replay is already queued`);
+		return said([row.lane]);
+	}
+	const job = stores.jobs.load().find((j) => j.id === owner);
+	if (!job) return refuse(`event ${shown}: ${owner.startsWith("cron-") ? "job" : "rule"} ${plainLine(owner)} is gone`);
+	const lane = job.stateful ? loopLane(job.id) : undefined;
+	if (!lane) return refuse(`event ${shown}: job ${plainLine(owner)} is not a loop`);
+	const runSource = `cron-run:${job.id}` as const;
+	const base = plainJobRow({ ...job, sessionId: lane }, plainRunId(job.id, `replay ${event.id} ${at}`), runSource, "", by, now);
+	const row = { ...base, lane, mode: modeOf("loop", "input", runSource, "turn"), payload: { ...base.payload!, events: [event.id] } };
+	if (!stores.requests.appendIfAbsent(row)) return refuse(`event ${shown}: its replay is already queued`);
+	return said([lane]);
+}
+
 async function recipeCommand(positional: string[], opts: { level?: string; overwrite: boolean }, cwd: string, loopsDir: string, out: (line: string) => void): Promise<number> {
 	const sub = positional[0] ?? "list";
 	if (sub === "list") {
@@ -853,7 +923,7 @@ const USAGE_SECTIONS: Record<string, string> = {
 	web: "pi-loops [--web", tui: "pi-loops [--web", open: "pi-loops open", upgrade: "pi-loops upgrade", "install-launcher": "pi-loops install-launcher", "uninstall-launcher": "pi-loops uninstall-launcher",
 	export: "pi-loops export", import: "pi-loops import", sessions: "pi-loops sessions", inspect: "pi-loops inspect",
 	start: "pi-loops start | stop", stop: "pi-loops start | stop", restart: "pi-loops start | stop", status: "pi-loops start | stop",
-	abort: "pi-loops start | stop", host: "pi-loops start | stop", pair: "pi-loops pair", recipe: "pi-loops recipe", inbox: "pi-loops inbox",
+	abort: "pi-loops start | stop", host: "pi-loops start | stop", pair: "pi-loops pair", recipe: "pi-loops recipe", inbox: "pi-loops inbox", events: "pi-loops events",
 };
 
 /** The flags every subcommand reads. */
@@ -863,13 +933,13 @@ const GLOBAL_FLAGS = new Set(["cwd", "help"]);
 const VERB_FLAGS: Record<string, readonly string[]> = {
 	upgrade: ["check"], "install-launcher": ["dir"], "uninstall-launcher": ["dir"], import: ["activate-triggers"], export: ["session", "output", "exclude-triggers"],
 	sessions: ["limit", "all"], recipe: ["level", "overwrite"], inbox: ["all", "json", "reason"], start: ["foreground"], status: ["url"],
-	inspect: [], stop: [], restart: [], abort: [], pair: [], open: ["loops-dir"],
+	inspect: [], stop: [], restart: [], abort: [], pair: [], open: ["loops-dir"], events: [],
 };
 
 /** How many words each subcommand reads after its name. */
 const VERB_POSITIONALS: Record<string, number> = {
 	upgrade: 0, "install-launcher": 0, "uninstall-launcher": 0, export: 0, sessions: 0, start: 0, stop: 0, restart: 0, status: 0, pair: 0, open: 0,
-	import: 1, inspect: 1, abort: 1, recipe: 2, inbox: 2,
+	import: 1, inspect: 1, abort: 1, recipe: 2, inbox: 2, events: 2,
 };
 
 /**

@@ -720,7 +720,7 @@ through a symlink sees and runs that project's automation.
 
 `/cron cost [today|7d|all]` adds up the run log by job, and shows today's spend against the budget
 if one is set. Every loop run, its checker and every trigger check is counted; so is the `/goal`
-evaluator.
+evaluator. A project's rule checks are one line, `checks of <project directory>`.
 
 ```toml
 [limits]

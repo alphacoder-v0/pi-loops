@@ -29,7 +29,8 @@ export async function run(ctx) {
 	const rulesFile = path.join(loops, "triggers.json");
 	const rules = () => { try { return JSON.parse(fs.readFileSync(rulesFile, "utf8")).rules; } catch { return []; /* not written yet */ } };
 	const audit = () => jsonl(path.join(loops, "triggers-audit.jsonl"));
-	const polls = () => { try { return JSON.parse(fs.readFileSync(path.join(loops, "polls.json"), "utf8")); } catch { return {}; /* not claimed yet */ } };
+	// Each project's poll is in clock.json (`checks`, keyed by its check lane): one fired time per poll.
+	const polls = () => { try { return JSON.parse(fs.readFileSync(path.join(loops, "clock.json"), "utf8")).checks ?? {}; } catch { return {}; /* not claimed yet */ } };
 	const jobs = () => { try { return JSON.parse(fs.readFileSync(path.join(loops, "jobs.json"), "utf8")).jobs; } catch { return []; /* not written yet */ } };
 	const clock = (job) => { try { return JSON.parse(fs.readFileSync(path.join(loops, "clock.json"), "utf8")).jobs?.[job]; } catch { return undefined; /* being rewritten */ } };
 	const page = (expr) => JSON.parse(JSON.parse(ctx.browser("eval", `JSON.stringify(${expr})`).trim()));
@@ -75,7 +76,7 @@ export async function run(ctx) {
 	const created = audit().length;
 	const claims = new Set();
 	await ctx.waitFor(`${POLLS} polls`, () => {
-		for (const [key, at] of Object.entries(polls())) if (key.endsWith(`:${rule.cwd}`)) claims.add(at);
+		for (const [lane, check] of Object.entries(polls())) if (lane.startsWith(`@check-${path.basename(rule.cwd)}-`)) claims.add(check.fired);
 		return { ok: claims.size >= POLLS, last: [...claims] };
 	}, (POLLS + 2) * 31000);
 	const since = audit().slice(created);

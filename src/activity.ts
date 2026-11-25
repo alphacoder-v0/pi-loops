@@ -140,7 +140,7 @@ export function activityFrom(input: ActivityInput): { items: ActivityItem[]; mor
 	for (const f of input.findings) if (typeof f.source === "string" && f.source.startsWith("trigger:")) filed.set(f.run_id, [...(filed.get(f.run_id) ?? []), f]);
 	for (const a of input.audit) {
 		if (a.type !== "trigger_result" || a.sourceLabel !== "local:dynamic" || typeof a.traceId !== "string" || !recent(a.ts) || !here(a.cwd)) continue;
-		// This project's rules the check named (src/trigger-runtime.ts), not every id it wrote.
+		// This project's rules the check named (src/check-run.ts), not every id it wrote.
 		const matched = Array.isArray(a.details?.matched_rule_ids) ? (a.details.matched_rule_ids as unknown[]).filter((id): id is string => typeof id === "string") : [];
 		if (!(a.state === "failed" || (a.state === "completed" && matched.length))) continue;
 		const ruleId = matched[0] ?? "";

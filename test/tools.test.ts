@@ -8,7 +8,6 @@ import { fakeRunner } from "./fake-runner.ts";
 import { ownerViewOf } from "../src/job-owner.ts";
 import { openStores } from "../src/stores.ts";
 import { type ConfirmTurn, GATE_NEEDS_PERSON, RULE_GATE_NEEDS_PERSON, type ToolHost, automationTools, confirmControlPlane, controlTarget, createLoopJob, wakeMeTool } from "../src/tools.ts";
-import { TriggerRuntime } from "../src/trigger-runtime.ts";
 import { parseSchedule, stamp } from "../src/schedule.ts";
 import { dayTime } from "../src/clock.ts";
 import { plainJobRow } from "../src/engine.ts";
@@ -18,8 +17,7 @@ function tools() {
 	const mine = path.join(dir, "mine");
 	fs.mkdirSync(mine);
 	const stores = openStores(dir);
-	const triggers = new TriggerRuntime({ store: stores.rules, jobStore: stores.jobs, getSession: () => ({ sessionId: "s", cwd: mine }), runner: fakeRunner(), dedupFile: path.join(dir, "dedup.json") });
-	const host: ToolHost = { stores, owner: () => ownerViewOf({ sessionId: "s", cwd: mine }, undefined), triggers, session: () => ({ sessionId: "s", cwd: mine }), createJob: (input, scope) => createLoopJob(host, input, scope), cronControlAudit: () => "audit-1", confirmTool: async () => undefined, refreshBadge: () => undefined };
+	const host: ToolHost = { stores, owner: () => ownerViewOf({ sessionId: "s", cwd: mine }, undefined), rules: stores.rules, pollSecs: () => 600, session: () => ({ sessionId: "s", cwd: mine }), createJob: (input, scope) => createLoopJob(host, input, scope), cronControlAudit: () => "audit-1", confirmTool: async () => undefined, refreshBadge: () => undefined };
 	const defs = automationTools({ hop: 0, actor: "tool" }, host);
 	const call = (name: string, args: Record<string, unknown>) => defs.find((t) => t.name === name)!.execute("i", args, undefined, undefined, { hasUI: true } as any);
 	return { stores, call };
@@ -54,8 +52,7 @@ test("a person's turn in a conversation pi has not saved proposes nothing: the p
 	const t = tools();
 	const dir = tmp("pi-loops-tools-nosession-");
 	const stores = openStores(dir);
-	const triggers = new TriggerRuntime({ store: stores.rules, jobStore: stores.jobs, getSession: () => ({ cwd: dir }), runner: fakeRunner(), dedupFile: path.join(dir, "dedup.json") });
-	const host: ToolHost = { stores, owner: () => ownerViewOf({ cwd: dir }, undefined), triggers, session: () => ({ cwd: dir }), createJob: (input, scope) => createLoopJob(host, input, scope), cronControlAudit: () => "audit-1", confirmTool: async () => undefined, refreshBadge: () => undefined };
+	const host: ToolHost = { stores, owner: () => ownerViewOf({ cwd: dir }, undefined), rules: stores.rules, pollSecs: () => 600, session: () => ({ cwd: dir }), createJob: (input, scope) => createLoopJob(host, input, scope), cronControlAudit: () => "audit-1", confirmTool: async () => undefined, refreshBadge: () => undefined };
 	for (const [name, args] of [["cron_create", { schedule: "every 10m", action: "look" }], ["new_trigger", { condition: "c", action: "a" }]] as const) {
 		const out = await automationTools({ hop: 0, actor: "tool" }, host).find((d) => d.name === name)!.execute("i", args, undefined, undefined, { hasUI: true } as any);
 		assert.equal(out.isError, true, name);
@@ -67,9 +64,8 @@ test("a person's turn in a conversation pi has not saved proposes nothing: the p
 test("[M5b.9] confirmTool in a window: the person's own turn gets pi's confirm; a scheduled turn with a guard seat opens no dialog, since the guard asked in /inbox; one with no seat and hop 1 are refused", async () => {
 	const dir = tmp("pi-loops-tools-confirm-");
 	const stores = openStores(dir);
-	const triggers = new TriggerRuntime({ store: stores.rules, jobStore: stores.jobs, getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(), dedupFile: path.join(dir, "dedup.json") });
 	let turn: ConfirmTurn = { kind: "person" };
-	const host: ToolHost = { stores, owner: () => ownerViewOf({ sessionId: "s", cwd: dir }, undefined), triggers, session: () => ({ sessionId: "s", cwd: dir }), createJob: (input, scope) => createLoopJob(host, input, scope), cronControlAudit: () => "audit-1", confirmTool: (ctx, req, hop) => confirmControlPlane(ctx, req, hop, turn), refreshBadge: () => undefined, scheduledTurn: () => turn.kind === "scheduled" };
+	const host: ToolHost = { stores, owner: () => ownerViewOf({ sessionId: "s", cwd: dir }, undefined), rules: stores.rules, pollSecs: () => 600, session: () => ({ sessionId: "s", cwd: dir }), createJob: (input, scope) => createLoopJob(host, input, scope), cronControlAudit: () => "audit-1", confirmTool: (ctx, req, hop) => confirmControlPlane(ctx, req, hop, turn), refreshBadge: () => undefined, scheduledTurn: () => turn.kind === "scheduled" };
 	const confirms: string[] = [];
 	let answer = false;
 	const ctx = { hasUI: true, ui: { notify: () => undefined, confirm: async (title: string) => (confirms.push(title), answer), select: async () => assert.fail("no select") } } as any;
@@ -101,7 +97,7 @@ test("[M5b.9] controlTarget reads a one-shot job the same in every time zone: th
 	const mine = path.join(dir, "mine");
 	fs.mkdirSync(mine);
 	const stores = openStores(dir);
-	const host = { stores, triggers: { store: stores.rules } } as any;
+	const host = { stores, rules: stores.rules } as any;
 	await stores.jobs.add({ id: "cron-bbbb", name: "release", schedule: { kind: "once", at: Date.UTC(2027, 0, 1, 1, 0) }, stateful: true, prompt: "ship", cwd: mine, enabled: true, catchUp: false, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 } as any);
 	const was = process.env.TZ;
 	try {
@@ -124,7 +120,7 @@ test("[M5b.9] controlTarget: what a control-plane call would change, resolved as
 	fs.mkdirSync(mine);
 	fs.mkdirSync(other);
 	const stores = openStores(dir);
-	const host = { stores, triggers: { store: stores.rules } } as any;
+	const host = { stores, rules: stores.rules } as any;
 	const job = await stores.jobs.add({ id: "cron-aaaa", name: "pr-watch", schedule: parseSchedule("every 10m"), stateful: true, prompt: "look", cwd: mine, enabled: true, catchUp: false, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 } as any);
 	assert.equal(controlTarget(host, "cron_remove", { ref: "pr-watch" }, mine), `job ${job.id} "pr-watch" every 10m`);
 	assert.equal(controlTarget(host, "set_cron_job_state", { ref: "pr-watch", enabled: false }, other), "no job matches", "another project's job is not this project's name");

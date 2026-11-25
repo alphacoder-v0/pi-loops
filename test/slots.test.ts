@@ -7,10 +7,8 @@ import { loadConfig } from "../src/config.ts";
 import { createHostRuntime } from "../src/host-runtime.ts";
 import { RUNTIME_RIDERS } from "../src/ticker.ts";
 import { SubagentSlots } from "../src/slots.ts";
-import { TriggerRuntime } from "../src/trigger-runtime.ts";
-import { type Trigger, TriggerStore, buildPeriodicCheckTrigger } from "../src/triggers.ts";
+import { checkLane } from "../src/lane.ts";
 import type { RunnerResult, SubagentRequest } from "../src/runner.ts";
-import { fakeRunner } from "./fake-runner.ts";
 import type { LoopJob } from "../src/store.ts";
 
 function makeJob(cwd: string, over: Partial<LoopJob> = {}): LoopJob {
@@ -29,35 +27,10 @@ function makeJob(cwd: string, over: Partial<LoopJob> = {}): LoopJob {
 	};
 }
 
-/** A trigger runner that blocks its first call until `open()`, so a check can be held in flight. */
-function gatedRunner() {
-	const calls: SubagentRequest[] = [];
-	let unblock!: () => void;
-	const gate = new Promise<void>((r) => (unblock = r));
-	const run = async (req: SubagentRequest): Promise<RunnerResult> => {
-		calls.push(req);
-		if (calls.length === 1) await gate;
-		return { ok: true, exitCode: 0, timedOut: false, text: "no match", usage: { input: 1, output: 1, cost: 0, turns: 1 } };
-	};
-	return Object.assign(run, { calls, open: () => unblock() });
-}
-
 async function until(cond: () => boolean, what: string): Promise<void> {
 	const end = Date.now() + 5000;
 	while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
 	assert.ok(cond(), what);
-}
-
-function pushTrigger(cwd: string, over: Partial<Trigger> = {}): Trigger {
-	return {
-		...buildPeriodicCheckTrigger(cwd, 1),
-		source: { kind: "mcp", serverName: "hub", method: "notifications/deploy" },
-		sourceKind: "mcp",
-		sourceLabel: "mcp:hub",
-		eventLabel: "deploy finished",
-		payloadSummary: "deploy 41 finished",
-		...over,
-	};
 }
 
 test("a loop run and a trigger check share one limit: together they exhaust max_concurrent_runs = 2", async () => {
@@ -73,14 +46,16 @@ test("a loop run and a trigger check share one limit: together they exhaust max_
 		return { ok: true, exitCode: 0, timedOut: false, text: "no match", usage: { input: 1, output: 1, cost: 0, turns: 1 } };
 	};
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: dir }), runner, mcpTools: () => [], log: () => undefined });
-	const tick = async () => { for (const name of RUNTIME_RIDERS) await host.riders[name](Date.now(), { startedAt: 0, tickMs: 30_000 }); };
+	const facts = { startedAt: 0, tickMs: 30_000 };
+	const tick = async () => { for (const name of RUNTIME_RIDERS) await host.riders[name](Date.now(), facts); };
 	try {
 		await host.stores.jobs.add(makeJob(dir, { id: "cron-0123456789abcdef0123456789abcd01", name: "hog" }));
 		await tick();
 		await until(() => calls.length === 1 && host.slotCount().inUse === 1, "the loop run took the first slot");
 
-		await host.triggers.store.add({ condition: "c", action: "a", cwd: dir, fireOnce: false });
-		await host.triggers.tick(Date.now(), true);
+		await host.stores.rules.add({ condition: "c", action: "a", cwd: dir, fireOnce: false });
+		await host.riders["rule-checks"](Date.now(), facts);
+		await host.riders["check-lanes"](Date.now(), facts);
 		await until(() => calls.length === 2 && host.slotCount().inUse === 2, "the periodic check took the second slot");
 
 		// The loop's refusal: its row waits, and says why, until a slot is free.
@@ -90,13 +65,14 @@ test("a loop run and a trigger check share one limit: together they exhaust max_
 		assert.deepEqual(waiting.map((row) => row.waiting), ["deferred: 2 sub-agent(s) already in flight (max 2)"]);
 		assert.equal(calls.length, 2, "and no third sub-agent started");
 
-		// The trigger runtime's refusal, which is deliberately a different one: a push is held,
-		// a periodic check is dropped because the next poll re-asks the same question.
-		assert.equal(await host.triggers.handle(pushTrigger(dir, { traceId: "push-1" }), "sub_agent"), undefined, "no slot free: nothing is delivered now");
-		assert.equal(host.triggers.pendingPushCount, 1, "the event is kept: no server sends it twice");
-		assert.equal(await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1, new Date(), "other"), "sub_agent"), undefined);
-		assert.equal(host.triggers.pendingPushCount, 1, "only pushes are held");
-		assert.equal(calls.length, 2, "and neither started a sub-agent");
+		// A check lane's refusal: another project's check row waits in its lane, unclaimed, until a slot is free.
+		const other = path.join(dir, "other");
+		fs.mkdirSync(other);
+		await host.stores.rules.add({ condition: "c", action: "a", cwd: other, fireOnce: false });
+		await tick();
+		const otherRows = host.stores.requests.list(checkLane(other)!);
+		assert.deepEqual(otherRows.map((row) => row.run), [undefined], "the other project's check row waits");
+		assert.equal(calls.length, 2, "and it started no sub-agent");
 
 		// Both sides hand their slot back when their sub-agent returns.
 		for (const release of held.splice(0)) release();

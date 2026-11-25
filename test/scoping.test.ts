@@ -7,7 +7,6 @@ import { ownerViewOf } from "../src/job-owner.ts";
 import { openStores } from "../src/stores.ts";
 import { TriggerStore, parseTriggerRule } from "../src/triggers.ts";
 import { ruleLines } from "../src/rule-lines.ts";
-import { TriggerRuntime } from "../src/trigger-runtime.ts";
 import { plainJobRow } from "../src/engine.ts";
 import { parseSchedule } from "../src/schedule.ts";
 import { type ToolHost, automationTools, checkJobInput, createLoopJob, toolsDropped } from "../src/tools.ts";
@@ -23,18 +22,18 @@ function fixture() {
 	fs.mkdirSync(mine);
 	fs.mkdirSync(other);
 	const stores = openStores(dir);
-	const triggers = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: stores.jobs, getSession: () => ({ sessionId: "s", cwd: mine }), runner: fakeRunner(), dedupFile: path.join(dir, "dedup.json") });
 	const host: ToolHost = {
 		stores,
 		owner: () => ownerViewOf({ sessionId: "s", cwd: mine }, undefined),
-		triggers,
+		rules: stores.rules,
+		pollSecs: () => 600,
 		session: () => ({ sessionId: "s", cwd: mine }),
 		createJob: (input, scope) => createLoopJob(host, input, scope),
 		cronControlAudit: () => "audit-1",
 		confirmTool: async () => undefined, // hop 0 with a user present: approvals granted
 		refreshBadge: () => undefined,
 	};
-	return { dir, mine, other, stores, triggers, host };
+	return { dir, mine, other, stores, host };
 }
 
 test("a cron expression that parses but never matches is refused at creation, the way /cron set refuses it", async () => {
@@ -145,8 +144,8 @@ test("the model-facing tools show this project's automation, not the whole machi
 	try {
 		await f.stores.jobs.add({ id: "cron-mine", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "mine", cwd: f.mine, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
 		await f.stores.jobs.add({ id: "cron-secret", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "client name in here", cwd: f.other, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
-		await f.triggers.store.add({ condition: "c1", action: "a1", cwd: f.mine });
-		await f.triggers.store.add({ condition: "c2", action: "other project", cwd: f.other });
+		await f.stores.rules.add({ condition: "c1", action: "a1", cwd: f.mine });
+		await f.stores.rules.add({ condition: "c2", action: "other project", cwd: f.other });
 		const tools = automationTools({ hop: 0, actor: "tool" }, f.host);
 		const cronList = tools.find((t) => t.name === "cron_list")!;
 		const listed = await cronList.execute("i", {}, undefined, undefined, ctx);
@@ -166,12 +165,12 @@ test("the model-facing tools show this project's automation, not the whole machi
 test("removing all trigger rules only clears this project", async () => {
 	const f = fixture();
 	try {
-		await f.triggers.store.add({ condition: "c1", action: "a1", cwd: f.mine });
-		await f.triggers.store.add({ condition: "c2", action: "a2", cwd: f.other });
+		await f.stores.rules.add({ condition: "c1", action: "a1", cwd: f.mine });
+		await f.stores.rules.add({ condition: "c2", action: "a2", cwd: f.other });
 		const remove = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "remove_trigger")!;
 		const res = await remove.execute("i", { all: true }, undefined, undefined, ctx);
 		assert.equal(res.details.removed_count, 1);
-		const left = f.triggers.store.load();
+		const left = f.stores.rules.load();
 		assert.equal(left.length, 1);
 		assert.equal(left[0].cwd, f.other, "another project's rule survives");
 	} finally {
@@ -243,7 +242,7 @@ test("a sub-agent cannot ask for the machine-wide view, and cannot disable anoth
 	const f = fixture();
 	try {
 		await f.stores.jobs.add({ id: "cron-elsewhere", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "secret", cwd: f.other, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
-		const rule = await f.triggers.store.add({ condition: "other project condition", action: "a", cwd: f.other });
+		const rule = await f.stores.rules.add({ condition: "other project condition", action: "a", cwd: f.other });
 
 		const subHost: ToolHost = { ...f.host, confirmTool: async () => "denied: nobody can approve this" };
 		const sub = automationTools({ hop: 1, actor: "sub-agent" }, subHost);
@@ -260,17 +259,17 @@ test("a sub-agent cannot ask for the machine-wide view, and cannot disable anoth
 		assert.equal(f.stores.jobs.load().find((j) => j.id === "cron-elsewhere")!.enabled, true);
 		const setTrig = sub.find((t) => t.name === "set_trigger_state")!;
 		assert.equal((await setTrig.execute("i", { id: rule.id, enabled: false }, undefined, undefined, ctx)).isError, true);
-		assert.equal(f.triggers.store.load().find((r) => r.id === rule.id)!.enabled, true);
+		assert.equal(f.stores.rules.load().find((r) => r.id === rule.id)!.enabled, true);
 
 		// Ordinals never resolve in the model-facing tools: the model's list is not the user's. This
 		// project has one job and one rule, so "1" is a position that would resolve if it were taken.
 		await f.stores.jobs.add({ id: "cron-mine", schedule: { kind: "every", ms: 60_000 }, stateful: false, prompt: "p", cwd: f.mine, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
-		const mineRule = await f.triggers.store.add({ condition: "this project condition", action: "a", cwd: f.mine });
+		const mineRule = await f.stores.rules.add({ condition: "this project condition", action: "a", cwd: f.mine });
 		const atHop0 = automationTools({ hop: 0, actor: "tool" }, f.host);
 		assert.equal((await atHop0.find((t) => t.name === "cron_remove")!.execute("i", { ref: "1" }, undefined, undefined, ctx)).isError, true);
 		assert.equal((await atHop0.find((t) => t.name === "remove_trigger")!.execute("i", { id: "1" }, undefined, undefined, ctx)).isError, true);
 		assert.ok(f.stores.jobs.load().some((j) => j.id === "cron-mine"), "the job at position 1 is still there");
-		assert.ok(f.triggers.store.load().some((r) => r.id === mineRule.id), "and so is the rule at position 1");
+		assert.ok(f.stores.rules.load().some((r) => r.id === mineRule.id), "and so is the rule at position 1");
 	} finally {
 	}
 });
@@ -422,9 +421,8 @@ test("cron_create says so while nothing runs in the background, as cron_list doe
 	fs.mkdirSync(mine);
 	const reason = "pi-loops is stopped — /pi-loops start";
 	const stores = openStores(dir);
-	const triggers = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: stores.jobs, getSession: () => ({ sessionId: "s", cwd: mine }), runner: fakeRunner(), dedupFile: path.join(dir, "dedup.json") });
 	// A scheduled turn: there `cron_create` creates at once (design 2.5); in a person's own turn it proposes, and a proposal runs nowhere until its yes.
-	const host: ToolHost = { stores, owner: () => ownerViewOf({ sessionId: "s", cwd: mine }, { heldEpoch: () => 1, holderOf: () => process.pid, hostPaused: () => reason }), triggers, session: () => ({ sessionId: "s", cwd: mine }), createJob: (input, scope) => createLoopJob(host, input, scope), cronControlAudit: () => "audit-1", confirmTool: async () => undefined, refreshBadge: () => undefined, scheduledTurn: () => true };
+	const host: ToolHost = { stores, owner: () => ownerViewOf({ sessionId: "s", cwd: mine }, { heldEpoch: () => 1, holderOf: () => process.pid, hostPaused: () => reason }), rules: stores.rules, pollSecs: () => 600, session: () => ({ sessionId: "s", cwd: mine }), createJob: (input, scope) => createLoopJob(host, input, scope), cronControlAudit: () => "audit-1", confirmTool: async () => undefined, refreshBadge: () => undefined, scheduledTurn: () => true };
 	try {
 		const tools = automationTools({ hop: 0, actor: "tool" }, host);
 		const loop = await tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 5m", action: "watch", stateful: true }, undefined, undefined, ctx);
@@ -506,7 +504,7 @@ test("with a person in their own turn, new_trigger proposes the rule: nothing is
 		assert.equal(f.selects.length, 0, "the question is drawn from the record later, not asked in the call");
 		assert.deepEqual(f.asked, [], "and no confirm either");
 		assert.match(String(out.content[0].text), /^proposed dynamic trigger dyn-\w+: the person sees a card/);
-		const rules = f.triggers.store.load();
+		const rules = f.stores.rules.load();
 		assert.equal(rules.length, 1);
 		assert.equal(out.details.id, rules[0].id);
 		assert.equal(rules[0].enabled, false);
@@ -525,7 +523,7 @@ test("new_trigger stores a condition the model wrote as \"when …\" the way /ne
 	] as const) {
 		try {
 			await f.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "when the build finishes", action: "tell me the build is ready" }, undefined, undefined, ctxOf(f.person));
-			const rules = f.triggers.store.load();
+			const rules = f.stores.rules.load();
 			assert.equal(rules[0].condition, parseTriggerRule("when the build finishes, run tell me the build is ready").condition, label);
 			assert.equal(rules[0].condition, "the build finishes", label);
 			const [row] = ruleLines(rules, { numbered: true, cwd: f.mine, home: "/nowhere", sameProject: () => true });

@@ -1,6 +1,6 @@
 /**
  * What the always-on host runs (see host.ts for the process shell): the ticker's riders, the loop
- * lanes and the TriggerRuntime, wired for a process that has no chat. It runs every loop and
+ * lanes and the check lanes, wired for a process that has no chat. It runs every loop and
  * checks every rule; a promotion is a request addressed to the conversation that created the rule
  * (src/requests.ts): its holder delivers it, and this process does when it is closed. Control-plane
  * operations by sub-agents are audited into `triggers-audit.jsonl`. Injected so it can be unit-tested.
@@ -10,7 +10,7 @@ import { type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
 import type { LoopsConfig } from "./config.ts";
 import { HookRunner, runEndEvent, runStartEvent } from "./hooks.ts";
-import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
+import { type McpNotification, PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { redact } from "./redact.ts";
 import { keepNotice, parseRingNote, type Notice } from "./host-control-channel.ts";
 import type { SubagentRequest, SubagentRunner } from "./runner.ts";
@@ -20,30 +20,33 @@ import type { ClaimedRow, Row } from "./requests.ts";
 import { type AnswerLanes, createAnswerLanes } from "./answer-lanes.ts";
 import { type Answers, conversationFile, createAnswers } from "./answers.ts";
 import { ConversationIndex } from "./conversation-rows.ts";
-import { type LaneId, parseLane } from "./lane.ts";
+import { type LaneId, checkLane, parseLane } from "./lane.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { type BackgroundExecutor, createBackgroundExecutor } from "./background-executor.ts";
 import { RunList } from "./run-list.ts";
 import type { OwnerView, SessionSnapshot } from "./job-owner.ts";
 import { DEFAULT_RUN_TIMEOUT_MS } from "./loop-run.ts";
 import { stamp } from "./schedule.ts";
-import { budgetState, jobCounts } from "./job-status.ts";
+import { budgetState, jobCounts, runHistory } from "./job-status.ts";
+import { createCheckTick } from "./check-tick.ts";
 import { SubagentSlots } from "./slots.ts";
 import { type LoopJob, type RunRecord, newId } from "./store.ts";
 import { RUNTIME_RIDERS, type Riders, type TickFacts } from "./ticker.ts";
 import { openStores, type Stores } from "./stores.ts";
-import { createLoopLanes, abortRemovedJobs, type LoopLanes } from "./background-executor.ts";
+import { createLoopLanes, createCheckLanes, abortRemovedJobs, type CheckLanes, type LoopLanes } from "./background-executor.ts";
 import { gateSources, runClockTick, type TickScope } from "./clock.ts";
 import { type GatePolicy, lookCommand } from "./gate.ts";
 import { FAILING_AFTER, failurePause } from "./backoff.ts";
 import { computeDue } from "./schedule.ts";
 import { type ToolHost, automationTools, controlTarget, createLoopJob } from "./tools.ts";
 import type { GuardSeats } from "./guard.ts";
-import { TriggerRuntime, checkLane, checkSessionDir, promotionToInbox } from "./trigger-runtime.ts";
+import { checkCap, checkSessionDir, promotionToInbox } from "./check-run.ts";
+import { withinProject } from "./paths.ts";
 import { auditCronFinish, auditCronStart, controlPlanePreflight } from "./triggers.ts";
 import { shortSessionId } from "./session-head.ts";
 import { DEAD_SESSION_MARKER } from "./convert-v2.ts";
-import { EventLog } from "./events.ts";
+import { EventLog, type RawEvent } from "./events.ts";
+import { type DeriveDeps, type InjectDeps, PUSH_WINDOW_MS, type PushDelivery, derivePush, eventsInRows, injectPush, pushTrigger, rawPush } from "./push.ts";
 
 export interface HostRuntimeDeps {
 	dir: string;
@@ -89,7 +92,10 @@ export interface HostRuntime {
 	drain(ms: number): Promise<void>;
 	riders: Riders<(typeof RUNTIME_RIDERS)[number]>;
 	tick(): Promise<void>;
-	triggers: TriggerRuntime;
+	/** One push as it arrives: stored raw first, then its rows or its delivery. False when it maps to no trigger. */
+	receivePush(server: string, delivery: PushDelivery, n: McpNotification, cwd?: string, inject?: boolean): boolean;
+	/** At start: the rows of the last five minutes' pushes that a crash kept from being written (after `clock.json`'s cursor). Returns how many lanes got one. */
+	rederivePushes(subAgent: (server: string) => boolean): number;
 	/** The tools a sub-session started by this host gets (its cwd and model, not the host's). */
 	customTools: (req: SubagentRequest) => Promise<ToolDefinition<any, any>[]>;
 	/** What a control-plane call would change, for the runner's guard (`GuardDeps.controlTarget`, src/tools.ts `controlTarget`). */
@@ -118,8 +124,14 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const notice = (text: string, cwd?: string) => {
 		noticeSeq = keepNotice(kept, noticeSeq, text, cwd, Date.now());
 	};
-	let triggers: TriggerRuntime;
 	const stores = deps.stores ?? openStores(dir, log);
+	// Audit writes are best-effort — a failed write never fails a trigger; say so once per distinct error.
+	let persistenceSaid: string | undefined;
+	stores.rules.onPersistenceError ??= (message) => {
+		if (message === persistenceSaid) return;
+		persistenceSaid = message;
+		log(redact(message));
+	};
 	const leases = new LeaseStore(dir);
 	const requests = stores.requests;
 	/** The host as a lease holder: it holds a closed conversation for one piece of work, then lets go. */
@@ -145,7 +157,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const ownerView: OwnerView = { holdsOwn: false, hostRuns: (sessionId) => canHold(sessionId) };
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
-	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: stores.inbox, audit: triggers.store, ledger: stores.jobs, counts: (id) => jobCounts(stores.history().get(id), stores.clock.read().jobs[id]?.cleared), self: createdBy });
+	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: stores.inbox, audit: stores.rules, ledger: stores.jobs, counts: (id) => jobCounts(stores.history().get(id), stores.clock.read().jobs[id]?.cleared), self: createdBy });
 
 	/* ------------------------------------------------------ lifecycle hooks */
 
@@ -199,8 +211,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const slots = new SubagentSlots(() => deps.config().maxConcurrentRuns);
 
 	const toInbox = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string) => {
-		// The check decided this result's finding already (TriggerRuntime's inbox); a push with no rule did not.
-		await promotionToInbox(stores.inbox, triggers.store, content, trigger, { cwd: trigger.cwd ?? "", sessionId: forSession });
+		// The check decided this result's finding already (`runCheck`'s inbox); a push with no rule did not.
+		await promotionToInbox(stores.inbox, stores.rules, content, trigger, { cwd: trigger.cwd ?? "", sessionId: forSession });
 		return "inbox" as const;
 	};
 
@@ -220,7 +232,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		appended: (row, into) => {
 			// Written into a closed conversation, so no screen showed it: the audit row says so. The
 			// "since you last looked" line counts the rule's finding in the inbox (src/seen.ts).
-			triggers.store.appendAudit({ cwd: row.payload?.cwd ?? "", type: "trigger_promotion", traceId: row.id, state: "appended", details: { session_id: into.sessionId } });
+			stores.rules.appendAudit({ cwd: row.payload?.cwd ?? "", type: "trigger_promotion", traceId: row.id, state: "appended", details: { session_id: into.sessionId } });
 			// And said in the project's open windows: the person is likely in another conversation of
 			// it now, where a rule's result used to land (0.22), and would not know to look there.
 			// Once an hour per conversation (keepNotice keeps one of each text an hour).
@@ -239,14 +251,14 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	/** `run_start` of a loop's run, a scheduled one or an answer's: its audit line, its log line, its hooks. */
 	const loopStarted = (job: LoopJob, row: ClaimedRow): void => {
 		// The latest slot the row owes, as main named the slot it fired: a slot counted onto a waiting row is the one that runs.
-		auditCronStart(triggers.store, job, row.run.id, row.collapsed_slot ?? row.payload?.slot);
+		auditCronStart(stores.rules, job, row.run.id, row.collapsed_slot ?? row.payload?.slot);
 		log(`loop ${job.name ?? job.id}: run ${row.run.id.slice(0, 12)} started`);
 		const hooks = hookRunnerFor(job, row.run.id);
 		if (hooks) void hooks.fire(runStartEvent(job, row.run.id)).catch((err: any) => log(`hooks: ${redact(err?.message ?? String(err))}`));
 	};
 	/** `run_end` of a loop's run, a scheduled one or an answer's (C2). */
 	const loopFinished = (record: RunRecord): void => {
-		auditCronFinish(triggers.store, { id: record.jobId, cwd: record.cwd }, record, !!record.aborted);
+		auditCronFinish(stores.rules, { id: record.jobId, cwd: record.cwd }, record, !!record.aborted);
 		log(`loop ${record.jobName ?? record.jobId}: ${record.ok ? "ok" : record.stoppedBy === "person" ? `stopped by you (from ${record.stoppedFrom === "page" ? "the page" : "a terminal"})` : `FAILED (${redact(record.error ?? "")})`} · ${record.findings} finding(s)${record.usage?.cost ? ` · $${record.usage.cost.toFixed(3)}` : ""}`);
 		const hooks = runHooks.get(record.runId);
 		if (hooks) void hooks.fire(runEndEvent({ id: record.jobId, name: record.jobName, cwd: record.cwd } as LoopJob, record)).then(() => runHooks.delete(record.runId), () => runHooks.delete(record.runId));
@@ -278,7 +290,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	};
 	const loopLog = (message: string, level?: "info" | "warning", job?: Pick<LoopJob, "cwd">): void => { log(redact(message)); if (level !== "info") notice(message, job?.cwd); };
 	/** What arrived from outside, stored before anything reads it: a loop's or a rule's gate reading. */
-	const events = new EventLog(dir, "background");
+	const events = new EventLog(dir, "background", { keep: () => eventsInRows(stores.requests) });
 	/** A gate's command is judged as an unattended run's is: this loops directory, and the allowlist the guard reads. */
 	const gatePolicy = (): GatePolicy => ({ loopsDir: dir, allowCommands: deps.config().allowCommands });
 	// One for the process: a look whose time could not be written is held here for its minute.
@@ -300,11 +312,70 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			finished: loopFinished,
 			filed: () => undefined,
 			retired: (job, reason) => {
-				triggers.store.appendAudit({ cwd: job.cwd, type: "cron_control_plane", traceId: newId("audit"), state: "remove", sourceLabel: "clock", eventLabel: job.id, summary: `${job.name ?? job.id}: ${reason}` });
+				stores.rules.appendAudit({ cwd: job.cwd, type: "cron_control_plane", traceId: newId("audit"), state: "remove", sourceLabel: "clock", eventLabel: job.id, summary: `${job.name ?? job.id}: ${reason}` });
 			},
 			log: loopLog,
 		},
 	});
+	/** A project's check lane: its pushes (and, in M8.3b, its periodic checks), each one run with `runCheck`. */
+	const checks: CheckLanes = createCheckLanes({
+		requests: stores.requests,
+		runs,
+		slots,
+		allRuns: () => stores.jobs.allRuns(),
+		events,
+		rules: stores.rules,
+		budget: () => budgetState(stores.jobs, deps.config().dailyBudgetUsd, Date.now()),
+		check: () => ({
+			runner: deps.runner,
+			rules: stores.rules,
+			jobs: stores.jobs,
+			inbox: stores.inbox,
+			clock: stores.clock,
+			promote: (content, trigger, forSession) => promote(content, trigger, forSession),
+			session: deps.session(),
+			hop: 0,
+			runTimeoutMs: deps.config().triggerRunTimeoutMs,
+			log: (message) => log(redact(message)),
+			now: Date.now,
+		}),
+		engine: sinks,
+		holder: () => ({ pid: process.pid, procStart: ownStart }),
+		log: (message) => log(redact(message)),
+	});
+	/** Each project's periodic check, as a row of its check lane (src/check-tick.ts): what `rule-checks` runs at each tick. */
+	const checkTick = createCheckTick({
+		rules: stores.rules,
+		requests: stores.requests,
+		clock: stores.clock,
+		events,
+		gatePolicy,
+		pollIntervalSecs: () => deps.config().triggerPollIntervalSecs,
+		history: () => runHistory(stores.jobs.allRuns()),
+		createdBy: () => createdBy(),
+		log: (message) => log(redact(message)),
+	});
+	/** What a push becomes here (src/push.ts): its rows, or its delivery into a chat. */
+	const pushDeps: DeriveDeps = { requests: stores.requests, events, rules: stores.rules, runs: () => stores.jobs.allRuns(), createdBy: () => createdBy() };
+	/**
+	 * A stored push's rows are written: the clock says so before anything else can run (design 3.4).
+	 * A write that fails is logged; the next start derives that push once more, or, when no cursor was
+	 * ever written, none.
+	 */
+	const derived = (seq: number): void => {
+		try { stores.clock.derivePushed(seq); }
+		catch (error) { log(`push #${seq} derived, but clock.json could not say so: ${error instanceof Error ? error.message : String(error)}`); }
+	};
+	const injectDeps: InjectDeps = {
+		events,
+		audit: stores.rules,
+		budget: () => budgetState(stores.jobs, deps.config().dailyBudgetUsd, Date.now()),
+		promote: (content, trigger) => promote(content, trigger),
+		// A push that injects and runs reaches pi-loops in the background only when no window has its server (host.ts): the inbox.
+		injectAndRun: (prompt, trigger) => toInbox(prompt, trigger),
+		log: (message) => log(redact(message)),
+		now: Date.now,
+	};
 	/** A check lane's transcripts: where its checks keep them (`checkSessionDir`, the one source). */
 	const checkDir = (cwd: string): string => checkSessionDir(stores.jobs, cwd);
 	/** The answer protocol over this directory's stores (src/answers.ts). */
@@ -345,10 +416,9 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		budgetCap: () => deps.config().dailyBudgetUsd,
 		cwdExists: fs.existsSync,
 		transcriptHeld,
-		checkRunning: (lane) => triggers.checkRunningIn(lane),
 		checkSessionDir: checkDir,
 		// The cap of a check's answer is the check's own, from the same function (`checkCap`).
-		checkCap: (cwd) => triggers.checkCapOf(cwd),
+		checkCap: (cwd) => checkCap(cwd, stores.rules.load().filter((r) => r.enabled && !r.proposed && withinProject(r.cwd, cwd)), deps.config().triggerRunTimeoutMs),
 		conversations: background.conversations,
 		started: loopStarted,
 		log: loopLog,
@@ -458,6 +528,16 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	 * fs.watch can miss events and is best-effort by design; the tick still delivers, so a watcher
 	 * that fails to start, or fails later, is logged and not restarted.
 	 */
+	/** A row written into a check lane (a window's `/triggers run`, a push): run now, one drain of a lane at a time, as its own writes ring again. */
+	const checkDraining = new Set<LaneId>();
+	function drainCheckLane(lane: LaneId): void {
+		if (checkDraining.has(lane)) return;
+		checkDraining.add(lane);
+		checks.drain(lane, Date.now())
+			.catch((error) => log(`check lane ${lane}: ${error instanceof Error ? error.message : String(error)}`))
+			.finally(() => checkDraining.delete(lane))
+			.catch((error) => log(`check lane ${lane}: ${error instanceof Error ? error.message : String(error)}`));
+	}
 	const watchers: fs.FSWatcher[] = [];
 	function watch(): void {
 		if (watchers.length) return;
@@ -472,6 +552,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				const watcher = fs.watch(where, (_event, name) => {
 					const file = String(name ?? "");
 					if (!file.endsWith(ext)) return;
+					const lane = kind === "request" ? parseLane(file.slice(0, -ext.length)) : undefined;
+					if (lane?.kind === "check") return drainCheckLane(lane.id);
 					const note = parseRingNote(`${kind}:${file.slice(0, -ext.length)}`);
 					if (note) ring(note.sessionId);
 				});
@@ -482,28 +564,6 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			}
 		}
 	}
-
-	triggers = new TriggerRuntime({
-		store: stores.rules,
-		jobStore: stores.jobs,
-		getSession: deps.session,
-		pollIntervalSecs: deps.config().triggerPollIntervalSecs,
-		runTimeoutMs: deps.config().triggerRunTimeoutMs,
-		runner: deps.runner,
-		dedupFile: path.join(dir, "dedup.json"),
-		slots,
-		budget: () => budgetState(stores.jobs, deps.config().dailyBudgetUsd, Date.now()),
-		inbox: stores.inbox,
-		events,
-		gatePolicy,
-		hooks: {
-			onPromote: promote,
-			// A push that injects and runs reaches the host only when no window has its server (host.ts): the inbox.
-			onInjectAndRun: (prompt, trigger) => toInbox(prompt, trigger),
-			onFinished: (o) => log(`trigger ${o.trigger.traceId.slice(0, 8)} ${o.delivery} ${o.ok ? "ok" : `FAILED (${redact(o.error ?? "")})`}${o.matchedRules.length ? ` matched ${o.matchedRules.length}` : ""}`),
-			log: (msg) => log(redact(msg)),
-		},
-	});
 
 	/** Whether `session` has a seat of the runner's guard in a conversation's lane. */
 	const conversationSeat = (session: object | undefined): boolean => {
@@ -517,7 +577,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		const host: ToolHost = {
 			stores,
 			runs,
-			triggers,
+			rules: stores.rules,
+			pollSecs: () => deps.config().triggerPollIntervalSecs,
 			owner: () => ownerView,
 			// A job a run makes gets no more built-in tools than that run (createLoopJob trims to them), and no trust of its own.
 			// A held turn's session is the conversation it runs in; a loop's run has none.
@@ -527,7 +588,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			cronControlAudit: (op, actor, before, after) => {
 				const job = after ?? before;
 				const id = newId("audit");
-				triggers.store.appendAudit({ cwd: req.cwd, type: "cron_control_plane", traceId: id, state: op, sourceLabel: actor, eventLabel: job?.id, summary: job ? `${job.name ?? job.id}: ${job.prompt}` : undefined, details: { before_enabled: before?.enabled, after_enabled: after?.enabled } });
+				stores.rules.appendAudit({ cwd: req.cwd, type: "cron_control_plane", traceId: id, state: op, sourceLabel: actor, eventLabel: job?.id, summary: job ? `${job.name ?? job.id}: ${job.prompt}` : undefined, details: { before_enabled: before?.enabled, after_enabled: after?.enabled } });
 				log(`cron control plane: ${op} by ${actor} ${job?.id ?? ""}`);
 				return id;
 			},
@@ -580,7 +641,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const riders: Riders<(typeof RUNTIME_RIDERS)[number]> = {
 		"stray-leases": (now) => releaseStrayLeases(now),
 		"closed-conversations": () => deliverToClosed(),
-		"rule-checks": async (now) => { await triggers.tick(now); },
+		"rule-checks": (now) => checkTick.tick(now),
 		"removed-jobs": () => { abortRemovedJobs(runs, (id) => stores.jobs.load().some((job) => job.id === id), log); },
 		"dead-sessions": async (now) => {
 			if (!deps.sessionExists || now - lastDeadSessionScan < 10 * 60_000) return;
@@ -613,6 +674,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		},
 		// Before the loop lanes: an answer E4 starts here holds its lane, so a slot due beside it is skipped as an overlap in this tick.
 		answers: (now) => answerLanes.tick(now),
+		"check-lanes": (now) => checks.drainAll(now),
 		"loop-lanes": (now) => loops.drainAll(now),
 		notices: (now, facts) => {
 			const budget = budgetState(stores.jobs, deps.config().dailyBudgetUsd, now);
@@ -645,6 +707,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			const deadline = Date.now() + ms;
 			while (plainRuns.size && Date.now() < deadline) await Promise.race([Promise.allSettled([...plainRuns]), new Promise((resolve) => setTimeout(resolve, 25))]);
 			await loops.settle(Math.max(0, deadline - Date.now()));
+			await checks.settle(Math.max(0, deadline - Date.now()));
 			await answerLanes.settle(Math.max(0, deadline - Date.now()));
 		},
 		riders,
@@ -656,7 +719,67 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				catch (error) { log(`tick: ${name} failed: ${error instanceof Error ? error.message : String(error)}`); }
 			}
 		},
-		triggers,
+		/**
+		 * One push as it arrives (design 3.4, raw first): appended to `events.jsonl` before anything maps
+		 * it, then a row in each project's check lane (`sub_agent`), or put in a chat (`inject_*`, unless
+		 * a window that has the server does it: `inject` false). `cwd` is a project's own server's project.
+		 * Returns false when the push maps to no trigger (a custom one with no dedup key): it stays in the log.
+		 */
+		receivePush: (server: string, delivery: PushDelivery, n: McpNotification, cwd?: string, inject = true): boolean => {
+			let event: RawEvent;
+			try { event = events.append(`mcp:${server}`, rawPush(n), { ...(cwd ? { project: cwd } : {}), delivery }); }
+			catch (error) {
+				log(`push from ${server} not acted on: it could not be stored first (${error instanceof Error ? error.message : String(error)})`);
+				return true;
+			}
+			const stored = pushTrigger(event);
+			if (!stored) return false;
+			const trigger = cwd ? { ...stored, cwd } : stored;
+			if (delivery === "sub_agent") {
+				const lanes = derivePush(pushDeps, event, trigger, Date.now());
+				derived(event.seq);
+				for (const lane of lanes) {
+					checks.drain(lane, Date.now()).catch((error) => log(`check lane ${lane}: ${error instanceof Error ? error.message : String(error)}`));
+				}
+				return true;
+			}
+			if (!inject) return true;
+			injectPush(injectDeps, event, trigger, delivery)
+				.then((outcome) => { if (outcome) log(`trigger ${trigger.traceId.slice(0, 8)} ${delivery} ok`); })
+				.catch((error) => log(`trigger ${trigger.traceId.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
+			return true;
+		},
+		/**
+		 * At start: the pushes of the last five minutes after the last one whose rows were written
+		 * (`clock.json` `pushes`), so a crash kept their rows from being written: those its server checked
+		 * (the event says so; `subAgent` answers for an event stored before it did), each in the project the
+		 * event names, or in every project with rules. A push whose rows were written is never derived
+		 * again, whatever became of them.
+		 */
+		rederivePushes: (subAgent: (server: string) => boolean): number => {
+			let queued = 0;
+			const now = Date.now();
+			const cursor = stores.clock.pushesDerived();
+			const last = events.lastSeq();
+			// No cursor: the first start of this version, or a clock.json that was lost. A cursor past the
+			// last number: events.seq and the log were removed, and numbers start again. What is stored was
+			// derived by a process before it, or never will be: a push is lost before it runs twice.
+			if (cursor === undefined || cursor > last) {
+				derived(last);
+				return 0;
+			}
+			// By the number each event got when it was stored: neither a rotation's copy nor a wall clock changes it.
+			for (const event of events.after(cursor, now - PUSH_WINDOW_MS)) {
+				if (event.receiver.kind !== "background" || !event.source.startsWith("mcp:")) continue;
+				// What its server said when it arrived; an event stored before that was kept is a user-level server's, looked up by name.
+				if (event.delivery !== undefined ? event.delivery !== "sub_agent" : event.project !== undefined || !subAgent(event.source.slice("mcp:".length))) continue;
+				const trigger = pushTrigger(event);
+				if (!trigger) continue;
+				queued += derivePush(pushDeps, event, trigger, now, true).length;
+				derived(event.seq);
+			}
+			return queued;
+		},
 		notice,
 		notices: () => [...kept],
 		ring,
@@ -664,7 +787,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			const turn = runs.turnIn(sessionId);
 			return turn && { runId: turn.runId, label: turn.label };
 		},
-		controlTarget: (tool, input, cwd) => controlTarget({ stores, triggers }, tool, input, cwd ?? ""),
+		controlTarget: (tool, input, cwd) => controlTarget({ stores, rules: stores.rules }, tool, input, cwd ?? ""),
 		customTools: async (req) => {
 			const shared = deps.mcpTools();
 			// A held turn is the conversation's own turn, as in a window (hop 0, actor "tool"): the
@@ -677,9 +800,9 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		start: () => { watch(); },
 		stop: async () => {
 			for (const w of watchers.splice(0)) w.close();
-			await triggers.stop();
 			await answerLanes.stop(5_000);
 			await loops.stop(5_000);
+			await checks.stop(5_000);
 			for (const run of runs.all()) run.ctrl.abort();
 			await Promise.race([Promise.allSettled([...plainRuns]), new Promise((resolve) => setTimeout(resolve, 5_000).unref())]);
 			// A held turn that claimed its row while the loops stopped is in the list only now: stopped too.

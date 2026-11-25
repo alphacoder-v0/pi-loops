@@ -410,6 +410,20 @@ test("spend() adds up what automation cost, by job and by window", () => {
 	assert.equal(store.spend(Date.now() + 1000).runs, 0, "a window in the future is empty, not an error");
 });
 
+test("spend() counts a project's checks, under a line that names them as checks and not as a job", () => {
+	const dir = tmp("pi-loops-spend-check-");
+	const store = new JobStore(dir);
+	const now = new Date().toISOString();
+	const base = { stateful: false, pid: 1, startedAt: now, finishedAt: now, ok: true, findings: 0, droppedFindings: 0, stateUpdated: false, usage: { input: 1, output: 1, cost: 0.25, turns: 1 } };
+	store.appendRun({ ...base, runId: "c1", jobId: "@check-web-0123abcd", cwd: path.join(dir, "web"), cause: "check" });
+	store.appendRun({ ...base, runId: "c2", jobId: "@check-web-0123abcd", cwd: path.join(dir, "web"), cause: "push" });
+	store.appendRun({ ...base, runId: "r1", jobId: "cron-a", cwd: dir, stateful: true });
+	const day = store.spend(Date.now() - 3_600_000);
+	assert.ok(Math.abs(day.total - 0.75) < 1e-9, "today's budget counts the checks");
+	assert.deepEqual(day.byJob.get("@check-web-0123abcd"), { cost: 0.5, runs: 2, name: "checks of web" });
+	assert.equal(day.byJob.get("cron-a")!.name, undefined, "a job with no name keeps none");
+});
+
 test("a run stamped with nonsense does not count against today's budget forever", () => {
 	const dir = tmp("pi-loops-spend-nan-");
 	const store = new JobStore(dir);

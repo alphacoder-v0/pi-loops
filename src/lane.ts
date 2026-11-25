@@ -1,17 +1,20 @@
 /**
  * Lanes. A lane is one queue of request rows (`requests/<lane id>.jsonl`) and whatever runs its
- * rows one at a time. This file imports nothing, so that `requests`, `inbox`, `engine` and `lease`
- * can all import it, and it is the one source of the grammar of a lane id:
+ * rows one at a time. This file imports only Node's built-ins and `paths`, so that `requests`, `inbox`,
+ * `engine` and `lease` can all import it, and it is the one source of the grammar of a lane id:
  *
  *   conversation   `<session id>`         `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`, and no `..`
  *   loop           `@cron-<rest>`         `@` and the job's id
- *   check          `@check-<rest>`        `@` and a project's key (src/trigger-runtime.ts `checkLane`)
+ *   check          `@check-<rest>`        `@` and a project's key (`checkLane`)
  *
  * After the `@`, the text obeys the rule of a session id and has one character or more after
  * `cron-` or `check-`. A session id cannot start with `@`, so the kinds cannot collide. The only
  * characters a lane id can hold are `[A-Za-z0-9._-]` and one leading `@`: it never names a path
  * outside the directory its files are in.
  */
+import { createHash } from "node:crypto";
+import * as path from "node:path";
+import { realpathish } from "./paths.ts";
 
 /**
  * A lane's id as a row, a finding and a file name carry it. A conversation's lane id is its session
@@ -65,4 +68,19 @@ export function laneFileName(lane: LaneId): string {
 export function loopLane(jobId: string): LaneId | undefined {
 	const lane = parseLane(`@${jobId}`);
 	return lane?.kind === "loop" ? lane.id : undefined;
+}
+
+/**
+ * A project's check lane: `@check-`, the directory's name and the digest of `triggerSessionKey`
+ * (src/check-run.ts). What a rule check or a push files for the project names it. The name is
+ * made of the characters a lane id takes and cut to 100, so that any directory has a lane; no project
+ * (`cwd` empty) has none.
+ */
+export function checkLane(cwd: string): LaneId | undefined {
+	if (!cwd) return undefined;
+	// The real directory's name, as the digest is of the real path: a symlink to the project is the same lane.
+	const name = (path.basename(realpathish(cwd)).replace(/[^A-Za-z0-9._-]/g, "_").replace(/\.{2,}/g, "_") || "unknown").slice(0, 100);
+	const digest = createHash("sha256").update(realpathish(cwd)).digest("hex").slice(0, 8);
+	const lane = parseLane(`@check-${name}-${digest}`);
+	return lane?.kind === "check" ? lane.id : undefined;
 }

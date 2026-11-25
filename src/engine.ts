@@ -138,7 +138,7 @@ function turnRow(id: string, source: Row["source"], text: string, to: RowAddress
 
 /**
  * An MCP push a server delivers as `inject_and_run`: one turn in the window that has the server.
- * `prompt` already starts with `[Trigger <traceId>] ` (src/trigger-runtime.ts), so the trace id is
+ * `prompt` already starts with `[Trigger <traceId>] ` (src/check-run.ts), so the trace id is
  * the row id and no second prefix is added. Pushes of one event kind collapse on the trigger's own
  * idempotency key, without the `mcp:<server>:` the key repeats from the source.
  */
@@ -1358,7 +1358,7 @@ async function deadLetter(store: RequestStore, sinks: EngineSinks, row: Row, why
 	// since-you-looked count and `/inbox open` tell results from runs by that source. Any other row
 	// was meant to run in the conversation, so its finding says why it did not, before a claim reruns it.
 	const rule = row.source.startsWith("rule:") ? row.source.slice("rule:".length) : undefined;
-	// The check that produced a rule's result decided its finding already (src/trigger-runtime.ts:
+	// The check that produced a rule's result decided its finding already (src/check-run.ts:
 	// filed it, or skipped a repeat), so its dead letter files nothing; a result no check decided is
 	// filed once by its run (Inbox.appendOnce).
 	if (rule !== undefined) {
@@ -1449,14 +1449,17 @@ export async function closeRun(store: RequestStore, sinks: EngineSinks, row: Cla
 	let end = proof.ran(row);
 	if (!end) {
 		const named = jobId === undefined ? undefined : sinks.ledger.load().find((j) => j.id === jobId);
-		const written: RunRecord = record ?? { runId: row.run.id, jobId: jobId ?? "", ...(named?.name ? { jobName: named.name } : {}), stateful: false, cwd: row.payload?.cwd ?? named?.cwd ?? "", pid: row.run.pid, startedAt: row.run.started_at, finishedAt: stamp(now), ok: false, error: INTERRUPTED, findings: 0, droppedFindings: 0, stateUpdated: false, interrupted: true };
+		const written: RunRecord = record ?? { runId: row.run.id, jobId: jobId ?? (parseLane(row.lane)?.kind === "check" ? row.lane : ""), ...(named?.name ? { jobName: named.name } : {}), stateful: false, cwd: row.payload?.cwd ?? named?.cwd ?? "", pid: row.run.pid, startedAt: row.run.started_at, finishedAt: stamp(now), ok: false, error: INTERRUPTED, findings: 0, droppedFindings: 0, stateUpdated: false, interrupted: true };
 		sinks.ledger.appendRun(written);
 		end = runEnd(written);
 	}
 	const closed = end;
 	// Whether the prompt is in the conversation. A run that ended spends its slot either way (the
 	// table of `settle`); a run that did not end is delivered only when its prompt is there.
-	const written = landed(row, proof);
+	// A check lane's run counts as written once claimed: its sub-agent may already have acted (posted,
+	// deployed, fired a fire-once rule), so a run its process lost is recorded and never asked again, as
+	// main lost such a push rather than run it twice.
+	const written = parseLane(row.lane)?.kind === "check" || landed(row, proof);
 	const named = jobId === undefined ? undefined : sinks.ledger.load().find((j) => j.id === jobId);
 	const settlement = settle(named, closed, written, jobId === undefined ? { streak: 0, interrupted: 0 } : sinks.counts(jobId));
 	const job = named && settlement.disable ? (await sinks.ledger.disable(named.id, settlement.disable)) ?? named : named;

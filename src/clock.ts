@@ -51,7 +51,15 @@ export interface GateLast { at: string; state?: PathState; digest?: string; fail
  */
 export interface GateClock { looks: number; last?: GateLast; seen?: { digest: string; at: string } }
 /** The versioned clock file. Unknown job keys are preserved by writes; `rules` is there once a rule's gate was looked at. */
-export interface ClockFile { v: 1; jobs: Record<string, JobClock>; rules?: Record<string, GateClock> }
+/** A project's periodic check: when its check lane last got a row (src/check-tick.ts). */
+export interface CheckClock { fired: string }
+/**
+ * The stored pushes pi-loops in the background derived: `derived`, the number (`seq`) of the last
+ * event in `events.jsonl` whose rows were written. A start derives only the pushes numbered after it
+ * (src/host-runtime.ts `rederivePushes`).
+ */
+export interface PushClock { derived: number }
+export interface ClockFile { v: 1; jobs: Record<string, JobClock>; rules?: Record<string, GateClock>; checks?: Record<string, CheckClock>; pushes?: PushClock }
 /** The cursor stamps as this ticker read them. */
 export interface CursorRead { readonly slot?: string; readonly fired?: string }
 export interface CursorMove {
@@ -267,13 +275,51 @@ export class ClockStore implements Clock, GateClocks {
 			const entry = validEntry(value);
 			if (entry) jobs[job] = entry;
 		}
-		if (!file.rules || typeof file.rules !== "object" || Array.isArray(file.rules)) return { v: 1, jobs };
-		const rules: Record<string, GateClock> = {};
-		for (const [rule, value] of Object.entries(file.rules)) {
-			const entry = validGate(value);
-			if (entry) rules[rule] = entry;
+		const out: ClockFile = { v: 1, jobs };
+		if (file.rules && typeof file.rules === "object" && !Array.isArray(file.rules)) {
+			const rules: Record<string, GateClock> = {};
+			for (const [rule, value] of Object.entries(file.rules)) {
+				const entry = validGate(value);
+				if (entry) rules[rule] = entry;
+			}
+			out.rules = rules;
 		}
-		return { v: 1, jobs, rules };
+		if (file.checks && typeof file.checks === "object" && !Array.isArray(file.checks)) {
+			const checks: Record<string, CheckClock> = {};
+			for (const [lane, value] of Object.entries(file.checks)) {
+				const fired = (value as { fired?: unknown } | null)?.fired;
+				if (typeof fired === "string" && Number.isFinite(Date.parse(fired))) checks[lane] = { fired };
+			}
+			out.checks = checks;
+		}
+		const derived = (file.pushes as { derived?: unknown } | undefined)?.derived;
+		if (typeof derived === "number" && Number.isSafeInteger(derived) && derived >= 0) out.pushes = { derived };
+		return out;
+	}
+	/** The last stored push whose rows were written, or undefined when no start of this version wrote one. */
+	pushesDerived(): number | undefined {
+		return this.read().pushes?.derived;
+	}
+	/** The stored push numbered `seq` has its rows: written right after them, in the same synchronous step. */
+	derivePushed(seq: number): void {
+		this.io.locked(this.paths.lock, () => {
+			const file = this.read();
+			this.io.write(this.paths.file, JSON.stringify({ ...file, pushes: { derived: seq } }));
+		});
+	}
+	/**
+	 * A project's poll: true, and the time written, when its check lane's last row is `intervalMs` old
+	 * or more. A time in the future (a corrected clock, another machine on a synced home) counts as now,
+	 * so it holds one interval and no more.
+	 */
+	claimCheck(lane: string, now: number, intervalMs: number): boolean {
+		return this.io.locked(this.paths.lock, () => {
+			const file = this.read();
+			const last = file.checks?.[lane] ? Math.min(Date.parse(file.checks[lane].fired), now) : undefined;
+			if (last !== undefined && now - last < intervalMs) return false;
+			this.io.write(this.paths.file, JSON.stringify({ ...file, checks: { ...file.checks, [lane]: { fired: stamp(now) } } }));
+			return true;
+		});
 	}
 	noteGate(rule: string, last: GateLast, held: boolean): GateClock | undefined {
 		return this.io.locked(this.paths.lock, () => {

@@ -16,6 +16,7 @@ import * as path from "node:path";
 import { fromV2, type V2Job } from "./convert-v2.ts";
 import { randomBytes } from "node:crypto";
 import { withFileLock, withFileLockSync, writeFileAtomic } from "./lock.ts";
+import { parseLane } from "./lane.ts";
 import { OVERFLOW_FILE, notesDirOf, walkNoLinks } from "./notes.ts";
 import type { Schedule } from "./schedule.ts";
 
@@ -307,7 +308,7 @@ export function newId(prefix: string): string {
 /**
  * On-disk shape of `jobs.json`, bumped whenever a field becomes load-bearing, so an older pi-loops sharing this directory refuses
  * the file instead of silently rewriting it without that field. Version 2 added `verify`/`checkerModel`,
- * `timeoutMs` and `consecutiveFailures` (and a `host` that gated dispatch until 0.19.0: pi-loops runs
+ * `timeoutMs` and a job's failures in a row (and a `host` that gated dispatch until 0.19.0: pi-loops runs
  * on one machine, so the field is ignored when read and dropped when written). Version 3 holds
  * definitions only, with `disabled`: a job's cursor is in `clock.json`, its runs in `runs.jsonl` and
  * its going run on its row (src/convert-v2.ts converts a version 2 file at the start).
@@ -703,10 +704,12 @@ export class JobStore {
 			const cost = (rec.usage?.cost ?? 0) + (rec.checker?.cost ?? 0);
 			total += cost;
 			runs++;
-			const entry = byJob.get(rec.jobId) ?? { cost: 0, runs: 0, name: rec.jobName };
+			// A project's checks are in the log under its check lane, which names no job: the line says whose checks they are.
+			const name = rec.jobName ?? (parseLane(rec.jobId)?.kind === "check" ? `checks of ${path.basename(rec.cwd) || rec.cwd}` : undefined);
+			const entry = byJob.get(rec.jobId) ?? { cost: 0, runs: 0, name };
 			entry.cost += cost;
 			entry.runs++;
-			if (rec.jobName) entry.name = rec.jobName;
+			if (name) entry.name = name;
 			byJob.set(rec.jobId, entry);
 		}
 		const rotated = this.rotatedSpend(sinceMs);

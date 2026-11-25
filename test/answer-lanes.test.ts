@@ -17,7 +17,7 @@ import { loadConfig } from "../src/config.ts";
 import { plainJobRow, plainRunId, ruleResultRow } from "../src/engine.ts";
 import { GuardSeats } from "../src/guard.ts";
 import type { InboxEntry } from "../src/inbox.ts";
-import { parseLane } from "../src/lane.ts";
+import { checkLane, parseLane } from "../src/lane.ts";
 import { LeaseBinding, LeaseStore, procStart } from "../src/lease.ts";
 import { createHostRuntime } from "../src/host-runtime.ts";
 import { RunList } from "../src/run-list.ts";
@@ -27,8 +27,8 @@ import { createInProcessRunner } from "../src/sdk-runner.ts";
 import type { LoopJob, RunRecord } from "../src/store.ts";
 import { openStores } from "../src/stores.ts";
 import { RUNTIME_RIDERS } from "../src/ticker.ts";
-import { checkLane, checkSessionDir, triggerSessionKey } from "../src/trigger-runtime.ts";
-import { buildPeriodicCheckTrigger } from "../src/triggers.ts";
+import { checkCap, checkSessionDir, triggerSessionKey } from "../src/check-run.ts";
+import { checkRow } from "../src/check-tick.ts";
 import { withFileLock } from "../src/lock.ts";
 import { tmp } from "./tmp.ts";
 
@@ -154,7 +154,7 @@ test("[answer-check] a yes to a check's question resumes the check's transcript 
 	try {
 		const lane = checkLane(w.cwd)!;
 		const sessionDir = w.stores.jobs.sessionDirFor(triggerSessionKey(w.cwd));
-		// What a rule check's request is (src/trigger-runtime.ts): its project's check lane and session directory.
+		// What a rule check's request is (src/check-run.ts `runCheck`): its project's check lane and session directory.
 		const asked = await model.real({ cwd: w.cwd, prompt: "PROMPT-ONE check the release", timeoutMs: 20_000, sessionDir, hop: 1, kind: "trigger", traceId: "trace-1", guard: { lane, origin: { source: "trigger:release-rule", run_id: "trace-1", cwd: w.cwd, who: "the check of proj" }, cap: resolveCap({ cwd: w.cwd }, 20_000) } });
 		assert.equal(asked.ok, true, asked.errorMessage ?? "");
 		const question = w.stores.inbox.list().find((f) => f.ask)!;
@@ -433,13 +433,15 @@ test("[answer-check-running] a yes to a check's finding waits while a check of i
 		const rule = await w.stores.rules.add({ condition: "the deploy is stuck", action: "say so", cwd: w.cwd, fireOnce: false });
 		const finding = await w.stores.inbox.append({ source: "trigger:deploy-rule", text: "the deploy is stuck", run_id: "trace-1", cwd: w.cwd, kind: "news", lane });
 		assert.equal((await w.host.answers.say(finding.id, "yes", PERSON)).said, "Y1");
-		const check = w.host.triggers.handle(buildPeriodicCheckTrigger(w.cwd, 1), "sub_agent", [rule]);
+		// A check of the project is a claimed row of its check lane, as a poll or `/triggers run` writes it.
+		w.stores.requests.appendIfAbsent(checkRow(w.cwd, [rule.id], { pid: process.pid, instance: "test", version: "0" }, Date.now()));
+		await w.host.riders["check-lanes"](Date.now(), { startedAt: 0, tickMs: 30_000 });
 		await started;
 		await w.host.answerLanes.tick(Date.now());
 		assert.equal(s.answerCalls().length, 0, "the check's transcript is not resumed while a check of the project runs");
 		assert.equal(w.stores.requests.list(lane).find((r) => r.id === answerRowId(finding.id))?.waiting, "a check of this project is running");
 		endCheck();
-		await check;
+		await w.host.drain(5_000);
 		await w.host.answerLanes.tick(Date.now());
 		s.release();
 		await w.host.drain(5_000);
@@ -607,7 +609,7 @@ test("[check-cap] an answer to a check's finding runs with the check's own cap: 
 		const [req] = s.answerCalls();
 		assert.ok(req, "the answer runs");
 		assert.deepEqual([req.timeoutMs, req.model, req.thinking], [60_000, "fake/pinned", "high"], "the check's timeout and pinned model, not a loop's defaults");
-		assert.deepEqual(req.guard?.cap, w.host.triggers.checkCapOf(w.cwd), "the one cap a check of the project runs under");
+		assert.deepEqual(req.guard?.cap, checkCap(w.cwd, w.stores.rules.load(), 60_000), "the one cap a check of the project runs under");
 		s.release();
 		await w.host.drain(5_000);
 	} finally {
@@ -792,7 +794,7 @@ test("[answer-conversation-gone] a deleted conversation's answer row is met as g
 		assert.deepEqual(w.stores.requests.list(sessionId), [], "both rows left");
 		assert.equal(s.answerCalls().length, 0);
 		assert.ok(w.logs.some((line) => line.includes("1 queued request(s) for session") && line.includes("its conversation is gone")), "the rule's row is buried as before, and the answer row is not among them");
-		const audit = w.host.triggers.store.listAudit(20, (r) => r.type === "request").map((r) => [r.traceId, r.state]);
+		const audit = w.host.stores.rules.listAudit(20, (r) => r.type === "request").map((r) => [r.traceId, r.state]);
 		assert.ok(audit.some(([id, state]) => id === answerRowId(finding.id) && state === "stale"), "the answer row's exit is audited");
 	} finally {
 		await w.host.stop();

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fromV2, type V2Job } from "../src/convert-v2.ts";
-import { jobStatus, listedJob, runHistory } from "../src/job-status.ts";
+import { jobRuns, jobStatus, listedJob, runHistory } from "../src/job-status.ts";
 import type { JobClock } from "../src/clock.ts";
 import type { Row } from "../src/requests.ts";
 type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
@@ -118,4 +118,11 @@ test("[listed-plain] A plain job's status comes from its cursor and its run log,
 	assert.deepEqual([ok.status.error, ok.status.streak], [undefined, 0], "a success clears it, as the turn's closing did");
 	const stopped = shown(plain, [], [record({ error: "other" }), record({ runId: "r2", aborted: true, stoppedBy: "person", finishedAt: T(5) })]);
 	assert.equal(stopped.status.error, "other", "a stop is no failure and clears nothing on a plain job");
+});
+
+test("A list of every job's runs leaves a project's checks out; a job's own list is its own records.", () => {
+	const records = [record({ runId: "a" }), record({ runId: "c1", jobId: "@check-web-0123abcd", stateful: false }), record({ runId: "b", jobId: "cron-other" }), record({ runId: "c2", jobId: "@check-web-0123abcd", stateful: false })];
+	assert.deepEqual(jobRuns(records, undefined, 10).map((r) => r.runId), ["a", "b"], "a check lane is no job");
+	assert.deepEqual(jobRuns(records, undefined, 1).map((r) => r.runId), ["b"], "the limit counts jobs' records only");
+	assert.deepEqual(jobRuns(records, "cron-job", 10).map((r) => r.runId), ["a"]);
 });

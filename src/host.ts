@@ -34,9 +34,11 @@ import { rotateInPlace } from "./log.ts";
 import { createHostRuntime } from "./host-runtime.ts";
 import { Ticker, HOST_RIDERS, BACKGROUND_RIDERS, type Riders } from "./ticker.ts";
 import { McpPool } from "./mcp-pool.ts";
-import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv, type McpNotification, type McpServerConfig } from "./mcp.ts";
+import { deliveryOf } from "./push.ts";
+import { ruleLook } from "./check-tick.ts";
+import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mcpToolDefinitions, mcpTokenFromEnv, type McpNotification, type McpServerConfig } from "./mcp.ts";
 import { failingJobs } from "./job-health.ts";
-import { listedJobs } from "./job-status.ts";
+import { jobRuns, listedJobs } from "./job-status.ts";
 import { loopLabel } from "./job-lines.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { parentRuntimeFlags, type RunnerResult, type SubagentRunner } from "./runner.ts";
@@ -49,6 +51,7 @@ import { sameProject } from "./paths.ts";
 import { isExactlyTrusted, isTrustedByPi } from "./trust.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { readUiPrefs, writeUiPref } from "./ui-prefs.ts";
+import { lastChecks } from "./check-run.ts";
 
 const agentDir = getAgentDir();
 const dir = process.env.PI_LOOPS_DIR || defaultLoopsDir(agentDir);
@@ -236,21 +239,17 @@ const host = createHostRuntime({
  * window has that server.
  */
 function onPush(cfg: McpServerConfig, n: McpNotification, source: McpSource, cwd?: string): void {
-	const trigger = mapNotification(cfg.name, n);
-	if (!trigger) {
+	const delivery = deliveryOf(cfg);
+	// Stored first whatever becomes of it (design 3.4); a push that maps to no trigger stays in the log only.
+	if (!host.receivePush(cfg.name, delivery, n, cwd, delivery === "sub_agent" || !someWindowInjects(cfg.name, cwd))) {
 		source.status.droppedCount++;
 		source.status.lastError = droppedNotificationMessage(n.method);
-		return;
 	}
-	if (cwd) trigger.cwd = cwd;
-	const delivery = cfg.injectAndRun ? "inject_and_run" : cfg.injectSummary ? "inject_summary" : "sub_agent";
-	if (delivery !== "sub_agent" && someWindowInjects(cfg.name, cwd)) return;
-	void host.triggers.handle(trigger, delivery).catch((err) => log(`trigger: ${err?.message ?? err}`));
 }
 
 /** Every minute: the trusted projects with enabled rules keep their push servers connected. */
 function watchProjectPushServers(): void {
-	const cwds = [...new Set(host.triggers.store.load().filter((r) => r.enabled).map((r) => r.cwd))];
+	const cwds = [...new Set(host.stores.rules.load().filter((r) => r.enabled).map((r) => r.cwd))];
 	mcpPool.watch(cwds);
 }
 
@@ -382,7 +381,7 @@ process.on("uncaughtException", (err) => {
 		log(`uncaught while stopping: ${redact(String(err?.stack ?? err))}`);
 		return;
 	}
-	const inFlight = [...host.runs.all().map((r) => `${r.label} (${r.runId.slice(0, 12)})`), ...host.triggers.runningList().map((c) => `check ${c.traceId.slice(0, 8)}`)];
+	const inFlight = host.runs.all().map((r) => `${r.label} (${r.runId.slice(0, 12)})`);
 	log(`uncaught: ${redact(String(err?.stack ?? err))}${inFlight.length ? `\n  in flight: ${inFlight.join(", ")}` : ""}`);
 	try {
 		recordCrash(dir, `pi-loops crashed: ${previewRedacted(String(err?.message ?? err), 160)}; see ${HOST_LOG}`);
@@ -464,7 +463,7 @@ function sweepConversations(now: number): void {
 	if (now - sweptAt < 10 * 60_000) return;
 	sweptAt = now;
 	// A loop's runs count for the conversation that created it (since-you-looked), so that one stays too.
-	const working = new Set<string>([...host.stores.jobs.load().flatMap((j) => [j.sessionId, j.createdBy?.sessionId].filter((id): id is string => !!id)), ...host.triggers.store.load().flatMap((r) => (r.createdBy?.sessionId ? [r.createdBy.sessionId] : [])), ...requests.sessions(), ...waitingLanes(host.stores.inbox.list())]);
+	const working = new Set<string>([...host.stores.jobs.load().flatMap((j) => [j.sessionId, j.createdBy?.sessionId].filter((id): id is string => !!id)), ...host.stores.rules.load().flatMap((r) => (r.createdBy?.sessionId ? [r.createdBy.sessionId] : [])), ...requests.sessions(), ...waitingLanes(host.stores.inbox.list())]);
 	// The page's last conversation keeps its lease, which names its project: `GET /` opens a new
 	// conversation there when that one was never saved (src/page-server.ts rootPage).
 	const lastPage = readUiPrefs(dir).lastPage;
@@ -520,9 +519,9 @@ function serveHostChannelSafely(...args: Parameters<typeof serveHostChannel>): R
 }
 
 /** The rules, or none when triggers.json cannot be read: a status must not fail with the file it reports on. */
-function rulesOrNone(): ReturnType<typeof host.triggers.store.load> {
+function rulesOrNone(): ReturnType<typeof host.stores.rules.load> {
 	try {
-		return host.triggers.store.load();
+		return host.stores.rules.load();
 	} catch (err: any) {
 		log(`rules: ${err?.message ?? err}`);
 		return [];
@@ -549,16 +548,16 @@ function snapshot(): HostSnapshot & { slots: { inUse: number; limit: number } } 
 			const title = l.sessionFile ? sessionTitle(l.sessionFile) : undefined;
 			return [{ sessionId: l.sessionId, pid, mode: l.holder.mode, ...(child ? { page: { tabs: child.clients.size, idleMs: Date.now() - child.lastClientAt } } : {}), ...(title ? { title } : {}) }];
 		}),
-		runs: host.runs.all().map(({ runId, label, jobId, startedAt, promptPreview, sessionFile }) => ({ runId, label, jobId, startedAt, promptPreview, sessionFile })),
-		checks: host.triggers.runningList().map((r) => ({ traceId: r.traceId, sourceLabel: r.sourceLabel, eventLabel: r.eventLabel, startedAt: r.startedAt, cwd: r.cwd })),
+		runs: host.runs.all().filter((r) => !r.check).map(({ runId, label, jobId, startedAt, promptPreview, sessionFile }) => ({ runId, label, jobId, startedAt, promptPreview, sessionFile })),
+		// A check lane's runs (src/background-executor.ts `createCheckLanes`): a check's run id is its row id.
+		checks: host.runs.all().flatMap((r) => (r.check ? [{ traceId: r.runId, sourceLabel: r.check.sourceLabel, eventLabel: r.check.eventLabel, startedAt: r.startedAt, cwd: r.check.cwd }] : [])),
 		slots: host.slotCount(),
 		jobs: { enabled: jobs.filter((j) => j.enabled).length, total: jobs.length },
 		rules: { enabled: rules.filter((r) => r.enabled).length, total: rules.length },
 		inboxNew: host.stores.inbox.newCount(),
 		// Without these a host that has failed every run for six hours reads exactly like one
 		// that succeeded an hour ago: "nothing running right now".
-		recent: host.stores.jobs
-			.listRuns(undefined, 5)
+		recent: jobRuns(host.stores.jobs.allRuns(), undefined, 5)
 			.reverse()
 			.map(recentRun),
 		// The three-in-a-row rule `/cron` and the badge use: one missed run is not a failing loop.
@@ -579,7 +578,7 @@ function snapshot(): HostSnapshot & { slots: { inUse: number; limit: number } } 
 		page: pageUrl,
 		pageOpen: pool.list().length,
 		pageWaiting: pageWaiting && pageWaitingLine(pageWaiting.reason),
-		lastPolls: [...host.triggers.lastPolls.values()],
+		lastPolls: lastChecks(host.stores.jobs.allRuns()),
 		notices: host.notices(),
 		requests: requestQueues(requests, leases),
 	};
@@ -682,7 +681,7 @@ function bindPage(): Promise<PageServer | NodeJS.ErrnoException> {
 			heldTurn: (id) => host.heldTurn(id),
 			abortRun,
 			stopRun: stopRunFrom("person", false, stopHost),
-			ruleLook: (id) => host.triggers.ruleLook(id),
+			ruleLook: (id) => ruleLook(host.stores.clock, id, config.triggerPollIntervalSecs),
 			lastPage: () => readUiPrefs(dir).lastPage,
 			rememberPage: (id) => writeUiPref(dir, "lastPage", id),
 			background: hostStatus,
@@ -781,8 +780,8 @@ const channelHandlers: HostChannelHandlers = {
 	abortRun,
 	stopRun: stopRunFrom("cli", true, stopHost),
 	abortCheck: (traceId) => {
-		const match = host.triggers.runningList().find((r) => r.traceId === traceId || r.traceId.startsWith(traceId));
-		return match ? host.triggers.abort(match.traceId) : false;
+		const match = host.runs.all().find((r) => r.check && (r.runId === traceId || r.runId.startsWith(traceId)));
+		return match ? host.runs.stop(match.runId) : false;
 	},
 	// Called once, or twice when a plain stop cuts a restart's or an upgrade's wait short: that
 	// `stop` leaves at once, and the wait's own leave later finds the shutdown under way. A restart
@@ -815,6 +814,11 @@ parentModel = await defaultModel().catch((err) => {
 log(`default model: ${parentModel ? `${parentModel.provider}/${parentModel.id}` : "none (jobs must pin one)"}`);
 startMcpSources();
 host.start();
+// A push stored just before a crash, whose rows were not written yet: written now (a row there already is left).
+{
+	const lanes = host.rederivePushes((server) => mcpLoaded.servers.some((cfg) => cfg.name === server && deliveryOf(cfg) === "sub_agent"));
+	if (lanes) log(`pushes: ${lanes} row(s) written again for pushes stored before a stop`);
+}
 ticker.start();
 // As in the minute timer below: a rules file that cannot be read must cost its rules, not every loop.
 try {
@@ -837,8 +841,6 @@ setInterval(() => {
 	} catch (err: any) {
 		log(`mcp.toml: ${err?.message ?? err}`);
 	}
-	host.triggers.pollIntervalSecs = config.triggerPollIntervalSecs;
-	host.triggers.runTimeoutMs = config.triggerRunTimeoutMs;
 	// And the model, on the same minute. This process can live for days: a credential added with
 	// `/login` in a pi that opened after this host started, or a provider that started resolving, would
 	// otherwise never reach it — `parentModel` was resolved once, at startup. Only an improvement is

@@ -38,7 +38,8 @@ only bearer auth is supported.
 
 Server pushes are mapped: `tools/resources/prompts listChanged` use stable
 keys and collapse to the latest event; `resources/updated` is keyed per URI; custom notifications
-need `_meta.pi_dedup_key` or are dropped at the source and counted. Summaries contain only the
+need `_meta.pi_dedup_key`. One without it is stored in `events.jsonl` like any push, counted, and
+nothing acts on it. Summaries contain only the
 method name plus bounded, redacted metadata (`notifications/resources/updated uri=…`,
 `_meta.pi_summary` capped at 200 chars) — never raw params.
 
@@ -88,9 +89,18 @@ last rule is removed or disabled, has its servers stopped within a minute.
 
 A repeated `[[server]]` name replaces the earlier entry (a diagnostic says so); the project file is
 `<project>/.pi/mcp.toml`.
-A machine-wide dedup window (`~/.pi/agent/loops/dedup.json`, 5 minutes) makes each push count once
-no matter how many pi windows are open, and a rule's result goes to the conversation that created
-it (see [triggers.md](triggers.md)). Crashed stdio servers are reconnected with
+Each push is stored in `events.jsonl` as it arrives, before anything acts on it. A push evaluated
+against the rules then waits on disk as a row in each project's check lane, so it survives a
+restart. At most 32 pushes wait in one lane; when one more arrives, the oldest waiting push is
+dropped with a `dropped` audit row. A push with the same idempotency key as one in the last 5
+minutes counts once: per project for rule evaluation, and per process for an injected push. The
+window is read from `events.jsonl`, not kept beside it. When pi-loops starts in the background, it
+writes the rows again for the pushes it stored in the last 5 minutes whose rows a stop or a crash
+kept from being written: each stored push names the project its own server pushed for, and whether
+its server checks it or injects it, so only that project's rules see it and an injecting push is never
+checked. While a row waits, the event it names stays in the log, whatever else arrives. `pi-loops events replay
+<id>` runs a stored push again ([cli.md](cli.md#events)). A rule's result goes to the conversation
+that created it (see [triggers.md](triggers.md)). Crashed stdio servers are reconnected with
 exponential backoff, 20 attempts by default, each distinct error reported once (rather than marking them
 disconnected). `/triggers sources` lists MCP servers first, then the cron hook, then the dynamic
 checker, in registration order; a stdio server's last stderr line is shown as `stderr:`

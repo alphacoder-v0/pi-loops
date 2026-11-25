@@ -31,7 +31,7 @@ import { loopSignal, signalSummary } from "./job-signal.ts";
 import { LoopsLog, pruneLogs } from "./log.ts";
 import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
 import { McpPool } from "./mcp-pool.ts";
-import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
+import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { capRedacted, plainLine, previewRedacted, redact, screenText } from "./redact.ts";
 import { CANCELLED_LINE, answerLine, answerWho, cancelRefusal, cardLines, cardOrigin, clearLeftTail, dismissOutcome, dismissTail, inboxCard, noQuestionLine, questionActions, threadOrder, threadedLines, threads, yesTerminalLine } from "./inbox-card.ts";
 import { type Answers, conversationFile, createAnswers } from "./answers.ts";
@@ -49,7 +49,7 @@ import { jobLines as cronJobLines } from "./job-lines.ts";
 import { plural } from "./plural.ts";
 import { type OwnerView, type PlainJobLeases, type SessionSnapshot, openWhere, ownerViewOf, runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, closedConversation, holderAlive, holderDelivers, openWindowPids, procStart } from "./lease.ts";
-import { parseLane } from "./lane.ts";
+import { checkLane, parseLane } from "./lane.ts";
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, heldTurns, newTriggerRow, promotionTarget, promotionView, proofOf, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, sessionFileEntries, stopRow, waitingLine } from "./engine.ts";
 import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, panelLines, pickQueued, proposalsNotice, queueLines, toolsCapNotice, wokeWords } from "./job-lines.ts";
 import { type Proposal, askProposal } from "./watch-plan.ts";
@@ -58,7 +58,7 @@ import type { Row, UnclaimedRow } from "./requests.ts";
 import { WindowExecutor, createWindowAnswers, turnJob, unattendedTurn, windowGuard } from "./window-executor.ts";
 import { RunList } from "./run-list.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
-import { budgetState, jobCounts, type ListedJob, listedJobs, switchTargets } from "./job-status.ts";
+import { budgetState, jobCounts, jobRuns, type ListedJob, listedJobs, switchTargets } from "./job-status.ts";
 import { runClockTick, decideRunNow } from "./clock.ts";
 import { DISABLED_BY_PERSON } from "./store.ts";
 import { openStores, removeJob } from "./stores.ts";
@@ -73,9 +73,12 @@ import { SubagentSlots } from "./slots.ts";
 import { askHost, noticesToShow, renderHostSnapshot, ringHost, type HostSnapshot } from "./host-control-channel.ts";
 import { HOST_LOG, crashPaused, crashPauseText, decideEviction, ensureHost, evictHost, heartbeatFresh, hostPushWork, hostServiceAlive, LEAVE_WAIT_MS, RESTART_WAIT_LINE, piPackageDir, readHostService, readSpawnLog, type HostServiceRecord } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
-import { TriggerRuntime, type TriggerOutcome, promotionToInbox, checkLane, checkSessionDir } from "./trigger-runtime.ts";
+import { type PromoteTarget, promotionToInbox, checkSessionDir } from "./check-run.ts";
+import { EventLog, type RawEvent } from "./events.ts";
+import { type TriggerOutcome, deliveryOf, eventsInRows, injectPush, pushTrigger, rawPush } from "./push.ts";
+import { checkRow, ruleLook } from "./check-tick.ts";
 import { scheduleAudit } from "./job-tune.ts";
-import { auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTrigger, resolveRuleRef } from "./triggers.ts";
+import { type Trigger, auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTrigger, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ConfirmTurn, type ToolHost, automationTools, checkJobName, confirmControlPlane, controlTarget, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
 import { claimPageChild } from "./page-children.ts";
 import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
@@ -307,70 +310,60 @@ export default function piLoops(pi: ExtensionAPI) {
 	/* ---------------------------------------------------------- triggers */
 
 	let config = loadConfig(dir);
-	const triggers: TriggerRuntime = new TriggerRuntime({
-		store: stores.rules,
-		jobStore: stores.jobs,
-		getSession: () => session,
-		pollIntervalSecs: config.triggerPollIntervalSecs,
-		runTimeoutMs: config.triggerRunTimeoutMs,
-		runner,
-		dedupFile: path.join(dir, "dedup.json"),
-		// Checks and actions cost the same money and the same process as loop runs, so they draw on the
-		// same counter rather than on a second one of their own.
-		slots: subagentSlots,
-		budget: () => budgetState(stores.jobs, config.dailyBudgetUsd, Date.now()),
-		inbox: stores.inbox,
-		hop,
-		hooks: {
-			onPromote: async (content, trigger, forSession) => {
-				// A rule's result is a request addressed to a conversation (src/engine.ts promotionTarget):
-				// the creating one while a window holds it, else one a window holds in the rule's project,
-				// this one included, else the closed creating one; delivered here when this window holds the
-				// target, by the holding window or the background process otherwise. A rule with no cwd of its
-				// own is this project's.
-				const here = binding.here();
-				const route = promotionTarget(forSession, promotionView(binding.store, trigger.cwd ?? session.cwd));
-				if (route.to === "inbox") {
-					// The check decided this result's finding already (TriggerRuntime's inbox); a push with no rule did not.
-					await promotionToInbox(stores.inbox, triggers.store, content, trigger, { cwd: trigger.cwd ?? session.cwd, sessionId: route.sessionId });
-					refreshBadge();
-					return "inbox";
-				}
-				const target = route.sessionId;
-				requests.append(ruleResultRow(target, content, { ...trigger, cwd: trigger.cwd ?? session.cwd }, createdBy()));
-				if (target !== here.sessionId || !here.holds) {
-					// Another window's conversation drains on its own watcher; a closed one is the background
-					// process's, which hears this instead of waiting for its tick. Never awaited: the row is
-					// on disk, and a lost ring costs one tick.
-					void ringHost(dir, `request:${target}`).catch(() => undefined);
-					return "queued";
-				}
-				const result = await drainRequests();
-				return result?.removed.includes(trigger.traceId) ? "chat" : "queued";
-			},
-			onInjectAndRun: async (prompt, trigger) => {
-				if (trigger.cwd && !sameProject(trigger.cwd, session.cwd)) {
-					await stores.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: prompt.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd, lane: checkLane(trigger.cwd) });
-					refreshBadge();
-					return "inbox";
-				}
-				// The turn is a row like a plain job's: pi gets it while idle, Esc has nothing of ours to drop.
-				const { written, result } = await handOver(pushRunRow(prompt, trigger, rowAddress()));
-				return handOverTarget(written, result, trigger.traceId);
-			},
-			onStarted: () => refreshBadge(),
-			onFinished: (outcome) => {
-				refreshBadge();
-				if (lastCtx?.hasUI && (!outcome.trigger.cwd || sameProject(outcome.trigger.cwd, session.cwd))) showTriggerCard(lastCtx, outcome);
-			},
-			// Trigger diagnostics carry failures, dedup and deferral decisions: the log always, and a
-			// notification for the ones a user would otherwise never learn about.
-			log: (msg) => {
-				log.info(`triggers: ${msg}`);
-				if (lastCtx?.hasUI) lastCtx.ui.notify(`[triggers] ${msg}`, /failed|disabled|not run/.test(msg) ? "warning" : "info");
-			},
-		},
-	});
+	/**
+	 * A rule's result is a request addressed to a conversation (src/engine.ts promotionTarget): the
+	 * creating one while a window holds it, else one a window holds in the rule's project, this one
+	 * included, else the closed creating one; delivered here when this window holds the target, by the
+	 * holding window or the background process otherwise. A rule with no cwd of its own is this project's.
+	 */
+	const windowPromote = async (content: string, trigger: Trigger, forSession?: string): Promise<PromoteTarget> => {
+		const here = binding.here();
+		const route = promotionTarget(forSession, promotionView(binding.store, trigger.cwd ?? session.cwd));
+		if (route.to === "inbox") {
+			// The check decided this result's finding already (src/check-run.ts); a push with no rule did not.
+			await promotionToInbox(stores.inbox, stores.rules, content, trigger, { cwd: trigger.cwd ?? session.cwd, sessionId: route.sessionId });
+			refreshBadge();
+			return "inbox";
+		}
+		const target = route.sessionId;
+		requests.append(ruleResultRow(target, content, { ...trigger, cwd: trigger.cwd ?? session.cwd }, createdBy()));
+		if (target !== here.sessionId || !here.holds) {
+			// Another window's conversation drains on its own watcher; a closed one is the background
+			// process's, which hears this instead of waiting for its tick. Never awaited: the row is
+			// on disk, and a lost ring costs one tick.
+			void ringHost(dir, `request:${target}`).catch(() => undefined);
+			return "queued";
+		}
+		const result = await drainRequests();
+		return result?.removed.includes(trigger.traceId) ? "chat" : "queued";
+	};
+	/** A push that injects and runs: a row like a plain job's, so pi gets it while idle; another project's goes to the inbox. */
+	const windowInjectAndRun = async (prompt: string, trigger: Trigger): Promise<PromoteTarget> => {
+		if (trigger.cwd && !sameProject(trigger.cwd, session.cwd)) {
+			await stores.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: prompt.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd, lane: checkLane(trigger.cwd) });
+			refreshBadge();
+			return "inbox";
+		}
+		const { written, result } = await handOver(pushRunRow(prompt, trigger, rowAddress()));
+		return handOverTarget(written, result, trigger.traceId);
+	};
+	/** The pushes this window received, stored before it acts on any (design 3.4). */
+	const windowEvents = new EventLog(dir, "window", { keep: () => eventsInRows(requests) });
+	const triggerLog = (msg: string): void => {
+		log.info(`triggers: ${msg}`);
+		if (lastCtx?.hasUI) lastCtx.ui.notify(`[triggers] ${msg}`, /failed|disabled|not run/.test(msg) ? "warning" : "info");
+	};
+	// Audit writes are best-effort — a failed write never fails a trigger; say so once per distinct error.
+	let persistenceSaid: string | undefined;
+	stores.rules.onPersistenceError ??= (message) => {
+		if (message === persistenceSaid) return;
+		persistenceSaid = message;
+		try {
+			triggerLog(message);
+		} catch {
+			/* the notifier failed: nothing left to report to */
+		}
+	};
 	// Trigger audit is kept as session custom entries (trigger / trigger_result / trigger_promotion),
 	// so it resumes with the session and travels in archives, on top of the machine-wide JSONL.
 	/**
@@ -379,7 +372,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * a dead branch once this window took the conversation over.
 	 */
 	const mayAppend = (): boolean => !!lastCtx && !leaving && binding.viewerOf === undefined && !binding.standingAside;
-	triggers.store.onAudit = (record) => {
+	stores.rules.onAudit = (record) => {
 		if (!mayAppend()) return;
 		// Only this project's rows: a result for another project must not put that project's
 		// output into this session (and its archives).
@@ -389,6 +382,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	pi.registerFlag("trigger-poll-secs", { type: "string", description: "Ignored: pi-loops checks rules every [triggers] poll_interval_secs in config.toml (pi-loops)" });
 
 	const mcpSources: McpSource[] = [];
+	/** Pushes this window's sources received again inside the dedup window and did not act on. */
+	const dedupedCount = (): number => mcpSources.reduce((n, source) => n + source.status.dedupedCount, 0);
 	/** Project-level MCP servers of *other* projects, connected on demand for their loops. */
 	const mcpPool = new McpPool({
 		isTrusted: (cwd) => isExactlyTrusted(getAgentDir(), cwd),
@@ -479,17 +474,9 @@ export default function piLoops(pi: ExtensionAPI) {
 			const source = new McpSource(cfg, {
 				onConnected: (src) => registerMcpTools(src),
 				onNotification: (n) => {
-					// A window handles only the inject_* pushes for the conversation it holds; the
-					// machine-wide dedup window (dedup.json) makes a push that several processes see count
-					// once. Rule pushes are the host's (below).
-					const trigger = mapNotification(cfg.name, n);
-					if (!trigger) {
-						source.status.droppedCount++;
-						source.status.lastError = droppedNotificationMessage(n.method);
-						return;
-					}
-					trigger.cwd = session.cwd;
-					const delivery = cfg.injectAndRun ? "inject_and_run" : cfg.injectSummary ? "inject_summary" : "sub_agent";
+					// A window handles only the inject_* pushes for the conversation it holds, each deduped
+					// against the pushes this window received. Rule pushes are the background's (below).
+					const delivery = deliveryOf(cfg);
 					// Rules are evaluated by the host alone, on its own connection to the server. It connects a
 					// project's own servers only once pi has saved trust for that directory: before that, this
 					// push reaches no rule, and the source says so rather than dropping it without a word.
@@ -507,10 +494,28 @@ export default function piLoops(pi: ExtensionAPI) {
 						source.status.lastError = "this window shows an older copy of its conversation; /resume it to take pushes again";
 						return;
 					}
-					void triggers
-						.handle(trigger, delivery)
+					// Stored first (design 3.4), then mapped: a push with no dedup key stays in the log only.
+					let event: RawEvent;
+					try {
+						event = windowEvents.append(`mcp:${cfg.name}`, rawPush(n), { delivery });
+					} catch (err: any) {
+						triggerLog(`push from ${cfg.name} not acted on: it could not be stored first (${err?.message ?? err})`);
+						return;
+					}
+					const stored = pushTrigger(event);
+					if (!stored) {
+						source.status.droppedCount++;
+						source.status.lastError = droppedNotificationMessage(n.method);
+						return;
+					}
+					const trigger: Trigger = { ...stored, cwd: session.cwd };
+					injectPush({ events: windowEvents, audit: stores.rules, budget: () => budgetState(stores.jobs, config.dailyBudgetUsd, Date.now()), promote: windowPromote, injectAndRun: windowInjectAndRun, log: triggerLog, now: Date.now }, event, trigger, delivery)
 						.then((out) => {
 							if (!out) source.status.dedupedCount++;
+							else {
+								refreshBadge();
+								if (lastCtx?.hasUI) showTriggerCard(lastCtx, out);
+							}
 						})
 						.catch((err) => {
 							try {
@@ -607,7 +612,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			return;
 		}
 		const lines = panelLines({
-			rules: triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd)).map((r) => ({ ...r, failureMark: ruleFailureMark(r) })),
+			rules: stores.rules.load().filter((r) => sameProject(r.cwd, session.cwd)).map((r) => ({ ...r, failureMark: ruleFailureMark(r, stores.history()) })),
 			poll: lastPoll(),
 			jobs: listedNow().filter((j) => sameProject(j.cwd, session.cwd)),
 			runs: recentRuns,
@@ -626,7 +631,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
-	const engineSinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => goalPursued(goal) }, inbox: stores.inbox, audit: triggers.store, ledger: stores.jobs, counts: (id) => jobCounts(stores.history().get(id), stores.clock.read().jobs[id]?.cleared), self: () => createdBy() });
+	const engineSinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => goalPursued(goal) }, inbox: stores.inbox, audit: stores.rules, ledger: stores.jobs, counts: (id) => jobCounts(stores.history().get(id), stores.clock.read().jobs[id]?.cleared), self: () => createdBy() });
 	/** One drain per session for when a wait ends on its own (the ring wait on a page's row), replaced, never stacked. */
 	const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	/**
@@ -848,12 +853,11 @@ export default function piLoops(pi: ExtensionAPI) {
 		return hostSnapshot;
 	}
 	/**
-	 * Runs and checks in flight for this machine: this window's own (`/goal`, `/triggers run`) and the
-	 * host's. Every view of "what is running" reads this, or it showed only the window and missed every loop.
+	 * Runs and checks in flight for this machine: pi-loops in the background runs them, and its snapshot
+	 * says which. Every view of "what is running" reads this, or it showed only the window and missed every loop.
 	 */
 	function machineRuns(): Array<{ id: string; source: string; event: string; label: string; startedAt: string; promptPreview: string; sessionFile?: string; check: boolean; inHost: boolean }> {
 		return [
-			...triggers.runningList().map((r) => ({ id: r.traceId, source: r.sourceLabel, event: r.eventLabel, label: r.sourceLabel === "local:dynamic" ? "trigger-check" : r.sourceLabel, startedAt: r.startedAt, promptPreview: r.promptPreview, check: r.sourceLabel === "local:dynamic", inHost: false })),
 			...(hostSnapshot?.runs ?? []).map((r) => ({ id: r.runId, source: "Cron", event: r.jobId, label: r.label, startedAt: r.startedAt, promptPreview: r.promptPreview, sessionFile: r.sessionFile, check: false, inHost: true })),
 			// A run the background process started since this window last asked it: its marker is in
 			// jobs.json at once (see watchStore), the snapshot only on the next tick.
@@ -877,15 +881,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			return []; // an unreadable store is said elsewhere (storeReadFailed)
 		}
 	}
-	/** The latest rule check, this window's or the host's. */
-	const lastPoll = () => {
-		const mine = triggers.lastPoll;
-		// The host checks every project's rules; another project's result is not this one's to show.
-		const theirs = hostSnapshot?.lastPolls?.find((p) => sameProject(p.cwd, session.cwd));
-		if (!mine) return theirs;
-		if (!theirs) return mine;
-		return Date.parse(theirs.at) > Date.parse(mine.at) ? theirs : mine;
-	};
+	/** This project's latest rule check: pi-loops in the background checks every project's rules. */
+	const lastPoll = () => hostSnapshot?.lastPolls?.find((p) => sameProject(p.cwd, session.cwd));
 	/** How far this window has read the background process's warnings (src/host-control-channel.ts noticesToShow). */
 	let noticesSeen: { pid: number; seq: number } | undefined;
 	function showNotices(snapshot: HostSnapshot, pid: number): void {
@@ -922,7 +919,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	function automationCounts(): { loops: number; rules: number; pushServers: number; closedSessionJobs: number; closedMailboxes: number; openAnswers: number } {
 		// Each store on its own: a damaged rules file stopped the loops too, because nothing then started
 		// the background process.
-		const rules = loadOrNone(() => triggers.store.load()).filter((r) => r.enabled).length;
+		const rules = loadOrNone(() => stores.rules.load()).filter((r) => r.enabled).length;
 		const jobs = loadOrNone(() => stores.jobs.load()).filter((j) => j.enabled);
 		return {
 			loops: jobs.filter((j) => j.stateful).length,
@@ -1054,7 +1051,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * the host runs — and none of it is in the store files a reader could open instead.
 	 */
 	function snapshotData(): Record<string, unknown> {
-		const rules = triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd));
+		const rules = stores.rules.load().filter((r) => sameProject(r.cwd, session.cwd));
 		const jobs = stores.jobs.load().filter((j) => sameProject(j.cwd, session.cwd));
 		const poll = lastPoll();
 		return {
@@ -1069,7 +1066,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				})(),
 				runs: machineRuns().filter((r) => !r.check).length,
 				checks: machineRuns().filter((r) => r.check).length,
-				deduped: triggers.dedupedCount,
+				deduped: dedupedCount(),
 			},
 			// Why nothing runs, when that is so: the browser panel shows it in place of next runs.
 			paused: hostHasWork() ? hostPauseReason() : undefined,
@@ -1249,7 +1246,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	 */
 	async function answerInTerminal(ctx: ExtensionCommandContext, p: Proposal): Promise<void> {
 		const select = (title: string, options: string[]) => (ctx.hasUI ? ctx.ui.select(title, options) : Promise.resolve(undefined));
-		const answered = await askProposal(p, select, { jobs: stores.jobs, rules: triggers.store, requests: stores.requests }, { now: Date.now, by: createdBy(), actor: "slash", auditJob: (op, before, after) => cronControlAudit(op, "slash", before, after), pollSecs: triggers.pollIntervalSecs, home: process.env.HOME });
+		const answered = await askProposal(p, select, { jobs: stores.jobs, rules: stores.rules, requests: stores.requests }, { now: Date.now, by: createdBy(), actor: "slash", auditJob: (op, before, after) => cronControlAudit(op, "slash", before, after), pollSecs: config.triggerPollIntervalSecs, home: process.env.HOME });
 		ctx.ui.notify(answered.line, "info");
 		refreshBadge();
 		if (answered.outcome === "set") toolHost.ensureHost?.();
@@ -1616,7 +1613,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						// The row the page writes for a schedule change, in the shared audit; nothing for an edit
 						// that left the schedule alone (src/job-tune.ts scheduleAudit decides).
 						const setRow = scheduleAudit(job, updated, { sourceLabel: "slash" });
-						if (setRow) triggers.store.appendAudit({ ...setRow, traceId: newTraceId() });
+						if (setRow) stores.rules.appendAudit({ ...setRow, traceId: newTraceId() });
 						for (const line of applied.changed) log.info(`cron ${updated.id}: ${line}`);
 						// A typo in a cron expression is invisible until it fails to fire, so the next run is
 						// part of the confirmation.
@@ -1655,7 +1652,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "runs": {
 						const job = rest ? pick(rest) : undefined;
 						if (rest && !job) return;
-						const runs = stores.jobs.listRuns(job?.id, 15);
+						const runs = jobRuns(stores.jobs.allRuns(), job?.id, 15);
 						if (!runs.length) {
 							show(ctx, "Runs: none yet", []);
 							return;
@@ -1687,7 +1684,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							ctx.ui.notify("usage: /cron trace [job] [k]   (k = 1 is the latest run)", "warning");
 							return;
 						}
-						const runs = stores.jobs.listRuns(job?.id, 200).reverse();
+						const runs = jobRuns(stores.jobs.allRuns(), job?.id, 200).reverse();
 						const run = runs[k - 1];
 						if (!run) {
 							ctx.ui.notify(`no run #${k}${job ? ` for ${job.name ?? job.id}` : ""} (have ${runs.length})`, "warning");
@@ -2301,7 +2298,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		"config: ~/.pi/agent/loops/config.toml [triggers] poll_interval_secs, mcp.toml for push sources, hooks.toml for lifecycle hooks",
 	];
 
-	const ruleLines = (rules: ReturnType<TriggerStore["load"]>, numbered: boolean) => listRules(rules, { numbered, sessionId: session.sessionId, cwd: session.cwd, home: process.env.HOME ?? "", sameProject });
+	const ruleLines = (rules: ReturnType<TriggerStore["load"]>, numbered: boolean) => listRules(rules, { numbered, sessionId: session.sessionId, cwd: session.cwd, home: process.env.HOME ?? "", sameProject, history: stores.history() });
 
 	pi.registerCommand("triggers", {
 		description: "Show trigger sources, rules, running actions, and recent audit — /triggers help",
@@ -2313,7 +2310,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			lastCtx = ctx;
 			const { sub, rest } = splitCommand(args);
-			const store = triggers.store;
+			const store = stores.rules;
 			const pickRule = (ref: string) => {
 				const all = store.load();
 				const rule = /^\d+$/.test(ref.trim()) ? resolveRuleRef(all.filter((r) => sameProject(r.cwd, session.cwd)), ref, { ordinals: true }) : resolveRuleRef(all, ref);
@@ -2325,7 +2322,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "status": {
 						const [first, ...lines] = triggerStatusLines({
 							rules: store.load(),
-							pollIntervalSecs: triggers.pollIntervalSecs,
+							pollIntervalSecs: config.triggerPollIntervalSecs,
 							running: !!liveHostRecord(),
 							lastCheck: lastPoll(),
 							home: process.env.HOME ?? "",
@@ -2333,8 +2330,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							configError: mcpConfigError,
 							sources: { total: mcpSources.length + LOCAL_SOURCES, connected: mcpSources.filter((s) => s.status.state === "connected").length + (localSourcesConnected() ? LOCAL_SOURCES : 0), attention: mcpSources.filter((s) => s.status.requiresAttention).length },
 							runningCount: machineRuns().length,
-							deduplicated: triggers.dedupedCount,
-							cyclesStopped: triggers.cycleSuppressedCount,
+							deduplicated: dedupedCount(),
 							rulesFile: store.rulesFile,
 							auditFile: store.auditFile,
 							persistenceError: store.lastPersistenceError,
@@ -2379,7 +2375,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							.at(-1);
 						lines.push(`  - source #${mcpSources.length + 1}: ${localState} queued=0 dropped=0 deduped=0 last_event=${lastFired ?? "never"}`);
 						lines.push(`      subscriptions: ${jobs.length ? `local crontab: ${plural(jobs.length, "loop")}, ${jobs.filter((j) => j.enabled).length} enabled` : "local crontab: 0 loops"}`);
-						lines.push(`  - source #${mcpSources.length + LOCAL_SOURCES}: ${localState} queued=${triggers.runningList().filter((r) => r.sourceLabel === "local:dynamic").length} dropped=0 deduped=${triggers.dedupedCount} last_event=${triggers.lastPoll?.at ?? "never"}`);
+						lines.push(`  - source #${mcpSources.length + LOCAL_SOURCES}: ${localState} queued=${machineRuns().filter((r) => r.check).length} dropped=0 deduped=0 last_event=${lastPoll()?.at ?? "never"}`);
 						lines.push("      subscriptions: dynamic trigger periodic check");
 						if (mcpSources.length) lines.push("  (pushes are deduplicated machine-wide; a rule's result goes to the conversation that created it)");
 						if (mcpConfigError) lines.push(`  ! ${mcpConfigError}`);
@@ -2448,14 +2444,14 @@ export default function piLoops(pi: ExtensionAPI) {
 						show(ctx, `updated trigger ${updated.id}`, [
 							`  model: ${updated.model ?? "(the running session's current model)"}`,
 							`  thinking: ${updated.thinking ?? "(the running session's current level)"}`,
-							`  timeout: ${updated.timeoutMs ? `${Math.round(updated.timeoutMs / 1000)}s` : `default (${Math.round(triggers.runTimeoutMs / 1000)}s)`}`,
+							`  timeout: ${updated.timeoutMs ? `${Math.round(updated.timeoutMs / 1000)}s` : `default (${Math.round(config.triggerRunTimeoutMs / 1000)}s)`}`,
 						]);
 						return;
 					}
 					case "run": {
-						// "Run now" on a rule. `handle` is the same path the periodic check takes,
-						// so dedup, audit, the sub-agent and promotion all behave as they do on a poll —
-						// what is skipped is only the poll ledger, which is the point of running it now.
+						// "Run now" on a rule: a row of its project's check lane, the same row a poll writes,
+						// so audit, the sub-agent and promotion all behave as they do on a poll; what is
+						// skipped is only the wait for the next poll, which is the point of running it now.
 						const rule = pickRule(rest);
 						if (!rule) return;
 						if (!schedulerStarted) {
@@ -2474,14 +2470,14 @@ export default function piLoops(pi: ExtensionAPI) {
 							ctx.ui.notify(`trigger ${rule.id} belongs to ${rule.cwd} — run it from a pi open in that project`, "warning");
 							return;
 						}
-						const trigger = buildPeriodicCheckTrigger(rule.cwd, 1, new Date(), `${process.pid}-run-now`);
-						// Never awaited: a check runs a sub-agent and can take minutes. `handle` is
-						// documented not to reject, and the catch is there because pi installs no
-						// unhandledRejection handler.
-						void triggers.handle(trigger, "sub_agent", [rule]).catch((err: any) => log.warn(`run-now failed: ${err?.message ?? err}`));
-						show(ctx, `checking trigger ${rule.id} now (trace ${trigger.traceId.slice(0, 8)})`, [
+						// A row of the project's check lane, with this rule only and no gate: pi-loops in the
+						// background runs it as it runs every check (src/check-tick.ts), and hears the write.
+						const row = checkRow(rule.cwd, [rule.id], createdBy(), Date.now());
+						requests.appendIfAbsent(row);
+						const running = !!liveHostRecord();
+						show(ctx, running ? `checking trigger ${rule.id} now (trace ${row.id.slice(0, 8)})` : `trigger ${rule.id} will be checked when pi-loops runs in the background (trace ${row.id.slice(0, 8)})`, [
 							`  condition: ${previewRedacted(rule.condition, 120)}`,
-							"  the result appears here when the check finishes — /triggers running shows it meanwhile",
+							running ? "  the result appears here when the check finishes — /triggers running shows it meanwhile" : "  pi-loops is not running in the background: pi-loops start runs it",
 						]);
 						return;
 					}
@@ -2493,7 +2489,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							ctx,
 							// The machine's runs, here and in the background, against the limit both use: a run
 							// started by another project's job holds a slot too, and is in this list.
-							`${running.length ? `Running triggers (${running.length}):` : "(no running triggers)"}  ${running.length} of ${plural(triggers.slots.limit, "sub-agent slot")} in use`,
+							`${running.length ? `Running triggers (${running.length}):` : "(no running triggers)"}  ${running.length} of ${plural(subagentSlots.limit, "sub-agent slot")} in use`,
 							running.flatMap((r) => {
 								const secs = Math.max(0, Math.round((now - Date.parse(r.startedAt)) / 1000));
 								const elapsed = secs < 90 ? `${secs}s` : `${Math.round(secs / 60)}m`;
@@ -2539,7 +2535,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							return !!answer?.ok && !!answer.aborted;
 						};
 						if (rest.trim() === "--all") {
-							let n = triggers.abortAll();
+							let n = 0;
 							const host = await refreshHostSnapshot();
 							for (const r of host?.runs ?? []) if (await askHostAbort(r.runId, true)) n++;
 							for (const c of host?.checks ?? []) if (await askHostAbort(c.traceId, false)) n++;
@@ -2547,8 +2543,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							return;
 						}
 						const target = rest.trim();
-						const hit = triggers.runningList().find((r) => r.traceId === target || r.traceId.startsWith(target));
-						if (target && !hit) {
+						if (target) {
 							// A turn in a closed conversation, run by pi-loops in the background: stopped through a
 							// request (src/engine.ts stopRow), which outlives a socket that does not answer. A loop
 							// run or a check belongs to no conversation and keeps the socket.
@@ -2572,12 +2567,7 @@ export default function piLoops(pi: ExtensionAPI) {
 								return;
 							}
 						}
-						if (!target || !hit) {
-							ctx.ui.notify(target ? `no running trigger with trace_id '${target}'` : "usage: /triggers abort <trace_id>|--all", "warning");
-							return;
-						}
-						triggers.abort(hit.traceId);
-						ctx.ui.notify(`requested abort for trigger ${hit.traceId}`, "info");
+						ctx.ui.notify(target ? `no running trigger with trace_id '${target}'` : "usage: /triggers abort <trace_id>|--all", "warning");
 						return;
 					}
 					case "panel": {
@@ -3167,7 +3157,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			const outputPath = path.resolve(session.cwd, pathArgs[0] ?? defaultExportPath(session.cwd, sessionId));
 			ctx.ui.notify(ARCHIVE_WARNING, "warning"); // Printed before the attempt, success or not
 			try {
-				const { jobs, rules } = automationOf(stores.jobs.load(), triggers.store.load(), session.cwd, sessionId);
+				const { jobs, rules } = automationOf(stores.jobs.load(), stores.rules.load(), session.cwd, sessionId);
 				const states: Record<string, string> = {};
 				for (const job of jobs) {
 					const loopState = job.stateful ? stores.jobs.readState(job.id) : undefined;
@@ -3220,14 +3210,14 @@ export default function piLoops(pi: ExtensionAPI) {
 					targetCwd,
 					activate: mode === "on",
 					existingJobs: store.load(),
-					existingRules: triggers.store.load(),
+					existingRules: stores.rules.load(),
 					existingJobIds: new Set(store.load().map((j) => j.id)),
-					existingRuleIds: new Set(triggers.store.load().map((r) => r.id)),
+					existingRuleIds: new Set(stores.rules.load().map((r) => r.id)),
 				});
 				// With `on` the import enables what it brings: its gates are shown before anything is on, as the CLI does.
 				const gates = mode === "on" ? importedGateLines(imp, { jobs: imp.jobs.filter((j) => j.enabled).map((j) => j.id), rules: imp.rules.filter((r) => r.enabled).map((r) => r.id) }) : [];
 				if (gates.length) show(ctx, GATES_HEAD, gates);
-				await applyImport(imp, store, triggers.store, stores.clock);
+				await applyImport(imp, store, stores.rules, stores.clock);
 				for (const job of imp.jobs) cronControlAudit("add", "slash", undefined, job);
 				refreshBadge();
 				const skipped = (imp.skippedJobs ?? 0) + (imp.skippedRules ?? 0);
@@ -3239,7 +3229,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				]);
 				// Offer to switch originally-enabled automation back on. Nothing is asked with no UI to
 				// ask in, and `off` means nothing is asked at all.
-				const enabled = await offerToEnable(imp, store, triggers.store, mode === "ask" && ctx.hasUI ? (question, detail) => ctx.ui.confirm(question, detail) : undefined, (before, after) => cronControlAudit("enable", "slash", before, after));
+				const enabled = await offerToEnable(imp, store, stores.rules, mode === "ask" && ctx.hasUI ? (question, detail) => ctx.ui.confirm(question, detail) : undefined, (before, after) => cronControlAudit("enable", "slash", before, after));
 				if (enabled.jobs || enabled.rules) {
 					refreshBadge();
 					ctx.ui.notify(`enabled ${plural(enabled.jobs, "loop")} and ${plural(enabled.rules, "rule")}`, "info");
@@ -3287,7 +3277,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** The tools' view of this extension (see tools.ts); sub-sessions and the headless host get their own. */
 	const toolHost: ToolHost = {
 		stores,
-		triggers,
+		rules: stores.rules,
+		pollSecs: () => config.triggerPollIntervalSecs,
 		owner: () => ownerView(),
 		// In a scheduled turn the chat is the row's declared tools, not this window's: a job made
 		// there gets no more built-ins than the turn, as a job a background run makes gets that run's.
@@ -3461,8 +3452,6 @@ export default function piLoops(pi: ExtensionAPI) {
 			// so a command line that passes it still starts, and says where the interval is set now.
 			const flagRaw = pi.getFlag("trigger-poll-secs");
 			if (flagRaw !== undefined && flagRaw !== "") config.errors.push(`triggers: --trigger-poll-secs is ignored: pi-loops checks rules every [triggers] poll_interval_secs in config.toml (now ${config.triggerPollIntervalSecs}s)`);
-			triggers.pollIntervalSecs = config.triggerPollIntervalSecs;
-			triggers.runTimeoutMs = config.triggerRunTimeoutMs;
 			// Without a UI, hook failures go to stderr instead of vanishing.
 			const warnHook = (message: string) => (ctx.hasUI ? ctx.ui.notify(`[hooks] ${message}`, "warning") : process.stderr.write(`[pi-loops hooks] ${message}\n`));
 			hookRunner = new HookRunner({ loopsDir: dir, projectCwd: ctx.cwd, allowProjectHooks: config.allowProjectHooks, getSession: () => session, warn: warnHook, log: (msg) => log.info(msg) });
@@ -3484,7 +3473,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			watchStore();
 			// The session-start line below says a pause already in place when this project has loops or rules;
 			// the tick does not say it a second time. Elsewhere the tick is what says it.
-			const saysPause = loadOrNone(() => stores.jobs.load()).some((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful) || loadOrNone(() => triggers.store.load()).some((r) => sameProject(r.cwd, session.cwd) && r.enabled);
+			const saysPause = loadOrNone(() => stores.jobs.load()).some((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful) || loadOrNone(() => stores.rules.load()).some((r) => sameProject(r.cwd, session.cwd) && r.enabled);
 			shownPause = saysPause && hostHasWork() ? hostPauseReason() : undefined;
 			hostTick(false).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
 			runsShownAfter = stamp();
@@ -3496,7 +3485,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			// can begin with loops and rules the user has entirely forgotten about.
 			// "Active here" means it: a plain job of another session is asleep, not active.
 			const myJobs = listedNow().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && runsHere(j, ownerView()));
-			const myRules = loadOrNone(() => triggers.store.load()).filter((r) => sameProject(r.cwd, session.cwd) && r.enabled);
+			const myRules = loadOrNone(() => stores.rules.load()).filter((r) => sameProject(r.cwd, session.cwd) && r.enabled);
 			// What is scheduled says nothing about what is working: a loop that has failed every night
 			// since Tuesday is still counted as active, and this line is the only one a user reads.
 			const failing = failingSummary(myJobs);
@@ -3529,7 +3518,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			}
 			if (ctx.hasUI) {
 				// A watch proposed here waits for its answer on every start, and says which command asks again (design 6.3).
-				const line = proposalsNotice(loadOrNone(() => stores.jobs.load()), loadOrNone(() => triggers.store.load()), session.sessionId);
+				const line = proposalsNotice(loadOrNone(() => stores.jobs.load()), loadOrNone(() => stores.rules.load()), session.sessionId);
 				if (line) sayInfo(line);
 			}
 			if (leftLine) {
@@ -3706,7 +3695,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	const runSettleOffers = oneRunAtATime(async (ctx: ExtensionContext) => {
 		const state = settleState(ctx);
 		if (!settleReady(state)) return;
-		const proposals: Proposal[] = [...stores.jobs.load().filter((job) => job.proposed).map((job): Proposal => ({ kind: "schedule", job })), ...triggers.store.load().filter((rule) => rule.proposed).map((rule): Proposal => ({ kind: "rule", rule }))];
+		const proposals: Proposal[] = [...stores.jobs.load().filter((job) => job.proposed).map((job): Proposal => ({ kind: "schedule", job })), ...stores.rules.load().filter((rule) => rule.proposed).map((rule): Proposal => ({ kind: "rule", rule }))];
 		const offers = settleOffers({ ...state, findings: stores.inbox.list(), proposals, offered: settleOffered });
 		if (!offers.length) return;
 		const from = { by: "terminal" as const, session: state.sessionId ?? "" };
@@ -3714,7 +3703,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const results = await offerAtSettle(offers, {
 			select: (title, options) => ctx.ui.select(title, options),
 			say: (id, word) => answers.say(id, word, from),
-			proposals: { stores: { jobs: stores.jobs, rules: triggers.store, requests: stores.requests }, ctx: { now: Date.now, by: createdBy(), actor: "slash", auditJob: (op, before, after) => cronControlAudit(op, "slash", before, after), pollSecs: triggers.pollIntervalSecs, home: process.env.HOME } },
+			proposals: { stores: { jobs: stores.jobs, rules: stores.rules, requests: stores.requests }, ctx: { now: Date.now, by: createdBy(), actor: "slash", auditJob: (op, before, after) => cronControlAudit(op, "slash", before, after), pollSecs: config.triggerPollIntervalSecs, home: process.env.HOME } },
 			loopName: (id) => names.get(id),
 			refused: (id, refusal) => refusedLine(id, refusal),
 			stillOk: () => {
@@ -3772,7 +3761,6 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (schedulerStarted) {
 			schedulerStarted = false;
 			await ticker.stop();
-			await triggers.stop();
 		}
 		// The conversation is free for the next window (or, after /new, the next session here) at once.
 		requestWatch?.close();

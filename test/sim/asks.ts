@@ -32,7 +32,7 @@ import { dangerousCommandReason } from "../../src/danger.ts";
 import { plainJobRow } from "../../src/engine.ts";
 import { type GuardDeps, type GuardReport, type GuardSeat, GuardSeats, guardCall } from "../../src/guard.ts";
 import { INBOX_ROTATE_BYTES, Inbox, type InboxEntry, type InboxSection, type Sync, findingId } from "../../src/inbox.ts";
-import { type ConversationId, type LaneId, laneFileName, parseLane } from "../../src/lane.ts";
+import { type ConversationId, type LaneId, checkLane, laneFileName, parseLane } from "../../src/lane.ts";
 import { DEFAULT_RUN_TIMEOUT_MS } from "../../src/loop-run.ts";
 import { type ClaimedRow, RequestStore, type Row, type UnclaimedRow } from "../../src/requests.ts";
 import { RunList } from "../../src/run-list.ts";
@@ -40,7 +40,7 @@ import { type RunnerResult, type SubagentRequest, failedRun } from "../../src/ru
 import { stamp } from "../../src/schedule.ts";
 import { SubagentSlots } from "../../src/slots.ts";
 import { JobStore, type LoopJob } from "../../src/store.ts";
-import { checkLane, checkSessionDir } from "../../src/trigger-runtime.ts";
+import { checkSessionDir } from "../../src/check-run.ts";
 import { TriggerStore } from "../../src/triggers.ts";
 import { type RowCap, type WindowAnswers, WindowExecutor, createWindowAnswers, windowGuard } from "../../src/window-executor.ts";
 import { type FindingMemory, decidedOnceOver, findingMemory, remember, standingOf } from "./invariants.ts";

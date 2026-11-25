@@ -9,13 +9,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
-import { clampFuture, stamp } from "./schedule.ts";
+import { stamp } from "./schedule.ts";
 import { withFileLock, writeFileAtomic } from "./lock.ts";
 import { capRedacted, previewRedacted } from "./redact.ts";
 import { type CommandGate, type PathGate, type Precheck, pathOnlyCondition, precheckOf } from "./gate.ts";
 
 export const DEFAULT_TRIGGER_POLL_INTERVAL_SECS = 10 * 60;
-export const DEDUP_WINDOW_MS = 5 * 60_000;
 export const SUMMARY_CAP_CHARS = 4096;
 /** Past this the audit is halved (docs/configuration.md). */
 export const AUDIT_ROTATE_BYTES = 2_000_000;
@@ -38,10 +37,6 @@ export interface DynamicTriggerRule {
 	/** Per-rule cap on the check/action sub-agent; default `[triggers] run_timeout_secs`. */
 	timeoutMs?: number;
 	createdBy?: { sessionId?: string };
-	/** Checks that failed in a row (a check covers every rule it evaluated). Cleared by one that completes; drives the poll backoff in the trigger runtime, as `JobStore`'s field of the same name drives the scheduler's. */
-	consecutiveFailures?: number;
-	/** When the last failing check ran: the backoff is measured from here, so a rule that has never been checked is never held back. */
-	lastCheckFailedAt?: string;
 	/**
 	 * Set when the condition is only "<path> exists / appears" (src/gate.ts): each poll `stat`s the
 	 * path first, and no model is asked while it is absent. Recorded at creation only; a rule with
@@ -213,7 +208,7 @@ export function renderDynamicTriggerPrompt(trigger: Trigger, rules: DynamicTrigg
 	const held =
 		trigger.deferredMs === undefined
 			? ""
-			: `This event was held ${Math.round(trigger.deferredMs / 1000)}s while other checks were running: \`received_at\` is when it happened, which is not now. Re-check anything time-sensitive before acting on it.\n\n`;
+			: `This event was held ${Math.round(trigger.deferredMs / 1000)}s before this check (other checks were running, or pi-loops was stopped): \`received_at\` is when it happened, which is not now. Re-check anything time-sensitive before acting on it.\n\n`;
 	return (
 		`A trigger check event arrived.\n\nEvent:\n${triggerJson}\n\n${held}Dynamic trigger rules:\n${rulesJson}\n\n` +
 		"Evaluate each rule's natural-language condition. For source-specific events, compare the rule against the event. For `local:dynamic` periodic checks, inspect current local or remote state with the available tools whenever the condition depends on filesystem state, paths, environment variables, shell expansion, command output, clock time, network/API state, or any fact not already present in the Event JSON. Do not report no match for those conditions until after the needed inspection. " +
@@ -232,7 +227,7 @@ export function extractDynamicRuleIds(text: string): string[] {
 /**
  * `evaluator` distinguishes the processes that check one project: a rule belongs to the session
  * that created it, so two pi windows in one repo each raise their own check and must not collapse
- * into one another in the shared dedup window when they land in the same millisecond.
+ * into one another when they land in the same millisecond.
  */
 export function buildPeriodicCheckTrigger(cwd: string, ruleCount: number, now = new Date(), evaluator = ""): Trigger {
 	return {
@@ -557,106 +552,4 @@ export function resolveRuleRef(rules: DynamicTriggerRule[], ref: string, opts?: 
 	if (exact) return exact;
 	const hits = rules.filter((r) => r.id.startsWith(t));
 	return hits.length === 1 ? hits[0] : undefined;
-}
-
-/* ------------------------------------------------------------- polls */
-
-/** A slot nobody has claimed for a day is a session that is gone; drop it on the next write. */
-export const POLL_LEDGER_TTL_MS = 24 * 60 * 60_000;
-
-/**
- * When each project was last checked, shared by every pi process on the machine so a check
- * runs once per poll interval no matter which process owns the project at that moment.
- */
-export class PollLedger {
-	private readonly file?: string;
-	private readonly mem = new Map<string, number>();
-	constructor(file?: string) {
-		this.file = file;
-	}
-
-	/**
-	 * True (and the slot is taken) when `key` has not been claimed inside `intervalMs`. The key is a
-	 * composite ownership key, not a directory: host, project and — when the creating session is
-	 * still open — that session, so two windows in one repo each check their own rules once per
-	 * interval while a hand-over of a project's own rules still never double-checks.
-	 */
-	async claim(key: string, now: number, intervalMs: number): Promise<boolean> {
-		if (!this.file) return this.claimMap(this.mem, key, now, intervalMs);
-		const file = this.file;
-		return withFileLock(`${file}.lock`, () => {
-			let map = new Map<string, number>();
-			try {
-				map = new Map(Object.entries(JSON.parse(fs.readFileSync(file, "utf8"))).map(([k, v]) => [k, Number(v)]));
-			} catch {
-				/* fresh */
-			}
-			const ok = this.claimMap(map, key, now, intervalMs);
-			if (ok) {
-				// Slots embed the creating session id, so every session that ever owned a rule left a
-				// permanent entry in a file that is read, parsed and rewritten on every tick.
-				for (const [k, v] of map) if (now - v > POLL_LEDGER_TTL_MS) map.delete(k);
-				writeFileAtomic(file, JSON.stringify(Object.fromEntries(map)));
-			}
-			return ok;
-		});
-	}
-
-	private claimMap(map: Map<string, number>, key: string, now: number, intervalMs: number): boolean {
-		// A stamp from the future (a corrected clock, another machine on a synced $HOME) would block
-		// every future poll; treat it as "just now" so the next interval is honoured and no more.
-		const last = clampFuture(map.get(key), now);
-		if (last !== undefined && now - last < intervalMs) return false;
-		map.set(key, now);
-		return true;
-	}
-}
-
-/* ------------------------------------------------------------- dedup */
-
-/**
- * Dedup window: two events with the same idempotency key inside `DEDUP_WINDOW_MS` (five minutes)
- * are one event. With a `file`, the window is shared by every pi process on the machine, so a push
- * that several processes receive is handled exactly once.
- */
-export interface DedupHit {
-	traceId: string;
-	/** The FIRST arrival's policy; the audit reports what the winning entry declared. */
-	replacementPolicy?: ReplacementPolicy;
-}
-
-export class DedupWindow {
-	private readonly seen = new Map<string, { at: number; traceId: string; policy?: ReplacementPolicy }>();
-	private readonly windowMs: number;
-	private readonly file?: string;
-	constructor(windowMs: number = DEDUP_WINDOW_MS, file?: string) {
-		this.windowMs = windowMs;
-		this.file = file;
-	}
-
-	/** Returns the previous arrival when `key` was seen inside the window, else records this one. */
-	async check(key: string, traceId: string, now = Date.now(), policy?: ReplacementPolicy): Promise<DedupHit | undefined> {
-		if (!this.file) return this.checkMap(this.seen, key, traceId, now, policy);
-		const file = this.file;
-		return withFileLock(`${file}.lock`, () => {
-			let map = new Map<string, { at: number; traceId: string; policy?: ReplacementPolicy }>();
-			try {
-				map = new Map(Object.entries(JSON.parse(fs.readFileSync(file, "utf8"))));
-			} catch {
-				/* fresh */
-			}
-			const prev = this.checkMap(map, key, traceId, now, policy);
-			writeFileAtomic(file, JSON.stringify(Object.fromEntries(map)));
-			return prev;
-		});
-	}
-
-	private checkMap(map: Map<string, { at: number; traceId: string; policy?: ReplacementPolicy }>, key: string, traceId: string, now: number, policy?: ReplacementPolicy): DedupHit | undefined {
-		// A future stamp never ages out of the window on its own, so it would dedup its key forever.
-		for (const [k, v] of map) if (clampFuture(v.at, now) === undefined || now - v.at > this.windowMs) map.delete(k);
-		const prev = map.get(key);
-		if (prev) return { traceId: prev.traceId, replacementPolicy: prev.policy };
-		map.set(key, { at: now, traceId, policy });
-		return undefined;
-	}
 }
