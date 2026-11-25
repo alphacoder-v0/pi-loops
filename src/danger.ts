@@ -181,17 +181,19 @@ const SUBCOMMANDS = /;|&&|\|\||\||&|\n/;
  * those could never be complete. `git` counts only with a sub-command in `GIT_TEXT` and no option
  * that runs a program (`gitTakesText`), `gh` not for `codespace` (or its alias `cs`, or a sub-command
  * spelled any other way), and `npm` only as `npm test` or `npm run <name>` with no quote of its own,
- * since npm hands its arguments to a script's shell. Known gap: a gh alias or a gh extension set up
- * before the run (`gh alias set c codespace`) is read as a plain sub-command.
+ * since npm hands its arguments to a script's shell. Known gaps: a gh alias or a gh extension set up
+ * before the run (`gh alias set c codespace`) is read as a plain sub-command, and so is a sub-command
+ * after a flag (`gh -R o/r cs …`): only the second word is read.
  */
 const TAKES_TEXT = new Set(["git", "grep", "egrep", "fgrep", "rg", "ag", "echo", "printf", "gh", "cat", "cd", "ls", "test", "[", "true", "false", "jq", "npm"]);
 const GIT_TEXT = new Set(["commit", "tag", "stash", "notes", "add", "status", "fetch", "log"]);
 /**
- * git options that run a program they are handed: `--upload-pack`, `--receive-pack`, `--exec`, and any
- * prefix git takes for them. Tested with quotes and backslashes removed, since the shell joins
- * `--upload-pack"="` and `--upload-pack\\=` back into the option.
+ * git options that run a program they are handed: `--upload-pack`, `--receive-pack`, `--exec`, at the
+ * start of the word as written, as on main: `--upload-pack"="…`, `--upload-pack$x=…` and
+ * `--upload-pack{,}=…` start with it too. Known gap: git takes a unique prefix of a long option
+ * (`--upl`), which this does not read (owner, 2026-11-25: main's test kept).
  */
-const GIT_RUNS = /^--(?:u(?:p(?:l(?:o(?:a(?:d(?:-(?:p(?:a(?:c(?:k)?)?)?)?)?)?)?)?)?)?|r(?:e(?:c(?:e(?:i(?:v(?:e(?:-(?:p(?:a(?:c(?:k)?)?)?)?)?)?)?)?)?)?)?|e(?:x(?:e(?:c)?)?)?)(?:=|$)/;
+const GIT_RUNS = /^--(upload-pack|receive-pack|exec)/;
 /** `git log` options that show a patch, which runs the diff drivers git is configured with. */
 const GIT_LOG_PATCH = /^(-[a-zA-Z]*[puc]|--(patch|ext-diff|textconv|cc|output|function-context))/;
 /** What `blankQuotedPhrases` leaves where a quoted phrase was. */
@@ -207,7 +209,7 @@ function gitTakesText(words: string[]): boolean {
 	}
 	const sub = words[i] ?? "";
 	const rest = words.slice(i + 1);
-	if (!GIT_TEXT.has(sub) || rest.some((w) => GIT_RUNS.test(w.replace(/["'\\]/g, "")))) return false;
+	if (!GIT_TEXT.has(sub) || rest.some((w) => GIT_RUNS.test(w))) return false;
 	return sub !== "log" || !rest.some((w) => GIT_LOG_PATCH.test(w));
 }
 

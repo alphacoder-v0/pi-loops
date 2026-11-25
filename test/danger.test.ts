@@ -1045,12 +1045,13 @@ test("[policy-rewritten-word] a word the rules read next to pi-loops or git that
 	for (const command of ["pi-loops status --json", "pi-loops inbox list", "git log --format=%h -3", "git commit -m 'fix: done'", "git config user.name 'A B'", "ls ~/code/pi-loops/src"]) assert.equal(reach(command), undefined, command);
 });
 
-test("[policy-gh-cs] git takes a prefix of --upload-pack: its quoted value is a command, not text", () => {
-	assert.equal(reasonOf("git fetch --upl 'pi-loops stop' /path"), "pi-loops abort / stop / restart");
+test("[policy-gh-cs] a word that starts with --upload-pack, as the shell may spell it, makes its quoted value a command, not text", () => {
 	assert.equal(reasonOf("git fetch --upload-pack='pi-loops stop' /path"), "pi-loops abort / stop / restart");
-	// The shell joins `--upload-pack"="`, `''`, `\=` back into the option (bash and dash, measured).
-	for (const command of [`git fetch --upload-pack"="'pi-loops stop' /path`, "git fetch --upload-pack''='pi-loops stop' /path", "git fetch --upload-pack\\='pi-loops stop' /path", `git fetch --upload-pack"" 'pi-loops stop' /path`]) assert.equal(reasonOf(command), "pi-loops abort / stop / restart", command);
-	assert.equal(reasonOf("git log --oneline -1 --exec-path"), undefined);
+	// The shell joins each back into --upload-pack (bash and dash, measured): main reads them all by the start of the word.
+	for (const command of [`git fetch --upload-pack"="'pi-loops stop' /path`, "git fetch --upload-pack''='pi-loops stop' /path", "git fetch --upload-pack\\='pi-loops stop' /path", `git fetch --upload-pack"" 'pi-loops stop' /path`, "git fetch --upload-pack$x='pi-loops stop' /path", "git fetch --upload-pack$@='pi-loops stop' /path", "git fetch --upload-pack$x 'pi-loops stop' /path", "git fetch --upload-pack$''='pi-loops stop' /path", "git fetch --upload-pack$'' 'pi-loops stop' /path", "git fetch --upload-pack{,}='pi-loops stop' /path"]) {
+		assert.equal(reasonOf(command), "pi-loops abort / stop / restart", command);
+	}
+	assert.equal(reasonOf("git log --oneline -1"), undefined);
 });
 
 test("[policy-dollar-dollar] a `$'…'` that holds a backslash is asked about: sh (dash, pi's fallback) and bash read it differently", () => {
