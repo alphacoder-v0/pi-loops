@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { OWN_FILES, dangerousCommandReason, pathToolReason } from "../src/danger.ts";
+import { OWN_FILES, UNREADABLE, dangerousCommandReason, pathToolReason } from "../src/danger.ts";
 import { openFileDir } from "../src/open-file.ts";
 import { tmp } from "./tmp.ts";
 
@@ -781,4 +781,52 @@ test("[own-notes-dir] a notes directory that a link puts elsewhere gets no excep
 	fs.symlinkSync(elsewhere, path.join(loops, "state", "cron-c3"));
 	assert.equal(pathToolReason({ toolName: "write", input: { path: path.join(loops, "state", "cron-c3", "x.md"), content: "{}" } }, proj, loops, undefined, "cron-c3"), undefined, "a link that leads out of the loops directory is a path like any other outside it");
 	assert.equal(dangerousCommandReason(`echo x > ${path.join(loops, "state", "cron-a1", "prs.md")}`, undefined, [], loops), OWN, "a shell command into its notes directory is judged as before");
+});
+
+const STOP = "pi-loops abort / stop / restart";
+const reasonOf = (command: string, allow: string[] = []) => dangerousCommandReason(command, "/home/u", allow, undefined, "linux");
+
+test("[policy-dollar-dollar] `$$'` is the process id and a plain quote, not the start of `$'…'`", () => {
+	assert.equal(reasonOf('echo "${x:-\'"\'}"; pi-loops stop # \''), STOP, "a quote inside `${…}` is not text: bash runs the stop");
+	// bash runs the middle command: `$$` and then `'a\'` is a quote that a backslash does not escape.
+	assert.equal(reasonOf("echo $$'a\\'; pi-loops stop; echo 'b c'"), STOP);
+	assert.equal(reasonOf("echo $$'a b'"), undefined);
+	assert.equal(reasonOf('git commit -m "pid $$"'), undefined);
+	assert.equal(reasonOf("echo $'it\\'s'"), undefined, "a real `$'…'` string still takes a backslash escape");
+});
+
+test("[policy-gh-cs] `gh cs` is `gh codespace`: its quoted text is a command, not text", () => {
+	assert.equal(reasonOf("gh codespace ssh -- 'pi-loops stop now'"), STOP);
+	assert.equal(reasonOf("gh cs ssh -- 'pi-loops stop now'"), STOP);
+	for (const spelling of ['"cs"', "c\\s", "$'cs'", '$"cs"', "code\\space", "{cs,}"]) assert.equal(reasonOf(`gh ${spelling} ssh -- 'pi-loops stop now'`), STOP, `gh ${spelling} is read as a command`);
+	assert.equal(reasonOf("git commit -m 'stop pi-loops now'"), undefined, "a plain second word still takes its quotes as text");
+	assert.equal(reasonOf("gh pr view 12 -q '.title words'"), undefined);
+});
+
+test("[policy-open-quote] a quote left open at the end of a line is asked about: the command cannot be read", () => {
+	assert.notEqual(reasonOf("git status # don't\npi-loops stop; git log 'a b'"), undefined);
+	assert.equal(reasonOf('echo "a\nb"'), UNREADABLE);
+	assert.equal(reasonOf("echo it's"), UNREADABLE);
+	assert.equal(reasonOf("git status # don't worry"), UNREADABLE, "an apostrophe in a comment counts: #231's shape");
+	assert.equal(reasonOf("git commit -m 'one line'"), undefined);
+	assert.equal(reasonOf("git commit -m 'one line'\ngit log --oneline -1 -- 'a b'"), undefined, "each quote closes on its line");
+	assert.equal(reasonOf("echo \\'"), undefined, "an escaped quote opens nothing");
+	assert.equal(reasonOf("echo 'a' \\\n'b c'"), undefined, "a line continuation joins the lines first");
+	assert.equal(reasonOf("echo it's", ["echo it's"]), undefined, "an allow entry permits it");
+	assert.equal(reasonOf("echo $$'a\\'"), undefined, "`$$` then a plain quote, closed");
+	assert.equal(reasonOf("git status # don't\\\npi-loops stop # '"), UNREADABLE, "a backslash in a comment does not join the lines: bash runs the second one");
+	assert.equal(reasonOf("git status # don't\\\ngit log # '"), UNREADABLE);
+});
+
+test("[policy-ansi-path] a path after a `$'…'` string that a backslash kept open is read as a path: `$'x\\''` closes at its third quote", () => {
+	const loops = "/home/u/.pi/agent/loops";
+	const reach = (command: string) => dangerousCommandReason(command, "/home/u", [], loops, "linux");
+	// bash reads `$'x\''` as x', then the path, unquoted, which `~` expands.
+	assert.equal(reach("cat $'x\\'' ~/.pi/agent/loops/web-token 'a b'"), OWN_FILES);
+	assert.equal(reach("cat $$'x\\' ~/.pi/agent/loops/web-token 'a b'"), OWN_FILES, "`$$` then a plain quote that a backslash does not escape");
+	assert.equal(reach("cat $'/home/u/.pi/agent/loops/web-token'"), OWN_FILES, "a `$'…'` path is a path");
+	assert.equal(reach('cat $"/home/u/.pi/agent/loops/web-token"'), OWN_FILES, "a `$\"…\"` path is a path");
+	assert.equal(reach('cat "${x:-\'"\'}" ~/.pi/agent/loops/web-token # \''), OWN_FILES, "a quote inside `${…}` is not read as text");
+	assert.equal(reach("grep -rn $'it\\'s ~/.pi/agent/loops' docs"), undefined, "a path inside a `$'…'` string is text");
+	assert.equal(reach("grep -rn '~/.pi/agent/loops' docs"), undefined);
 });

@@ -179,8 +179,10 @@ const SUBCOMMANDS = /;|&&|\|\||\||&|\n/;
  * Quoted text is read as text only when every sub-command starts with one of them; anything else
  * (`ssh`, `python3 -c`, `$SHELL -c`, `env -S`, `tmux new`) may run what it is given, and a list of
  * those could never be complete. `git` counts only with a sub-command in `GIT_TEXT` and no option
- * that runs a program (`gitTakesText`), `gh` not for `codespace`, and `npm` only as `npm test` or
- * `npm run <name>` with no quote of its own, since npm hands its arguments to a script's shell.
+ * that runs a program (`gitTakesText`), `gh` not for `codespace` (or its alias `cs`, or a sub-command
+ * spelled any other way), and `npm` only as `npm test` or `npm run <name>` with no quote of its own,
+ * since npm hands its arguments to a script's shell. Known gap: a gh alias or a gh extension set up
+ * before the run (`gh alias set c codespace`) is read as a plain sub-command.
  */
 const TAKES_TEXT = new Set(["git", "grep", "egrep", "fgrep", "rg", "ag", "echo", "printf", "gh", "cat", "cd", "ls", "test", "[", "true", "false", "jq", "npm"]);
 const GIT_TEXT = new Set(["commit", "tag", "stash", "notes", "add", "status", "fetch", "log"]);
@@ -207,13 +209,14 @@ function gitTakesText(words: string[]): boolean {
 
 /**
  * Whether the quoted text of `joined` is only text, so `blanked` (its copy from `blankQuotedPhrases`)
- * may be read in its place. Not when the command substitutes anything (a backtick, `$(`, `<(`, `>(`,
- * `${ `, `${|`), quoted or not, since the shell runs what that holds; not when it redirects output
+ * may be read in its place. Not when the command substitutes anything (a backtick, `$(`, `<(`, `>(`),
+ * quoted or not, since the shell runs what that holds; not when it expands `${…}`, whose quotes nest
+ * inside a double quote (`"${x:-'"'}"`) as `blankQuotedPhrases` does not read them; not when it redirects output
  * (`>`), which can write a config that runs a program; and only when every sub-command starts with
  * a `TAKES_TEXT` program, with no `VAR=value` before it (`GIT_EXTERNAL_DIFF='…' git diff`).
  */
 function quotesAreText(joined: string, blanked: string): boolean {
-	if (/`|[$<>]\(|\$\{[\s|]|>/.test(joined)) return false;
+	if (/`|[$<>]\(|\$\{|>/.test(joined)) return false;
 	for (const sub of blanked.split(SUBCOMMANDS)) {
 		const words = sub.trim().split(/\s+/).filter(Boolean);
 		if (!words.length) continue;
@@ -221,7 +224,9 @@ function quotesAreText(joined: string, blanked: string): boolean {
 		const next = words[1] ?? "";
 		if (!TAKES_TEXT.has(name) || words.some((w) => w.includes("alias"))) return false;
 		if (name === "git" && !gitTakesText(words)) return false;
-		if (name === "gh" && next === "codespace") return false;
+		// `gh` passes every sub-command but one, so a sub-command the shell spells another way (`"cs"`, `c\s`,
+		// `$'cs'`, `{cs,}`) is not read: it may be `codespace`. `git` and `npm` pass only the ones they name.
+		if (name === "gh" && (next === "codespace" || next === "cs" || !/^[\w-]+$/.test(next))) return false;
 		if (name === "npm" && !((next === "test" || (next === "run" && words.length > 2)) && !/["'\u0001]/.test(sub))) return false;
 	}
 	return true;
@@ -246,6 +251,12 @@ function blankQuotedPhrases(s: string): string {
 			i += 2;
 			continue;
 		}
+		// `$$` is the process id: in `$$'…'` the quote is a plain one, which a backslash does not escape.
+		if (c === "$" && s[i + 1] === "$") {
+			out += "$$";
+			i += 2;
+			continue;
+		}
 		const ansi = c === "$" && s[i + 1] === "'";
 		if (c !== "'" && c !== '"' && !ansi) {
 			out += c;
@@ -267,6 +278,46 @@ function blankQuotedPhrases(s: string): string {
 		i = j + 1;
 	}
 	return out;
+}
+
+/**
+ * Whether a quote of `command` is still open at the end of a line, or at its end (#231). It scans as
+ * `blankQuotedPhrases` does: a backslash outside quotes escapes the next character (so a line
+ * continuation joins its lines), `'…'` has no escapes, `"…"` and `$'…'` take a backslash escape, and
+ * `$$` opens nothing. It does not know `#` comments, so an apostrophe in a comment counts: a comment's
+ * quote that pairs with one on the next line is how a stop was hidden. Lines are not joined first: in
+ * a comment a backslash does not continue the line, and bash runs the next one. The cost: a quoted string over
+ * several lines (a commit message, a heredoc with an apostrophe) is asked about. One pass.
+ */
+function quoteLeftOpen(s: string): boolean {
+	let i = 0;
+	while (i < s.length) {
+		const c = s[i];
+		if (c === "\\") {
+			i += 2;
+			continue;
+		}
+		if (c === "$" && s[i + 1] === "$") {
+			i += 2;
+			continue;
+		}
+		const ansi = c === "$" && s[i + 1] === "'";
+		if (c !== "'" && c !== '"' && !ansi) {
+			i++;
+			continue;
+		}
+		const open = ansi ? i + 1 : i;
+		const q = s[open];
+		const escapes = q === '"' || ansi;
+		let j = open + 1;
+		while (j < s.length && s[j] !== q) {
+			if (s[j] === "\n" || s[j] === "\r") return true;
+			j += escapes && s[j] === "\\" ? 2 : 1;
+		}
+		if (j >= s.length) return true;
+		i = j + 1;
+	}
+	return false;
 }
 
 /**
@@ -468,6 +519,9 @@ function runsPi(command: string): boolean {
  */
 export const OWN_FILES = "reads or writes pi-loops' own files";
 
+/** Why a command with a quote left open at the end of a line is asked about (`quoteLeftOpen`): the rules above cannot read it with confidence. */
+export const UNREADABLE = "a quote is left open at the end of a line, so the command cannot be read";
+
 /** Whether the default file systems of `platform` ignore letter case (APFS, NTFS). */
 function foldsCase(platform: NodeJS.Platform): boolean {
 	return platform === "darwin" || platform === "win32";
@@ -517,7 +571,11 @@ function loopsDirSpellings(loopsDir: string, home: string | undefined): { named:
 /** What `inertQuotes` puts in place of a `~` or a `$` the shell does not expand. */
 const INERT = "\u0002";
 
-/** `s` with each `~` in quotes, and each `$` in single quotes, replaced by `INERT`: the shell expands neither. One pass. */
+/**
+ * `s` with each `~` in quotes, and each `$` in single quotes or `$'…'`, replaced by `INERT`: the shell
+ * expands neither. Quotes are read as `blankQuotedPhrases` reads them (`$$` opens nothing, `$'…'` takes a
+ * backslash escape), so a path after them is not taken for quoted text. One pass.
+ */
 function inertQuotes(s: string): string {
 	let out = "";
 	let i = 0;
@@ -528,19 +586,27 @@ function inertQuotes(s: string): string {
 			i += 2;
 			continue;
 		}
-		if (c !== "'" && c !== '"') {
+		if (c === "$" && s[i + 1] === "$") {
+			out += "$$";
+			i += 2;
+			continue;
+		}
+		const ansi = c === "$" && s[i + 1] === "'";
+		if (c !== "'" && c !== '"' && !ansi) {
 			out += c;
 			i++;
 			continue;
 		}
-		let j = i + 1;
-		if (c === "'") j = s.indexOf("'", j);
+		const open = ansi ? i + 1 : i;
+		const q = s[open];
+		let j = open + 1;
+		if (q === "'" && !ansi) j = s.indexOf("'", j);
 		else {
-			while (j < s.length && s[j] !== '"') j += s[j] === "\\" ? 2 : 1;
+			while (j < s.length && s[j] !== q) j += s[j] === "\\" ? 2 : 1;
 			if (j >= s.length) j = -1;
 		}
 		if (j === -1) return out + s.slice(i);
-		out += c + s.slice(i + 1, j).replace(c === "'" ? /[~$]/g : /~/g, INERT) + c;
+		out += s.slice(i, open + 1) + s.slice(open + 1, j).replace(q === "'" ? /[~$]/g : /~/g, INERT) + q;
 		i = j + 1;
 	}
 	return out;
@@ -555,7 +621,8 @@ function inertQuotes(s: string): string {
 function pathText(command: string): string {
 	const joined = command.replace(/\\\r?\n/g, "");
 	const text = quotesAreText(joined, blankQuotedPhrases(joined)) ? inertQuotes(joined) : joined;
-	return dequote(text).replace(/["']/g, "");
+	// `$'…'` and `$"…"` are quotes: their `$` goes with them, or a path in them reads as `$/…`.
+	return dequote(text.replace(/\$(?=['"])/g, "")).replace(/["']/g, "");
 }
 
 /** A run of characters that a shell word may hold, with no command separator in it. */
@@ -771,5 +838,5 @@ export function dangerousCommandReason(command: string, home: string = process.e
 	if (stopsPiLoops(command)) return PI_LOOPS_STOP;
 	if (answersForPerson(piLoopsPrograms(command)) || runsPi(command)) return ANSWERS;
 	if (loopsDir !== undefined && reachesLoopsDir(pathText(command), loopsDir, home || undefined, platform)) return OWN_FILES;
-	return rmRecursiveForceOnDangerousTarget(scanned, home || undefined);
+	return rmRecursiveForceOnDangerousTarget(scanned, home || undefined) ?? (quoteLeftOpen(command) ? UNREADABLE : undefined);
 }
