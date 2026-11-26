@@ -23,7 +23,8 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `host-service.sock` | pi-loops' control socket (0600): status, abort, run, stop, and opening a conversation in the page |
 | `pages/<session>.json` | one per conversation open in the page: its pi's pid and start time, and when a tab last used it (0600). A pi-loops that restarts stops the pis these name, rather than adopt them |
 | `pages/args/<session>.json` | the pi arguments of the launch that last opened that conversation in the page (0600). Kept after its pi stops: a pi the page starts again for it gets the same ones |
-| `leases/<session>.json` | which process holds each conversation |
+| `leases/<session>.json` | which process holds each conversation, and its pi-loops `version` (a live holder without one is pi-loops 0.24.2 or earlier, which this version waits for) |
+| `presence/` | written by pi-loops 0.22 windows, never by this version; read only to wait while one is open, and removed when the directory is converted |
 | `requests/<session>.jsonl` | requests addressed to a conversation (rule results), each kept until it is in the conversation or in the inbox as a dead letter. The file is named for the queue's lane: a conversation's lane is its session id; a name that starts with `@` (`@cron-…`, `@check-…`) is a loop's or a project's checks' lane: a project's pushes and periodic checks wait there. A line is version 3; a version 2 line that 0.24.2 wrote is read as it is |
 | `seen.json` | when each project was last looked at (`/inbox`, or the page's Mark all seen), for the "since you last looked" line and the page's away card |
 | `*.lock` | short-lived locks around writes |

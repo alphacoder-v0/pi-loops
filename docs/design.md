@@ -92,10 +92,18 @@ machine. Everything here follows from that, and each one has a price.
    waits for a window) costs it no read of the conversation on a tick where the conversation,
    `jobs.json` and the queue are as they were and no backoff has ended; it remembers the three at
    the last "nothing to do" and reads again when one moves. The inbox gets a result only when the conversation cannot
-   be written; shell-created rules go to the inbox. A pi-loops 0.22 window gets no special treatment:
-   nothing reads `presence/` and nothing writes `scheduler.json` for it. The cost: a 0.22 window that
-   is still open runs its loops beside pi-loops, and its conversation's plain jobs beside the
-   background process, until it is closed. Close every 0.22 window before an upgrade.
+   be written; shell-created rules go to the inbox. One version works a loops directory at a time
+   (`src/older.ts`, owner decision of 2026-11-26). A 0.22 window writes `presence/` every 30 s, and a
+   terminal of 0.24.2 or earlier holds a lease with no `version`. While a live one is there, pi-loops
+   in the background, a window and `pi -p` convert nothing and run nothing in the directory, and each
+   says why with the pid and the fix. The older versions write `inbox.jsonl` again in their own shape
+   on each claim or dismiss, which removes every field this version added, and a 0.22 window checks
+   its project's rules beside the background: a bridge that mended each case (a fence, a yield of
+   each rule, a side file for the fields) would find one more case in each review. The cost: while a
+   terminal of 0.24.2 or earlier stays open, no loop or rule runs, since the background is this
+   version and it waits; that terminal does not say so. A 0.22 window open meanwhile runs its own
+   loops, because nothing is converted. The check is made when a process starts: an older pi-loops
+   that starts after it (a downgrade) is not waited for.
 
    The cost: loops pause while pi-loops cannot start, whereas they previously ran in an interactive pi.
    A loop no longer shares a window's live MCP connections; it connects its own from `mcp.toml`

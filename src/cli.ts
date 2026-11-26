@@ -37,7 +37,8 @@ import { JobStore, defaultLoopsDir, homeLoopsDir, piAgentDir } from "./store.ts"
 import { automationBadge, previewText, readSessionHead, shortSessionId } from "./session-head.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, TRACKER_FILE, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, listRecipes, loadRecipe, planInstall, playbookFiles, readRecord, resolveRecipeRef } from "./recipe.ts";
 import { TriggerStore } from "./triggers.ts";
-import { openStores } from "./stores.ts";
+import { convertDir, openStores } from "./stores.ts";
+import { olderLine, olderPiLoops } from "./older.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { formatLocal, stamp } from "./schedule.ts";
 import { canonicalDir } from "./paths.ts";
@@ -301,6 +302,15 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	const agentDir = piAgentDir();
 	const loopsDir = process.env.PI_LOOPS_DIR || defaultLoopsDir(agentDir);
 	const cwd = path.resolve(str("cwd") ?? process.cwd());
+	// One version at a time (src/older.ts): while an older pi-loops is open in this loops directory, a
+	// verb that reads or writes its stores answers with the line, and a service verb says it first.
+	const older = olderLine(olderPiLoops(loopsDir, Date.now()), PI_LOOPS_VERSION);
+	if (older && WAITS_FOR_OLDER.has(command)) {
+		out(older);
+		return 1;
+	}
+	// The page is not served while pi-loops in the background waits, so the launcher says it too.
+	if (older && (SERVICE_VERBS.has(command) || ["host", "web", "tui", "open"].includes(command))) out(older);
 
 	if (command === "web" || command === "tui") return launch(argv, out);
 	// What the door tells a browser with no way in to run: the project's newest conversation, so
@@ -364,6 +374,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		const sessions = listSessions(path.join(agentDir, "sessions"));
 		const picked = pickSession(sessions, { id: str("session"), cwd });
 		// The stores as pi-loops opens them: a directory 0.24.2 left is converted first.
+		convertDir(loopsDir);
 		const stores = openStores(loopsDir);
 		const jobStore = stores.jobs;
 		// The archive carries what the picked session created in its project — the one rule
@@ -386,6 +397,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		if (!file) throw new UsageError("import needs an archive path");
 		const mode = parseActivateMode(str("activate-triggers"));
 		// The stores as pi-loops opens them: a directory 0.24.2 left is converted first.
+		convertDir(loopsDir);
 		const stores = openStores(loopsDir);
 		const jobStore = stores.jobs;
 		const triggerStore = stores.rules;
@@ -448,6 +460,8 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 }
 
 /** What runs loops while no pi is open, started, stopped and looked at by name. */
+/** The verbs that read or write pi-loops' stores, which wait while an older pi-loops is open (src/older.ts). */
+const WAITS_FOR_OLDER: ReadonlySet<string> = new Set(["inbox", "events", "recipe", "export", "import"]);
 const SERVICE_VERBS = new Set(["start", "stop", "restart", "status", "abort", "pair"]);
 
 const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "host", "recipe", "inbox", "events", "web", "open", "upgrade", "install-launcher", "uninstall-launcher", "help"]);
@@ -596,6 +610,7 @@ async function eventsCommand(positional: string[], loopsDir: string, out: (line:
 	if (!event) return refuse(`no event ${shown} in events.jsonl`);
 	// Loaded here: the push and check modules take a third of a second, and only this verb needs them.
 	const [{ pushTrigger, replayPush }, { checkRow }] = await Promise.all([import("./push.ts"), import("./check-tick.ts")]);
+	convertDir(loopsDir);
 	const stores = openStores(loopsDir);
 	const by = { pid: process.pid, instance: "cli", procStart: procStart(process.pid), version: PI_LOOPS_VERSION };
 	const now = Date.now();

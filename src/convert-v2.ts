@@ -261,6 +261,8 @@ function promptWritten(requests: RequestStore, session: string, runId: string): 
 	catch { /* no lease file */ }
 	if (!file) return false;
 	try {
+		// Only a regular file: a read of a FIFO would hold the conversion, and the start, for ever.
+		if (!fs.statSync(file).isFile()) return false;
 		return fs.readFileSync(file, "utf8").split("\n").some((line) => line.includes(`[Trigger ${runId}] `));
 	} catch { return false; }
 }

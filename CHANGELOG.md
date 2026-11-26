@@ -34,17 +34,6 @@ All notable changes to pi-loops are documented here. The format follows
   removes each such turn from its queue. If pi had the turn before the upgrade, the finding stays
   claimed. If pi did not have it, the finding is `new` again: say yes to it again, and it runs as
   described under Changed. Each removed turn is in the audit of requests as `converted`.
-- **Restart every pi terminal that runs pi-loops 0.24.2 or earlier after you upgrade.** What
-  this version queues for a conversation is a line an earlier version cannot read. While a
-  terminal of an earlier version has a conversation open, none of these reaches it: a rule's
-  result, a queued prompt, a message or a claim sent from the page, and a stop or a cancel.
-  `pi-loops abort <session>` then says the stop is queued, and the turn goes on. Each waits in
-  the queue until you restart that terminal. A request the earlier version queued
-  itself stays readable to it, with one exception: a scheduled prompt that pi-loops in the
-  background has started to run in a closed conversation. Every scheduled prompt that pi-loops
-  in the background queues for a closed conversation is a line of this version too: a terminal
-  of an earlier version that opens that conversation does not run it, though its turn is
-  counted, until you restart that terminal.
 - **Before you go back to 0.24.2, let what is queued be delivered, or cancel it.** 0.24.2 does
   not read what this version queued: it leaves those requests in the queue, `pi-loops status`
   does not count them, and it removes the images of a queued message from the page after one
@@ -78,20 +67,30 @@ All notable changes to pi-loops are documented here. The format follows
   built-in tool outside them is refused. pi-loops' other tools, and a tool of another extension or
   an MCP server, run. Nobody is asked about a tool that is refused, since a card cannot show what it
   would do. Before, the dialog let you allow it.
-- **Close every pi-loops 0.22 window before you upgrade.** This version no longer holds such a
-  window back, and a window no longer warns you that an older one has the same conversation open.
-  Windows of 0.23 and later are not affected. While a 0.22 window stays open:
-  - it runs loops beside pi-loops in the background, so a loop can run twice;
-  - it runs its conversation's plain jobs, and pi-loops in the background can run the same jobs
-    and write to the same conversation file, when a window of 0.23 or later opened that
-    conversation before;
-  - a rule's result for its conversation can be written to the conversation's file while the
-    window has it open, where it went to the inbox before;
-  - a 0.22 window started with `--no-session` or `--session-dir` has its plain jobs turned off
-    within ten minutes (`disabled: session … no longer exists`). `/cron enable <id>` holds only
-    after you close that window and open the conversation in a window of this version; before
-    that, the job is turned off again within ten minutes. A `--no-session` conversation cannot be
-    opened again: make its jobs again in a new conversation.
+- **pi-loops waits while an older pi-loops is open in its loops directory.** A pi window that
+  runs pi-loops 0.22, or a pi terminal that runs 0.24.2 or earlier, writes the loops directory in
+  its own shape: one claim or dismiss there removes from every finding the fields that this
+  version adds (a question waiting for your answer among them), and a 0.22 window checks its
+  project's rules beside pi-loops in the background. So while one is open, this version converts
+  nothing and runs nothing in that directory: no loop, rule, push, queued prompt or inbox write.
+  It says so in one line, with the pid and what to do, in a new pi window (when it starts, and
+  for each pi-loops command or tool), in `pi-loops status` and the launcher, and in the log:
+  `pi-loops 0.24.3 is waiting: a pi window with pi-loops 0.22 (pid 12345, ~/proj) is still open.
+  Close it, and pi-loops 0.24.3 starts within 30 seconds. Until then, that window runs your
+  loops.` Close that window or restart that terminal, and this version starts within 30
+  seconds, with no restart of its own windows. A loop that came due meanwhile runs once.
+  - With a 0.22 window open, that window goes on running its loops, plain jobs and rules as
+    before, since nothing is converted yet.
+  - With a terminal of 0.24.2 or earlier open, no loop or rule runs until you restart it:
+    pi-loops in the background is this version now, and it waits. That terminal does not say so.
+  - The browser page is not served while pi-loops in the background waits.
+  - This version looks when it starts. An older pi-loops that starts after it, as after a
+    downgrade, is not waited for.
+  - After the 0.22 window closes, a plain job of a conversation that it started with
+    `--no-session` or `--session-dir` is turned off within ten minutes (`disabled: session …
+    no longer exists`), as in 0.24.2. A `--session-dir` conversation keeps its jobs once you open
+    it in a window of this version and `/cron enable <id>` them. A `--no-session` conversation
+    cannot be opened again: make its jobs again in a new conversation.
 - **A loop's notes file from 0.24.2 needs no conversion.** `state/<id>.md` is read as it is. A
   file edited by hand to more than 2000 characters, which 0.24.2 cut when it read it, is now read
   whole, and the loop's next run writes it back under the cap.
@@ -547,9 +546,9 @@ All notable changes to pi-loops are documented here. The format follows
   conversation's session id, `@` and the job's id for a loop's run, `@check-<project>` for a rule check.
   `pi-loops inbox --json` prints what it printed.
 - **The bridge for pi-loops 0.22 windows is removed** (see the upgrade note). pi-loops no longer
-  reads `presence/` or writes `scheduler.json`, and the Background view no longer has the holder
-  `a pi-loops 0.22 window`. When pi-loops in the background or a window starts, it removes
-  `next-runs.json`, `scheduler.json` and `presence/` from the loops directory: nothing reads them.
+  writes `scheduler.json`, and the Background view no longer has the holder `a pi-loops 0.22
+  window`. It reads `presence/` only to wait while a 0.22 window is open. Once none is, it removes
+  `next-runs.json`, `scheduler.json` and `presence/` from the loops directory when it converts it.
 
 ## [0.24.2] - 2026-11-11
 

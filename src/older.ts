@@ -3,7 +3,7 @@
  * at a time). Two versions in one directory each write its files in their own shape: a claim or a
  * dismiss in 0.22.8 or 0.24.2 writes `inbox.jsonl` again and drops every field this version added,
  * and a 0.22 window checks its project's rules beside pi-loops in the background. So while one is
- * open, this version converts nothing and runs nothing here, and says so (`waitingLine`).
+ * open, this version converts nothing and runs nothing here, and says so (`olderLine`).
  *
  * Two marks tell one apart, both read from files that the older version writes on its own:
  *   - pi-loops 0.22 writes `presence/<host>-<pid>-<instance>.json` every 30 s, with no `leases`
@@ -85,7 +85,7 @@ function presenceEntries(dir: string): PresenceEntry[] {
 }
 
 /** What every surface says while `older` is open: the first one, what to do about it, and how many more. */
-export function waitingLine(older: readonly OlderPiLoops[], self: string): string | undefined {
+export function olderLine(older: readonly OlderPiLoops[], self: string): string | undefined {
 	const [first, ...rest] = older;
 	if (!first) return undefined;
 	const at = first.where ? `, ${first.where}` : "";
@@ -97,4 +97,29 @@ export function waitingLine(older: readonly OlderPiLoops[], self: string): strin
 			: `pi-loops ${self} is waiting: a pi terminal with pi-loops 0.24.2 or earlier (pid ${first.pid}${at}) is still open. Restart it, and ${starts}. Until then, no loop or rule runs.`;
 	if (!rest.length) return line;
 	return `${line} ${rest.length} more older pi-loops process${rest.length === 1 ? " is" : "es are"} open: pid${rest.length === 1 ? "" : "s"} ${rest.map((o) => o.pid).join(", ")}.`;
+}
+
+/** How often a process that waits looks again: one tick of pi-loops. */
+export const WAIT_POLL_MS = 30_000;
+
+/**
+ * Resolves once no older pi-loops is open in `dir`. `say` gets the line each time it changes, and
+ * `each` runs on every look (pi-loops in the background keeps its heartbeat with it, so a window
+ * does not take a process that waits for a wedged one). The timer keeps the process alive unless
+ * `unref` is set, as a window's must be.
+ */
+export async function untilAlone(dir: string, opts: { say: (line: string) => void; self: string; each?: (now: number) => void; everyMs?: number; unref?: boolean; probe?: ProcessProbe }): Promise<void> {
+	let said: string | undefined;
+	for (;;) {
+		const now = Date.now();
+		const line = olderLine(olderPiLoops(dir, now, opts.probe), opts.self);
+		if (line === undefined) return;
+		if (line !== said) opts.say(line);
+		said = line;
+		opts.each?.(now);
+		await new Promise<void>((resolve) => {
+			const timer = setTimeout(resolve, opts.everyMs ?? WAIT_POLL_MS);
+			if (opts.unref) timer.unref();
+		});
+	}
 }

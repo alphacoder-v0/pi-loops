@@ -81,16 +81,15 @@ test("convertStores does not throw when the loops directory cannot be read: it r
 	assert.equal(fs.existsSync(path.join(dir, "scheduler.json")), true);
 });
 
-test("the host and window open stores through openStores, which runs conversion first.", () => {
+test("the host and window convert through convertDir, and pi-loops in the background only once no older pi-loops is open.", () => {
 	const here = path.dirname(new URL(import.meta.url).pathname);
 	const stores = fs.readFileSync(path.join(here, "..", "src", "stores.ts"), "utf8");
-	assert.match(stores, /export function openStores[\s\S]*?convertStores\(dir, log\)/);
-	const host = fs.readFileSync(path.join(here, "..", "src", "host-runtime.ts"), "utf8");
-	assert.match(host, /const stores = deps\.stores \?\? openStores\(dir, log\)/);
+	assert.match(stores, /export function convertDir[\s\S]*?convertStores\(dir, log\)/);
+	assert.doesNotMatch(stores.slice(stores.indexOf("export function openStores")), /convertStores\(/, "opening the stores converts nothing");
 	const background = fs.readFileSync(path.join(here, "..", "src", "host.ts"), "utf8");
-	assert.match(background, /const stores = openStores\(dir, log\)/);
+	assert.match(background, /await untilAlone\(dir,[\s\S]*?\}\);\nconvertDir\(dir, log\);/);
 	const window = fs.readFileSync(path.join(here, "..", "src", "pi-loops.ts"), "utf8");
-	assert.match(window, /const stores = openStores\(dir,/);
+	assert.match(window, /convertDir\(dir,/);
 });
 
 /** A `version: 2` jobs.json as 0.24.2 wrote it. */
@@ -438,4 +437,21 @@ test("[K2] A finding a person answered after the row's finding was opened again 
 	assert.deepEqual(convertClaimRows(loggedStores(dir).stores, () => {}), { handed: 0, reopened: 0 });
 	assert.deepEqual(new RequestStore(dir).list(CONV), []);
 	assert.deepEqual([findingOf(dir, OPEN)?.status, findingOf(dir, OPEN)?.answered_by, findingOf(dir, OPEN)?.answer?.state], ["claimed", "terminal", "pending"]);
+});
+
+test("[fifo-session-file] the conversion reads a conversation's file only when it is a regular file: a FIFO there does not hold the start", { skip: process.platform === "win32" }, async () => {
+	const { spawnSync } = await import("node:child_process");
+	const dir = tmp("pi-loops-convert-fifo-");
+	const sid = "01a1dce4-8ad1-77c0-89b0-475ccfeaf690";
+	const slot = "2026-01-05T09:00:00.000Z";
+	writeV2(dir, [v2Loop(dir, { id: "cron-plain", stateful: false, sessionId: sid, lastDueAt: slot, running: { runId: "plain-run", pid: 2_000_000_000, startedAt: slot } })]);
+	const fifo = path.join(dir, "conversation.jsonl");
+	assert.equal(spawnSync("mkfifo", [fifo]).status, 0, "mkfifo");
+	fs.mkdirSync(path.join(dir, "leases"));
+	fs.writeFileSync(path.join(dir, "leases", `${sid}.json`), JSON.stringify({ v: 1, sessionId: sid, sessionFile: fifo, epoch: 1, holder: null, updatedAt: slot }));
+	const repo = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+	const script = `import(${JSON.stringify(path.join(repo, "src/convert-v2.ts"))}).then((m) => { process.stdout.write(JSON.stringify(m.convertStores(${JSON.stringify(dir)}))); process.exit(0); })`;
+	const child = spawnSync(process.execPath, ["--import", path.join(repo, "src/register-pi.mjs"), "--input-type=module", "-e", script], { encoding: "utf8", timeout: 15_000, env: { ...process.env, PI_LOOPS_HOST: "off" } });
+	assert.equal(child.signal, null, "the conversion returned instead of blocking");
+	assert.deepEqual(JSON.parse(child.stdout), { removed: [], jobs: 1, rows: 1, gates: 0 }, "the prompt is not known to be written, so its slot is owed once");
 });

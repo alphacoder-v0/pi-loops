@@ -124,7 +124,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const notice = (text: string, cwd?: string) => {
 		noticeSeq = keepNotice(kept, noticeSeq, text, cwd, Date.now());
 	};
-	const stores = deps.stores ?? openStores(dir, log);
+	const stores = deps.stores ?? openStores(dir);
 	// Audit writes are best-effort — a failed write never fails a trigger; say so once per distinct error.
 	let persistenceSaid: string | undefined;
 	stores.rules.onPersistenceError ??= (message) => {

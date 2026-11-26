@@ -7,7 +7,7 @@ import { TriggerStore } from "../src/triggers.ts";
 import { type ClaimedRow, type ImageContent, RequestStore, type Row, type UnclaimedRow } from "../src/requests.ts";
 import * as path from "node:path";
 import { BACKOFF_MS } from "../src/backoff.ts";
-import { type Action, type Proof, ANSWER_ROW_WAITS, OLD_CLAIM_WAITS, isOldClaim, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, isLocal, modeOf, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, proofOf, landed, personRow, plainJobRow, plainRunId, stripImageNotes, answerClaimLive, claimAlive, changesSomething, runningRun, jobQueued, queuedPrompt, closeRun, heldTurns } from "../src/engine.ts";
+import { type Action, type Proof, ANSWER_ROW_WAITS, OLD_CLAIM_WAITS, isOldClaim, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, isLocal, modeOf, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, proofOf, landed, personRow, plainJobRow, plainRunId, stripImageNotes, answerClaimLive, claimAlive, changesSomething, runningRun, jobQueued, queuedPrompt, closeRun, heldTurns, sessionFileEntries } from "../src/engine.ts";
 import { jobCounts, listedJob, runHistory } from "../src/job-status.ts";
 import { runEnd } from "../src/settle.ts";
 import type { RunRecord } from "../src/store.ts";
@@ -2624,4 +2624,18 @@ test("[wake-me] a follow-up's row is its loop's row: it leaves as job-removed wh
 	assert.deepEqual(decideDrain("loop", [woke], none, { ...jobs, exists: (id: string) => id !== "cron-j" }, held, T0), [{ do: "exit", row: woke, exit: "job-removed" }]);
 	assert.deepEqual(decideDrain("loop", [woke], none, { ...jobs, enabled: (id: string) => id !== "cron-j" }, held, T0).map((a) => (a.do === "wait" ? a.why : a.do)), ["its job is disabled"]);
 	assert.deepEqual(decideDrain("loop", [woke], none, jobs, held, T0).map((a) => a.do), ["turn"], "an enabled loop's follow-up runs");
+});
+
+test("[fifo-session-file] a session file that is not a regular file holds no entries, and reading it does not block (U6 of M3)", { skip: process.platform === "win32" }, async () => {
+	const { spawnSync } = await import("node:child_process");
+	const dir = tmp();
+	const fifo = path.join(dir, "s.jsonl");
+	assert.equal(spawnSync("mkfifo", [fifo]).status, 0, "mkfifo");
+	// In a child: a read that blocks on the FIFO blocks the whole process, so the test cannot time it out from inside.
+	const repo = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+	const script = `import(${JSON.stringify(path.join(repo, "src/engine.ts"))}).then((m) => { process.stdout.write(JSON.stringify(m.sessionFileEntries(${JSON.stringify(fifo)}))); process.exit(0); })`;
+	const child = spawnSync(process.execPath, ["--import", path.join(repo, "src/register-pi.mjs"), "--input-type=module", "-e", script], { encoding: "utf8", timeout: 15_000, env: { ...process.env, PI_LOOPS_HOST: "off" } });
+	assert.equal(child.signal, null, "the read returned instead of blocking");
+	assert.equal(child.stdout, "[]");
+	assert.deepEqual(sessionFileEntries(path.join(dir, "missing.jsonl")), []);
 });

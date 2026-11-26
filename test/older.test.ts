@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { LeaseBinding, LeaseStore, type LeaseHolder, type ProcessProbe } from "../src/lease.ts";
-import { olderPiLoops, waitingLine, type OlderPiLoops } from "../src/older.ts";
+import { olderPiLoops, untilAlone, olderLine, type OlderPiLoops } from "../src/older.ts";
 import { PI_LOOPS_VERSION } from "../src/version.ts";
 
 const NOW = Date.parse("2026-11-26T12:00:00.000Z");
@@ -101,9 +101,31 @@ test("[older-line] the line names the version, the pid, where it is open, and wh
 	const window22: OlderPiLoops = { version: "0.22", kind: "window", pid: 4242, where: "/home/p/proj" };
 	const window24: OlderPiLoops = { version: "0.24", kind: "window", pid: 5151, where: "/home/p/other" };
 	const background: OlderPiLoops = { version: "0.22", kind: "background", pid: 77 };
-	assert.equal(waitingLine([], "0.24.3"), undefined);
-	assert.equal(waitingLine([window22], "0.24.3"), "pi-loops 0.24.3 is waiting: a pi window with pi-loops 0.22 (pid 4242, /home/p/proj) is still open. Close it, and pi-loops 0.24.3 starts within 30 seconds. Until then, that window runs your loops.");
-	assert.equal(waitingLine([window24], "0.24.3"), "pi-loops 0.24.3 is waiting: a pi terminal with pi-loops 0.24.2 or earlier (pid 5151, /home/p/other) is still open. Restart it, and pi-loops 0.24.3 starts within 30 seconds. Until then, no loop or rule runs.");
-	assert.equal(waitingLine([background], "0.24.3"), "pi-loops 0.24.3 is waiting: pi-loops 0.22 in the background (pid 77) is still running. End it (kill 77), and pi-loops 0.24.3 starts within 30 seconds.");
-	assert.equal(waitingLine([window22, window24, background], "0.24.3"), `${waitingLine([window22], "0.24.3")} 2 more older pi-loops processes are open: pids 5151, 77.`);
+	assert.equal(olderLine([], "0.24.3"), undefined);
+	assert.equal(olderLine([window22], "0.24.3"), "pi-loops 0.24.3 is waiting: a pi window with pi-loops 0.22 (pid 4242, /home/p/proj) is still open. Close it, and pi-loops 0.24.3 starts within 30 seconds. Until then, that window runs your loops.");
+	assert.equal(olderLine([window24], "0.24.3"), "pi-loops 0.24.3 is waiting: a pi terminal with pi-loops 0.24.2 or earlier (pid 5151, /home/p/other) is still open. Restart it, and pi-loops 0.24.3 starts within 30 seconds. Until then, no loop or rule runs.");
+	assert.equal(olderLine([background], "0.24.3"), "pi-loops 0.24.3 is waiting: pi-loops 0.22 in the background (pid 77) is still running. End it (kill 77), and pi-loops 0.24.3 starts within 30 seconds.");
+	assert.equal(olderLine([window22, window24, background], "0.24.3"), `${olderLine([window22], "0.24.3")} 2 more older pi-loops processes are open: pids 5151, 77.`);
+});
+
+test("[older-wait] untilAlone says the line once, looks again on each poll, and resolves when the older one is gone", async () => {
+	const dir = tmp();
+	presence(dir, { heartbeatAt: new Date().toISOString() });
+	const said: string[] = [];
+	let looks = 0;
+	await untilAlone(dir, {
+		say: (line) => said.push(line),
+		self: "0.24.3",
+		everyMs: 5,
+		probe: probe(),
+		each: () => {
+			looks++;
+			if (looks === 3) fs.rmSync(path.join(dir, "presence"), { recursive: true });
+		},
+	});
+	assert.equal(looks, 3);
+	assert.deepEqual(said, [olderLine([{ version: "0.22", kind: "window", pid: 4242, where: "/home/p/proj" }], "0.24.3")]);
+	let ran = false;
+	await untilAlone(tmp(), { say: () => { ran = true; }, self: "0.24.3", each: () => { ran = true; } });
+	assert.equal(ran, false, "nothing older: it resolves at once and says nothing");
 });

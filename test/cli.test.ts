@@ -1349,7 +1349,7 @@ test("pi-loops host stop, the 0.22.8 spelling, says that it now stops everything
 	});
 });
 
-const liveWindow = () => ({ kind: "terminal" as const, pid: process.pid, instance: "w", acquiredAt: new Date().toISOString(), pushServers: [] });
+const liveWindow = () => ({ kind: "terminal" as const, pid: process.pid, instance: "w", version: PI_LOOPS_VERSION, acquiredAt: new Date().toISOString(), pushServers: [] });
 
 test("pi-loops abort of a session takes effect with the socket closed", { timeout: 30_000 }, async () => {
 	const root = tmp("pi-loops-abort-");
@@ -1966,4 +1966,29 @@ test("the CLI loads without pi's SDK: only the verb that needs it imports it, so
 	const r = spawnSync(process.execPath, ["--input-type=module", "-e", 'const { runCli } = await import("./src/cli.ts"); process.exitCode = await runCli(["--version"]);'], { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "" } });
 	assert.equal(r.status, 0, r.stderr);
 	assert.equal(r.stdout.trim(), `pi-loops v${PI_LOOPS_VERSION}`);
+});
+
+test("[older-cli] while an older pi-loops is open, a verb that reads or writes the stores answers with the line, and status says it first", async () => {
+	const root = tmp("pi-loops-older-cli-");
+	const loops = path.join(root, "loops");
+	fs.mkdirSync(path.join(loops, "presence"), { recursive: true });
+	// A 0.22 window, as v0.22.8 writes its presence entry: this test's own pid stands for its process.
+	fs.writeFileSync(path.join(loops, "presence", "x.json"), JSON.stringify({ pid: process.pid, host: os.hostname(), instance: "i", sessionId: "s", cwd: root, kind: "interactive", heartbeatAt: new Date().toISOString() }));
+	fs.writeFileSync(path.join(loops, "jobs.json"), `${JSON.stringify({ version: 2, jobs: [] })}\n`);
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: "off" }, async () => {
+		for (const argv of [["inbox", "list", "--all"], ["events", "list"], ["recipe", "list"], ["export", "--session", "x"]]) {
+			const lines: string[] = [];
+			assert.equal(await runCli(argv, (l) => lines.push(l)), 1, argv.join(" "));
+			assert.match(lines.join("\n"), /^pi-loops \S+ is waiting: a pi window with pi-loops 0\.22 \(pid \d+, /, argv.join(" "));
+		}
+		const status: string[] = [];
+		await runCli(["status"], (l) => status.push(l));
+		assert.match(status[0] ?? "", /is waiting: a pi window with pi-loops 0\.22/);
+		assert.equal(JSON.parse(fs.readFileSync(path.join(loops, "jobs.json"), "utf8")).version, 2, "nothing converted");
+	});
+	fs.rmSync(path.join(loops, "presence"), { recursive: true });
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: "off" }, async () => {
+		const lines: string[] = [];
+		assert.equal(await runCli(["inbox", "list", "--all"], (l) => lines.push(l)), 0, "alone again: the verb runs");
+	});
 });

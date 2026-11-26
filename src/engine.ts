@@ -732,6 +732,8 @@ export function conversationHas(entries: readonly unknown[], id: string): boolea
 export function sessionFileEntries(file: string): unknown[] {
 	let data: string;
 	try {
+		// Only a regular file: a read of a FIFO waits for a writer, and with it the tick, for ever.
+		if (!fs.statSync(file).isFile()) return [];
 		data = fs.readFileSync(file, "utf8");
 	} catch {
 		return []; // no file: nothing landed
