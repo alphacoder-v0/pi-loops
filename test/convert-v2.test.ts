@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { type ClaimRowStores, RETIRED_FILES, convertClaimRows, convertStores } from "../src/convert-v2.ts";
@@ -146,7 +147,7 @@ test("[convert-owed] An owed slot and a dead run marker are not queued: the upgr
 	const said: string[] = [];
 	assert.equal(convertStores(dir, (line) => void said.push(line)).held, true);
 	assert.equal(new RequestStore(dir).list("@cron-convert").length, 0, "no row");
-	assert.ok(said.some((line) => line === `cron cron-convert: its owed run of ${slot} is not queued: the clock catches up after \`pi-loops resume\``));
+	assert.ok(said.some((line) => line === `cron cron-convert: its owed run of ${slot} is not queued: after \`pi-loops resume\` the loop runs as a loop turned on again does`));
 	assert.equal(new JobStore(dir).load()[0].enabled, true);
 });
 
@@ -265,6 +266,7 @@ test("convertStores removes a retired name that is a link, and leaves what the l
 	const dir = tmp("pi-loops-convert-");
 	const elsewhere = tmp("pi-loops-elsewhere-");
 	fs.writeFileSync(path.join(elsewhere, "keep.txt"), "not ours\n");
+	fs.writeFileSync(path.join(dir, "jobs.json"), '{"version":3,"jobs":[]}\n'); // this version wrote it: no pause, so presence/ goes
 	fs.symlinkSync(elsewhere, path.join(dir, "presence"));
 	assert.deepEqual(convertStores(dir).removed, ["presence"]);
 	assert.equal(fs.readFileSync(path.join(elsewhere, "keep.txt"), "utf8"), "not ours\n");
@@ -272,6 +274,7 @@ test("convertStores removes a retired name that is a link, and leaves what the l
 
 test("convertStores reports a file it cannot remove, goes on to the next, and does not throw.", { skip: process.getuid?.() === 0 ? "root removes anything" : false }, () => {
 	const dir = tmp("pi-loops-convert-");
+	fs.writeFileSync(path.join(dir, "jobs.json"), '{"version":3,"jobs":[]}\n'); // this version wrote it: no pause, so presence/ goes
 	fs.mkdirSync(path.join(dir, "presence"));
 	fs.writeFileSync(path.join(dir, "presence", "box-41-w22.json"), "{}\n");
 	fs.writeFileSync(path.join(dir, "scheduler.json"), "{}\n");
@@ -500,4 +503,18 @@ test("[upgrade-hold] The store's backup becomes version 3 with the conversion: r
 	resumeUpgrade(dir);
 	fs.copyFileSync(path.join(dir, "jobs.json.bak"), path.join(dir, "jobs.json"));
 	assert.equal(convertStores(dir).held, false);
+});
+
+test("[upgrade-hold] While the upgrade's pause holds, every start keeps presence/, which resume reads; after resume, the next start removes it.", () => {
+	const dir = tmp("pi-loops-convert-");
+	writeV2(dir, [v2Loop(dir)]);
+	fs.mkdirSync(path.join(dir, "presence"));
+	const entry = path.join(dir, "presence", "box-41-w22.json");
+	fs.writeFileSync(entry, JSON.stringify({ pid: 41, host: os.hostname(), heartbeatAt: new Date().toISOString() }));
+	assert.equal(convertStores(dir).held, true);
+	convertStores(dir);
+	assert.ok(fs.existsSync(entry), "two starts later, the entry 0.22 wrote is there");
+	assert.deepEqual(resumeUpgrade(dir, Date.now(), (pid) => pid === 41), { resumed: false, olderPids: [41] }, "so resume still refuses");
+	assert.deepEqual(resumeUpgrade(dir, Date.now(), () => false), { resumed: true, held: true });
+	assert.ok(convertStores(dir).removed.includes("presence"), "resumed: the next start removes it");
 });

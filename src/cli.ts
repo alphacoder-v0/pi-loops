@@ -2001,6 +2001,6 @@ export function resumeCommand(loopsDir: string, out: (line: string) => void): nu
 		out(olderRunningLine(result.olderPids));
 		return 1;
 	}
-	out(result.held ? "pi-loops resumed: loops, plain jobs and rules run again; a loop that missed slots catches up as its catch-up says" : "pi-loops is not paused");
+	out(result.held ? "pi-loops resumed: loops, plain jobs and rules run again; a loop whose slots came due during the pause runs as a loop turned on again does" : "pi-loops is not paused");
 	return 0;
 }

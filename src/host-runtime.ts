@@ -743,6 +743,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			if (delivery === "sub_agent") {
 				const lanes = derivePush(pushDeps, event, trigger, Date.now());
 				derived(event.seq);
+				// While the upgrade's pause holds, the rows wait: the check-lanes rider runs them after `pi-loops resume`.
+				if (upgradeHeld(dir)) return true;
 				for (const lane of lanes) {
 					checks.drain(lane, Date.now()).catch((error) => log(`check lane ${lane}: ${error instanceof Error ? error.message : String(error)}`));
 				}

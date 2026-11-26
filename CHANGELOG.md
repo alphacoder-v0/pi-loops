@@ -92,7 +92,9 @@ All notable changes to pi-loops are documented here. The format follows
   on the page).` Close those pis first: `resume` refuses while pi-loops 0.22 still runs here, and
   names its pid. Nothing else changes: each loop, plain job and rule keeps the on or off it had,
   with its run count, findings and notes, and the version 2 file is kept as `jobs.json.v2.bak`. A
-  run that 0.24.2 owed is not queued; once resumed, each loop catches up as its catch-up says.
+  run that 0.24.2 owed is not queued. Once resumed, a loop whose slots came due during the pause runs
+  as a loop turned on again does: once, for its latest slot, while pi-loops ran through the pause;
+  with catch-up off, a slot that came due while pi-loops was not running is skipped.
   - The check is made once, when the directory is converted. Putting `jobs.json.v2.bak` back as
     `jobs.json` is an upgrade again, and pauses again.
   - pi-loops 0.24.2 in the background, which an upgrade of the package does not stop, is replaced

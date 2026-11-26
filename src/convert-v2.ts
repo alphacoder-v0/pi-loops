@@ -9,7 +9,7 @@ import { RequestStore } from "./requests.ts";
 import { TriggerStore } from "./triggers.ts";
 import { type JobClock, type RunClose, validStamp } from "./clock.ts";
 import { stamp } from "./schedule.ts";
-import { holdUpgrade } from "./upgrade-hold.ts";
+import { holdUpgrade, upgradeHeld } from "./upgrade-hold.ts";
 import { clockStore } from "./stores.ts";
 import { DISABLED_BY_PERSON, type Disabled, JOBS_FILE_VERSION, JobStore, type LoopJob, type RunningMarker } from "./store.ts";
 
@@ -148,6 +148,8 @@ export function convertStores(dir: string, log: (line: string) => void = () => {
 	const removed: string[] = [];
 	for (const name of RETIRED_FILES) {
 		const file = path.join(dir, name);
+		// `pi-loops resume` reads presence/ to see whether pi-loops 0.22 still runs here: kept while the pause holds.
+		if (name === "presence" && upgradeHeld(dir)) continue;
 		try {
 			if (!fs.lstatSync(file, { throwIfNoEntry: false })) continue;
 			fs.rmSync(file, { recursive: true, force: true });
@@ -260,7 +262,7 @@ function convertJobs(dir: string, log: (line: string) => void): { jobs: number; 
 		clockStore(dir).seed(entries);
 		// Step 2, the owed slots: none is queued. The upgrade's pause holds every job until a person resumes
 		// it (src/upgrade-hold.ts), and the clock then catches up as each job's catch-up says.
-		for (const { job, slot } of owed) log(`cron ${job.name ?? job.id}: its owed run of ${slot} is not queued: the clock catches up after \`pi-loops resume\``);
+		for (const { job, slot } of owed) log(`cron ${job.name ?? job.id}: its owed run of ${slot} is not queued: after \`pi-loops resume\` the loop runs as a loop turned on again does`);
 		// Step 3: the pause, before the commit point, so a start that stops between the two holds anyway.
 		holdUpgrade(dir);
 		// Step 5: the version 2 text kept beside, then the definitions as version 3, each as on or off as it
