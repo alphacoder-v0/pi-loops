@@ -928,6 +928,8 @@ export interface JobsView {
 	enabled(id: string): boolean;
 	/** Whether the session has a goal being pursued: a `goal` row without one is stale. */
 	goalActive(sessionId: string): boolean;
+	/** Whether the upgrade's pause holds (src/upgrade-hold.ts): every job's row waits. */
+	paused?(): boolean;
 }
 
 /** The job a row names: the clock's slot (`cron:`), `/cron run` (`cron-run:`), or a loop's follow-up (`wake:`). */
@@ -1195,6 +1197,11 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 			if (!job.exists) {
 				leaveHeld();
 				actions.push({ do: "exit", row, exit: "job-removed" });
+				return done();
+			}
+			// The upgrade's pause holds every job's row, `/cron run` too, until a person resumes (src/upgrade-hold.ts).
+			if (jobs.paused?.()) {
+				wait("pi-loops is paused after the upgrade: pi-loops resume");
 				return done();
 			}
 			// The clock's prompt and a loop's follow-up wait with its clock; `/cron run` was asked for, and

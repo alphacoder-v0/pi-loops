@@ -416,6 +416,12 @@ disabled and then asks once, where there is a terminal or a UI to ask in, whethe
 was enabled in the source. `off` never asks; `on` activates it as part of the import.
 Importing the same archive twice adds nothing the second time.
 
+## resume
+
+`pi-loops resume` ends the pause that an upgrade begins (the CHANGELOG's upgrade notes): loops, plain
+jobs and rules run again. It refuses while pi-loops 0.22 still runs in this loops directory, and names
+its pid. With no pause it says `pi-loops is not paused`.
+
 ## pi-loops in the background
 
 `pi-loops status` prints the process status, including its pid, version, start time, current work,

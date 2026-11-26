@@ -2639,3 +2639,24 @@ test("[fifo-session-file] a session file that is not a regular file holds no ent
 	assert.equal(child.stdout, "[]");
 	assert.deepEqual(sessionFileEntries(path.join(dir, "missing.jsonl")), []);
 });
+
+test("[upgrade-hold] while the upgrade's pause holds, every job's row waits, /cron run's too; a person's row is delivered; resumed, the job's row runs", async () => {
+	const { store, inbox, audit } = world();
+	const page = personRow("11111111-2222-3333-4444-555555555556", "hello from the browser", undefined, { sessionId: "s", cwd: "/p", createdBy: plainBy }, T0);
+	const clock = plainJobRow(plainJob(), plainRunId("j1", "2026-06-01T12:00:00Z"), "cron:j1", "", plainBy, T0 + 1);
+	store.append(page);
+	store.append(clock);
+	let paused = true;
+	const sinks: EngineSinks = { jobs: { exists: () => true, enabled: () => true, goalActive: () => true, paused: () => paused }, inbox, audit };
+	const w = windowOn(store);
+	const why = decideDrain("conversation", store.list("s"), proofOf("s", () => [], () => []), sinks.jobs, w.executor.view("s"), T0).find((a) => a.row?.id === clock.id);
+	assert.deepEqual(why?.do === "wait" ? why.why : why?.do, "pi-loops is paused after the upgrade: pi-loops resume");
+	const asked = plainJobRow(plainJob(), "run-asked-by-a-person", "cron-run:j1", "", plainBy, T0 + 2);
+	assert.equal(decideDrain("conversation", [asked], proofOf("s", () => [], () => []), sinks.jobs, w.executor.view("s"), T0).find((a) => a.row?.id === asked.id)?.do, "wait", "/cron run's row waits too");
+	const out = await drain("s", store, w.executor, T0 + 5_000, sinks);
+	assert.deepEqual([out.delivered, out.waiting], [[page.id], [clock.id]], "the person's own message goes; the job's row waits");
+	paused = false;
+	const fresh = windowOn(store);
+	const after = decideDrain("conversation", [clock], proofOf("s", () => [], () => []), sinks.jobs, fresh.executor.view("s"), T0 + 6_000).find((a) => a.row?.id === clock.id);
+	assert.notEqual(after?.do, "wait", "resumed: the job's row is no longer held");
+});

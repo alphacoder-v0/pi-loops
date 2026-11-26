@@ -22,6 +22,7 @@ import { type Answers, conversationFile, createAnswers } from "./answers.ts";
 import { ConversationIndex } from "./conversation-rows.ts";
 import { type LaneId, checkLane, parseLane } from "./lane.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
+import { upgradeHeld } from "./upgrade-hold.ts";
 import { type BackgroundExecutor, createBackgroundExecutor } from "./background-executor.ts";
 import { RunList } from "./run-list.ts";
 import type { OwnerView, SessionSnapshot } from "./job-owner.ts";
@@ -31,7 +32,7 @@ import { budgetState, jobCounts, runHistory } from "./job-status.ts";
 import { createCheckTick } from "./check-tick.ts";
 import { SubagentSlots } from "./slots.ts";
 import { type LoopJob, type RunRecord, newId } from "./store.ts";
-import { RUNTIME_RIDERS, type Riders, type TickFacts } from "./ticker.ts";
+import { RUNTIME_RIDERS, type Rider, type Riders, type TickFacts } from "./ticker.ts";
 import { openStores, type Stores } from "./stores.ts";
 import { createLoopLanes, createCheckLanes, abortRemovedJobs, type CheckLanes, type LoopLanes } from "./background-executor.ts";
 import { gateSources, runClockTick, type TickScope } from "./clock.ts";
@@ -157,7 +158,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const ownerView: OwnerView = { holdsOwn: false, hostRuns: (sessionId) => canHold(sessionId) };
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
-	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: stores.inbox, audit: stores.rules, ledger: stores.jobs, counts: (id) => jobCounts(stores.history().get(id), stores.clock.read().jobs[id]?.cleared), self: createdBy });
+	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false, paused: () => upgradeHeld(dir) }, inbox: stores.inbox, audit: stores.rules, ledger: stores.jobs, counts: (id) => jobCounts(stores.history().get(id), stores.clock.read().jobs[id]?.cleared), self: createdBy });
 
 	/* ------------------------------------------------------ lifecycle hooks */
 
@@ -638,10 +639,13 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	}
 	let lastDeadSessionScan = 0;
 	let tickerFacts: TickFacts = { startedAt: Date.now(), tickMs: 30_000 };
+	// While the upgrade's pause holds (src/upgrade-hold.ts), nothing automated starts: no clock pass (a
+	// gate's command included), rule check, answer, lane run or delivery into a closed conversation.
+	const unlessPaused = (rider: Rider): Rider => (now, facts) => (upgradeHeld(dir) ? undefined : rider(now, facts));
 	const riders: Riders<(typeof RUNTIME_RIDERS)[number]> = {
 		"stray-leases": (now) => releaseStrayLeases(now),
-		"closed-conversations": () => deliverToClosed(),
-		"rule-checks": (now) => checkTick.tick(now),
+		"closed-conversations": unlessPaused(() => deliverToClosed()),
+		"rule-checks": unlessPaused((now) => checkTick.tick(now)),
 		"removed-jobs": () => { abortRemovedJobs(runs, (id) => stores.jobs.load().some((job) => job.id === id), log); },
 		"dead-sessions": async (now) => {
 			if (!deps.sessionExists || now - lastDeadSessionScan < 10 * 60_000) return;
@@ -655,6 +659,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		},
 		clock: async (now, facts) => {
 			tickerFacts = facts;
+			if (upgradeHeld(dir)) return;
 			const sources = {
 				book: () => stores.book(), history: () => stores.history(), requests: stores.requests, clock: stores.clock,
 				proof: (lane: string) => {
@@ -673,9 +678,9 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			firePlain(now);
 		},
 		// Before the loop lanes: an answer E4 starts here holds its lane, so a slot due beside it is skipped as an overlap in this tick.
-		answers: (now) => answerLanes.tick(now),
-		"check-lanes": (now) => checks.drainAll(now),
-		"loop-lanes": (now) => loops.drainAll(now),
+		answers: unlessPaused((now) => answerLanes.tick(now)),
+		"check-lanes": unlessPaused((now) => checks.drainAll(now)),
+		"loop-lanes": unlessPaused((now) => loops.drainAll(now)),
 		notices: (now, facts) => {
 			const budget = budgetState(stores.jobs, deps.config().dailyBudgetUsd, now);
 			const day = stamp(now).slice(0, 10);

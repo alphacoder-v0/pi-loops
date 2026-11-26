@@ -37,7 +37,7 @@ import { JobStore, defaultLoopsDir, homeLoopsDir, piAgentDir } from "./store.ts"
 import { automationBadge, previewText, readSessionHead, shortSessionId } from "./session-head.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, TRACKER_FILE, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, listRecipes, loadRecipe, planInstall, playbookFiles, readRecord, resolveRecipeRef } from "./recipe.ts";
 import { TriggerStore } from "./triggers.ts";
-import { upgradeOffLine } from "./convert-v2.ts";
+import { HOLD_LINE, olderRunningLine, resumeUpgrade, upgradeHeld } from "./upgrade-hold.ts";
 import { openStores } from "./stores.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { formatLocal, stamp } from "./schedule.ts";
@@ -141,6 +141,9 @@ const CLI_USAGE = [
 	"",
 	"pi-loops start | stop | restart | status [--url] | abort <run-id|trace-id|session-id>",
 	"    Run, stop or check pi-loops in the background, or stop one run or turn.",
+	"",
+	"pi-loops resume",
+	"    End the pause that the upgrade began, once every pi that runs an older pi-loops is closed.",
 	"",
 	"pi-loops pair",
 	"    Print a one-use code that signs another device in to the page.",
@@ -420,6 +423,8 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		return 0;
 	}
 
+	if (command === "resume") return resumeCommand(loopsDir, out);
+
 	// 0.22.8 shipped `pi-loops host status|abort|stop`: they stay spellings of the same commands.
 	if (SERVICE_VERBS.has(command) || command === "host") {
 		const code = await serviceCommand(verb, words, flags, loopsDir, out);
@@ -451,7 +456,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 /** What runs loops while no pi is open, started, stopped and looked at by name. */
 const SERVICE_VERBS = new Set(["start", "stop", "restart", "status", "abort", "pair"]);
 
-const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "host", "recipe", "inbox", "events", "web", "open", "upgrade", "install-launcher", "uninstall-launcher", "help"]);
+const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "resume", "start", "stop", "restart", "status", "abort", "pair", "host", "recipe", "inbox", "events", "web", "open", "upgrade", "install-launcher", "uninstall-launcher", "help"]);
 
 /**
  * `pi-loops inbox`: `/inbox list|claim|dismiss` for a shell with no pi open, and — with `--json` —
@@ -923,7 +928,7 @@ export function cliRoute(argv: string[]): "launch" | "subcommand" | "help" | "ve
 const USAGE_SECTIONS: Record<string, string> = {
 	web: "pi-loops [--web", tui: "pi-loops [--web", open: "pi-loops open", upgrade: "pi-loops upgrade", "install-launcher": "pi-loops install-launcher", "uninstall-launcher": "pi-loops uninstall-launcher",
 	export: "pi-loops export", import: "pi-loops import", sessions: "pi-loops sessions", inspect: "pi-loops inspect",
-	start: "pi-loops start | stop", stop: "pi-loops start | stop", restart: "pi-loops start | stop", status: "pi-loops start | stop",
+	resume: "pi-loops resume", start: "pi-loops start | stop", stop: "pi-loops start | stop", restart: "pi-loops start | stop", status: "pi-loops start | stop",
 	abort: "pi-loops start | stop", host: "pi-loops start | stop", pair: "pi-loops pair", recipe: "pi-loops recipe", inbox: "pi-loops inbox", events: "pi-loops events",
 };
 
@@ -934,12 +939,12 @@ const GLOBAL_FLAGS = new Set(["cwd", "help"]);
 const VERB_FLAGS: Record<string, readonly string[]> = {
 	upgrade: ["check"], "install-launcher": ["dir"], "uninstall-launcher": ["dir"], import: ["activate-triggers"], export: ["session", "output", "exclude-triggers"],
 	sessions: ["limit", "all"], recipe: ["level", "overwrite"], inbox: ["all", "json", "reason"], start: ["foreground"], status: ["url"],
-	inspect: [], stop: [], restart: [], abort: [], pair: [], open: ["loops-dir"], events: [],
+	inspect: [], stop: [], restart: [], abort: [], pair: [], open: ["loops-dir"], events: [], resume: [],
 };
 
 /** How many words each subcommand reads after its name. */
 const VERB_POSITIONALS: Record<string, number> = {
-	upgrade: 0, "install-launcher": 0, "uninstall-launcher": 0, export: 0, sessions: 0, start: 0, stop: 0, restart: 0, status: 0, pair: 0, open: 0,
+	upgrade: 0, "install-launcher": 0, "uninstall-launcher": 0, export: 0, sessions: 0, resume: 0, start: 0, stop: 0, restart: 0, status: 0, pair: 0, open: 0,
 	import: 1, inspect: 1, abort: 1, recipe: 2, inbox: 2, events: 2,
 };
 
@@ -1841,9 +1846,8 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 		return serviceCommand("start", [], new Map(), loopsDir, out);
 	}
 	if (verb === "status") {
-		// What the upgrade turned off and is still off, before anything else (src/convert-v2.ts).
-		const off = upgradeOffLine(readOrNone(() => new JobStore(loopsDir).load()), readOrNone(() => new TriggerStore(loopsDir).load()));
-		if (off) out(off);
+		// The upgrade's pause, before anything else (src/upgrade-hold.ts).
+		if (upgradeHeld(loopsDir)) out(HOLD_LINE);
 		const res = await askHost(loopsDir, { op: "status" });
 		if (!res) {
 			// What waits for each conversation, from the files: a live host says it in its snapshot, and
@@ -1990,8 +1994,13 @@ function runInForeground(loopsDir: string): Promise<number> {
 	});
 }
 
-/** A store's list, or none when it cannot be read: a line about what is off must not stop `status`. */
-function readOrNone<T>(read: () => T[]): T[] {
-	try { return read(); }
-	catch { return []; /* the status below says what is wrong with the store */ }
+/** `pi-loops resume`: the end of the upgrade's pause (src/upgrade-hold.ts). Refused while pi-loops 0.22 still runs here. */
+export function resumeCommand(loopsDir: string, out: (line: string) => void): number {
+	const result = resumeUpgrade(loopsDir);
+	if (!result.resumed) {
+		out(olderRunningLine(result.olderPids));
+		return 1;
+	}
+	out(result.held ? "pi-loops resumed: loops, plain jobs and rules run again; a loop that missed slots catches up as its catch-up says" : "pi-loops is not paused");
+	return 0;
 }

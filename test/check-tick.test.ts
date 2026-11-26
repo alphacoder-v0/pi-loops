@@ -1,4 +1,5 @@
 import { type TestContext, test } from "node:test";
+import { holdUpgrade, resumeUpgrade } from "../src/upgrade-hold.ts";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -512,4 +513,17 @@ test("[gate-policy] a rule's command gate written into triggers.json by hand tha
 	assert.equal(fs.existsSync(path.join(project, "ran")), false, "the gate was not run");
 	assert.equal(s.runner.calls.length, 1, "a failed look lets the rule through to the model");
 	assert.equal(s.clock().rules[rule.id].last.failed, "refused: a gate is one line a person can read: it holds a line break, a control character or an invisible one");
+});
+
+test("[upgrade-hold] while the upgrade's pause holds, pi-loops in the background writes no check row and runs no check; resumed, it checks", async (t) => {
+	const s = scene(t, { pollSecs: 60 });
+	const project = s.project();
+	await s.host.stores.rules.add({ condition: "a file appears", action: "say so", cwd: project, fireOnce: false, promoteToChat: false });
+	holdUpgrade(s.dir);
+	await s.poll();
+	assert.equal(s.rows(project).length, 0, "no check row while paused");
+	assert.equal(s.runner.calls.length, 0, "no check run while paused");
+	assert.deepEqual(resumeUpgrade(s.dir), { resumed: true, held: true });
+	await s.poll();
+	assert.equal(s.runner.calls.length, 1, "resumed: the rule is checked");
 });

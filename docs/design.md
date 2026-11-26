@@ -92,18 +92,19 @@ machine. Everything here follows from that, and each one has a price.
    waits for a window) costs it no read of the conversation on a tick where the conversation,
    `jobs.json` and the queue are as they were and no backoff has ended; it remembers the three at
    the last "nothing to do" and reads again when one moves. The inbox gets a result only when the conversation cannot
-   be written; shell-created rules go to the inbox. An older pi-loops gets no special treatment:
-   nothing reads `presence/` or writes `scheduler.json` for it. Instead, the conversion of a directory
-   an older version worked in turns off every loop, plain job and rule that was on, once (owner
-   decision, 2026-11-26): each carries its own mark (`disabled.code` "upgrade", `offForUpgrade`), which
-   goes when a person turns it on or off in this version. The version 3 `jobs.json` is the one commit point, written
-   last under `jobs.lock` (an empty one for a directory with rules only): a start that stops before it
-   does every step again, and after it a file an older window writes again turns nothing off. A
-   window and `pi-loops status` say what is still off. An older window still open then runs nothing of them: 0.22 cannot read the converted
-   `jobs.json`, and every rule is off. Two designs that detected an older pi-loops and waited for it
-   were withdrawn after three reviews each found one more path or file it did not handle. The cost:
-   every person who upgrades turns their loops and rules on again, and one they turn on while an
-   older window is still open can run there too.
+   be written; shell-created rules go to the inbox. An older pi-loops gets no special treatment while it
+   runs: nothing reads `presence/` or writes `scheduler.json` for it. Instead the conversion of a
+   directory an older version worked in pauses pi-loops (`upgrade-hold.json`, written before the
+   version 3 `jobs.json`, the conversion's one commit point; src/upgrade-hold.ts), owner decision of
+   2026-11-26. While it holds, nothing automated starts in a window or in the background: no clock
+   pass, rule check, answer, lane run or delivery into a closed conversation; a person's own messages
+   go. Each job and rule keeps the on or off it had, so an archive, a downgrade and the lists see them
+   as they were. `pi-loops resume` (or `/pi-loops resume`, or the page's Resume) ends it, and refuses
+   while a fresh `presence/` entry of a live pid says pi-loops 0.22 still runs here. Two designs that
+   detected an older pi-loops and waited for it, and one that turned every job and rule off and marked
+   each, were withdrawn: reviews found one more path around the first two each round, and the third
+   carried its marks into archives, downgrades and answers. The cost: every person who upgrades runs
+   one command, and a 0.24.2 terminal that was not restarted is not seen by `resume`.
 
    The cost: loops pause while pi-loops cannot start, whereas they previously ran in an interactive pi.
    A loop no longer shares a window's live MCP connections; it connects its own from `mcp.toml`

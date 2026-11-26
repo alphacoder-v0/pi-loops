@@ -78,33 +78,28 @@ All notable changes to pi-loops are documented here. The format follows
   built-in tool outside them is refused. pi-loops' other tools, and a tool of another extension or
   an MCP server, run. Nobody is asked about a tool that is refused, since a card cannot show what it
   would do. Before, the dialog let you allow it.
-- **The upgrade turns off every loop, plain job and rule; turn them on again yourself.** The first
-  start of this version in a loops directory that pi-loops 0.24.2 or earlier worked in converts it
-  and turns off each loop, plain job and rule that was on, once: what you turn on or make after
-  that stays on. A pi that still runs an older pi-loops
-  (a 0.22 window, a 0.24.2 terminal or its pi-loops in the background) would otherwise run them
-  beside this version: a 0.22 window checks its project's rules itself, and a claim or a dismiss in
-  an older version writes `inbox.jsonl` again in its own shape, which removes what this version
-  adds to a finding. A pi window says so when it starts, and so does `pi-loops status`, while any of
-  them is still off: `pi-loops turned off 2 loops and 1 rule when it upgraded this loops directory,
-  … Close every such pi, then turn them on: /cron enable <id> (…); /triggers enable <id> (…).` In
-  `/cron`, such a loop shows `turned off when pi-loops was upgraded`. Nothing else is lost: each
-  definition, its run count, the findings and the notes files stay, and the version 2 file is kept
-  as `jobs.json.v2.bak`. A run that 0.24.2 owed, or had queued and not started (a scheduled one,
-  or one asked for with `/cron run`), is dropped, and the loop goes on from its next slot when you
-  turn it on. A loop or rule that you turn on or off yourself later in this version is not in the
-  line. A rule turned on or off in a window of an older version keeps the mark: whenever it is off
-  again, it is in the line. Putting
-  `jobs.json.v2.bak` back as `jobs.json` is an upgrade again: what it holds is turned off again.
-  - Close every pi of an older pi-loops before you turn them on. Until then, an older window can
-    still run what you turn on beside this version, and its claim or dismiss can still remove what
-    this version added to a finding.
+- **The upgrade pauses pi-loops until you resume it.** The first start of this version in a loops
+  directory that pi-loops 0.24.2 or earlier worked in converts it and pauses: no loop, plain job,
+  rule check or push check runs, and no answer to a question starts, until you run `pi-loops resume`
+  (or `/pi-loops resume`, or Resume on the page). Your own messages are answered as usual. A pi that
+  still runs an older pi-loops (a 0.22 window, a 0.24.2 terminal, or 0.22 in the background) would
+  otherwise run your loops and rules beside this version: a 0.22 window checks its project's rules
+  itself, and a claim or a dismiss in an older version writes `inbox.jsonl` again in its own shape,
+  which removes what this version adds to a finding. Each pi window says so when it starts,
+  `pi-loops status` says so first, and the page says so above the conversation with a Resume button:
+  `pi-loops is paused after the upgrade, so that a pi that still runs an older pi-loops does not run
+  your loops and rules a second time. Close every such pi, then run \`pi-loops resume\` (or Resume
+  on the page).` Close those pis first: `resume` refuses while pi-loops 0.22 still runs here, and
+  names its pid. Nothing else changes: each loop, plain job and rule keeps the on or off it had,
+  with its run count, findings and notes, and the version 2 file is kept as `jobs.json.v2.bak`. A
+  run that 0.24.2 owed is not queued; once resumed, each loop catches up as its catch-up says.
+  - The check is made once, when the directory is converted. Putting `jobs.json.v2.bak` back as
+    `jobs.json` is an upgrade again, and pauses again.
   - pi-loops 0.24.2 in the background, which an upgrade of the package does not stop, is replaced
-    by the first pi window of this version, as before. Until then it runs nothing: it cannot read
-    the converted `jobs.json`, and every rule is off.
-  - A 0.22 window started with `--no-session` or `--session-dir` keeps its plain jobs off after the
-    upgrade like every other job; a `--no-session` conversation cannot be opened again, so make its
-    jobs again in a new conversation.
+    by the first pi window of this version, as before. While the pause holds it runs nothing: it
+    cannot read the converted `jobs.json`.
+  - A terminal of 0.24.2 that you do not restart cannot be seen from here: `resume` cannot refuse
+    for it. Restart every terminal of an older pi-loops before you resume.
 - **A loop's notes file from 0.24.2 needs no conversion.** `state/<id>.md` is read as it is. A
   file edited by hand to more than 2000 characters, which 0.24.2 cut when it read it, is now read
   whole, and the loop's next run writes it back under the cap.

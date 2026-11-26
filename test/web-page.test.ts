@@ -5301,3 +5301,20 @@ test("[gate-held-count] a gated loop's row says no model call while its command 
 		dom.dispose();
 	}
 });
+
+test("[upgrade-hold] while the upgrade's pause holds, the page says so above the conversation with a Resume button that posts /resume", { timeout: 20_000 }, async () => {
+	const hold = "pi-loops is paused after the upgrade, so that a pi that still runs an older pi-loops does not run your loops and rules a second time. Close every such pi, then run `pi-loops resume` (or Resume on the page).";
+	const state = { ...STATE, automation: { ...(STATE as any).automation, upgradeHold: hold } };
+	const dom = await startPage(state, { "/conversations": listAnswer(ROWS), "/resume": { ok: true, held: true } });
+	const doc = (globalThis as any).document;
+	await until(() => !doc.getElementById("held").hidden, "the held line is shown");
+	const line = doc.getElementById("held");
+	assert.match(textOf(line), /paused after the upgrade/);
+	const button = (line.children as any[]).find((c) => c && c.tag === "button");
+	assert.ok(button, "a Resume button");
+	assert.equal(button._text ?? button.textContent, "Resume");
+	await button.onclick();
+	await until(() => dom.calls.some((c) => c.url === "/resume"), "it posts /resume");
+	const call = dom.calls.find((c) => c.url === "/resume")!;
+	assert.equal(call.headers?.["x-pi-web-token"], "test-token", "behind the token");
+});

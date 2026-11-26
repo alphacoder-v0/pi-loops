@@ -1969,3 +1969,33 @@ test("the CLI loads without pi's SDK: only the verb that needs it imports it, so
 	assert.equal(r.status, 0, r.stderr);
 	assert.equal(r.stdout.trim(), `pi-loops v${PI_LOOPS_VERSION}`);
 });
+
+test("[upgrade-hold] pi-loops status says the upgrade's pause first; pi-loops resume refuses while pi-loops 0.22 still runs here, then ends it", async () => {
+	const root = tmp("pi-loops-resume-cli-");
+	const loops = path.join(root, "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	fs.writeFileSync(path.join(loops, "upgrade-hold.json"), JSON.stringify({ at: new Date().toISOString() }));
+	// pi-loops 0.22 running here: this test's own pid stands for its process.
+	fs.mkdirSync(path.join(loops, "presence"));
+	fs.writeFileSync(path.join(loops, "presence", "old.json"), JSON.stringify({ pid: process.pid, host: os.hostname(), instance: "i", cwd: root, kind: "interactive", heartbeatAt: new Date().toISOString() }));
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: "off" }, async () => {
+		const status: string[] = [];
+		await runCli(["status"], (l) => status.push(l));
+		assert.match(status[0] ?? "", /^pi-loops is paused after the upgrade, .* run `pi-loops resume`/);
+		const refused: string[] = [];
+		assert.equal(await runCli(["resume"], (l) => refused.push(l)), 1);
+		assert.deepEqual(refused, [`pi-loops 0.22 still runs here (pid ${process.pid}): close that pi, or end it (kill ${process.pid}), then run \`pi-loops resume\` again.`]);
+		assert.equal(fs.existsSync(path.join(loops, "upgrade-hold.json")), true);
+		fs.rmSync(path.join(loops, "presence"), { recursive: true });
+		const done: string[] = [];
+		assert.equal(await runCli(["resume"], (l) => done.push(l)), 0);
+		assert.match(done[0] ?? "", /^pi-loops resumed: /);
+		assert.equal(fs.existsSync(path.join(loops, "upgrade-hold.json")), false);
+		const again: string[] = [];
+		assert.equal(await runCli(["resume"], (l) => again.push(l)), 0);
+		assert.deepEqual(again, ["pi-loops is not paused"]);
+		const after: string[] = [];
+		await runCli(["status"], (l) => after.push(l));
+		assert.equal(after.some((l) => /paused after the upgrade/.test(l)), false);
+	});
+});

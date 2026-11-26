@@ -1,4 +1,5 @@
 import { mock, test } from "node:test";
+import { resumeUpgrade } from "../src/upgrade-hold.ts";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -610,7 +611,7 @@ test("a turn that is going when pi-loops stops is handed back, not failed: its r
 	}
 });
 
-test("pi-loops in the background asks nothing again that 0.24.2 left a marker for: the upgrade turned each job off; the prompt 0.24.2 wrote is counted as a run", async () => {
+test("[upgrade-hold] pi-loops in the background runs nothing while the upgrade's pause holds; resumed, the prompt 0.24.2 wrote is counted and not asked again", async () => {
 	const s = scene(ok);
 	try {
 		// 0.24.2 ran the turn with a marker on the job and no row, and its process stopped.
@@ -623,9 +624,14 @@ test("pi-loops in the background asks nothing again that 0.24.2 left a marker fo
 		// The markers are what 0.24.2 left on disk at a start; the conversion reads them before a tick.
 		convertStores(s.dir);
 		for (let i = 0; i < 2; i++) await s.tick();
-		assert.deepEqual(s.calls.map((c) => c.jobId), [], "nothing is asked again: both jobs are off until a person turns them on");
+		assert.deepEqual(s.calls.map((c) => c.jobId), [], "paused: nothing runs");
+		assert.deepEqual([...new RequestStore(s.dir).sessions()].flatMap((lane) => new RequestStore(s.dir).list(lane)).filter((row) => row.source.startsWith("cron:")), [], "and the clock wrote no row: no pass ran while paused");
+		assert.equal(s.job()!.enabled, true, "the job keeps the on it had");
+		assert.deepEqual(resumeUpgrade(s.dir), { resumed: true, held: true });
+		for (let i = 0; i < 2; i++) await s.tick();
+		assert.equal(s.calls.filter((c) => c.jobId === "cron-held").length, 0, "the prompt 0.24.2 wrote is not asked again");
 		const written = s.job()!;
-		assert.deepEqual([written.enabled, written.running, written.runCount, written.lastFiredAt], [false, undefined, 1, fired], "the prompt 0.24.2 wrote is counted, and its stamps stand");
+		assert.deepEqual([written.running, written.runCount, written.lastFiredAt], [undefined, 1, fired], "the prompt 0.24.2 wrote is counted, and its stamps stand");
 	} finally {
 		await s.host.stop();
 	}

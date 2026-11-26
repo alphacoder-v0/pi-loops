@@ -7,6 +7,7 @@
  * than scraping command output: they are on this machine, they are JSON, and text meant for a
  * human is a bad wire format.
  */
+import { HOLD_LINE, olderRunningLine, resumeUpgrade, upgradeHeld } from "./upgrade-hold.ts";
 import { randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
@@ -1329,7 +1330,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		// is which ones actually connected and what they exposed, and that is in the runtime snapshot.
 		// Read from host-service.json on every request: the runtime snapshot is written only when a change
 		// is worth an entry, and pi-loops coming up may not be written for a minute.
-		return { installed: true, dir: LOOPS_DIR, jobs, rules, inboxNew, inboxDecisions, elsewhere, hostPid, lastCheck: lastCheckIn(cwd), paused: jobs.some((j: any) => j.enabled && (j.stateful || whereRuns(owned(j), view).kind === "paused")) || rules.some((r: any) => r.enabled) ? paused : undefined };
+		return { installed: true, dir: LOOPS_DIR, jobs, rules, inboxNew, inboxDecisions, elsewhere, hostPid, lastCheck: lastCheckIn(cwd), ...(upgradeHeld(LOOPS_DIR) ? { upgradeHold: HOLD_LINE } : {}), paused: jobs.some((j: any) => j.enabled && (j.stateful || whereRuns(owned(j), view).kind === "paused")) || rules.some((r: any) => r.enabled) ? paused : undefined };
 	}
 
 	const requests = new RequestStore(LOOPS_DIR);
@@ -2677,6 +2678,11 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					if (!("ok" in b)) return void json(res, { error: b.error }, b.status);
 					const done = url.pathname === "/loops/stop" ? stopLoopRun(b.ok) : url.pathname === "/loops/wake" ? clearLoopWake(b.ok) : await tuneLoop(b.ok);
 					return void json(res, done.body, done.status);
+				}
+				// The end of the upgrade's pause (src/upgrade-hold.ts), as `pi-loops resume` says it. Behind the token.
+				if (!prefixed && url.pathname === "/resume" && req.method === "POST") {
+					const done = resumeUpgrade(LOOPS_DIR);
+					return void json(res, done.resumed ? { ok: true, held: done.held } : { error: olderRunningLine(done.olderPids) }, done.resumed ? 200 : 409);
 				}
 				if (!prefixed && url.pathname === "/inbox/seen" && req.method === "POST") {
 					const b = await inboxBody(req, SEEN_BODY_MAX);
