@@ -445,15 +445,16 @@ if (readUiPrefs(dir).host === "stopped") {
 }
 log(`pi-loops ${PI_LOOPS_VERSION} started (pid ${process.pid}, dir ${dir})`);
 // One version at a time (src/older.ts): while an older pi-loops is open here, this process converts
-// nothing and runs nothing. It holds its claim, so an older window does not start another, and keeps
-// its heartbeat, so a window does not take it for a wedged one.
+// nothing and runs nothing. It holds its claim, so a window of 0.24.2 does not start another (pi-loops
+// 0.22 claims `host.json`, not this record, and may start one: each look stops it once no older window
+// is open), and keeps its heartbeat, so a window does not take it for a wedged one.
 await untilAlone(dir, {
 	say: log,
 	self: PI_LOOPS_VERSION,
 	each: (now) => {
 		try { updateHostService(dir, process.pid, { tickAt: stamp(now) }); }
 		catch (err: any) { log(`heartbeat: ${err?.message ?? err}`); }
-		stopOlderBackground(olderPiLoops(dir, now), log);
+		return stopOlderBackground(dir, olderPiLoops(dir, now), log);
 	},
 });
 convertDir(dir, log);

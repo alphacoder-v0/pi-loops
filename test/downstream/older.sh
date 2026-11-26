@@ -27,6 +27,8 @@ echo 'setInterval(() => {}, 1000);' >"$ROOT/old-pkg/src/host-entry.mjs"
 node "$ROOT/old-pkg/src/host-entry.mjs" &
 OLD_BG=$!
 printf '{"pid":%s,"host":"%s","instance":"bg","cwd":"","kind":"host","heartbeatAt":"%s"}\n' "$OLD_BG" "$(hostname)" "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >"$PI_LOOPS_DIR/presence/old-bg.json"
+# 0.22.8's own record of it, which names the pid and the entry it runs.
+printf '{"pid":%s,"host":"%s","startedAt":"%s","node":"node","entry":"%s"}\n' "$OLD_BG" "$(hostname)" "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" "$ROOT/old-pkg/src/host-entry.mjs" >"$PI_LOOPS_DIR/host.json"
 
 start_model 'done <loop-state>seen: 1</loop-state>' || finish
 start_host
@@ -45,19 +47,24 @@ case "$STATUS" in
 	*"is waiting: a pi window with pi-loops 0.22 (pid $OLD_PID, $PROJECT) is still open. Close it"*) ok "status line" ;;
 	*) fail "status does not say it waits: $STATUS" ;;
 esac
+$PI_LOOPS status 2>&1 | grep -q -F "is not answering" && fail "status calls the process that waits one that is not answering"
 grep -q -F "is waiting: a pi window with pi-loops 0.22 (pid $OLD_PID" "$PI_LOOPS_DIR/host.log" || fail "the log does not say it waits"
 ok "log line"
 
-echo "pi-loops 0.22 in the background is asked to stop"
+echo "while the 0.22 window is open, its background stays, as before"
+kill -0 "$OLD_BG" 2>/dev/null || fail "pi-loops 0.22 in the background was stopped while its window is open"
+ok "kept"
+
+echo "once the 0.22 window is gone, pi-loops 0.22 in the background is asked to stop"
+kill "$OLD_PID" 2>/dev/null
+wait "$OLD_PID" 2>/dev/null
 i=0
-while kill -0 "$OLD_BG" 2>/dev/null; do [ "$i" -ge 50 ] && break; sleep 0.2; i=$((i + 1)); done
+while kill -0 "$OLD_BG" 2>/dev/null; do [ "$i" -ge 225 ] && break; sleep 0.2; i=$((i + 1)); done
 kill -0 "$OLD_BG" 2>/dev/null && fail "pi-loops 0.22 in the background (pid $OLD_BG) still runs"
 grep -q -F "asked pi-loops 0.22 in the background (pid $OLD_BG) to stop" "$PI_LOOPS_DIR/host.log" || fail "the log does not say it stopped pi-loops 0.22 in the background"
 ok "stopped"
 
-echo "once the 0.22 window is gone, it converts and runs the loop"
-kill "$OLD_PID" 2>/dev/null
-wait "$OLD_PID" 2>/dev/null
+echo "then it converts and runs the loop"
 wait_for "$ROOT/run_end.json" 90 || fail "the loop never ran after the 0.22 window closed (host log: $(tail -5 "$PI_LOOPS_DIR/host.log" 2>/dev/null))"
 stop_host
 expect_eq "jobs.json is version 3" "$(jq -c .version "$PI_LOOPS_DIR/jobs.json")" 3

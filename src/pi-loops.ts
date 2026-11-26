@@ -665,7 +665,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	 */
 	async function drainRequests(opts: DrainOptions = {}) {
 		const sessionId = binding.here().sessionId;
-		if (!sessionId) return undefined;
+		// While an older pi-loops is open here, nothing queued is handed to pi (src/older.ts).
+		if (!sessionId || waiting !== undefined) return undefined;
 		const now = Date.now();
 		// The window's one drain: a yes first (it runs after the current turn, before the next turn row,
 		// design 6.4), then the engine's, under one lock, so pi is handed one turn of ours at a time.
@@ -3491,8 +3492,15 @@ export default function piLoops(pi: ExtensionAPI) {
 			// executor delivers only in tui and rpc mode): a window or pi-loops in the background does.
 			const hostMode = ctx.mode === "tui" || ctx.mode === "rpc" || envFlag("LOOPS_HOST");
 			if (!hostMode) {
-				// A `pi -p` run converts what an older version left, as a window does, unless an older pi-loops is open here.
-				if (!olderPiLoops(dir, Date.now()).length) convertDir(dir, (line) => log.info(line));
+				// A `pi -p` run converts what an older version left, as a window does, unless an older pi-loops is
+				// open here: then its pi-loops commands and tools answer with the line, as a waiting window's do.
+				const line = olderLine(olderPiLoops(dir, Date.now()), PI_LOOPS_VERSION);
+				if (line === undefined) convertDir(dir, (l) => log.info(l));
+				else {
+					waiting = line;
+					log.info(line);
+					if (!ctx.hasUI) process.stderr.write(`[pi-loops] ${line}\n`);
+				}
 				return;
 			}
 			// One version at a time (src/older.ts): while an older pi-loops is open in this loops directory,
@@ -3518,7 +3526,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		waiting = line;
 		if (ctx.hasUI) afterHistory(ctx, () => ctx.ui.notify(`[pi-loops] ${line}`, "warning"));
 		log.info(line);
-		untilAlone(dir, { say: (next: string) => { waiting = next; log.info(next); }, self: PI_LOOPS_VERSION, unref: true, each: (now) => void stopOlderBackground(olderPiLoops(dir, now), (l) => log.info(l)) })
+		untilAlone(dir, { say: (next: string) => { waiting = next; log.info(next); }, self: PI_LOOPS_VERSION, unref: true, each: (now) => stopOlderBackground(dir, olderPiLoops(dir, now), (l) => log.info(l)) })
 			.then(() => {
 				waiting = undefined;
 				if (leaving) return;
@@ -3719,6 +3727,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		markTurn("agent_settled");
 		// pi is idle now: what it no longer has is offered again by the drain below, unless a stop named it.
 		executor.settled(event.aborted);
+		// While an older pi-loops is open here, a turn's end writes nothing: no answer, goal or offer (src/older.ts).
+		if (waiting !== undefined) return;
 		// An answer's turn that ran closes now; a stop closes it unfinished.
 		await windowAnswers.settled(event.aborted, Date.now()).catch((err: any) => log.info(`answers: ${err?.message ?? err}`));
 		// The tracker description `/recipe add` was waiting for: written during this turn, so the

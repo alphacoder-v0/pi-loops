@@ -1863,6 +1863,12 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 			// No answer is not the same as not running: one wedged on a hung MCP read still holds the
 			// record. Fall back to it, so the person gets a pid and a log to look at.
 			const rec = live();
+			// One that waits for an older pi-loops serves no socket yet (src/older.ts): it is not wedged, and is not to be stopped.
+			if (rec && rec.version === PI_LOOPS_VERSION && olderPiLoops(loopsDir, Date.now()).length) {
+				out(`pi-loops (pid ${rec.pid}) waits for it (started ${formatLocal(Date.parse(rec.startedAt))})`);
+				out(`  log: ${path.join(loopsDir, HOST_LOG)}`);
+				return 1;
+			}
 			if (rec) {
 				out(`pi-loops (pid ${rec.pid}) is not answering (started ${formatLocal(Date.parse(rec.startedAt))})`);
 				out(`  log: ${path.join(loopsDir, HOST_LOG)}`);

@@ -93,20 +93,20 @@ machine. Everything here follows from that, and each one has a price.
    `jobs.json` and the queue are as they were and no backoff has ended; it remembers the three at
    the last "nothing to do" and reads again when one moves. The inbox gets a result only when the conversation cannot
    be written; shell-created rules go to the inbox. One version works a loops directory at a time
-   (`src/older.ts`, owner decision of 2026-11-26). A 0.22 window writes `presence/` every 30 s, and a
-   terminal of 0.24.2 or earlier holds a lease with no `version`. While a live one is there, pi-loops
-   in the background, a window and `pi -p` convert nothing and run nothing in the directory, and each
-   says why with the pid and the fix. The older versions write `inbox.jsonl` again in their own shape
-   on each claim or dismiss, which removes every field this version added, and a 0.22 window checks
-   its project's rules beside the background: a bridge that mended each case (a fence, a yield of
-   each rule, a side file for the fields) would find one more case in each review. The cost: while a
-   terminal of 0.24.2 or earlier stays open, this version runs nothing. pi-loops 0.24.2 in the
-   background, which an upgrade of the package leaves running, goes on running the loops until a
-   window of this version replaces it once the terminal is gone; when it does not run, no loop or
-   rule runs until that terminal restarts, and that terminal does not say so. A 0.22 window open meanwhile runs its own
-   loops, because nothing is converted; the 0.22 process it starts in the background when it closes
-   is stopped by the one that waits, as an upgrade replaces an older background. The check is made when a process starts: an older pi-loops
-   that starts after it (a downgrade) is not waited for.
+   (`src/older.ts`, owner decision of 2026-11-26). A 0.22 window writes `presence/` every 30 s, a
+   terminal of 0.24.2 or earlier holds a lease with no `version`, and 0.24.2 in the background has a
+   live service record of its version. While one is there, pi-loops in the background, a window and
+   `pi -p` convert nothing and run nothing in the directory, and each says why with the pid and the
+   fix. The older versions write `inbox.jsonl` again in their own shape on each claim or dismiss,
+   which removes every field this version added, and a 0.22 window checks its project's rules
+   beside the background: a bridge that mended each case (a fence, a yield of each rule, a side file
+   for the fields) would find one more case in each review. While an older window or terminal is
+   open, the older background goes on as before; once none is, a process of this version that waits
+   replaces it as an upgrade does (0.24.2 by its upgrade request, 0.22 by SIGTERM to the pid its
+   `host.json` names), and only then converts. The cost: while a terminal of 0.24.2 or earlier stays
+   open with no 0.24.2 background, no loop or rule runs, and that terminal does not say so. The check
+   is made when a process starts: an older pi-loops that starts after it (a downgrade) is not waited
+   for.
 
    The cost: loops pause while pi-loops cannot start, whereas they previously ran in an interactive pi.
    A loop no longer shares a window's live MCP connections; it connects its own from `mcp.toml`

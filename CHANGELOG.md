@@ -74,20 +74,26 @@ All notable changes to pi-loops are documented here. The format follows
   project's rules beside pi-loops in the background. So while one is open, this version converts
   nothing and runs nothing in that directory: no loop, rule, push, queued prompt or inbox write.
   It says so in one line, with the pid and what to do, in a new pi window (when it starts, and
-  for each pi-loops command or tool), in `pi-loops status` and the launcher, and in the log:
-  `pi-loops 0.24.3 is waiting: a pi window with pi-loops 0.22 (pid 12345, ~/proj) is still open.
-  Close it, and pi-loops 0.24.3 starts within 30 seconds. Until then, that window runs your
-  loops.` Close that window or restart that terminal, and this version starts within 30
-  seconds, with no restart of its own windows. A loop that came due meanwhile runs once.
-  - With a 0.22 window open, that window goes on running its loops, plain jobs and rules as
-    before, since nothing is converted yet. When it closes, it starts pi-loops 0.22 in the
-    background to keep them running; this version asks that process to stop (SIGTERM), as an
-    upgrade replaces an older pi-loops in the background, and says so in its log.
-  - With a terminal of 0.24.2 or earlier open, pi-loops 0.24.2 in the background, which an
-    upgrade of the package does not stop, goes on running your loops and rules as before. Once
-    the terminal is gone, a window of this version replaces it. If it no longer runs (it was
-    stopped, or it ended), no loop or rule runs until you restart that terminal, since what
-    starts in the background now is this version, and it waits. That terminal does not say so.
+  for each pi-loops command or tool), in `pi-loops status`, the launcher and `pi -p`, and in the
+  log: `pi-loops 0.24.3 is waiting: a pi window with pi-loops 0.22 (pid 12345, ~/proj) is still
+  open. Close it, and pi-loops 0.24.3 starts within a minute. Until then, that window runs your
+  loops.` A window that waits hands pi nothing queued, and a turn you run in it ends with
+  nothing that pi-loops writes. Close that window or restart that terminal, and this version
+  starts within a minute, with no restart of its own windows. A loop that came due meanwhile
+  runs once.
+  - While a window or terminal of the older version is open, its own pi-loops in the background
+    goes on as before: a 0.22 window, which runs its loops itself, starts one when it closes, and
+    pi-loops 0.24.2 in the background, which an upgrade of the package does not stop, runs the
+    loops and rules beside a 0.24.2 terminal. Once no such window or terminal is open, a process
+    of this version that waits replaces it, as an upgrade does, and says so in its log: 0.24.2 is
+    asked over its socket, and 0.22 gets SIGTERM when its own record (`host.json`) names that
+    process on this machine. A pi window of this version, or `pi-loops start`, is such a process.
+    Then it converts the directory.
+  - With a 0.24.2 terminal open and no pi-loops 0.24.2 in the background (it was stopped, or it
+    ended), no loop or rule runs until you restart that terminal, since what starts in the
+    background now is this version, and it waits. That terminal does not say so.
+  - A 0.22 entry from another machine that shares the loops directory is waited for by its
+    heartbeat. It is not stopped from here: the line says to stop it on that machine.
   - The browser page is not served while pi-loops in the background waits.
   - This version looks when it starts. An older pi-loops that starts after it, as after a
     downgrade, is not waited for.
