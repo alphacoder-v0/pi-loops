@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { convertedAndOn } from "./v2-jobs.ts";
 import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import { spawn, spawnSync } from "node:child_process";
@@ -1290,6 +1291,7 @@ test("pi-loops status lists a loop as failing only after three failures in a row
 	const now = new Date().toISOString();
 	const job = (id: string, name: string | undefined) => ({ id, ...(name ? { name } : {}), schedule: { kind: "every", ms: 86_400_000 }, stateful: true, prompt: "p", cwd: dir, enabled: true, catchUp: false, createdAt: now, lastFiredAt: now, runCount: 3, skippedOverlap: 0 });
 	fs.writeFileSync(path.join(dir, "jobs.json"), JSON.stringify({ version: 2, jobs: [job("cron-0123456789abcdef0123456789abcdef", undefined), job("cron-fedcba9876543210fedcba9876543210", "missed-once")] }));
+	convertedAndOn(dir);
 	// The streak is the failed runs at the end of a loop's run log.
 	const failed = (jobId: string, n: number) => Array.from({ length: n }, (_, i) => JSON.stringify({ runId: `run-${jobId.slice(5, 13)}-${i}`, jobId, stateful: true, cwd: dir, pid: 1, startedAt: now, finishedAt: now, ok: false, error: "provider 500", findings: 0, droppedFindings: 0, stateUpdated: false }));
 	fs.writeFileSync(path.join(dir, "runs.jsonl"), [...failed("cron-0123456789abcdef0123456789abcdef", 3), ...failed("cron-fedcba9876543210fedcba9876543210", 1)].join("\n") + "\n");

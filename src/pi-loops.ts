@@ -82,6 +82,7 @@ import { type Trigger, auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTr
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ConfirmTurn, type ToolHost, automationTools, checkJobName, confirmControlPlane, controlTarget, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
 import { claimPageChild } from "./page-children.ts";
 import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
+import { upgradeOffLine } from "./convert-v2.ts";
 import { ALL_PROJECTS, awayIn, awayLine, markProjectSeen } from "./seen.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -3490,6 +3491,11 @@ export default function piLoops(pi: ExtensionAPI) {
 			// since Tuesday is still counted as active, and this line is the only one a user reads.
 			const failing = failingSummary(myJobs);
 			log.info(`session start: ${myJobs.length} enabled loop(s), ${myRules.length} enabled rule(s)${failing ? `, ${failing}` : ""} in ${session.cwd}`);
+			{
+				// What the upgrade turned off, while any of it is still off (src/convert-v2.ts).
+				const line = upgradeOffLine(loadOrNone(() => stores.jobs.load()), loadOrNone(() => stores.rules.load()));
+				if (line && ctx.hasUI) afterHistory(ctx, () => ctx.ui.notify(`[pi-loops] ${line}`, "warning"));
+			}
 			{
 				const line = awayLine(awayHere());
 				// After pi has drawn the resumed history: said now, a long conversation pushed it off the screen.

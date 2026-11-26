@@ -6,7 +6,7 @@ import { DEFAULT_REPLY } from "../boot.mjs";
 export const id = "J4", title = "Five runs of a loop: the first three and every one asked for card in the conversation, with the reply; five in the strip and the panel", expect = "head", active = true, page = "new", tui = true, needs = ["agent-browser"];
 const JOB = "cron-journey-run-card";
 export function seed(dirs) {
-	fs.writeFileSync(path.join(dirs.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: JOB, name: "journey-card", schedule: { kind: "every", ms: 60000 }, stateful: true, prompt: "report the journey run", cwd: dirs.project, enabled: false, catchUp: true, createdAt: new Date(Date.now() + 120000).toISOString(), runCount: 0, skippedOverlap: 0 }] }));
+	fs.writeFileSync(path.join(dirs.loops, "jobs.json"), JSON.stringify({ version: 3, jobs: [{ id: JOB, name: "journey-card", schedule: { kind: "every", ms: 60000 }, stateful: true, prompt: "report the journey run", cwd: dirs.project, enabled: false, catchUp: true, createdAt: new Date(Date.now() + 120000).toISOString() }] }));
 }
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; /* the lease holder exited */ } };
 const jsonl = (file) => { try { return fs.readFileSync(file, "utf8").split("\n").filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; /* a line still being written */ } }); } catch { return []; /* not written yet */ } };

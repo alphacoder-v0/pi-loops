@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { convertedAndOn } from "./v2-jobs.ts";
 import { mock, test } from "node:test";
 import fsDefault from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
@@ -2352,7 +2353,7 @@ test("a loop row carries its run, its signal and one suggestion; apply writes on
 		// pi-loops in the background holds the busy loop's run: its pid is the service record's.
 		fs.writeFileSync(path.join(page.loops, "host-service.json"), JSON.stringify({ v: 1, pid: process.pid, startedAt: new Date().toISOString() }));
 		fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [original, loopJob(dir, { id: "cron-cccccccc", name: "busy" }), loopJob(dir, { id: "cron-dddddddd", name: "window", stateful: false }), loopJob(dir, { id: "cron-eeeeeeee", name: "held", stateful: false, sessionId: "held-here" }), loopJob(dir, { id: "cron-ffffffff", name: "left", stateful: false, sessionId: "held-there" })] }));
-		convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
+		convertedAndOn(page.loops); // as pi-loops converts 0.24.2's file at its start, and a person turns its loops on again
 		// A plain job's turn in a closed conversation has no marker: it is the claim on the job's row. One is the background's, one a process's that is not.
 		const queue = new RequestStore(page.loops);
 		const claimedAt = new Date().toISOString();
@@ -2398,7 +2399,7 @@ test("a loop row carries its run, its signal and one suggestion; apply writes on
 
 		// Apply: a fresh loop, the same numbers.
 		fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [loopJob(dir, { lastFiredAt: new Date(Date.now() - 60_000).toISOString() })] }));
-		convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
+		convertedAndOn(page.loops); // as pi-loops converts 0.24.2's file at its start, and a person turns its loops on again
 		const applied = await page.post("loops/tune", { jobId: "cron-aaaaaaaa", key: "slower:cron-aaaaaaaa:every 15m", choice: "apply" });
 		assert.equal(applied.status, 200);
 		assert.equal(applied.body.op, "set");
@@ -2425,7 +2426,8 @@ test("a loop whose findings were all dismissed is offered Pause, and applying it
 	try {
 		fs.mkdirSync(page.loops, { recursive: true });
 		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [loopJob(dir)] }));
-		convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
+		convertedAndOn(page.loops);
+		convertedAndOn(page.loops); // as pi-loops converts 0.24.2's file at its start, and a person turns its loops on again
 		writeInbox(page.loops, Array.from({ length: 6 }, (_, i) => finding({ id: `inb-${hex(i + 1)}`, job_id: "cron-aaaaaaaa", status: "dismissed" })));
 		fs.writeFileSync(path.join(page.loops, "runs.jsonl"), JSON.stringify({ runId: `run-${hex(1)}`, jobId: "cron-aaaaaaaa", stateful: true, cwd: dir, pid: 1, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), ok: true, findings: 6, droppedFindings: 0, stateUpdated: true }) + "\n");
 		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
@@ -2473,7 +2475,8 @@ test("a tune whose store write fails answers 500 with fixed words and logs the e
 		// L2: Keep in one tab, Apply in another, at once: exactly one lands, whichever is first.
 		for (let i = 0; i < 4; i++) {
 			fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [loopJob(dir, { lastFiredAt: new Date(Date.now() - 60_000).toISOString() })] }));
-			convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
+			convertedAndOn(path.dirname(jobsFile));
+			convertedAndOn(page.loops); // as pi-loops converts 0.24.2's file at its start, and a person turns its loops on again
 			const answers = await Promise.all([page.post("loops/tune", { jobId: "cron-aaaaaaaa", key, choice: "keep" }), page.post("loops/tune", { jobId: "cron-aaaaaaaa", key, choice: "apply" })]);
 			assert.deepEqual(answers.map((a) => a.status).sort(), [200, 409], `round ${i}: ${JSON.stringify(answers)}`);
 			const job = JSON.parse(fs.readFileSync(jobsFile, "utf8")).jobs[0];
@@ -2482,12 +2485,12 @@ test("a tune whose store write fails answers 500 with fixed words and logs the e
 
 		// L3: a loop whose cwd names no project the page lists.
 		fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [loopJob("")] }));
-		convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
+		convertedAndOn(page.loops); // as pi-loops converts 0.24.2's file at its start, and a person turns its loops on again
 		assert.deepEqual(await page.post("loops/tune", { jobId: "cron-aaaaaaaa", key: "slower:cron-aaaaaaaa:every 15m", choice: "apply" }), { status: 404, body: { error: "no such loop" } });
 
 		// L1: the store cannot be written.
 		fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [loopJob(dir)] }));
-		convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
+		convertedAndOn(page.loops); // as pi-loops converts 0.24.2's file at its start, and a person turns its loops on again
 		const store = (await import("../src/store.ts")).JobStore.prototype;
 		const real = store.update;
 		store.update = async () => { throw new Error(`EACCES: permission denied, open '${jobsFile}.tmp'`); };
@@ -2573,7 +2576,7 @@ test("[wake-me] a loop row carries what the loop set for itself; POST /loops/wak
 	try {
 		fs.mkdirSync(page.loops, { recursive: true });
 		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [loopJob(dir)] }));
-		convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
+		convertedAndOn(page.loops); // as pi-loops converts 0.24.2's file at its start, and a person turns its loops on again
 		const clock = clockStore(page.loops);
 		const at = stamp(Date.now() + 3_600_000);
 		clock.setFollowup("cron-aaaaaaaa", { at, note: "nothing before then", set_by: "run-a" }, true, Date.now());
@@ -2607,7 +2610,8 @@ test("[next-run] a quiet loop's next run is the first slot the tick runs after t
 		fs.mkdirSync(page.loops, { recursive: true });
 		fs.writeFileSync(path.join(page.loops, "host-service.json"), JSON.stringify({ v: 1, pid: process.pid, startedAt: new Date().toISOString() }));
 		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [loopJob(dir, { lastFiredAt: new Date(Date.now() - 60_000).toISOString() })] }));
-		convertStores(page.loops); // as pi-loops converts 0.24.2's file at its start
+		convertedAndOn(page.loops);
+		convertedAndOn(page.loops); // as pi-loops converts 0.24.2's file at its start, and a person turns its loops on again
 		const clock = clockStore(page.loops);
 		const until = Date.now() + 40 * 60_000;
 		clock.setFollowup("cron-aaaaaaaa", { at: stamp(until), note: "nothing before then", set_by: "run-a" }, true, Date.now());

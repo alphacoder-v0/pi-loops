@@ -78,20 +78,33 @@ All notable changes to pi-loops are documented here. The format follows
   built-in tool outside them is refused. pi-loops' other tools, and a tool of another extension or
   an MCP server, run. Nobody is asked about a tool that is refused, since a card cannot show what it
   would do. Before, the dialog let you allow it.
-- **Close every pi-loops 0.22 window before you upgrade.** This version no longer holds such a
-  window back, and a window no longer warns you that an older one has the same conversation open.
-  Windows of 0.23 and later are not affected. While a 0.22 window stays open:
-  - it runs loops beside pi-loops in the background, so a loop can run twice;
-  - it runs its conversation's plain jobs, and pi-loops in the background can run the same jobs
-    and write to the same conversation file, when a window of 0.23 or later opened that
-    conversation before;
-  - a rule's result for its conversation can be written to the conversation's file while the
-    window has it open, where it went to the inbox before;
-  - a 0.22 window started with `--no-session` or `--session-dir` has its plain jobs turned off
-    within ten minutes (`disabled: session … no longer exists`). `/cron enable <id>` holds only
-    after you close that window and open the conversation in a window of this version; before
-    that, the job is turned off again within ten minutes. A `--no-session` conversation cannot be
-    opened again: make its jobs again in a new conversation.
+- **The upgrade turns off every loop, plain job and rule; turn them on again yourself.** The first
+  start of this version in a loops directory that pi-loops 0.24.2 or earlier worked in converts it
+  and turns off each loop, plain job and rule that was on, once: what you turn on or make after
+  that stays on. A pi that still runs an older pi-loops
+  (a 0.22 window, a 0.24.2 terminal or its pi-loops in the background) would otherwise run them
+  beside this version: a 0.22 window checks its project's rules itself, and a claim or a dismiss in
+  an older version writes `inbox.jsonl` again in its own shape, which removes what this version
+  adds to a finding. A pi window says so when it starts, and so does `pi-loops status`, while any of
+  them is still off: `pi-loops turned off 2 loops and 1 rule when it upgraded this loops directory,
+  … Close every such pi, then turn them on: /cron enable <id> (…); /triggers enable <id> (…).` In
+  `/cron`, such a loop shows `turned off when pi-loops was upgraded`. Nothing else is lost: each
+  definition, its run count, the findings and the notes files stay, and the version 2 file is kept
+  as `jobs.json.v2.bak`. A run that 0.24.2 owed, or had queued and not started (a scheduled one,
+  or one asked for with `/cron run`), is dropped, and the loop goes on from its next slot when you
+  turn it on. A loop or rule that you turn on or off yourself later in this version is not in the
+  line. A rule turned on or off in a window of an older version keeps the mark: whenever it is off
+  again, it is in the line. Putting
+  `jobs.json.v2.bak` back as `jobs.json` is an upgrade again: what it holds is turned off again.
+  - Close every pi of an older pi-loops before you turn them on. Until then, an older window can
+    still run what you turn on beside this version, and its claim or dismiss can still remove what
+    this version added to a finding.
+  - pi-loops 0.24.2 in the background, which an upgrade of the package does not stop, is replaced
+    by the first pi window of this version, as before. Until then it runs nothing: it cannot read
+    the converted `jobs.json`, and every rule is off.
+  - A 0.22 window started with `--no-session` or `--session-dir` keeps its plain jobs off after the
+    upgrade like every other job; a `--no-session` conversation cannot be opened again, so make its
+    jobs again in a new conversation.
 - **A loop's notes file from 0.24.2 needs no conversion.** `state/<id>.md` is read as it is. A
   file edited by hand to more than 2000 characters, which 0.24.2 cut when it read it, is now read
   whole, and the loop's next run writes it back under the cap.

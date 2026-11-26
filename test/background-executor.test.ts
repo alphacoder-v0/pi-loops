@@ -610,7 +610,7 @@ test("a turn that is going when pi-loops stops is handed back, not failed: its r
 	}
 });
 
-test("pi-loops in the background does not ask again a prompt that 0.24.2 wrote and left a marker for; it asks again the one that was not written", async () => {
+test("pi-loops in the background asks nothing again that 0.24.2 left a marker for: the upgrade turned each job off; the prompt 0.24.2 wrote is counted as a run", async () => {
 	const s = scene(ok);
 	try {
 		// 0.24.2 ran the turn with a marker on the job and no row, and its process stopped.
@@ -623,9 +623,9 @@ test("pi-loops in the background does not ask again a prompt that 0.24.2 wrote a
 		// The markers are what 0.24.2 left on disk at a start; the conversion reads them before a tick.
 		convertStores(s.dir);
 		for (let i = 0; i < 2; i++) await s.tick();
-		assert.deepEqual(s.calls.map((c) => c.jobId), ["cron-unwritten"], "only the turn that wrote no prompt is asked again");
+		assert.deepEqual(s.calls.map((c) => c.jobId), [], "nothing is asked again: both jobs are off until a person turns them on");
 		const written = s.job()!;
-		assert.deepEqual([written.running, written.runCount, written.owedSlot, written.lastFiredAt], [undefined, 1, undefined, fired], "spent: the stamps stand, and the slot is counted");
+		assert.deepEqual([written.enabled, written.running, written.runCount, written.lastFiredAt], [false, undefined, 1, fired], "the prompt 0.24.2 wrote is counted, and its stamps stand");
 	} finally {
 		await s.host.stop();
 	}

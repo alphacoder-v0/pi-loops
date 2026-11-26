@@ -15,7 +15,7 @@ const CANCELLED = "Cancelled. The question is open again";
 export const id = "J3", title = "Act on a decision from the page: a yes runs in the background, in the run that reported it", expect = "head", active = true, milestone = "M5a", page = "new", tui = false, needs = ["agent-browser"];
 export function seed(dirs) {
 	// A stateful loop the page's findings came from, disabled until the journey wants it to run.
-	fs.writeFileSync(path.join(dirs.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: JOB, name: "issue-triage", schedule: { kind: "every", ms: 60000 }, stateful: true, prompt: FIRST_PROMPT, cwd: dirs.project, enabled: false, catchUp: true, createdAt: new Date(Date.now() + 120000).toISOString(), runCount: 0, skippedOverlap: 0 }] }));
+	fs.writeFileSync(path.join(dirs.loops, "jobs.json"), JSON.stringify({ version: 3, jobs: [{ id: JOB, name: "issue-triage", schedule: { kind: "every", ms: 60000 }, stateful: true, prompt: FIRST_PROMPT, cwd: dirs.project, enabled: false, catchUp: true, createdAt: new Date(Date.now() + 120000).toISOString() }] }));
 }
 
 /** The run that filed the first decision, as pi writes a session: a header, then a tree of entries. */

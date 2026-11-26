@@ -92,10 +92,18 @@ machine. Everything here follows from that, and each one has a price.
    waits for a window) costs it no read of the conversation on a tick where the conversation,
    `jobs.json` and the queue are as they were and no backoff has ended; it remembers the three at
    the last "nothing to do" and reads again when one moves. The inbox gets a result only when the conversation cannot
-   be written; shell-created rules go to the inbox. A pi-loops 0.22 window gets no special treatment:
-   nothing reads `presence/` and nothing writes `scheduler.json` for it. The cost: a 0.22 window that
-   is still open runs its loops beside pi-loops, and its conversation's plain jobs beside the
-   background process, until it is closed. Close every 0.22 window before an upgrade.
+   be written; shell-created rules go to the inbox. An older pi-loops gets no special treatment:
+   nothing reads `presence/` or writes `scheduler.json` for it. Instead, the conversion of a directory
+   an older version worked in turns off every loop, plain job and rule that was on, once (owner
+   decision, 2026-11-26): each carries its own mark (`disabled.code` "upgrade", `offForUpgrade`), which
+   goes when a person turns it on or off in this version. The version 3 `jobs.json` is the one commit point, written
+   last under `jobs.lock` (an empty one for a directory with rules only): a start that stops before it
+   does every step again, and after it a file an older window writes again turns nothing off. A
+   window and `pi-loops status` say what is still off. An older window still open then runs nothing of them: 0.22 cannot read the converted
+   `jobs.json`, and every rule is off. Two designs that detected an older pi-loops and waited for it
+   were withdrawn after three reviews each found one more path or file it did not handle. The cost:
+   every person who upgrades turns their loops and rules on again, and one they turn on while an
+   older window is still open can run there too.
 
    The cost: loops pause while pi-loops cannot start, whereas they previously ran in an interactive pi.
    A loop no longer shares a window's live MCP connections; it connects its own from `mcp.toml`

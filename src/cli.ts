@@ -37,6 +37,7 @@ import { JobStore, defaultLoopsDir, homeLoopsDir, piAgentDir } from "./store.ts"
 import { automationBadge, previewText, readSessionHead, shortSessionId } from "./session-head.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, TRACKER_FILE, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, listRecipes, loadRecipe, planInstall, playbookFiles, readRecord, resolveRecipeRef } from "./recipe.ts";
 import { TriggerStore } from "./triggers.ts";
+import { upgradeOffLine } from "./convert-v2.ts";
 import { openStores } from "./stores.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { formatLocal, stamp } from "./schedule.ts";
@@ -1840,6 +1841,9 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 		return serviceCommand("start", [], new Map(), loopsDir, out);
 	}
 	if (verb === "status") {
+		// What the upgrade turned off and is still off, before anything else (src/convert-v2.ts).
+		const off = upgradeOffLine(readOrNone(() => new JobStore(loopsDir).load()), readOrNone(() => new TriggerStore(loopsDir).load()));
+		if (off) out(off);
 		const res = await askHost(loopsDir, { op: "status" });
 		if (!res) {
 			// What waits for each conversation, from the files: a live host says it in its snapshot, and
@@ -1984,4 +1988,10 @@ function runInForeground(loopsDir: string): Promise<number> {
 		});
 		child.once("exit", (code, signal) => resolve(code ?? (signal ? 128 + (os.constants.signals[signal] ?? 0) : 1)));
 	});
+}
+
+/** A store's list, or none when it cannot be read: a line about what is off must not stop `status`. */
+function readOrNone<T>(read: () => T[]): T[] {
+	try { return read(); }
+	catch { return []; /* the status below says what is wrong with the store */ }
 }

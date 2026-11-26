@@ -45,9 +45,9 @@ export async function run(ctx) {
 	const after = (m) => new Date(Date.now() - m * 60_000).toISOString();
 
 	// Two loops in the project: one made in this conversation, one a recipe's made in another.
-	fs.writeFileSync(path.join(loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [
-		{ id: A, name: "away-a", schedule: { kind: "every", ms: 3_600_000 }, stateful: true, prompt: "look around", cwd: project, enabled: true, catchUp: true, createdAt: after(120), runCount: 0, skippedOverlap: 0, createdBy: { sessionId: mine, cwd: project } },
-		{ id: B, name: "pr-watch", recipe: "pr-watch", schedule: { kind: "every", ms: 3_600_000 }, stateful: true, prompt: "watch", cwd: project, enabled: false, catchUp: false, createdAt: after(120), runCount: 0, skippedOverlap: 0, createdBy: { sessionId: "conversation-b", cwd: project } },
+	fs.writeFileSync(path.join(loops, "jobs.json"), JSON.stringify({ version: 3, jobs: [
+		{ id: A, name: "away-a", schedule: { kind: "every", ms: 3_600_000 }, stateful: true, prompt: "look around", cwd: project, enabled: true, catchUp: true, createdAt: after(120), createdBy: { sessionId: mine, cwd: project } },
+		{ id: B, name: "pr-watch", recipe: "pr-watch", schedule: { kind: "every", ms: 3_600_000 }, stateful: true, prompt: "watch", cwd: project, enabled: false, catchUp: false, createdAt: after(120), createdBy: { sessionId: "conversation-b", cwd: project } },
 	] }));
 	fs.writeFileSync(path.join(loops, "seen.json"), JSON.stringify({ v: 2, projects: { [fs.realpathSync(project)]: cursor }, sessions: {} }));
 	const run = (n, over) => JSON.stringify({ runId: `seeded-${n}`, jobId: A, stateful: true, cwd: project, pid: 1, startedAt: after(31), finishedAt: after(30), ok: true, findings: 0, droppedFindings: 0, stateUpdated: false, forSession: mine, ...over });

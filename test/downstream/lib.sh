@@ -69,7 +69,7 @@ EOF
 # the store changes shape, this function changes with it and nothing else here does.
 seed_loop() {
 	cat > "$PI_LOOPS_DIR/jobs.json" <<EOF
-{ "version": 2, "jobs": [ { "id": "cron-00000000000000000000000000000001", "name": "$1", "schedule": { "kind": "every", "ms": 60000 }, "stateful": true, "prompt": "report", "cwd": "$PROJECT", "enabled": true, "catchUp": true, "createdAt": "2026-01-01T00:00:00.000+00:00", "runCount": 0, "skippedOverlap": 0 } ] }
+{ "version": 3, "jobs": [ { "id": "cron-00000000000000000000000000000001", "name": "$1", "schedule": { "kind": "every", "ms": 60000 }, "stateful": true, "prompt": "report", "cwd": "$PROJECT", "enabled": true, "catchUp": true, "createdAt": "2026-01-01T00:00:00.000+00:00" } ] }
 EOF
 }
 

@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { convertedAndOn } from "./v2-jobs.ts";
 import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import { convertStores } from "../src/convert-v2.ts";
@@ -1252,6 +1253,7 @@ test("the panel shows each job's next run from the job itself, with no file betw
 		job("cron-off", { kind: "cron", expr: "0 9 * * *" }, false),
 		job("every-bad", { kind: "every", ms: 5 }),
 	] }));
+	convertedAndOn(loops);
 	convertStores(loops); // as pi-loops converts 0.24.2's file at its start
 	fs.writeFileSync(path.join(loops, "host-service.json"), JSON.stringify({ v: 1, pid: process.pid, startedAt: new Date().toISOString() }));
 

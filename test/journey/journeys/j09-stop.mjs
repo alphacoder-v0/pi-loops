@@ -5,11 +5,11 @@ export const id = "J9", title = "Stop a running background run from the page", e
 
 const LOOP = "cron-9a9a9a9a";
 const SPARE = "cron-9b9b9b9b";
-const job = (id, name, cwd) => ({ id, name, schedule: { kind: "every", ms: 10 * 60_000 }, stateful: true, prompt: "wait for the build, then report", cwd, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 20 * 60_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+const job = (id, name, cwd) => ({ id, name, schedule: { kind: "every", ms: 10 * 60_000 }, stateful: true, prompt: "wait for the build, then report", cwd, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 20 * 60_000).toISOString() });
 
 /** Two loops due at once; the stand-in answers each run with one `sleep 120`, which holds it open until stopped. */
 export function seed(dirs) {
-	fs.writeFileSync(path.join(dirs.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [job(LOOP, "pr-watch", dirs.project), job(SPARE, "nightly", dirs.project)] }));
+	fs.writeFileSync(path.join(dirs.loops, "jobs.json"), JSON.stringify({ version: 3, jobs: [job(LOOP, "pr-watch", dirs.project), job(SPARE, "nightly", dirs.project)] }));
 	return { modelEnv: { FAKE_MODEL_TOOL_COMMAND: "sleep 120" } };
 }
 
