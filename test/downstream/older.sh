@@ -20,6 +20,13 @@ sleep 300 &
 OLD_PID=$!
 mkdir -p "$PI_LOOPS_DIR/presence"
 printf '{"pid":%s,"host":"%s","instance":"old","sessionId":"s-old","cwd":"%s","kind":"interactive","heartbeatAt":"%s"}\n' "$OLD_PID" "$(hostname)" "$PROJECT" "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >"$PI_LOOPS_DIR/presence/old.json"
+# And pi-loops 0.22 in the background, which a 0.22 window starts when it closes: a process that runs
+# the background entry, with its presence entry. Nobody sees it, so pi-loops stops it as an upgrade does.
+mkdir -p "$ROOT/old-pkg/src"
+echo 'setInterval(() => {}, 1000);' >"$ROOT/old-pkg/src/host-entry.mjs"
+node "$ROOT/old-pkg/src/host-entry.mjs" &
+OLD_BG=$!
+printf '{"pid":%s,"host":"%s","instance":"bg","cwd":"","kind":"host","heartbeatAt":"%s"}\n' "$OLD_BG" "$(hostname)" "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >"$PI_LOOPS_DIR/presence/old-bg.json"
 
 start_model 'done <loop-state>seen: 1</loop-state>' || finish
 start_host
@@ -40,6 +47,13 @@ case "$STATUS" in
 esac
 grep -q -F "is waiting: a pi window with pi-loops 0.22 (pid $OLD_PID" "$PI_LOOPS_DIR/host.log" || fail "the log does not say it waits"
 ok "log line"
+
+echo "pi-loops 0.22 in the background is asked to stop"
+i=0
+while kill -0 "$OLD_BG" 2>/dev/null; do [ "$i" -ge 50 ] && break; sleep 0.2; i=$((i + 1)); done
+kill -0 "$OLD_BG" 2>/dev/null && fail "pi-loops 0.22 in the background (pid $OLD_BG) still runs"
+grep -q -F "asked pi-loops 0.22 in the background (pid $OLD_BG) to stop" "$PI_LOOPS_DIR/host.log" || fail "the log does not say it stopped pi-loops 0.22 in the background"
+ok "stopped"
 
 echo "once the 0.22 window is gone, it converts and runs the loop"
 kill "$OLD_PID" 2>/dev/null

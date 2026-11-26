@@ -29,7 +29,7 @@ import { LeaseStore, holderAlive, openWindowPids, procStart } from "./lease.ts";
 import { waitingLanes } from "./ask.ts";
 import { sessionTitle, shortSessionId } from "./session-head.ts";
 import { convertDir, openStores } from "./stores.ts";
-import { untilAlone } from "./older.ts";
+import { olderPiLoops, stopOlderBackground, untilAlone } from "./older.ts";
 import { THINKING_LEVELS, thinkingLevelOrUndefined } from "./thinking.ts";
 import { rotateInPlace } from "./log.ts";
 import { createHostRuntime } from "./host-runtime.ts";
@@ -453,6 +453,7 @@ await untilAlone(dir, {
 	each: (now) => {
 		try { updateHostService(dir, process.pid, { tickAt: stamp(now) }); }
 		catch (err: any) { log(`heartbeat: ${err?.message ?? err}`); }
+		stopOlderBackground(olderPiLoops(dir, now), log);
 	},
 });
 convertDir(dir, log);

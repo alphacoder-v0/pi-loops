@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { LeaseBinding, LeaseStore, type LeaseHolder, type ProcessProbe } from "../src/lease.ts";
-import { olderPiLoops, untilAlone, olderLine, type OlderPiLoops } from "../src/older.ts";
+import { olderPiLoops, stopOlderBackground, untilAlone, olderLine, type OlderPiLoops } from "../src/older.ts";
 import { PI_LOOPS_VERSION } from "../src/version.ts";
 
 const NOW = Date.parse("2026-11-26T12:00:00.000Z");
@@ -48,7 +48,7 @@ test("[older-presence] a fresh presence entry of a live 0.22 window is an older 
 
 	const elsewhere = tmp();
 	presence(elsewhere, { host: "another-machine" });
-	assert.deepEqual(olderPiLoops(elsewhere, NOW, probe({ alive: () => false })), [{ version: "0.22", kind: "window", pid: 4242, where: "/home/p/proj" }], "a pid on another machine cannot be probed: the heartbeat decides");
+	assert.deepEqual(olderPiLoops(elsewhere, NOW, probe({ alive: () => false })), [{ version: "0.22", kind: "window", pid: 4242, where: "/home/p/proj", elsewhere: true }], "a pid on another machine cannot be probed: the heartbeat decides");
 
 	const torn = tmp();
 	fs.mkdirSync(path.join(torn, "presence"));
@@ -86,6 +86,12 @@ test("[older-lease] a live holder of a lease with no `version` is an older pi-lo
 	lease(both, "s1");
 	lease(both, "s2", { pid: 5151, instance: "t1" }, "/home/p/third");
 	assert.deepEqual(olderPiLoops(both, NOW, probe()).map((o) => `${o.version}:${o.pid}`), ["0.22:4242", "0.24:5151"], "one entry per process, 0.22 first");
+
+	const order = tmp();
+	presence(order, { pid: 1, kind: "host", cwd: "", instance: "bg" });
+	presence(order, { pid: 2 });
+	lease(order, "s1", { pid: 3 });
+	assert.deepEqual(olderPiLoops(order, NOW, probe()).map((o) => `${o.version}:${o.kind}:${o.pid}`), ["0.22:window:2", "0.24:window:3", "0.22:background:1"], "a window first: the line names what a person has to close");
 });
 
 test("[older-lease] every lease this version writes carries its version", () => {
@@ -128,4 +134,33 @@ test("[older-wait] untilAlone says the line once, looks again on each poll, and 
 	let ran = false;
 	await untilAlone(tmp(), { say: () => { ran = true; }, self: "0.24.3", each: () => { ran = true; } });
 	assert.equal(ran, false, "nothing older: it resolves at once and says nothing");
+});
+
+test("[older-stop] a waiting process stops pi-loops 0.22 in the background on this machine, and nothing else", async () => {
+	const { spawn } = await import("node:child_process");
+	// A process whose command line runs pi-loops' background entry, as v0.22.8 starts it when its last window closes.
+	const fake = path.join(tmp(), "src", "host-entry.mjs");
+	fs.mkdirSync(path.dirname(fake), { recursive: true });
+	fs.writeFileSync(fake, "setInterval(() => {}, 1000);\n");
+	const child = spawn(process.execPath, [fake], { stdio: "ignore" });
+	const exited = new Promise<NodeJS.Signals | null>((resolve) => child.once("exit", (_code, signal) => resolve(signal)));
+	try {
+		await new Promise((r) => setTimeout(r, 300));
+		const said: string[] = [];
+		const background: OlderPiLoops = { version: "0.22", kind: "background", pid: child.pid! };
+		assert.equal(stopOlderBackground([background], (l) => said.push(l)), 1);
+		assert.equal(await exited, "SIGTERM");
+		assert.deepEqual(said, [`asked pi-loops 0.22 in the background (pid ${child.pid}) to stop, as an upgrade replaces an older pi-loops`]);
+	} finally {
+		child.kill("SIGKILL");
+	}
+	const killed: number[] = [];
+	const kill = (pid: number) => void killed.push(pid);
+	assert.equal(stopOlderBackground([{ version: "0.22", kind: "background", pid: process.pid }], () => undefined, { kill }), 0, "a pid that runs another program now (this test) is not stopped");
+	assert.equal(stopOlderBackground([
+		{ version: "0.22", kind: "window", pid: 11 },
+		{ version: "0.22", kind: "background", pid: 12, elsewhere: true },
+		{ version: "0.24", kind: "background", pid: 13 },
+	], () => undefined, { kill, runsEntry: () => true }), 0, "a window, another machine's process, and 0.24.2's background (which the upgrade path replaces) are not stopped here");
+	assert.deepEqual(killed, []);
 });

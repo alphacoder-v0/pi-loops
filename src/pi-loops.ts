@@ -62,7 +62,7 @@ import { budgetState, jobCounts, jobRuns, type ListedJob, listedJobs, switchTarg
 import { runClockTick, decideRunNow } from "./clock.ts";
 import { DISABLED_BY_PERSON } from "./store.ts";
 import { convertDir, openStores, removeJob } from "./stores.ts";
-import { olderLine, olderPiLoops, untilAlone } from "./older.ts";
+import { olderLine, olderPiLoops, stopOlderBackground, untilAlone } from "./older.ts";
 import { Ticker, WINDOW_RIDERS, type Riders } from "./ticker.ts";
 import { TURN_TYPE } from "./mark.ts";
 import { renderTurn } from "./turn-render.ts";
@@ -3518,7 +3518,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		waiting = line;
 		if (ctx.hasUI) afterHistory(ctx, () => ctx.ui.notify(`[pi-loops] ${line}`, "warning"));
 		log.info(line);
-		untilAlone(dir, { say: (next: string) => { waiting = next; log.info(next); }, self: PI_LOOPS_VERSION, unref: true })
+		untilAlone(dir, { say: (next: string) => { waiting = next; log.info(next); }, self: PI_LOOPS_VERSION, unref: true, each: (now) => void stopOlderBackground(olderPiLoops(dir, now), (l) => log.info(l)) })
 			.then(() => {
 				waiting = undefined;
 				if (leaving) return;

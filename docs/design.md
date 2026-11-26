@@ -102,7 +102,8 @@ machine. Everything here follows from that, and each one has a price.
    each rule, a side file for the fields) would find one more case in each review. The cost: while a
    terminal of 0.24.2 or earlier stays open, no loop or rule runs, since the background is this
    version and it waits; that terminal does not say so. A 0.22 window open meanwhile runs its own
-   loops, because nothing is converted. The check is made when a process starts: an older pi-loops
+   loops, because nothing is converted; the 0.22 process it starts in the background when it closes
+   is stopped by the one that waits, as an upgrade replaces an older background. The check is made when a process starts: an older pi-loops
    that starts after it (a downgrade) is not waited for.
 
    The cost: loops pause while pi-loops cannot start, whereas they previously ran in an interactive pi.

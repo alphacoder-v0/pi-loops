@@ -14,6 +14,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import { holderAlive, LeaseStore, type ProcessProbe, systemProbe } from "./lease.ts";
 
 /** pi-loops 0.22 prunes a presence entry whose heartbeat is older than this (v0.22.8 src/presence.ts). */
@@ -27,9 +28,11 @@ export interface OlderPiLoops {
 	pid: number;
 	/** The project it has open, when its file names one. */
 	where?: string;
+	/** A 0.22 entry from another machine that shares this directory: its pid is not one here. */
+	elsewhere?: true;
 }
 
-/** Each older pi-loops open in `dir` now, one per process, the 0.22 ones first. */
+/** Each older pi-loops open in `dir` now, one per process: windows first, the 0.22 ones first among each. */
 export function olderPiLoops(dir: string, now: number, probe: ProcessProbe = systemProbe): OlderPiLoops[] {
 	const found: OlderPiLoops[] = [];
 	const seen = new Set<string>();
@@ -45,14 +48,15 @@ export function olderPiLoops(dir: string, now: number, probe: ProcessProbe = sys
 		if (!(age <= PRESENCE_STALE_MS)) continue;
 		// A pid on another machine that shares this directory cannot be probed: its heartbeat decides.
 		if (entry.host === self && !probe.alive(entry.pid)) continue;
-		add({ version: "0.22", kind: entry.kind === "host" ? "background" : "window", pid: entry.pid, ...(entry.cwd ? { where: entry.cwd } : {}) }, `${entry.host}:${entry.pid}`);
+		add({ version: "0.22", kind: entry.kind === "host" ? "background" : "window", pid: entry.pid, ...(entry.cwd ? { where: entry.cwd } : {}), ...(entry.host === self ? {} : { elsewhere: true as const }) }, `${entry.host}:${entry.pid}`);
 	}
 	for (const lease of new LeaseStore(dir).list()) {
 		const holder = lease.holder;
 		if (!holder || holder.version !== undefined || !holderAlive(holder, probe)) continue;
 		add({ version: "0.24", kind: holder.kind === "host" ? "background" : "window", pid: holder.pid, ...(lease.cwd ? { where: lease.cwd } : {}) }, `${self}:${holder.pid}`);
 	}
-	return found;
+	// A window first: that is the one a person has to close; pi-loops stops a 0.22 background itself.
+	return [...found.filter((o) => o.kind === "window"), ...found.filter((o) => o.kind === "background")];
 }
 
 interface PresenceEntry {
@@ -121,5 +125,45 @@ export async function untilAlone(dir: string, opts: { say: (line: string) => voi
 			const timer = setTimeout(resolve, opts.everyMs ?? WAIT_POLL_MS);
 			if (opts.unref) timer.unref();
 		});
+	}
+}
+
+/**
+ * A 0.22 window that closes starts pi-loops 0.22 in the background to keep its loops, and nobody
+ * sees that process. A process of this version that waits asks it to stop (SIGTERM), as an upgrade
+ * replaces an older pi-loops in the background, and says so. Only a process on this machine whose
+ * command line runs pi-loops' background entry: the pid of a presence entry may be another program
+ * by now. Returns how many it asked.
+ */
+export function stopOlderBackground(older: readonly OlderPiLoops[], say: (line: string) => void, opts: { kill?: (pid: number, signal: NodeJS.Signals) => void; runsEntry?: (pid: number) => boolean } = {}): number {
+	const kill = opts.kill ?? ((pid, signal) => process.kill(pid, signal));
+	const runsEntry = opts.runsEntry ?? runsHostEntry;
+	let asked = 0;
+	for (const o of older) {
+		if (o.version !== "0.22" || o.kind !== "background" || o.elsewhere || !runsEntry(o.pid)) continue;
+		try {
+			kill(o.pid, "SIGTERM");
+			asked++;
+			say(`asked pi-loops 0.22 in the background (pid ${o.pid}) to stop, as an upgrade replaces an older pi-loops`);
+		} catch (err: any) {
+			say(`could not stop pi-loops 0.22 in the background (pid ${o.pid}): ${err?.message ?? err}`);
+		}
+	}
+	return asked;
+}
+
+/** Whether `pid` runs `src/host-entry.mjs`, the entry pi-loops starts in the background (0.22.8 too). Unknown is no. */
+function runsHostEntry(pid: number): boolean {
+	const entry = `${path.sep}src${path.sep}host-entry.mjs`;
+	try {
+		return fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").some((arg) => arg.endsWith(entry));
+	} catch {
+		/* no /proc (macOS): ask ps */
+	}
+	try {
+		const command = `${execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trimEnd()} `;
+		return command.includes(`${entry} `);
+	} catch {
+		return false; // not known to be ours: it is not stopped
 	}
 }
