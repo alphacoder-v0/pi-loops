@@ -92,7 +92,8 @@ All notable changes to pi-loops are documented here. The format follows
   definition, its run count, the findings and the notes files stay, and the version 2 file is kept
   as `jobs.json.v2.bak`. A run that 0.24.2 owed, or had queued and not started (a scheduled one,
   or one asked for with `/cron run`), is dropped, and the loop goes on from its next slot when you
-  turn it on. A loop or rule that you turn on or off yourself later is not in the line. Putting
+  turn it on. A loop or rule that you turn on or off yourself later in this version is not in the
+  line; a rule turned on or off in a window of an older version still is. Putting
   `jobs.json.v2.bak` back as `jobs.json` is an upgrade again: what it holds is turned off again.
   - Close every pi of an older pi-loops before you turn them on. Until then, an older window can
     still run what you turn on beside this version, and its claim or dismiss can still remove what

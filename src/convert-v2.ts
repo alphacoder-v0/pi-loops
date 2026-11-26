@@ -326,7 +326,11 @@ function convertJobs(dir: string, log: (line: string) => void): { jobs: number; 
 		// Step 4: the runs 0.24.2 queued for them and nobody started.
 		dropQueuedRuns(dir, turnedOff, log);
 		writeFileAtomic(`${jobsFile}.v2.bak`, text);
-		writeFileAtomic(jobsFile, `${JSON.stringify({ version: JOBS_FILE_VERSION, jobs: v3 }, null, 2)}\n`);
+		const converted = `${JSON.stringify({ version: JOBS_FILE_VERSION, jobs: v3 }, null, 2)}\n`;
+		// The store's own backup (`jobs.json.bak`, what it tells a person to restore) is version 2 too
+		// while 0.24.2 wrote it last: restored, it would be an upgrade again. It becomes this version's.
+		writeFileAtomic(`${jobsFile}.bak`, converted);
+		writeFileAtomic(jobsFile, converted);
 		log(`jobs.json: version 2 converted to version 3 (${jobs.length} job(s), ${turnedOff.length} turned off for the upgrade${dropped ? `, ${dropped} entr${dropped === 1 ? "y" : "ies"} with no id left out` : ""}); the version 2 file is jobs.json.v2.bak`);
 		return { jobs: jobs.length, turnedOff, rulesOff };
 	});

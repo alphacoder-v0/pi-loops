@@ -476,9 +476,13 @@ export class JobStore {
 		return this.mutate((jobs) => ({ jobs: [...jobs, job], result: job }));
 	}
 
-	/** Turn a job off with its reason. A job already off keeps the reason it has. */
+	/**
+	 * Turn a job off with its reason. A job already off keeps the reason it has, but for one the upgrade
+	 * turned off that a person now turns off: it is theirs from now on, and the upgrade's line drops it.
+	 */
 	async disable(id: string, disabled: Disabled): Promise<LoopJob | undefined> {
 		return this.update(id, (job) => {
+			if (!job.enabled && job.disabled?.code === "upgrade" && disabled.code === "person") job.disabled = disabled;
 			if (!job.enabled) return;
 			job.enabled = false;
 			job.disabled = disabled;

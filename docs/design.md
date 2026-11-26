@@ -96,7 +96,7 @@ machine. Everything here follows from that, and each one has a price.
    nothing reads `presence/` or writes `scheduler.json` for it. Instead, the conversion of a directory
    an older version worked in turns off every loop, plain job and rule that was on, once (owner
    decision, 2026-11-26): each carries its own mark (`disabled.code` "upgrade", `offForUpgrade`), which
-   goes when a person turns it on or off. The version 3 `jobs.json` is the one commit point, written
+   goes when a person turns it on or off in this version. The version 3 `jobs.json` is the one commit point, written
    last under `jobs.lock` (an empty one for a directory with rules only): a start that stops before it
    does every step again, and after it a file an older window writes again turns nothing off. A
    window and `pi-loops status` say what is still off. An older window still open then runs nothing of them: 0.22 cannot read the converted

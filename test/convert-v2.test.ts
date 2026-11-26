@@ -545,3 +545,29 @@ test("[upgrade-off] The line names only what the upgrade turned off and is still
 	assert.equal(store.load()[0].offForUpgrade, undefined, "turned off by a person here: the mark goes too");
 	assert.equal(upgradeOffLine([], store.load()), undefined);
 });
+
+test("[upgrade-off] A loop the upgrade turned off that a person turns off is theirs: the line drops it.", async () => {
+	const dir = tmp("pi-loops-upgrade-person-");
+	writeV2(dir, [v2Loop(dir, { id: "cron-a" })]);
+	convertStores(dir);
+	const store = new JobStore(dir);
+	assert.match(upgradeOffLine(store.load(), []) ?? "", /turned off 1 loop/);
+	await store.disable("cron-a", { code: "person", why: "disabled by a person", at: "2026-11-26T00:00:00.000Z" });
+	assert.equal(store.load()[0].disabled?.code, "person");
+	assert.equal(upgradeOffLine(store.load(), []), undefined);
+	await store.disable("cron-a", { code: "cwd-missing", why: "disabled: cwd /gone", at: "2026-11-26T00:00:00.000Z" });
+	assert.equal(store.load()[0].disabled?.code, "person", "a job already off keeps its reason otherwise");
+});
+
+test("[upgrade-off] The store's backup becomes version 3 with the conversion: restored as the store tells a person to, it is no upgrade again.", async () => {
+	const dir = tmp("pi-loops-upgrade-bak-");
+	writeV2(dir, [v2Loop(dir, { id: "cron-a" })]);
+	fs.writeFileSync(path.join(dir, "jobs.json.bak"), JSON.stringify({ version: 2, jobs: [v2Loop(dir, { id: "cron-a" })] }));
+	fs.writeFileSync(path.join(dir, "triggers.json"), JSON.stringify({ version: 1, rules: [rule("rule-a", true, dir)] }));
+	convertStores(dir);
+	assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "jobs.json.bak"), "utf8")).version, 3);
+	await new TriggerStore(dir).setEnabled("rule-a", true);
+	fs.copyFileSync(path.join(dir, "jobs.json.bak"), path.join(dir, "jobs.json"));
+	assert.deepEqual(convertStores(dir).turnedOff, NONE);
+	assert.equal(new TriggerStore(dir).load()[0].enabled, true, "the rule a person turned on stays on");
+});
