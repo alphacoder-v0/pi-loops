@@ -3493,7 +3493,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			log.info(`session start: ${myJobs.length} enabled loop(s), ${myRules.length} enabled rule(s)${failing ? `, ${failing}` : ""} in ${session.cwd}`);
 			{
 				// What the upgrade turned off, while any of it is still off (src/convert-v2.ts).
-				const line = upgradeOffLine(readUiPrefs(dir).upgradeOff, loadOrNone(() => stores.jobs.load()), loadOrNone(() => stores.rules.load()));
+				const line = upgradeOffLine(loadOrNone(() => stores.jobs.load()), loadOrNone(() => stores.rules.load()));
 				if (line && ctx.hasUI) afterHistory(ctx, () => ctx.ui.notify(`[pi-loops] ${line}`, "warning"));
 			}
 			{

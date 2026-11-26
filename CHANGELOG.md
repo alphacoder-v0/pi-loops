@@ -80,7 +80,8 @@ All notable changes to pi-loops are documented here. The format follows
   would do. Before, the dialog let you allow it.
 - **The upgrade turns off every loop, plain job and rule; turn them on again yourself.** The first
   start of this version in a loops directory that pi-loops 0.24.2 or earlier worked in converts it
-  and turns off each loop, plain job and rule that was on. A pi that still runs an older pi-loops
+  and turns off each loop, plain job and rule that was on, once: what you turn on or make after
+  that stays on. A pi that still runs an older pi-loops
   (a 0.22 window, a 0.24.2 terminal or its pi-loops in the background) would otherwise run them
   beside this version: a 0.22 window checks its project's rules itself, and a claim or a dismiss in
   an older version writes `inbox.jsonl` again in its own shape, which removes what this version
@@ -89,8 +90,9 @@ All notable changes to pi-loops are documented here. The format follows
   … Close every such pi, then turn them on: /cron enable <id> (…); /triggers enable <id> (…).` In
   `/cron`, such a loop shows `turned off when pi-loops was upgraded`. Nothing else is lost: each
   definition, its run count, the findings and the notes files stay, and the version 2 file is kept
-  as `jobs.json.v2.bak`. A run that 0.24.2 owed is not run when you turn its loop on; the loop
-  goes on from its next slot.
+  as `jobs.json.v2.bak`. A run that 0.24.2 owed, or had queued and not started, is dropped, and
+  the loop goes on from its next slot when you turn it on. A loop or rule that you turn off
+  yourself later is not in the line.
   - Close every pi of an older pi-loops before you turn them on. Until then, an older window can
     still run what you turn on beside this version, and its claim or dismiss can still remove what
     this version added to a finding.

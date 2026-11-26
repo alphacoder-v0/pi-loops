@@ -1842,7 +1842,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 	}
 	if (verb === "status") {
 		// What the upgrade turned off and is still off, before anything else (src/convert-v2.ts).
-		const off = upgradeOffLine(readUiPrefs(loopsDir).upgradeOff, readOrNone(() => new JobStore(loopsDir).load()), readOrNone(() => new TriggerStore(loopsDir).load()));
+		const off = upgradeOffLine(readOrNone(() => new JobStore(loopsDir).load()), readOrNone(() => new TriggerStore(loopsDir).load()));
 		if (off) out(off);
 		const res = await askHost(loopsDir, { op: "status" });
 		if (!res) {

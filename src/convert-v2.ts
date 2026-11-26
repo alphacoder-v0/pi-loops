@@ -141,12 +141,16 @@ export interface Conversion {
  * converted slot has an id derived from the job and the slot, so a second attempt appends nothing.
  */
 export function convertStores(dir: string, log: (line: string) => void = () => {}): Conversion {
-	// Decided before any step removes what tells it: a directory an older version worked in.
-	const older = olderDirectory(dir);
+	// Decided before any step removes what tells it: a directory an older version worked in, not done yet.
+	const older = !readUiPrefs(dir).upgradeOff && olderDirectory(dir);
 	const converted = convertJobs(dir, log);
 	const { gates, turnedOff: rules } = convertRules(dir, log, older);
 	const turnedOff = { loops: converted.turnedOff, rules };
-	if (turnedOff.loops.length || turnedOff.rules.length) recordTurnedOff(dir, turnedOff);
+	if (older) {
+		dropQueuedRuns(dir, log);
+		// Last: each loop and rule already carries its own mark, so a stop before this line is finished by the next start.
+		writeUiPref(dir, "upgradeOff", { at: stamp(Date.now()) });
+	}
 	convertClaimRows({ inbox: new Inbox(dir), requests: new RequestStore(dir), audit: new TriggerStore(dir) }, log);
 	const removed: string[] = [];
 	for (const name of RETIRED_FILES) {
@@ -176,6 +180,8 @@ function olderDirectory(dir: string): boolean {
 	try {
 		const parsed = JSON.parse(fs.readFileSync(path.join(dir, "jobs.json"), "utf8")) as { version?: unknown };
 		if (typeof parsed?.version === "number" && parsed.version < JOBS_FILE_VERSION) return true;
+		// A start that turned its loops off and stopped before it wrote that it was done.
+		if (Array.isArray((parsed as { jobs?: unknown }).jobs) && ((parsed as { jobs: Array<{ disabled?: { code?: unknown } }> }).jobs).some((job) => job?.disabled?.code === "upgrade")) return true;
 	} catch {
 		/* no jobs.json, or one that does not parse: the retired files decide */
 	}
@@ -185,14 +191,25 @@ function olderDirectory(dir: string): boolean {
 	});
 }
 
-/** The ids the upgrade turned off, kept in `ui.json` for the line a window and `pi-loops status` show. Merged, so a second process adds to the first. */
-function recordTurnedOff(dir: string, off: { loops: readonly string[]; rules: readonly string[] }): void {
-	const before = readUiPrefs(dir).upgradeOff;
-	writeUiPref(dir, "upgradeOff", {
-		at: before?.at ?? stamp(Date.now()),
-		loops: [...new Set([...(before?.loops ?? []), ...off.loops])],
-		rules: [...new Set([...(before?.rules ?? []), ...off.rules])],
-	});
+/**
+ * The runs 0.24.2 queued for a loop or plain job that the upgrade turned off, and that no process has
+ * started: removed, so that turning it on goes on from its next slot and does not run an old prompt.
+ * A row a process claimed is left to that process. A second pass finds none.
+ */
+function dropQueuedRuns(dir: string, log: (line: string) => void): void {
+	let off: Set<string>;
+	try { off = new Set(new JobStore(dir).load().filter((job) => job.disabled?.code === "upgrade").map((job) => `cron:${job.id}`)); }
+	catch { return; /* jobs.json that does not parse: the store says what is wrong with it */ }
+	if (!off.size) return;
+	const requests = new RequestStore(dir);
+	let dropped = 0;
+	for (const lane of [...requests.sessions(), ...requests.lanes().map((l) => l.id)]) {
+		for (const row of requests.list(lane)) {
+			if (row.run || !off.has(row.source)) continue;
+			if (requests.removeIf(lane, row.id, (now) => !now.run && off.has(now.source)).outcome === "removed") dropped++;
+		}
+	}
+	if (dropped) log(`requests: ${dropped} run(s) an older pi-loops queued for a loop the upgrade turned off removed`);
 }
 
 /**
@@ -218,6 +235,7 @@ function convertRules(dir: string, log: (line: string) => void, older: boolean):
 			// Step 3: a rule that is on is turned off when an older version worked here (`olderDirectory`).
 			if (older && r.enabled === true) {
 				r.enabled = false;
+				(r as { offForUpgrade?: true }).offForUpgrade = true;
 				if (typeof r.id === "string") turnedOff.push(r.id);
 			}
 			const pre = r.precheck as { of?: unknown; raw?: unknown; resolved?: unknown } | undefined;
@@ -378,12 +396,12 @@ export function convertClaimRows(stores: ClaimRowStores, log: (line: string) => 
 
 /**
  * The line a window says at its start, and `pi-loops status` says, while a loop or rule the upgrade
- * turned off is still off. `undefined` once each is on again or gone.
+ * turned off is still off: each carries the mark (`disabled.code` "upgrade", `offForUpgrade`), which
+ * goes when it is turned on. `undefined` when none is.
  */
-export function upgradeOffLine(off: { loops: readonly string[]; rules: readonly string[] } | undefined, jobs: readonly Pick<LoopJob, "id" | "enabled">[], rules: readonly { id: string; enabled: boolean }[]): string | undefined {
-	if (!off) return undefined;
-	const loops = off.loops.filter((id) => jobs.some((j) => j.id === id && !j.enabled));
-	const rs = off.rules.filter((id) => rules.some((r) => r.id === id && !r.enabled));
+export function upgradeOffLine(jobs: readonly Pick<LoopJob, "id" | "enabled" | "disabled">[], rules: readonly { id: string; enabled: boolean; offForUpgrade?: true }[]): string | undefined {
+	const loops = jobs.filter((j) => !j.enabled && j.disabled?.code === "upgrade").map((j) => j.id);
+	const rs = rules.filter((r) => !r.enabled && r.offForUpgrade === true).map((r) => r.id);
 	if (!loops.length && !rs.length) return undefined;
 	const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 	const ids = (list: readonly string[]) => (list.length > 5 ? `${list.slice(0, 5).join(", ")} and ${list.length - 5} more` : list.join(", "));

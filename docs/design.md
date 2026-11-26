@@ -94,9 +94,10 @@ machine. Everything here follows from that, and each one has a price.
    the last "nothing to do" and reads again when one moves. The inbox gets a result only when the conversation cannot
    be written; shell-created rules go to the inbox. An older pi-loops gets no special treatment:
    nothing reads `presence/` or writes `scheduler.json` for it. Instead, the conversion of a directory
-   an older version worked in turns off every loop, plain job and rule that was on (owner decision,
-   2026-11-26), records which in `ui.json`, and a window and `pi-loops status` say so until each is on
-   again. An older window still open then runs nothing of them: 0.22 cannot read the converted
+   an older version worked in turns off every loop, plain job and rule that was on, once (owner
+   decision, 2026-11-26): each carries its own mark (`disabled.code` "upgrade", `offForUpgrade`), which
+   goes when it is turned on, and `ui.json` says the conversion is done, so a file an older window
+   writes again later turns nothing off. A window and `pi-loops status` say what is still off. An older window still open then runs nothing of them: 0.22 cannot read the converted
    `jobs.json`, and every rule is off. Two designs that detected an older pi-loops and waited for it
    were withdrawn after three reviews each found one more path or file it did not handle. The cost:
    every person who upgrades turns their loops and rules on again, and one they turn on while an
