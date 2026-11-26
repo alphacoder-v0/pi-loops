@@ -19,6 +19,11 @@ import * as path from "node:path";
 import { writeFileAtomic } from "./lock.ts";
 
 export interface UiPrefs {
+	/**
+	 * What the upgrade turned off in this loops directory (src/convert-v2.ts), by id. A window and
+	 * `pi-loops status` say so while any of them is still off.
+	 */
+	upgradeOff?: { at: string; loops: string[]; rules: string[] };
 	/** Whether `/cron`'s panel shows above the editor. Absent means nobody has turned it off. */
 	panel?: boolean;
 	/** The model and thinking level last chosen in the browser front end. */
@@ -73,6 +78,9 @@ export function readUiPrefs(dir: string): UiPrefs {
 	if (typeof doc.heldJobsNotice === "string") prefs.heldJobsNotice = doc.heldJobsNotice;
 	if (typeof doc.toolsCapNotice === "string") prefs.toolsCapNotice = doc.toolsCapNotice;
 	if (typeof doc.lastPage === "string") prefs.lastPage = doc.lastPage;
+	const off = doc.upgradeOff as { at?: unknown; loops?: unknown; rules?: unknown } | undefined;
+	const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+	if (off && typeof off === "object" && typeof off.at === "string") prefs.upgradeOff = { at: off.at, loops: ids(off.loops), rules: ids(off.rules) };
 	return prefs;
 }
 

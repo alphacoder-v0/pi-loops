@@ -90,7 +90,8 @@ export const DISABLED_BY_PERSON = "disabled by a person";
 
 /** Why a job does not run, and who said so. `at` is a stamp. */
 export interface Disabled {
-	code: "person" | "session-gone" | "cwd-missing" | "schedule" | "interrupted";
+	/** "upgrade": turned off by the conversion of a directory an older pi-loops worked in (src/convert-v2.ts). */
+	code: "person" | "session-gone" | "cwd-missing" | "schedule" | "interrupted" | "upgrade";
 	/** One line for a person. It ends with what to do when there is something to do. */
 	why: string;
 	at: string;

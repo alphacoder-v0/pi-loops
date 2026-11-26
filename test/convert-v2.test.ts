@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { type ClaimRowStores, RETIRED_FILES, convertClaimRows, convertStores } from "../src/convert-v2.ts";
+import { type ClaimRowStores, RETIRED_FILES, UPGRADE_OFF_WHY, convertClaimRows, convertStores, upgradeOffLine } from "../src/convert-v2.ts";
+import { readUiPrefs } from "../src/ui-prefs.ts";
 import { type ProtocolWrite, PROTOCOL } from "./answer-protocol.ts";
 import { Inbox } from "../src/inbox.ts";
 import { TriggerStore } from "../src/triggers.ts";
@@ -55,8 +56,8 @@ test("convertStores removes nothing that is not in its list.", () => {
 test("convertStores does nothing the second time, and nothing in a directory that is not there.", () => {
 	const { dir } = seeded();
 	convertStores(dir);
-	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, rows: 0, gates: 0 });
-	assert.deepEqual(convertStores(path.join(dir, "no-such-directory")), { removed: [], jobs: 0, rows: 0, gates: 0 });
+	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, gates: 0, turnedOff: NONE });
+	assert.deepEqual(convertStores(path.join(dir, "no-such-directory")), { removed: [], jobs: 0, gates: 0, turnedOff: NONE });
 });
 
 test("convertStores does not throw when the loops directory is a file.", () => {
@@ -81,16 +82,20 @@ test("convertStores does not throw when the loops directory cannot be read: it r
 	assert.equal(fs.existsSync(path.join(dir, "scheduler.json")), true);
 });
 
-test("the host and window convert through convertDir, and pi-loops in the background only once no older pi-loops is open.", () => {
+test("the host and window open stores through openStores, which runs conversion first.", () => {
 	const here = path.dirname(new URL(import.meta.url).pathname);
 	const stores = fs.readFileSync(path.join(here, "..", "src", "stores.ts"), "utf8");
-	assert.match(stores, /export function convertDir[\s\S]*?convertStores\(dir, log\)/);
-	assert.doesNotMatch(stores.slice(stores.indexOf("export function openStores")), /convertStores\(/, "opening the stores converts nothing");
+	assert.match(stores, /export function openStores[\s\S]*?convertStores\(dir, log\)/);
+	const host = fs.readFileSync(path.join(here, "..", "src", "host-runtime.ts"), "utf8");
+	assert.match(host, /const stores = deps\.stores \?\? openStores\(dir, log\)/);
 	const background = fs.readFileSync(path.join(here, "..", "src", "host.ts"), "utf8");
-	assert.match(background, /await untilAlone\(dir,[\s\S]*?\}\);\nconvertDir\(dir, log\);/);
+	assert.match(background, /const stores = openStores\(dir, log\)/);
 	const window = fs.readFileSync(path.join(here, "..", "src", "pi-loops.ts"), "utf8");
-	assert.match(window, /convertDir\(dir,/);
+	assert.match(window, /const stores = openStores\(dir,/);
 });
+
+/** What a conversion that turned nothing off reports. */
+const NONE = { loops: [], rules: [] };
 
 /** A `version: 2` jobs.json as 0.24.2 wrote it. */
 function writeV2(dir: string, jobs: Record<string, unknown>[]): string {
@@ -104,18 +109,19 @@ test("[convert-steps] A version 2 jobs.json: each cursor into clock.json, the te
 	const dir = tmp("pi-loops-convert-");
 	const text = writeV2(dir, [v2Loop(dir, { runCount: 7, skippedOverlap: 2, lastDueAt: "2026-01-05T09:00:00.000Z", lastFiredAt: "2026-01-05T09:00:01.000Z", lastCompletedAt: "2026-01-05T09:01:00.000Z", consecutiveFailures: 1, cwdMissingSince: "2026-01-05T08:30:00.000Z", clearedAt: "2026-01-05T08:10:00.000Z", host: "old-box" })]);
 	const said: string[] = [];
-	assert.deepEqual(convertStores(dir, (line) => void said.push(line)), { removed: [], jobs: 1, rows: 0, gates: 0 });
+	assert.deepEqual(convertStores(dir, (line) => void said.push(line)), { removed: [], jobs: 1, gates: 0, turnedOff: { loops: ["cron-convert"], rules: [] } });
 	const clock = JSON.parse(fs.readFileSync(path.join(dir, "clock.json"), "utf8"));
 	assert.deepEqual(clock.jobs["cron-convert"], { slot: "2026-01-05T09:00:00.000Z", fired: "2026-01-05T09:00:01.000Z", runs: 7, collapsed: 2, cleared: "2026-01-05T08:10:00.000Z", cwdMissing: "2026-01-05T08:30:00.000Z" });
 	assert.equal(fs.readFileSync(path.join(dir, "jobs.json.v2.bak"), "utf8"), text);
 	const written = JSON.parse(fs.readFileSync(path.join(dir, "jobs.json"), "utf8"));
 	assert.equal(written.version, 3);
-	assert.deepEqual(Object.keys(written.jobs[0]).sort(), ["catchUp", "createdAt", "cwd", "enabled", "id", "prompt", "schedule", "stateful"]);
+	assert.deepEqual(Object.keys(written.jobs[0]).sort(), ["catchUp", "createdAt", "cwd", "disabled", "enabled", "id", "prompt", "schedule", "stateful"]);
+	assert.deepEqual([written.jobs[0].enabled, written.jobs[0].disabled.code], [false, "upgrade"], "turned off by the upgrade");
 	assert.equal(new JobStore(dir).load()[0].id, "cron-convert");
-	assert.match(said.join("\n"), /version 2 converted to version 3 \(1 job\(s\), 0 owed run\(s\) queued\)/);
+	assert.match(said.join("\n"), /version 2 converted to version 3 \(1 job\(s\), 1 turned off for the upgrade\)/);
 	// The second start finds version 3 and writes nothing.
 	const before = [fs.readFileSync(path.join(dir, "jobs.json"), "utf8"), fs.readFileSync(path.join(dir, "clock.json"), "utf8")];
-	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, rows: 0, gates: 0 });
+	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, gates: 0, turnedOff: NONE });
 	assert.deepEqual([fs.readFileSync(path.join(dir, "jobs.json"), "utf8"), fs.readFileSync(path.join(dir, "clock.json"), "utf8")], before);
 });
 
@@ -130,25 +136,23 @@ test("[convert-disabled] A disabled job of version 2 gets its code from its reas
 	]);
 	convertStores(dir);
 	const jobs = new JobStore(dir).load();
-	assert.deepEqual(jobs.map((job) => [job.id, job.disabled?.code]), [["cron-person", "person"], ["cron-gone", "session-gone"], ["cron-parked", "interrupted"], ["cron-cwd", "cwd-missing"], ["cron-noted", undefined]]);
+	assert.deepEqual(jobs.map((job) => [job.id, job.disabled?.code]), [["cron-person", "person"], ["cron-gone", "session-gone"], ["cron-parked", "interrupted"], ["cron-cwd", "cwd-missing"], ["cron-noted", "upgrade"]], "one that was off keeps its own reason; one that was on is turned off by the upgrade");
 	const clock = JSON.parse(fs.readFileSync(path.join(dir, "clock.json"), "utf8"));
 	assert.deepEqual(clock.jobs["cron-noted"].note, { at: "2026-01-05T09:00:00.000Z", text: "missed 09:00 while no pi was running (catch-up disabled)" });
 });
 
-test("[convert-owed] An owed slot and a dead run marker become one row each of the job's lane; a second start writes none.", () => {
+test("[convert-owed] An owed slot and a dead run marker are not queued: the upgrade turned the job off, and a person who turns it on starts afresh.", () => {
 	const dir = tmp("pi-loops-convert-");
 	const slot = new Date(Date.now() - 60_000).toISOString();
 	writeV2(dir, [v2Loop(dir, { lastDueAt: slot, owedSlot: slot, interruptions: 2, running: { runId: "old-run", pid: 2_000_000_000, startedAt: slot } })]);
-	assert.equal(convertStores(dir).rows, 1);
-	const row = new RequestStore(dir).list("@cron-convert")[0];
-	assert.equal(row?.created_by.instance, "convert");
-	assert.equal(row?.attempts, 2);
-	assert.equal(row?.payload?.slot, slot);
-	assert.equal(convertStores(dir).rows, 0);
-	assert.equal(new RequestStore(dir).list("@cron-convert").length, 1);
+	const said: string[] = [];
+	assert.deepEqual(convertStores(dir, (line) => void said.push(line)).turnedOff, { loops: ["cron-convert"], rules: [] });
+	assert.equal(new RequestStore(dir).list("@cron-convert").length, 0, "no row");
+	assert.ok(said.some((line) => line === `cron cron-convert: its owed run of ${slot} is not queued: the upgrade turned it off`));
+	assert.equal(new JobStore(dir).load()[0].enabled, false);
 });
 
-test("[convert-crash] A start that stopped after the rows and before version 3 is finished by the next: the cursors are written again, the rows are not.", () => {
+test("[convert-crash] A start that stopped before version 3 is finished by the next: the cursors are written again, and no row is queued.", () => {
 	const dir = tmp("pi-loops-convert-");
 	const slot = new Date(Date.now() - 60_000).toISOString();
 	const text = writeV2(dir, [v2Loop(dir, { runCount: 4, lastDueAt: slot, owedSlot: slot })]);
@@ -156,19 +160,19 @@ test("[convert-crash] A start that stopped after the rows and before version 3 i
 	// The version 2 file is back as it was before step 5, with a stale cursor a partial attempt left.
 	fs.writeFileSync(path.join(dir, "jobs.json"), text);
 	fs.writeFileSync(path.join(dir, "clock.json"), JSON.stringify({ v: 1, jobs: { "cron-convert": { runs: 1 } } }));
-	assert.deepEqual(convertStores(dir), { removed: [], jobs: 1, rows: 0, gates: 0 });
+	assert.deepEqual(convertStores(dir), { removed: [], jobs: 1, gates: 0, turnedOff: { loops: ["cron-convert"], rules: [] } });
 	assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "clock.json"), "utf8")).jobs["cron-convert"].runs, 4);
-	assert.equal(new RequestStore(dir).list("@cron-convert").length, 1);
+	assert.equal(new RequestStore(dir).list("@cron-convert").length, 0);
 });
 
-test("[convert-live] A run marker whose process lives gets no row and one line: that older process still runs it, and its record will come.", () => {
+test("[convert-live] A run marker whose process lives gets one line: that older process still runs it, and its record will come.", () => {
 	const dir = tmp("pi-loops-convert-");
 	const slot = new Date(Date.now() - 60_000).toISOString();
 	// A pid that is alive: this process's parent, which is not this process.
 	writeV2(dir, [v2Loop(dir, { id: "cron-dead", lastDueAt: slot, running: { runId: "dead-run", pid: 2_000_000_000, startedAt: slot } }), v2Loop(dir, { id: "cron-live", lastDueAt: slot, running: { runId: "live-run", pid: process.ppid, startedAt: new Date().toISOString() } })]);
 	const said: string[] = [];
 	convertStores(dir, (line) => void said.push(line));
-	assert.equal(new RequestStore(dir).list("@cron-dead").length, 1, "the dead marker's slot is a row");
+	assert.equal(new RequestStore(dir).list("@cron-dead").length, 0, "the dead marker's slot is not queued: the job is off");
 	assert.equal(new RequestStore(dir).list("@cron-live").length, 0);
 	assert.ok(said.some((line) => /cron-live: an older pi-loops process still runs it; its record will come/.test(line)));
 	assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "jobs.json"), "utf8")).version, 3);
@@ -186,7 +190,7 @@ test("[convert-put-back] A version 2 file put back while pi-loops runs is read a
 	assert.equal((await store.update("cron-convert", (job) => { job.name = "renamed"; }))?.name, "renamed");
 });
 
-test("[convert-malformed] A hand-edited version 2 file converts, twice, without throwing: a field that is not what it says is dropped alone, an owed run goes only to the job's own lane", () => {
+test("[convert-malformed] A hand-edited version 2 file converts, twice, without throwing: a field that is not what it says is dropped alone, and no row is queued", () => {
 	const dir = tmp("pi-loops-convert-");
 	const slot = new Date(Date.now() - 60_000).toISOString();
 	writeV2(dir, [
@@ -205,11 +209,8 @@ test("[convert-malformed] A hand-edited version 2 file converts, twice, without 
 	assert.deepEqual(jobs[0].disabled?.code, "person", "a reason that is not text is no reason");
 	const clock = clockStore(dir).read().jobs;
 	assert.deepEqual(clock["cron-bad-fields"], { slot, runs: 4 }, "the good fields of a cursor stay when others are dropped");
-	const requests = new RequestStore(dir);
-	assert.deepEqual(requests.list("@cron-bad-fields").map((row) => row.attempts), [0], "an attempt count that is not one starts at 0");
-	assert.equal(fs.existsSync(path.join(dir, "requests")) && fs.readdirSync(path.join(dir, "requests")).some((name) => name.includes("victim") || name.includes("evil")), false, "no row for a lane that is not the job's own conversation");
-	assert.equal(requests.list("@cron-marker").length, 0, "a slot that is not a stamp owes nothing");
-	assert.ok(said.some((line) => /cron-escape: its owed run is not queued/.test(line)) && said.some((line) => /cron-other-lane: its owed run is not queued/.test(line)));
+	assert.equal(fs.existsSync(path.join(dir, "requests")) && fs.readdirSync(path.join(dir, "requests")).length > 0, false, "no row for any lane: every job is off");
+	assert.ok(!said.some((line) => /cron-marker: its owed run/.test(line)), "a slot that is not a stamp owes nothing");
 	assert.ok(said.some((line) => /3 entries with no id left out/.test(line)));
 });
 
@@ -217,7 +218,7 @@ test("[convert-version-text] A version that is not a number is not converted: th
 	const dir = tmp("pi-loops-convert-");
 	const text = JSON.stringify({ version: "3", jobs: [{ ...v2Loop(dir), runCount: undefined, skippedOverlap: undefined, enabled: false, disabled: { code: "cwd-missing", why: "disabled: cwd /gone", at: "2026-01-05T08:00:00.000Z" } }] });
 	fs.writeFileSync(path.join(dir, "jobs.json"), text);
-	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, rows: 0, gates: 0 });
+	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, gates: 0, turnedOff: NONE });
 	assert.equal(fs.readFileSync(path.join(dir, "jobs.json"), "utf8"), text);
 	assert.equal(fs.existsSync(path.join(dir, "jobs.json.v2.bak")), false);
 	assert.equal(new JobStore(dir).load()[0].disabled?.why, "disabled: cwd /gone");
@@ -226,7 +227,7 @@ test("[convert-version-text] A version that is not a number is not converted: th
 test("[convert-unreadable] A jobs.json that does not parse is left as it is, for the store to say what is wrong with it.", () => {
 	const dir = tmp("pi-loops-convert-");
 	fs.writeFileSync(path.join(dir, "jobs.json"), "{ half-typed");
-	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, rows: 0, gates: 0 });
+	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, gates: 0, turnedOff: NONE });
 	assert.equal(fs.readFileSync(path.join(dir, "jobs.json"), "utf8"), "{ half-typed");
 	assert.equal(fs.existsSync(path.join(dir, "jobs.json.v2.bak")), false);
 });
@@ -387,7 +388,7 @@ test("[K1] A claim row 0.24.2 handed over leaves at start, its finding stays cla
 	assert.equal(findingOf(dir, HANDED)?.status, "claimed", "it was handed to pi before the upgrade: nothing to open again");
 	assert.deepEqual(convertedAudit(dir), [[`claim-${HANDED.slice(4, 12)}`, HANDED, "handed over before the upgrade"]]);
 	const before = snapshot(dir);
-	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, rows: 0, gates: 0 });
+	assert.deepEqual(convertStores(dir), { removed: [], jobs: 0, gates: 0, turnedOff: NONE });
 	assert.deepEqual(snapshot(dir), before, "the second start writes nothing");
 	for (let stop = 1; stop <= PROTOCOL.K1.length; stop++) {
 		const v = claimDir([{ finding: HANDED, handed: true }], [HANDED]);
@@ -453,5 +454,54 @@ test("[fifo-session-file] the conversion reads a conversation's file only when i
 	const script = `import(${JSON.stringify(path.join(repo, "src/convert-v2.ts"))}).then((m) => { process.stdout.write(JSON.stringify(m.convertStores(${JSON.stringify(dir)}))); process.exit(0); })`;
 	const child = spawnSync(process.execPath, ["--import", path.join(repo, "src/register-pi.mjs"), "--input-type=module", "-e", script], { encoding: "utf8", timeout: 15_000, env: { ...process.env, PI_LOOPS_HOST: "off" } });
 	assert.equal(child.signal, null, "the conversion returned instead of blocking");
-	assert.deepEqual(JSON.parse(child.stdout), { removed: [], jobs: 1, rows: 1, gates: 0 }, "the prompt is not known to be written, so its slot is owed once");
+	assert.deepEqual(JSON.parse(child.stdout), { removed: [], jobs: 1, gates: 0, turnedOff: { loops: ["cron-plain"], rules: [] } }, "it returned");
+});
+
+/** A rule as triggers.json holds it, on or off. */
+const rule = (id: string, enabled: boolean, cwd: string) => ({ id, condition: "c", action: "a", enabled, fireOnce: false, promoteToChat: false, createdAt: "2026-01-05T08:00:00.000Z", cwd });
+
+test("[upgrade-off] A directory an older version worked in has every loop and rule that was on turned off, once, and recorded; one this version made is left as it is.", () => {
+	const dir = tmp("pi-loops-upgrade-off-");
+	writeV2(dir, [v2Loop(dir, { id: "cron-on" }), v2Loop(dir, { id: "cron-off", enabled: false })]);
+	fs.writeFileSync(path.join(dir, "triggers.json"), JSON.stringify({ version: 1, rules: [rule("rule-on", true, dir), rule("rule-off", false, dir)] }));
+	const said: string[] = [];
+	assert.deepEqual(convertStores(dir, (line) => void said.push(line)).turnedOff, { loops: ["cron-on"], rules: ["rule-on"] });
+	assert.deepEqual(new JobStore(dir).load().map((job) => [job.id, job.enabled, job.disabled?.code]), [["cron-on", false, "upgrade"], ["cron-off", false, "person"]]);
+	assert.deepEqual(new JobStore(dir).load()[0].disabled?.why, UPGRADE_OFF_WHY);
+	assert.deepEqual(new TriggerStore(dir).load().map((r) => [r.id, r.enabled]), [["rule-on", false], ["rule-off", false]]);
+	assert.deepEqual(readUiPrefs(dir).upgradeOff && { loops: readUiPrefs(dir).upgradeOff!.loops, rules: readUiPrefs(dir).upgradeOff!.rules }, { loops: ["cron-on"], rules: ["rule-on"] });
+	assert.ok(said.includes("triggers.json: 1 rule(s) turned off for the upgrade"));
+	// A person turns them on again: the next start leaves them on.
+	const jobs = JSON.parse(fs.readFileSync(path.join(dir, "jobs.json"), "utf8"));
+	jobs.jobs[0].enabled = true;
+	delete jobs.jobs[0].disabled;
+	fs.writeFileSync(path.join(dir, "jobs.json"), JSON.stringify(jobs));
+	const rules = JSON.parse(fs.readFileSync(path.join(dir, "triggers.json"), "utf8"));
+	rules.rules[0].enabled = true;
+	fs.writeFileSync(path.join(dir, "triggers.json"), JSON.stringify(rules));
+	assert.deepEqual(convertStores(dir).turnedOff, NONE, "the second start finds no older version's file");
+	assert.equal(new TriggerStore(dir).load()[0].enabled, true);
+
+	const fresh = tmp("pi-loops-upgrade-fresh-");
+	fs.writeFileSync(path.join(fresh, "jobs.json"), JSON.stringify({ version: 3, jobs: [{ ...v2Loop(fresh, { id: "cron-new" }), runCount: undefined, skippedOverlap: undefined }] }));
+	fs.writeFileSync(path.join(fresh, "triggers.json"), JSON.stringify({ version: 1, rules: [rule("rule-new", true, fresh)] }));
+	assert.deepEqual(convertStores(fresh).turnedOff, NONE, "a directory only this version wrote: nothing is turned off");
+	assert.equal(new TriggerStore(fresh).load()[0].enabled, true);
+	assert.equal(readUiPrefs(fresh).upgradeOff, undefined);
+
+	const rulesOnly = tmp("pi-loops-upgrade-rules-");
+	fs.writeFileSync(path.join(rulesOnly, "triggers.json"), JSON.stringify({ version: 1, rules: [rule("rule-a", true, rulesOnly)] }));
+	fs.writeFileSync(path.join(rulesOnly, "next-runs.json"), "{}\n");
+	assert.deepEqual(convertStores(rulesOnly).turnedOff, { loops: [], rules: ["rule-a"] }, "rules only, with a file only an older version writes");
+});
+
+test("[upgrade-off] The line says what is still off and how to turn it on, until each is on again or gone.", () => {
+	const off = { loops: ["cron-a", "cron-b", "cron-gone"], rules: ["rule-a"] };
+	const jobs = [{ id: "cron-a", enabled: false }, { id: "cron-b", enabled: true }];
+	const rules = [{ id: "rule-a", enabled: false }];
+	assert.equal(upgradeOffLine(off, jobs, rules), "pi-loops turned off 1 loop and 1 rule when it upgraded this loops directory, so that a pi that still runs an older pi-loops cannot run them twice. Close every such pi, then turn them on: /cron enable <id> (cron-a); /triggers enable <id> (rule-a).");
+	assert.equal(upgradeOffLine(off, [{ id: "cron-a", enabled: true }], [{ id: "rule-a", enabled: true }]), undefined, "all on again");
+	assert.equal(upgradeOffLine(undefined, jobs, rules), undefined, "nothing was turned off");
+	const many = Array.from({ length: 7 }, (_, i) => `cron-${i}`);
+	assert.match(upgradeOffLine({ loops: many, rules: [] }, many.map((id) => ({ id, enabled: false })), []) ?? "", /7 loops .* \(cron-0, cron-1, cron-2, cron-3, cron-4 and 2 more\)\.$/);
 });

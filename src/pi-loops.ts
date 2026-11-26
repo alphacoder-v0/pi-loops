@@ -61,9 +61,7 @@ import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE
 import { budgetState, jobCounts, jobRuns, type ListedJob, listedJobs, switchTargets } from "./job-status.ts";
 import { runClockTick, decideRunNow } from "./clock.ts";
 import { DISABLED_BY_PERSON } from "./store.ts";
-import { convertDir, openStores, removeJob } from "./stores.ts";
-import { olderPiLoops, replaceOlderBackground } from "./older.ts";
-import { registerWaitingWindow } from "./waiting-window.ts";
+import { openStores, removeJob } from "./stores.ts";
 import { Ticker, WINDOW_RIDERS, type Riders } from "./ticker.ts";
 import { TURN_TYPE } from "./mark.ts";
 import { renderTurn } from "./turn-render.ts";
@@ -84,6 +82,7 @@ import { type Trigger, auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTr
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ConfirmTurn, type ToolHost, automationTools, checkJobName, confirmControlPlane, controlTarget, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
 import { claimPageChild } from "./page-children.ts";
 import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
+import { upgradeOffLine } from "./convert-v2.ts";
 import { ALL_PROJECTS, awayIn, awayLine, markProjectSeen } from "./seen.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -110,15 +109,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	const dir = defaultLoopsDir(getAgentDir());
 	/** Everything this process diagnoses, kept after the window is gone. */
 	const log = new LoopsLog(dir, `pi-${process.pid}.log`);
-	// One version at a time (src/older.ts): while a window or terminal of an older pi-loops is open
-	// here, this window does not start; it answers each pi-loops command with the line and holds its
-	// conversation (src/waiting-window.ts) until /reload.
-	if (olderPiLoops(dir, Date.now()).some((o) => o.kind === "window")) {
-		registerWaitingWindow(pi, { dir, self: PI_LOOPS_VERSION, instance: newId("pi"), log: (line) => log.info(line) });
-		return;
-	}
-	// Converted at session_start, once an older pi-loops in the background is replaced (`convertWhenAlone`).
-	const stores = openStores(dir);
+	const stores = openStores(dir, (line) => log.info(line));
 	/** This package's directory: a sub-session must not load a second copy of this extension. */
 	const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -3476,7 +3467,6 @@ export default function piLoops(pi: ExtensionAPI) {
 			// run too, which queues its conversation's due prompts but hands none to pi (the window
 			// executor delivers only in tui and rpc mode): a window or pi-loops in the background does.
 			const hostMode = ctx.mode === "tui" || ctx.mode === "rpc" || envFlag("LOOPS_HOST");
-			await convertWhenAlone(hostMode);
 			if (!hostMode) return;
 			// The host runs the loops; this window only makes sure there is one. Not awaited: a start can
 			// take seconds, and the session must not wait behind it. A probe here never counts toward
@@ -3501,6 +3491,11 @@ export default function piLoops(pi: ExtensionAPI) {
 			// since Tuesday is still counted as active, and this line is the only one a user reads.
 			const failing = failingSummary(myJobs);
 			log.info(`session start: ${myJobs.length} enabled loop(s), ${myRules.length} enabled rule(s)${failing ? `, ${failing}` : ""} in ${session.cwd}`);
+			{
+				// What the upgrade turned off, while any of it is still off (src/convert-v2.ts).
+				const line = upgradeOffLine(readUiPrefs(dir).upgradeOff, loadOrNone(() => stores.jobs.load()), loadOrNone(() => stores.rules.load()));
+				if (line && ctx.hasUI) afterHistory(ctx, () => ctx.ui.notify(`[pi-loops] ${line}`, "warning"));
+			}
 			{
 				const line = awayLine(awayHere());
 				// After pi has drawn the resumed history: said now, a long conversation pushed it off the screen.
@@ -3552,20 +3547,6 @@ export default function piLoops(pi: ExtensionAPI) {
 			flushStartLines(ctx);
 		}
 	});
-
-	/**
-	 * What older versions left is converted once nothing older works here (src/older.ts). An older
-	 * pi-loops in the background, with no older window open, is replaced first, as an upgrade does, for
-	 * at most `REPLACE_WAIT_MS`: it may finish a turn in its page first. A `pi -p` run replaces nothing:
-	 * it converts only when nothing older is there at all.
-	 */
-	async function convertWhenAlone(hostMode: boolean): Promise<void> {
-		if (olderPiLoops(dir, Date.now()).length && (!hostMode || !(await replaceOlderBackground(dir, (line) => log.info(line))))) {
-			log.info("not converted yet: an older pi-loops in the background is still running here");
-			return;
-		}
-		convertDir(dir, (line) => log.info(line));
-	}
 
 	/**
 	 * Say on the lease that a turn runs, from pi's events. The page's pi says it for a terminal's

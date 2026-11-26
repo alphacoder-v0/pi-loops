@@ -92,24 +92,15 @@ machine. Everything here follows from that, and each one has a price.
    waits for a window) costs it no read of the conversation on a tick where the conversation,
    `jobs.json` and the queue are as they were and no backoff has ended; it remembers the three at
    the last "nothing to do" and reads again when one moves. The inbox gets a result only when the conversation cannot
-   be written; shell-created rules go to the inbox. One version works a loops directory at a time
-   (`src/older.ts`, owner decisions of 2026-11-26). A 0.22 window writes `presence/` every 30 s, a
-   terminal of 0.24.2 or earlier holds a lease with no `version`, and 0.24.2 in the background has a
-   live service record of its version. The older versions write `inbox.jsonl` again in their own
-   shape on each claim or dismiss, which removes every field this version added, and a 0.22 window
-   checks its project's rules beside the background: a bridge that mended each case (a fence, a yield
-   of each rule, a side file for the fields) would find one more case in each review, and so did a
-   gate in each of the window's handlers (two reviews). So a window that starts while an older window
-   or terminal is open does not start the extension: it registers its commands, which answer with
-   the line, and holds its conversation's lease (`src/waiting-window.ts`) until `/reload`. pi-loops in
-   the background waits after its claim; the CLI's verbs that touch the stores answer with the line.
-   While an older window or terminal is open, the older background goes on as before; once none is, a
-   window that starts or the background of this version replaces it as an upgrade does (0.24.2 by
-   its upgrade request, 0.22 by SIGTERM to the pid its `host.json` names), and only then converts.
-   The cost: a window opened beside an older one needs `/reload` once it is gone, and while a
-   terminal of 0.24.2 or earlier stays open with no 0.24.2 background, no loop or rule runs, and that
-   terminal does not say so. The check is made when a process starts: an older pi-loops that starts
-   after it (a downgrade) is not waited for.
+   be written; shell-created rules go to the inbox. An older pi-loops gets no special treatment:
+   nothing reads `presence/` or writes `scheduler.json` for it. Instead, the conversion of a directory
+   an older version worked in turns off every loop, plain job and rule that was on (owner decision,
+   2026-11-26), records which in `ui.json`, and a window and `pi-loops status` say so until each is on
+   again. An older window still open then runs nothing of them: 0.22 cannot read the converted
+   `jobs.json`, and every rule is off. Two designs that detected an older pi-loops and waited for it
+   were withdrawn after three reviews each found one more path or file it did not handle. The cost:
+   every person who upgrades turns their loops and rules on again, and one they turn on while an
+   older window is still open can run there too.
 
    The cost: loops pause while pi-loops cannot start, whereas they previously ran in an interactive pi.
    A loop no longer shares a window's live MCP connections; it connects its own from `mcp.toml`

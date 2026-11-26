@@ -1,6 +1,4 @@
 import { test } from "node:test";
-import { PI_LOOPS_VERSION } from "../src/version.ts";
-import { olderPiLoops } from "../src/older.ts";
 import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import { addV2, viewV2 } from "./v2-jobs.ts";
@@ -795,8 +793,6 @@ test("a stop row aborts the held turn running in that conversation", { timeout: 
 		assert.equal(await until(() => started, 5000), true, "the held turn is running");
 		const leases = new LeaseStore(dir);
 		assert.ok(leases.read(sessionId)?.holder?.busy?.runId, "the lease names the turn");
-		assert.equal(leases.read(sessionId)?.holder?.version, PI_LOOPS_VERSION, "the background holds it as this version");
-		assert.deepEqual(olderPiLoops(dir, Date.now()), [], "so a window that starts now does not wait for it");
 		const requests = new RequestStore(dir);
 		const stop = stopRow(sessionId, { current: true, started_before: stamp() }, "cli", { pid: 1, instance: "cli", version: "0" });
 		requests.append(stop);

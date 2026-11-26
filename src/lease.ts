@@ -11,7 +11,6 @@ import { execFileSync } from "node:child_process";
 import { parseLane } from "./lane.ts";
 import { pidAlive, withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { stamp } from "./schedule.ts";
-import { PI_LOOPS_VERSION } from "./version.ts";
 
 export interface LeaseHolder {
 	kind: "terminal" | "host";
@@ -19,11 +18,6 @@ export interface LeaseHolder {
 	instance: string;
 	procStart?: string;
 	acquiredAt: string;
-	/**
-	 * The pi-loops version of the holder. Every holder this version writes has it; a live holder
-	 * without it is pi-loops 0.24.2 or earlier, which src/older.ts waits for.
-	 */
-	version?: string;
 	mode?: "tui" | "rpc" | "print" | "json" | "unbound";
 	/**
 	 * Written by a window that stands aside (`LeaseBinding.standAside`): it keeps the lease, so nothing
@@ -469,7 +463,7 @@ export class LeaseBinding {
 	}
 
 	private me(): LeaseHolder {
-		return { ...this.self(), version: PI_LOOPS_VERSION, acquiredAt: stamp(Date.now()) };
+		return { ...this.self(), acquiredAt: stamp(Date.now()) };
 	}
 
 	/** Take `sessionId`'s lease, or become its viewer. A different session bound before is released first. */

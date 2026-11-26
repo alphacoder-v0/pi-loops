@@ -4,7 +4,10 @@
  * that file, each value derived as the lists derive it.
  */
 import type { ClockStore } from "../src/clock.ts";
-import { fromV2, type V2Job } from "../src/convert-v2.ts";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { convertStores, fromV2, type V2Job } from "../src/convert-v2.ts";
+import { readUiPrefs } from "../src/ui-prefs.ts";
 import { jobCounts, listedJob, runHistory } from "../src/job-status.ts";
 import type { JobStore } from "../src/store.ts";
 
@@ -30,3 +33,25 @@ export function viewV2(stores: JobsAndClock, id: string): any {
 	return { ...definition, runCount: status.runs, lastDueAt: status.due, lastFiredAt: status.fired, lastCompletedAt: status.completed, consecutiveFailures: status.streak || undefined, lastError: status.error, skippedOverlap: status.collapsed, running: undefined, owedSlot: undefined, interruptions: jobCounts(history, clock?.cleared).interrupted || undefined };
 }
 
+
+/**
+ * A loops directory with a version 2 `jobs.json`, converted as a start converts it, and each loop and
+ * rule the upgrade turned off turned on again, as a person does after the upgrade: for scenes about
+ * something other than the upgrade.
+ */
+export function convertedAndOn(dir: string): void {
+	convertStores(dir);
+	const jobsFile = path.join(dir, "jobs.json");
+	if (fs.existsSync(jobsFile)) {
+		const file = JSON.parse(fs.readFileSync(jobsFile, "utf8")) as { version: number; jobs: Array<{ enabled: boolean; disabled?: { code: string } }> };
+		for (const job of file.jobs) if (job.disabled?.code === "upgrade") { job.enabled = true; delete job.disabled; }
+		fs.writeFileSync(jobsFile, `${JSON.stringify(file, null, 2)}\n`);
+	}
+	const off = readUiPrefs(dir).upgradeOff;
+	const rulesFile = path.join(dir, "triggers.json");
+	if (off && fs.existsSync(rulesFile)) {
+		const file = JSON.parse(fs.readFileSync(rulesFile, "utf8")) as { rules: Array<{ id: string; enabled: boolean }> };
+		for (const rule of file.rules) if (off.rules.includes(rule.id)) rule.enabled = true;
+		fs.writeFileSync(rulesFile, `${JSON.stringify(file, null, 2)}\n`);
+	}
+}

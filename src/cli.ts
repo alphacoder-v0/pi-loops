@@ -37,8 +37,8 @@ import { JobStore, defaultLoopsDir, homeLoopsDir, piAgentDir } from "./store.ts"
 import { automationBadge, previewText, readSessionHead, shortSessionId } from "./session-head.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, TRACKER_FILE, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, listRecipes, loadRecipe, planInstall, playbookFiles, readRecord, resolveRecipeRef } from "./recipe.ts";
 import { TriggerStore } from "./triggers.ts";
-import { convertDir, openStores } from "./stores.ts";
-import { olderLine, olderPiLoops } from "./older.ts";
+import { upgradeOffLine } from "./convert-v2.ts";
+import { openStores } from "./stores.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { formatLocal, stamp } from "./schedule.ts";
 import { canonicalDir } from "./paths.ts";
@@ -302,17 +302,6 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	const agentDir = piAgentDir();
 	const loopsDir = process.env.PI_LOOPS_DIR || defaultLoopsDir(agentDir);
 	const cwd = path.resolve(str("cwd") ?? process.cwd());
-	// One version at a time (src/older.ts): while an older pi-loops is open in this loops directory, a
-	// verb that reads or writes its stores answers with the line, and a service verb says it first.
-	const olderNow = olderPiLoops(loopsDir, Date.now());
-	const older = olderLine(olderNow, PI_LOOPS_VERSION);
-	// A window of this version that a launcher opens beside an older window only waits: it is refused. Beside
-	// an older background alone, it is what replaces that background, so it opens.
-	if (older && (STORE_VERBS.has(verb) || (LAUNCH_VERBS.has(command) && olderNow.some((o) => o.kind === "window")))) {
-		out(older);
-		return 1;
-	}
-	if (older) out(older);
 
 	if (command === "web" || command === "tui") return launch(argv, out);
 	// What the door tells a browser with no way in to run: the project's newest conversation, so
@@ -376,7 +365,6 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		const sessions = listSessions(path.join(agentDir, "sessions"));
 		const picked = pickSession(sessions, { id: str("session"), cwd });
 		// The stores as pi-loops opens them: a directory 0.24.2 left is converted first.
-		convertDir(loopsDir);
 		const stores = openStores(loopsDir);
 		const jobStore = stores.jobs;
 		// The archive carries what the picked session created in its project — the one rule
@@ -399,7 +387,6 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		if (!file) throw new UsageError("import needs an archive path");
 		const mode = parseActivateMode(str("activate-triggers"));
 		// The stores as pi-loops opens them: a directory 0.24.2 left is converted first.
-		convertDir(loopsDir);
 		const stores = openStores(loopsDir);
 		const jobStore = stores.jobs;
 		const triggerStore = stores.rules;
@@ -462,13 +449,6 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 }
 
 /** What runs loops while no pi is open, started, stopped and looked at by name. */
-/**
- * The verbs that read or write pi-loops' stores, or queue a request, which answer with the line while an
- * older pi-loops is open (src/older.ts). Every other verb runs and says the line first.
- */
-const STORE_VERBS: ReadonlySet<string> = new Set(["inbox", "events", "recipe", "export", "import", "abort", "pair"]);
-/** The verbs that open a pi window or the page. */
-const LAUNCH_VERBS: ReadonlySet<string> = new Set(["web", "tui", "open"]);
 const SERVICE_VERBS = new Set(["start", "stop", "restart", "status", "abort", "pair"]);
 
 const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "host", "recipe", "inbox", "events", "web", "open", "upgrade", "install-launcher", "uninstall-launcher", "help"]);
@@ -617,7 +597,6 @@ async function eventsCommand(positional: string[], loopsDir: string, out: (line:
 	if (!event) return refuse(`no event ${shown} in events.jsonl`);
 	// Loaded here: the push and check modules take a third of a second, and only this verb needs them.
 	const [{ pushTrigger, replayPush }, { checkRow }] = await Promise.all([import("./push.ts"), import("./check-tick.ts")]);
-	convertDir(loopsDir);
 	const stores = openStores(loopsDir);
 	const by = { pid: process.pid, instance: "cli", procStart: procStart(process.pid), version: PI_LOOPS_VERSION };
 	const now = Date.now();
@@ -1862,6 +1841,9 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 		return serviceCommand("start", [], new Map(), loopsDir, out);
 	}
 	if (verb === "status") {
+		// What the upgrade turned off and is still off, before anything else (src/convert-v2.ts).
+		const off = upgradeOffLine(readUiPrefs(loopsDir).upgradeOff, readOrNone(() => new JobStore(loopsDir).load()), readOrNone(() => new TriggerStore(loopsDir).load()));
+		if (off) out(off);
 		const res = await askHost(loopsDir, { op: "status" });
 		if (!res) {
 			// What waits for each conversation, from the files: a live host says it in its snapshot, and
@@ -1870,12 +1852,6 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 			// No answer is not the same as not running: one wedged on a hung MCP read still holds the
 			// record. Fall back to it, so the person gets a pid and a log to look at.
 			const rec = live();
-			// One that waits for an older pi-loops serves no socket yet (src/older.ts): it is not wedged, and is not to be stopped.
-			if (rec && rec.version === PI_LOOPS_VERSION && olderPiLoops(loopsDir, Date.now()).length) {
-				out(`pi-loops (pid ${rec.pid}) waits for it (started ${formatLocal(Date.parse(rec.startedAt))})`);
-				out(`  log: ${path.join(loopsDir, HOST_LOG)}`);
-				return 1;
-			}
 			if (rec) {
 				out(`pi-loops (pid ${rec.pid}) is not answering (started ${formatLocal(Date.parse(rec.startedAt))})`);
 				out(`  log: ${path.join(loopsDir, HOST_LOG)}`);
@@ -2012,4 +1988,10 @@ function runInForeground(loopsDir: string): Promise<number> {
 		});
 		child.once("exit", (code, signal) => resolve(code ?? (signal ? 128 + (os.constants.signals[signal] ?? 0) : 1)));
 	});
+}
+
+/** A store's list, or none when it cannot be read: a line about what is off must not stop `status`. */
+function readOrNone<T>(read: () => T[]): T[] {
+	try { return read(); }
+	catch { return []; /* the status below says what is wrong with the store */ }
 }

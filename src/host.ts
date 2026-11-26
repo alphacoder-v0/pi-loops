@@ -28,8 +28,7 @@ import { awayFor, pruneSeen, readSeen, sinceCounts } from "./seen.ts";
 import { LeaseStore, holderAlive, openWindowPids, procStart } from "./lease.ts";
 import { waitingLanes } from "./ask.ts";
 import { sessionTitle, shortSessionId } from "./session-head.ts";
-import { convertDir, openStores } from "./stores.ts";
-import { olderPiLoops, stopOlderBackground, untilAlone } from "./older.ts";
+import { openStores } from "./stores.ts";
 import { THINKING_LEVELS, thinkingLevelOrUndefined } from "./thinking.ts";
 import { rotateInPlace } from "./log.ts";
 import { createHostRuntime } from "./host-runtime.ts";
@@ -207,7 +206,7 @@ const pool = new ChildPool({
 });
 /** Project-level MCP servers, connected on demand: the host itself has no project. */
 const mcpPool = new McpPool({ isTrusted: (cwd) => isExactlyTrusted(agentDir, cwd), resolveToken: resolveMcpToken, log: (msg) => log(`mcp pool: ${msg}`), onNotification: (cwd, cfg, n, source) => onPush(cfg, n, source, cwd) });
-const stores = openStores(dir);
+const stores = openStores(dir, log);
 const host = createHostRuntime({
 	dir,
 	stores,
@@ -444,20 +443,6 @@ if (readUiPrefs(dir).host === "stopped") {
 	process.exit(0);
 }
 log(`pi-loops ${PI_LOOPS_VERSION} started (pid ${process.pid}, dir ${dir})`);
-// One version at a time (src/older.ts): while an older pi-loops is open here, this process converts
-// nothing and runs nothing. It holds its claim, so a window of 0.24.2 does not start another (pi-loops
-// 0.22 claims `host.json`, not this record, and may start one: each look stops it once no older window
-// is open), and keeps its heartbeat, so a window does not take it for a wedged one.
-await untilAlone(dir, {
-	say: log,
-	self: PI_LOOPS_VERSION,
-	each: (now) => {
-		try { updateHostService(dir, process.pid, { tickAt: stamp(now) }); }
-		catch (err: any) { log(`heartbeat: ${err?.message ?? err}`); }
-		return stopOlderBackground(dir, olderPiLoops(dir, now), log);
-	},
-});
-convertDir(dir, log);
 // The status page's token, from before the page moved here: `web-token` is the one token now.
 try {
 	fs.unlinkSync(path.join(dir, "host-page-token"));

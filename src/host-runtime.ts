@@ -124,7 +124,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const notice = (text: string, cwd?: string) => {
 		noticeSeq = keepNotice(kept, noticeSeq, text, cwd, Date.now());
 	};
-	const stores = deps.stores ?? openStores(dir);
+	const stores = deps.stores ?? openStores(dir, log);
 	// Audit writes are best-effort — a failed write never fails a trigger; say so once per distinct error.
 	let persistenceSaid: string | undefined;
 	stores.rules.onPersistenceError ??= (message) => {
@@ -138,7 +138,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const ownStart = procStart(process.pid);
 	/** This process, as the rows it writes name it. */
 	const createdBy = (): Row["created_by"] => ({ pid: process.pid, instance: "host", procStart: ownStart, version: PI_LOOPS_VERSION });
-	const me = (busy?: LeaseHolder["busy"]): LeaseHolder => ({ kind: "host", pid: process.pid, instance: "host", procStart: ownStart, version: PI_LOOPS_VERSION, acquiredAt: stamp(), pushServers: [], ...(busy ? { busy } : {}) });
+	const me = (busy?: LeaseHolder["busy"]): LeaseHolder => ({ kind: "host", pid: process.pid, instance: "host", procStart: ownStart, acquiredAt: stamp(), pushServers: [], ...(busy ? { busy } : {}) });
 	const fileMtime = (file: string | undefined): number | undefined => {
 		if (!file) return undefined;
 		try {

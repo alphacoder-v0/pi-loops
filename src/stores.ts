@@ -30,18 +30,9 @@ export function clockStore(dir: string): ClockStore {
 	return new ClockStore({ file: path.join(dir, "clock.json"), lock: path.join(dir, "clock.lock") }, { locked: withFileLockSync, write: writeFileAtomic });
 }
 
-/**
- * What older versions left in `dir`, converted (src/convert-v2.ts), with the line that names the files
- * it removed. Run by a process once it may work here: never while an older pi-loops is open in `dir`
- * (src/older.ts), which reads the files this would convert or remove.
- */
-export function convertDir(dir: string, log: (line: string) => void = () => {}): void {
+export function openStores(dir: string, log: (line: string) => void = () => {}): Stores {
 	const { removed } = convertStores(dir, log);
 	if (removed.length) log(`removed ${removed.join(", ")}: files of an older version that nothing reads now`);
-}
-
-/** The stores of `dir`. Opening them writes nothing: `convertDir` is the caller's, after src/older.ts lets it work. */
-export function openStores(dir: string): Stores {
 	const jobs = new JobStore(dir);
 	const inbox = new Inbox(dir);
 	const requests = new RequestStore(dir);
