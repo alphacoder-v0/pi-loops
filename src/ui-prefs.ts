@@ -19,12 +19,6 @@ import * as path from "node:path";
 import { writeFileAtomic } from "./lock.ts";
 
 export interface UiPrefs {
-	/**
-	 * When the conversion turned off what was on in this loops directory, which an older pi-loops worked
-	 * in (src/convert-v2.ts). Written last, once each loop and rule carries its own mark: it is not done
-	 * a second time.
-	 */
-	upgradeOff?: { at: string };
 	/** Whether `/cron`'s panel shows above the editor. Absent means nobody has turned it off. */
 	panel?: boolean;
 	/** The model and thinking level last chosen in the browser front end. */
@@ -79,8 +73,6 @@ export function readUiPrefs(dir: string): UiPrefs {
 	if (typeof doc.heldJobsNotice === "string") prefs.heldJobsNotice = doc.heldJobsNotice;
 	if (typeof doc.toolsCapNotice === "string") prefs.toolsCapNotice = doc.toolsCapNotice;
 	if (typeof doc.lastPage === "string") prefs.lastPage = doc.lastPage;
-	const off = doc.upgradeOff as { at?: unknown } | undefined;
-	if (off && typeof off === "object" && typeof off.at === "string") prefs.upgradeOff = { at: off.at };
 	return prefs;
 }
 

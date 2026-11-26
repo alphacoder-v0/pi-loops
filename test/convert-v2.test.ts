@@ -4,7 +4,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { type ClaimRowStores, RETIRED_FILES, UPGRADE_OFF_WHY, convertClaimRows, convertStores, upgradeOffLine } from "../src/convert-v2.ts";
-import { readUiPrefs } from "../src/ui-prefs.ts";
 import { type ProtocolWrite, PROTOCOL } from "./answer-protocol.ts";
 import { Inbox } from "../src/inbox.ts";
 import { TriggerStore } from "../src/triggers.ts";
@@ -50,7 +49,7 @@ test("convertStores removes nothing that is not in its list.", () => {
 	convertStores(dir);
 	for (const [name, text] of Object.entries(kept)) assert.equal(fs.readFileSync(path.join(dir, name), "utf8"), text, `${name} is as it was`);
 	assert.equal(fs.readFileSync(path.join(dir, "state", "cron-a", "presence"), "utf8"), "a loop's own note\n", "a file of that name deeper in the directory is not a retired file");
-	assert.deepEqual(fs.readdirSync(dir).sort(), [...Object.keys(kept), "state", "ui.json"].sort(), "and ui.json: what an older version left was turned off, once");
+	assert.deepEqual(fs.readdirSync(dir).sort(), [...Object.keys(kept), "state"].sort());
 });
 
 test("convertStores does nothing the second time, and nothing in a directory that is not there.", () => {
@@ -460,7 +459,7 @@ test("[fifo-session-file] the conversion reads a conversation's file only when i
 /** A rule as triggers.json holds it, on or off. */
 const rule = (id: string, enabled: boolean, cwd: string) => ({ id, condition: "c", action: "a", enabled, fireOnce: false, promoteToChat: false, createdAt: "2026-01-05T08:00:00.000Z", cwd });
 
-test("[upgrade-off] A directory an older version worked in has every loop and rule that was on turned off and marked, once; one this version made is left as it is.", () => {
+test("[upgrade-off] A directory an older version worked in has every loop and rule that was on turned off and marked, once: the version 3 jobs.json is the commit point.", async () => {
 	const dir = tmp("pi-loops-upgrade-off-");
 	writeV2(dir, [v2Loop(dir, { id: "cron-on" }), v2Loop(dir, { id: "cron-off", enabled: false })]);
 	fs.writeFileSync(path.join(dir, "triggers.json"), JSON.stringify({ version: 1, rules: [rule("rule-on", true, dir), rule("rule-off", false, dir)] }));
@@ -469,39 +468,47 @@ test("[upgrade-off] A directory an older version worked in has every loop and ru
 	assert.deepEqual(new JobStore(dir).load().map((job) => [job.id, job.enabled, job.disabled?.code]), [["cron-on", false, "upgrade"], ["cron-off", false, "person"]]);
 	assert.deepEqual(new JobStore(dir).load()[0].disabled?.why, UPGRADE_OFF_WHY);
 	assert.deepEqual(new TriggerStore(dir).load().map((r) => [r.id, r.enabled, r.offForUpgrade]), [["rule-on", false, true], ["rule-off", false, undefined]]);
-	assert.equal(typeof readUiPrefs(dir).upgradeOff?.at, "string", "done, written last");
 	assert.ok(said.includes("triggers.json: 1 rule(s) turned off for the upgrade"));
-	// A person turns the rule on; an older window still open writes a file only an older version writes.
-	void new TriggerStore(dir).setEnabled("rule-on", true);
+	assert.equal(fs.existsSync(path.join(dir, "ui.json")), false, "nothing is kept beside the stores");
+	// A person turns the rule on and makes another; an older window still open writes a file only an older version writes.
+	await new TriggerStore(dir).setEnabled("rule-on", true);
 	fs.writeFileSync(path.join(dir, "dedup.json"), "{}\n");
+	fs.mkdirSync(path.join(dir, "presence"), { recursive: true });
 	fs.writeFileSync(path.join(dir, "triggers.json"), JSON.stringify({ version: 1, rules: [...JSON.parse(fs.readFileSync(path.join(dir, "triggers.json"), "utf8")).rules, rule("rule-new", true, dir)] }));
-	assert.deepEqual(convertStores(dir).turnedOff, NONE, "not a second time: done");
+	assert.deepEqual(convertStores(dir).turnedOff, NONE, "not a second time: jobs.json is version 3");
 	assert.deepEqual(new TriggerStore(dir).load().filter((r) => r.enabled).map((r) => r.id).sort(), ["rule-new", "rule-on"], "what a person turned on or made stays on");
 
 	const fresh = tmp("pi-loops-upgrade-fresh-");
 	fs.writeFileSync(path.join(fresh, "jobs.json"), JSON.stringify({ version: 3, jobs: [{ ...v2Loop(fresh, { id: "cron-new" }), runCount: undefined, skippedOverlap: undefined }] }));
 	fs.writeFileSync(path.join(fresh, "triggers.json"), JSON.stringify({ version: 1, rules: [rule("rule-new", true, fresh)] }));
-	assert.deepEqual(convertStores(fresh).turnedOff, NONE, "a directory only this version wrote: nothing is turned off");
+	fs.writeFileSync(path.join(fresh, "next-runs.json"), "{}\n");
+	assert.deepEqual(convertStores(fresh).turnedOff, NONE, "a version 3 jobs.json: nothing is turned off, whatever else is there");
 	assert.equal(new TriggerStore(fresh).load()[0].enabled, true);
-	assert.equal(readUiPrefs(fresh).upgradeOff, undefined);
+	const empty = tmp("pi-loops-upgrade-empty-");
+	fs.writeFileSync(path.join(empty, "triggers.json"), JSON.stringify({ version: 1, rules: [rule("rule-new", true, empty)] }));
+	assert.deepEqual(convertStores(empty).turnedOff, NONE, "no jobs.json and no file of an older version: a new directory");
+	assert.equal(fs.existsSync(path.join(empty, "jobs.json")), false);
 
 	const rulesOnly = tmp("pi-loops-upgrade-rules-");
 	fs.writeFileSync(path.join(rulesOnly, "triggers.json"), JSON.stringify({ version: 1, rules: [rule("rule-a", true, rulesOnly)] }));
 	fs.writeFileSync(path.join(rulesOnly, "next-runs.json"), "{}\n");
 	assert.deepEqual(convertStores(rulesOnly).turnedOff, { loops: [], rules: ["rule-a"] }, "rules only, with a file only an older version writes");
+	assert.equal(JSON.parse(fs.readFileSync(path.join(rulesOnly, "jobs.json"), "utf8")).version, 3, "an empty version 3 jobs.json says it is done");
+	await new TriggerStore(rulesOnly).setEnabled("rule-a", true);
+	fs.writeFileSync(path.join(rulesOnly, "next-runs.json"), "{}\n");
+	assert.deepEqual(convertStores(rulesOnly).turnedOff, NONE, "and it is not done again");
 });
 
-test("[upgrade-off] A start that turned the loops off and stopped before it was done is finished by the next one.", () => {
+test("[upgrade-off] A start that stopped before version 3 does every step again; the version 2 file put back is an upgrade again.", () => {
 	const dir = tmp("pi-loops-upgrade-crash-");
-	writeV2(dir, [v2Loop(dir, { id: "cron-on" })]);
-	fs.writeFileSync(path.join(dir, "triggers.json"), JSON.stringify({ version: 1, rules: [rule("rule-on", true, dir)] }));
+	const text = writeV2(dir, [v2Loop(dir, { id: "cron-on" })]);
+	fs.writeFileSync(path.join(dir, "triggers.json"), JSON.stringify({ version: 1, rules: [rule("rule-on", true, dir), rule("rule-two", true, dir)] }));
 	convertStores(dir);
-	// As if it stopped after jobs.json: the rule is on again, nothing says it is done.
-	fs.writeFileSync(path.join(dir, "triggers.json"), JSON.stringify({ version: 1, rules: [rule("rule-on", true, dir)] }));
-	fs.writeFileSync(path.join(dir, "ui.json"), "{}\n");
-	assert.deepEqual(convertStores(dir).turnedOff, { loops: [], rules: ["rule-on"] }, "a loop still marked tells it");
-	assert.equal(typeof readUiPrefs(dir).upgradeOff?.at, "string");
-	assert.match(upgradeOffLine(new JobStore(dir).load(), new TriggerStore(dir).load()) ?? "", /turned off 1 loop and 1 rule/);
+	// As if it stopped after the rules and before version 3: one rule turned off and marked, one not.
+	fs.writeFileSync(path.join(dir, "jobs.json"), text);
+	fs.writeFileSync(path.join(dir, "triggers.json"), JSON.stringify({ version: 1, rules: [{ ...rule("rule-on", false, dir), offForUpgrade: true }, rule("rule-two", true, dir)] }));
+	assert.deepEqual(convertStores(dir).turnedOff, { loops: ["cron-on"], rules: ["rule-two"] });
+	assert.match(upgradeOffLine(new JobStore(dir).load(), new TriggerStore(dir).load()) ?? "", /turned off 1 loop and 2 rules/, "both rules carry the mark");
 });
 
 test("[upgrade-off] A run 0.24.2 queued for a loop the upgrade turns off, and nobody started, is removed; one a process started is left to it.", () => {
@@ -512,11 +519,11 @@ test("[upgrade-off] A run 0.24.2 queued for a loop the upgrade turns off, and no
 	fs.mkdirSync(path.join(dir, "requests"));
 	// A row a process started is a version 3 line with its claim: no version writes a claim on a version 2 line.
 	const started = (({ session_id: _sid, ...rest }) => ({ ...rest, v: 3, lane: sid }))(row("run-started", "cron:cron-plain", { id: "run-started", pid: process.pid, started_at: "2026-01-05T08:00:01.000Z" }));
-	fs.writeFileSync(path.join(dir, "requests", `${sid}.jsonl`), [row("run-owed", "cron:cron-plain"), started, row("other", "trigger:rule-x")].map((r) => JSON.stringify(r)).join("\n") + "\n");
+	fs.writeFileSync(path.join(dir, "requests", `${sid}.jsonl`), [row("run-owed", "cron:cron-plain"), row("run-asked", "cron-run:cron-plain"), started, row("other", "trigger:rule-x")].map((r) => JSON.stringify(r)).join("\n") + "\n");
 	const said: string[] = [];
 	convertStores(dir, (line) => void said.push(line));
 	assert.deepEqual(new RequestStore(dir).list(sid).map((r) => r.id), ["run-started", "other"]);
-	assert.ok(said.some((line) => /1 run\(s\) an older pi-loops queued for a loop the upgrade turned off removed/.test(line)));
+	assert.ok(said.some((line) => /2 run\(s\) an older pi-loops queued for a loop the upgrade turned off removed/.test(line)), "the scheduled one and the one a person asked for");
 });
 
 test("[upgrade-off] The line names only what the upgrade turned off and is still off; a loop or rule a person turned off is not in it.", async () => {
@@ -534,8 +541,7 @@ test("[upgrade-off] The line names only what the upgrade turned off and is still
 	const dir = tmp("pi-loops-upgrade-mark-");
 	fs.writeFileSync(path.join(dir, "triggers.json"), JSON.stringify({ version: 1, rules: [{ ...rule("rule-a", false, dir), offForUpgrade: true }] }));
 	const store = new TriggerStore(dir);
-	await store.setEnabled("rule-a", true);
 	await store.setEnabled("rule-a", false);
-	assert.equal(store.load()[0].offForUpgrade, undefined);
+	assert.equal(store.load()[0].offForUpgrade, undefined, "turned off by a person here: the mark goes too");
 	assert.equal(upgradeOffLine([], store.load()), undefined);
 });

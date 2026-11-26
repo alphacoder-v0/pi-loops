@@ -9,7 +9,6 @@ import { RequestStore } from "./requests.ts";
 import { TriggerStore } from "./triggers.ts";
 import { type JobClock, type RunClose, validStamp } from "./clock.ts";
 import { stamp } from "./schedule.ts";
-import { readUiPrefs, writeUiPref } from "./ui-prefs.ts";
 import { clockStore } from "./stores.ts";
 import { DISABLED_BY_PERSON, type Disabled, JOBS_FILE_VERSION, JobStore, type LoopJob, type RunningMarker } from "./store.ts";
 
@@ -141,16 +140,9 @@ export interface Conversion {
  * converted slot has an id derived from the job and the slot, so a second attempt appends nothing.
  */
 export function convertStores(dir: string, log: (line: string) => void = () => {}): Conversion {
-	// Decided before any step removes what tells it: a directory an older version worked in, not done yet.
-	const older = !readUiPrefs(dir).upgradeOff && olderDirectory(dir);
 	const converted = convertJobs(dir, log);
-	const { gates, turnedOff: rules } = convertRules(dir, log, older);
-	const turnedOff = { loops: converted.turnedOff, rules };
-	if (older) {
-		dropQueuedRuns(dir, log);
-		// Last: each loop and rule already carries its own mark, so a stop before this line is finished by the next start.
-		writeUiPref(dir, "upgradeOff", { at: stamp(Date.now()) });
-	}
+	const gates = convertRules(dir, log);
+	const turnedOff = { loops: converted.turnedOff, rules: converted.rulesOff };
 	convertClaimRows({ inbox: new Inbox(dir), requests: new RequestStore(dir), audit: new TriggerStore(dir) }, log);
 	const removed: string[] = [];
 	for (const name of RETIRED_FILES) {
@@ -169,22 +161,8 @@ export function convertStores(dir: string, log: (line: string) => void = () => {
 /** The reason a job that the upgrade turned off shows (`/cron`), with what to do. */
 export const UPGRADE_OFF_WHY = "turned off when pi-loops was upgraded: close every pi that runs an older pi-loops, then /cron enable it";
 
-/**
- * Whether an older pi-loops worked in `dir`: a `jobs.json` of version 2 or older, or a private file
- * that only an older version writes (`RETIRED_FILES`). Such a directory has its loops and rules turned
- * off once, by the conversion that finds it (owner decision, 2026-11-26): a window of an older version
- * that is still open would run them beside this one, and one claim or dismiss there writes
- * `inbox.jsonl` again in its own shape. A person turns them on again after closing those windows.
- */
-function olderDirectory(dir: string): boolean {
-	try {
-		const parsed = JSON.parse(fs.readFileSync(path.join(dir, "jobs.json"), "utf8")) as { version?: unknown };
-		if (typeof parsed?.version === "number" && parsed.version < JOBS_FILE_VERSION) return true;
-		// A start that turned its loops off and stopped before it wrote that it was done.
-		if (Array.isArray((parsed as { jobs?: unknown }).jobs) && ((parsed as { jobs: Array<{ disabled?: { code?: unknown } }> }).jobs).some((job) => job?.disabled?.code === "upgrade")) return true;
-	} catch {
-		/* no jobs.json, or one that does not parse: the retired files decide */
-	}
+/** Whether a private file that only an older version writes is in `dir` (`RETIRED_FILES`). */
+function retiredFilesThere(dir: string): boolean {
 	return RETIRED_FILES.some((name) => {
 		try { return !!fs.lstatSync(path.join(dir, name), { throwIfNoEntry: false }); }
 		catch { return false; /* not readable: not known to be there */ }
@@ -196,10 +174,9 @@ function olderDirectory(dir: string): boolean {
  * started: removed, so that turning it on goes on from its next slot and does not run an old prompt.
  * A row a process claimed is left to that process. A second pass finds none.
  */
-function dropQueuedRuns(dir: string, log: (line: string) => void): void {
-	let off: Set<string>;
-	try { off = new Set(new JobStore(dir).load().filter((job) => job.disabled?.code === "upgrade").map((job) => `cron:${job.id}`)); }
-	catch { return; /* jobs.json that does not parse: the store says what is wrong with it */ }
+function dropQueuedRuns(dir: string, ids: readonly string[], log: (line: string) => void): void {
+	// A scheduled run (`cron:`) and one a person asked for (`cron-run:`): the engine runs the second even for a job that is off.
+	const off = new Set(ids.flatMap((id) => [`cron:${id}`, `cron-run:${id}`]));
 	if (!off.size) return;
 	const requests = new RequestStore(dir);
 	let dropped = 0;
@@ -218,53 +195,83 @@ function dropQueuedRuns(dir: string, log: (line: string) => void): void {
  * lock. A rule that has a `gate` keeps it, and nothing else in the file changes; a file that does not
  * parse is left for the store to say what is wrong with it. A second run finds nothing to fill.
  */
-function convertRules(dir: string, log: (line: string) => void, older: boolean): { gates: number; turnedOff: string[] } {
-	const none = { gates: 0, turnedOff: [] };
+function convertRules(dir: string, log: (line: string) => void): number {
 	const file = path.join(dir, "triggers.json");
-	if (!fs.existsSync(file)) return none;
+	if (!fs.existsSync(file)) return 0;
 	return withFileLockSync(path.join(dir, "triggers.lock"), () => {
 		let parsed: { rules?: unknown };
 		try { parsed = JSON.parse(fs.readFileSync(file, "utf8")) as typeof parsed; }
-		catch { return none; }
-		if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.rules)) return none;
+		catch { return 0; }
+		if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.rules)) return 0;
 		let filled = 0;
-		const turnedOff: string[] = [];
 		for (const rule of parsed.rules as unknown[]) {
 			if (!rule || typeof rule !== "object" || Array.isArray(rule)) continue;
-			const r = rule as { id?: unknown; enabled?: unknown; gate?: unknown; precheck?: unknown };
-			// Step 3: a rule that is on is turned off when an older version worked here (`olderDirectory`).
-			if (older && r.enabled === true) {
-				r.enabled = false;
-				(r as { offForUpgrade?: true }).offForUpgrade = true;
-				if (typeof r.id === "string") turnedOff.push(r.id);
-			}
+			const r = rule as { gate?: unknown; precheck?: unknown };
 			const pre = r.precheck as { of?: unknown; raw?: unknown; resolved?: unknown } | undefined;
 			if (r.gate !== undefined || !pre || typeof pre !== "object" || Array.isArray(pre)) continue;
 			r.gate = { kind: "path", of: pre.of, raw: pre.raw, resolved: pre.resolved };
 			filled++;
 		}
-		if (!filled && !turnedOff.length) return none;
+		if (!filled) return 0;
 		writeFileAtomic(file, `${JSON.stringify(parsed, null, 2)}\n`);
-		if (filled) log(`triggers.json: ${filled} rule(s) that wait for a path have their gate`);
-		if (turnedOff.length) log(`triggers.json: ${turnedOff.length} rule(s) turned off for the upgrade`);
-		return { gates: filled, turnedOff };
+		log(`triggers.json: ${filled} rule(s) that wait for a path have their gate`);
+		return filled;
 	});
 }
 
-function convertJobs(dir: string, log: (line: string) => void): { jobs: number; turnedOff: string[] } {
+/**
+ * Step 3 of an upgrade: each rule that is on is turned off and marked (`offForUpgrade`) in one write,
+ * under the rules' lock. A second pass finds none on that it did not leave on. Returns their ids.
+ */
+function turnRulesOff(dir: string, log: (line: string) => void): string[] {
+	const file = path.join(dir, "triggers.json");
+	if (!fs.existsSync(file)) return [];
+	return withFileLockSync(path.join(dir, "triggers.lock"), () => {
+		let parsed: { rules?: unknown };
+		try { parsed = JSON.parse(fs.readFileSync(file, "utf8")) as typeof parsed; }
+		catch { return []; /* a file that does not parse: the store says what is wrong with it */ }
+		if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.rules)) return [];
+		const off: string[] = [];
+		for (const rule of parsed.rules as unknown[]) {
+			if (!rule || typeof rule !== "object" || Array.isArray(rule)) continue;
+			const r = rule as { id?: unknown; enabled?: unknown; offForUpgrade?: true };
+			if (r.enabled !== true) continue;
+			r.enabled = false;
+			r.offForUpgrade = true;
+			if (typeof r.id === "string") off.push(r.id);
+		}
+		if (!off.length) return [];
+		writeFileAtomic(file, `${JSON.stringify(parsed, null, 2)}\n`);
+		log(`triggers.json: ${off.length} rule(s) turned off for the upgrade`);
+		return off;
+	});
+}
+
+function convertJobs(dir: string, log: (line: string) => void): { jobs: number; turnedOff: string[]; rulesOff: string[] } {
+	const none = { jobs: 0, turnedOff: [], rulesOff: [] };
 	const jobsFile = path.join(dir, "jobs.json");
-	if (!fs.existsSync(jobsFile)) return { jobs: 0, turnedOff: [] };
+	// No jobs.json: an upgrade only when a file that only an older version writes is there (rules, and no
+	// loop). Its rules are turned off, and an empty version 3 file says it is done.
+	if (!fs.existsSync(jobsFile)) {
+		if (!retiredFilesThere(dir)) return none;
+		return withFileLockSync(path.join(dir, "jobs.lock"), () => {
+			if (fs.existsSync(jobsFile)) return none; // another process did it meanwhile
+			const rulesOff = turnRulesOff(dir, log);
+			writeFileAtomic(jobsFile, `${JSON.stringify({ version: JOBS_FILE_VERSION, jobs: [] }, null, 2)}\n`);
+			return { jobs: 0, turnedOff: [], rulesOff };
+		});
+	}
 	return withFileLockSync(path.join(dir, "jobs.lock"), () => {
 		let text: string;
 		try { text = fs.readFileSync(jobsFile, "utf8"); }
-		catch (err: any) { if (err?.code === "ENOENT") return { jobs: 0, turnedOff: [] }; throw err; }
+		catch (err: any) { if (err?.code === "ENOENT") return none; throw err; }
 		let parsed: { version?: unknown; jobs?: unknown };
 		// A file that does not parse is not converted: the store says what is wrong with it, as it did before.
 		try { parsed = JSON.parse(text) as typeof parsed; }
-		catch { return { jobs: 0, turnedOff: [] }; }
-		if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.jobs)) return { jobs: 0, turnedOff: [] };
+		catch { return none; }
+		if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.jobs)) return none;
 		// Only a file that says it is version 2 or older is converted: a version that is not a number is not one this code wrote.
-		if (typeof parsed.version !== "number" || parsed.version >= JOBS_FILE_VERSION) return { jobs: 0, turnedOff: [] };
+		if (typeof parsed.version !== "number" || parsed.version >= JOBS_FILE_VERSION) return none;
 		const jobs = (parsed.jobs as unknown[]).filter((job): job is V2Job => !!job && typeof job === "object" && !Array.isArray(job) && typeof (job as V2Job).id === "string");
 		const dropped = parsed.jobs.length - jobs.length;
 		const requests = new RequestStore(dir);
@@ -302,7 +309,11 @@ function convertJobs(dir: string, log: (line: string) => void): { jobs: number; 
 		// Step 2, the owed slots: none is queued. Every job is turned off by the upgrade (owner decision,
 		// 2026-11-26), and a row of a job that is off is not run; a person who turns it on starts afresh.
 		for (const { job, slot } of owed) log(`cron ${job.name ?? job.id}: its owed run of ${slot} is not queued: the upgrade turned it off`);
-		// Step 5: the version 2 text kept beside, then the definitions as version 3, each one that was on turned off.
+		// Step 3: the rules that are on, turned off and marked.
+		const rulesOff = turnRulesOff(dir, log);
+		// Step 5: the version 2 text kept beside, then the definitions as version 3, each one that was on
+		// turned off and marked. This write is the upgrade's one commit point: a start that stops before it
+		// does every step again, and one after it finds version 3 and does none (owner decision, 2026-11-26).
 		const at = stamp(Date.now());
 		const turnedOff: string[] = [];
 		const v3 = jobs.map((job) => {
@@ -312,10 +323,12 @@ function convertJobs(dir: string, log: (line: string) => void): { jobs: number; 
 			turnedOff.push(definition.id);
 			return { ...definition, enabled: false, disabled: { code: "upgrade" as const, why: UPGRADE_OFF_WHY, at } };
 		});
+		// Step 4: the runs 0.24.2 queued for them and nobody started.
+		dropQueuedRuns(dir, turnedOff, log);
 		writeFileAtomic(`${jobsFile}.v2.bak`, text);
 		writeFileAtomic(jobsFile, `${JSON.stringify({ version: JOBS_FILE_VERSION, jobs: v3 }, null, 2)}\n`);
 		log(`jobs.json: version 2 converted to version 3 (${jobs.length} job(s), ${turnedOff.length} turned off for the upgrade${dropped ? `, ${dropped} entr${dropped === 1 ? "y" : "ies"} with no id left out` : ""}); the version 2 file is jobs.json.v2.bak`);
-		return { jobs: jobs.length, turnedOff };
+		return { jobs: jobs.length, turnedOff, rulesOff };
 	});
 }
 

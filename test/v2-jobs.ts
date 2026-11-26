@@ -7,7 +7,6 @@ import type { ClockStore } from "../src/clock.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { convertStores, fromV2, type V2Job } from "../src/convert-v2.ts";
-import { readUiPrefs } from "../src/ui-prefs.ts";
 import { jobCounts, listedJob, runHistory } from "../src/job-status.ts";
 import type { JobStore } from "../src/store.ts";
 
@@ -47,11 +46,10 @@ export function convertedAndOn(dir: string): void {
 		for (const job of file.jobs) if (job.disabled?.code === "upgrade") { job.enabled = true; delete job.disabled; }
 		fs.writeFileSync(jobsFile, `${JSON.stringify(file, null, 2)}\n`);
 	}
-	const off = readUiPrefs(dir).upgradeOff;
 	const rulesFile = path.join(dir, "triggers.json");
-	if (off && fs.existsSync(rulesFile)) {
-		const file = JSON.parse(fs.readFileSync(rulesFile, "utf8")) as { rules: Array<{ id: string; enabled: boolean }> };
-		for (const rule of file.rules) if (off.rules.includes(rule.id)) rule.enabled = true;
+	if (fs.existsSync(rulesFile)) {
+		const file = JSON.parse(fs.readFileSync(rulesFile, "utf8")) as { rules: Array<{ enabled: boolean; offForUpgrade?: true }> };
+		for (const rule of file.rules) if (rule.offForUpgrade) { rule.enabled = true; delete rule.offForUpgrade; }
 		fs.writeFileSync(rulesFile, `${JSON.stringify(file, null, 2)}\n`);
 	}
 }

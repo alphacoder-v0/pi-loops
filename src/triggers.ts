@@ -49,7 +49,7 @@ export interface DynamicTriggerRule {
 	precheck?: Precheck;
 	/** A watch nobody has said yes to yet (design 2.5): `enabled` is false, and only its answer sets it up. */
 	proposed?: { at: string; session: string };
-	/** Turned off by the conversion of a directory an older pi-loops worked in (src/convert-v2.ts); gone once it is on again. */
+	/** Turned off by the conversion of a directory an older pi-loops worked in (src/convert-v2.ts); gone once a person turns it on or off. */
 	offForUpgrade?: true;
 }
 
@@ -384,7 +384,8 @@ export class TriggerStore {
 			if (rule.proposed) return rule;
 			rule.enabled = enabled;
 			if (enabled) rule.firedAt = undefined;
-			if (enabled) delete rule.offForUpgrade;
+			// Turned on or off here, it is the person's: the upgrade's mark goes either way.
+			delete rule.offForUpgrade;
 			return rule;
 		});
 	}
