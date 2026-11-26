@@ -78,7 +78,8 @@ All notable changes to pi-loops are documented here. The format follows
     window with pi-loops 0.22 (pid 12345, ~/proj) is still open. Close it, and pi-loops 0.24.3
     starts. Until then, that window runs your loops. Then run /reload in this window.` It has no
     pi-loops tool and no MCP connection of pi-loops, and it holds its conversation so that nothing
-    else writes into it. Once the older one is gone, it says to run `/reload`.
+    else writes into it. Once no older window or terminal is open, it says to run `/reload`;
+    the window then starts, and replaces an older pi-loops in the background if one still runs.
   - pi-loops in the background, `pi -p`, and the `pi-loops` command say the same line. `pi-loops
     inbox`, `events`, `recipe`, `export`, `import`, `abort` and `pair` do nothing else; `web`,
     `tui` and `open` do nothing else while an older window or terminal is open.

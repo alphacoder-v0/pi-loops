@@ -8,25 +8,30 @@
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { LeaseBinding, LeaseStore, procStart } from "./lease.ts";
-import { olderLine, olderPiLoops, untilAlone } from "./older.ts";
+import { olderLine, olderPiLoops, WAIT_POLL_MS } from "./older.ts";
 
 /** The commands the extension registers (src/pi-loops.ts); each answers with the line while it waits. */
 export const WAITING_COMMANDS = ["cron", "crontab", "loop", "goal", "inbox", "triggers", "pi-loops", "recipe", "session-share", "session-export", "session-import", "new-trigger"] as const;
 
-/** What a waiting window says once the older pi-loops is gone. */
-export const GONE_LINE = "the older pi-loops is gone: run /reload to start pi-loops here";
+/** What a waiting window says once no older window or terminal is open: /reload starts it, and it replaces an older background. */
+export const GONE_LINE = "the older pi-loops window is gone: run /reload to start pi-loops here";
 
 export interface WaitingWindowDeps {
 	dir: string;
 	self: string;
 	instance: string;
 	log: (line: string) => void;
+	/** How often it looks for the older window (`WAIT_POLL_MS`). */
+	everyMs?: number;
 }
 
 export function registerWaitingWindow(pi: Pick<ExtensionAPI, "registerCommand" | "on">, deps: WaitingWindowDeps): void {
+	// Only an older window or terminal keeps it waiting: an older background alone is what the window,
+	// once reloaded, replaces (src/older.ts replaceOlderBackground).
+	const older = () => olderPiLoops(deps.dir, Date.now());
 	const line = (): string => {
-		const now = olderLine(olderPiLoops(deps.dir, Date.now()), deps.self);
-		return now === undefined ? GONE_LINE : `${now} Then run /reload in this window.`;
+		const now = older();
+		return now.some((o) => o.kind === "window") ? `${olderLine(now, deps.self)} Then run /reload in this window.` : GONE_LINE;
 	};
 	for (const name of WAITING_COMMANDS) {
 		pi.registerCommand(name, {
@@ -52,12 +57,13 @@ export function registerWaitingWindow(pi: Pick<ExtensionAPI, "registerCommand" |
 		else process.stderr.write(`[pi-loops] ${said}\n`);
 		if (watching) return;
 		watching = true;
-		untilAlone(deps.dir, { say: () => undefined, self: deps.self, unref: true })
-			.then(() => {
-				deps.log(GONE_LINE);
-				if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${GONE_LINE}`, "info");
-			})
-			.catch((err: any) => deps.log(`waiting for an older pi-loops: ${err?.message ?? err}`));
+		const look = setInterval(() => {
+			if (older().some((o) => o.kind === "window")) return;
+			clearInterval(look);
+			deps.log(GONE_LINE);
+			if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${GONE_LINE}`, "info");
+		}, deps.everyMs ?? WAIT_POLL_MS);
+		look.unref();
 	});
 	pi.on("session_shutdown", async () => {
 		try { binding.release(); }

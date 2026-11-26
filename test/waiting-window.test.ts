@@ -78,3 +78,22 @@ test("[waiting-window] the extension waits before it opens anything: the gate is
 	const registered = [...source.matchAll(/pi\.registerCommand\("([^"]+)"/g)].map((m) => m[1]).sort();
 	assert.deepEqual(registered, [...WAITING_COMMANDS].sort());
 });
+
+test("[waiting-window] an older background alone does not keep it waiting: the window, once reloaded, replaces it", async () => {
+	const dir = tmp();
+	const presence = olderWindow(dir);
+	// And pi-loops 0.22 in the background, which its window started.
+	fs.writeFileSync(path.join(dir, "presence", "bg.json"), JSON.stringify({ pid: process.ppid, host: os.hostname(), instance: "bg", cwd: "", kind: "host", heartbeatAt: new Date().toISOString() }));
+	const { pi, commands, handlers } = fakePi();
+	registerWaitingWindow(pi, { dir, self: "0.24.3", instance: "w1", log: () => undefined, everyMs: 20 });
+	const notes: string[] = [];
+	await handlers.get("session_start")!({ reason: "startup" }, ctxFor(notes));
+	assert.match(notes[0] ?? "", /is waiting: a pi window with pi-loops 0\.22/);
+	fs.rmSync(presence);
+	await new Promise((r) => setTimeout(r, 200));
+	assert.equal(notes.at(-1), `[pi-loops] ${GONE_LINE}`, "said once its window is gone, though its background still runs");
+	const after: string[] = [];
+	await commands.get("cron")!("", ctxFor(after));
+	assert.deepEqual(after, [`[pi-loops] ${GONE_LINE}`]);
+	await handlers.get("session_shutdown")!({}, ctxFor([]));
+});

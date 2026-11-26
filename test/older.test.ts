@@ -139,6 +139,8 @@ test("[older-presence] a presence file that is not a regular file of an entry's 
 	assert.equal(spawnSync("mkfifo", [path.join(dir, "presence", "fifo.json")]).status, 0, "mkfifo");
 	fs.symlinkSync("/dev/zero", path.join(dir, "presence", "zero.json"));
 	fs.writeFileSync(path.join(dir, "presence", "big.json"), JSON.stringify({ pid: 4242, host: os.hostname(), cwd: "x".repeat(20_000), heartbeatAt: new Date().toISOString() }));
+	// And pi-loops' own service record in its place: every verb reads it.
+	assert.equal(spawnSync("mkfifo", [path.join(dir, "host-service.json")]).status, 0, "mkfifo");
 	// In a child: a read that blocks on the FIFO blocks the whole process, so the test cannot time it out from inside.
 	const repo = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 	const script = `import(${JSON.stringify(path.join(repo, "src/older.ts"))}).then((m) => { process.stdout.write(JSON.stringify(m.olderPiLoops(${JSON.stringify(dir)}, Date.now()))); process.exit(0); })`;
@@ -284,5 +286,7 @@ test("[older-replace] a window that starts beside an older background alone asks
 	assert.equal(await replaceOlderBackground(stays, () => undefined, { boundMs: 100, pollMs: 20 }), false, "one that does not go: not gone after the bound");
 	const window = tmp();
 	presence(window, { pid: process.pid, heartbeatAt: new Date().toISOString() });
-	assert.equal(await replaceOlderBackground(window, () => undefined, { boundMs: 100 }), false, "an older window: nothing is replaced");
+	const before = Date.now();
+	assert.equal(await replaceOlderBackground(window, () => undefined, { boundMs: 2_000, pollMs: 20 }), false, "an older window: nothing is replaced");
+	assert.ok(Date.now() - before < 1_000, "and it is not waited out");
 });
