@@ -83,8 +83,11 @@ All notable changes to pi-loops are documented here. The format follows
     before, since nothing is converted yet. When it closes, it starts pi-loops 0.22 in the
     background to keep them running; this version asks that process to stop (SIGTERM), as an
     upgrade replaces an older pi-loops in the background, and says so in its log.
-  - With a terminal of 0.24.2 or earlier open, no loop or rule runs until you restart it:
-    pi-loops in the background is this version now, and it waits. That terminal does not say so.
+  - With a terminal of 0.24.2 or earlier open, pi-loops 0.24.2 in the background, which an
+    upgrade of the package does not stop, goes on running your loops and rules as before. Once
+    the terminal is gone, a window of this version replaces it. If it no longer runs (it was
+    stopped, or it ended), no loop or rule runs until you restart that terminal, since what
+    starts in the background now is this version, and it waits. That terminal does not say so.
   - The browser page is not served while pi-loops in the background waits.
   - This version looks when it starts. An older pi-loops that starts after it, as after a
     downgrade, is not waited for.

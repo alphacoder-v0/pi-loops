@@ -109,7 +109,7 @@ test("[older-line] the line names the version, the pid, where it is open, and wh
 	const background: OlderPiLoops = { version: "0.22", kind: "background", pid: 77 };
 	assert.equal(olderLine([], "0.24.3"), undefined);
 	assert.equal(olderLine([window22], "0.24.3"), "pi-loops 0.24.3 is waiting: a pi window with pi-loops 0.22 (pid 4242, /home/p/proj) is still open. Close it, and pi-loops 0.24.3 starts within 30 seconds. Until then, that window runs your loops.");
-	assert.equal(olderLine([window24], "0.24.3"), "pi-loops 0.24.3 is waiting: a pi terminal with pi-loops 0.24.2 or earlier (pid 5151, /home/p/other) is still open. Restart it, and pi-loops 0.24.3 starts within 30 seconds. Until then, no loop or rule runs.");
+	assert.equal(olderLine([window24], "0.24.3"), "pi-loops 0.24.3 is waiting: a pi terminal with pi-loops 0.24.2 or earlier (pid 5151, /home/p/other) is still open. Restart it, and pi-loops 0.24.3 starts within 30 seconds. Until then, pi-loops 0.24.3 runs nothing here, and pi-loops 0.24.2 in the background, while it still runs, runs your loops.");
 	assert.equal(olderLine([background], "0.24.3"), "pi-loops 0.24.3 is waiting: pi-loops 0.22 in the background (pid 77) is still running. End it (kill 77), and pi-loops 0.24.3 starts within 30 seconds.");
 	assert.equal(olderLine([window22, window24, background], "0.24.3"), `${olderLine([window22], "0.24.3")} 2 more older pi-loops processes are open: pids 5151, 77.`);
 });

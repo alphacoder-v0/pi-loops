@@ -100,8 +100,10 @@ machine. Everything here follows from that, and each one has a price.
    on each claim or dismiss, which removes every field this version added, and a 0.22 window checks
    its project's rules beside the background: a bridge that mended each case (a fence, a yield of
    each rule, a side file for the fields) would find one more case in each review. The cost: while a
-   terminal of 0.24.2 or earlier stays open, no loop or rule runs, since the background is this
-   version and it waits; that terminal does not say so. A 0.22 window open meanwhile runs its own
+   terminal of 0.24.2 or earlier stays open, this version runs nothing. pi-loops 0.24.2 in the
+   background, which an upgrade of the package leaves running, goes on running the loops until a
+   window of this version replaces it once the terminal is gone; when it does not run, no loop or
+   rule runs until that terminal restarts, and that terminal does not say so. A 0.22 window open meanwhile runs its own
    loops, because nothing is converted; the 0.22 process it starts in the background when it closes
    is stopped by the one that waits, as an upgrade replaces an older background. The check is made when a process starts: an older pi-loops
    that starts after it (a downgrade) is not waited for.

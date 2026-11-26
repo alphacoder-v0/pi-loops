@@ -98,7 +98,7 @@ export function olderLine(older: readonly OlderPiLoops[], self: string): string 
 		? `pi-loops ${self} is waiting: pi-loops ${first.version === "0.22" ? "0.22" : "0.24.2 or earlier"} in the background (pid ${first.pid}) is still running. End it (kill ${first.pid}), and ${starts}.`
 		: first.version === "0.22"
 			? `pi-loops ${self} is waiting: a pi window with pi-loops 0.22 (pid ${first.pid}${at}) is still open. Close it, and ${starts}. Until then, that window runs your loops.`
-			: `pi-loops ${self} is waiting: a pi terminal with pi-loops 0.24.2 or earlier (pid ${first.pid}${at}) is still open. Restart it, and ${starts}. Until then, no loop or rule runs.`;
+			: `pi-loops ${self} is waiting: a pi terminal with pi-loops 0.24.2 or earlier (pid ${first.pid}${at}) is still open. Restart it, and ${starts}. Until then, pi-loops ${self} runs nothing here, and pi-loops 0.24.2 in the background, while it still runs, runs your loops.`;
 	if (!rest.length) return line;
 	return `${line} ${rest.length} more older pi-loops process${rest.length === 1 ? " is" : "es are"} open: pid${rest.length === 1 ? "" : "s"} ${rest.map((o) => o.pid).join(", ")}.`;
 }
