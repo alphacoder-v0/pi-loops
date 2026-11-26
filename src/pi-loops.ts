@@ -62,7 +62,8 @@ import { budgetState, jobCounts, jobRuns, type ListedJob, listedJobs, switchTarg
 import { runClockTick, decideRunNow } from "./clock.ts";
 import { DISABLED_BY_PERSON } from "./store.ts";
 import { convertDir, openStores, removeJob } from "./stores.ts";
-import { olderLine, olderPiLoops, stopOlderBackground, untilAlone } from "./older.ts";
+import { olderPiLoops, replaceOlderBackground } from "./older.ts";
+import { registerWaitingWindow } from "./waiting-window.ts";
 import { Ticker, WINDOW_RIDERS, type Riders } from "./ticker.ts";
 import { TURN_TYPE } from "./mark.ts";
 import { renderTurn } from "./turn-render.ts";
@@ -109,24 +110,15 @@ export default function piLoops(pi: ExtensionAPI) {
 	const dir = defaultLoopsDir(getAgentDir());
 	/** Everything this process diagnoses, kept after the window is gone. */
 	const log = new LoopsLog(dir, `pi-${process.pid}.log`);
+	// One version at a time (src/older.ts): while a window or terminal of an older pi-loops is open
+	// here, this window does not start; it answers each pi-loops command with the line and holds its
+	// conversation (src/waiting-window.ts) until /reload.
+	if (olderPiLoops(dir, Date.now()).some((o) => o.kind === "window")) {
+		registerWaitingWindow(pi, { dir, self: PI_LOOPS_VERSION, instance: newId("pi"), log: (line) => log.info(line) });
+		return;
+	}
+	// Converted at session_start, once an older pi-loops in the background is replaced (`convertWhenAlone`).
 	const stores = openStores(dir);
-	/** The line every pi-loops command and tool answers with while an older pi-loops is open here (`waitForOlder`). */
-	let waiting: string | undefined;
-	/** `pi.registerCommand` for pi-loops' own commands: each answers with `waiting` while an older pi-loops is open here. */
-	const registerCommand = (name: string, options: Parameters<typeof pi.registerCommand>[1]): void =>
-		pi.registerCommand(name, {
-			...options,
-			handler: async (args, ctx) => {
-				if (waiting === undefined) return options.handler(args, ctx);
-				ctx.ui.notify(`[pi-loops] ${waiting}`, "warning");
-			},
-		});
-	/** A pi-loops tool that answers with `waiting`, as an error, while an older pi-loops is open here. */
-	const whileAlone = (def: ToolDefinition<any, any>): ToolDefinition<any, any> => ({
-		...def,
-		execute: async (...args: Parameters<ToolDefinition<any, any>["execute"]>) =>
-			waiting === undefined ? def.execute(...args) : { content: [{ type: "text" as const, text: waiting }], isError: true, details: undefined },
-	});
 	/** This package's directory: a sub-session must not load a second copy of this extension. */
 	const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -512,12 +504,6 @@ export default function piLoops(pi: ExtensionAPI) {
 						source.status.lastError = "this window shows an older copy of its conversation; /resume it to take pushes again";
 						return;
 					}
-					// While an older pi-loops is open here, this window stores nothing (src/older.ts).
-					if (waiting !== undefined) {
-						source.status.droppedCount++;
-						source.status.lastError = waiting;
-						return;
-					}
 					// Stored first (design 3.4), then mapped: a push with no dedup key stays in the log only.
 					let event: RawEvent;
 					try {
@@ -665,8 +651,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	 */
 	async function drainRequests(opts: DrainOptions = {}) {
 		const sessionId = binding.here().sessionId;
-		// While an older pi-loops is open here, nothing queued is handed to pi (src/older.ts).
-		if (!sessionId || waiting !== undefined) return undefined;
+		if (!sessionId) return undefined;
 		const now = Date.now();
 		// The window's one drain: a yes first (it runs after the current turn, before the next turn row,
 		// design 6.4), then the engine's, under one lock, so pi is handed one turn of ours at a time.
@@ -1810,13 +1795,13 @@ export default function piLoops(pi: ExtensionAPI) {
 		]);
 	}
 
-	registerCommand("cron", {
+	pi.registerCommand("cron", {
 		description: 'Scheduled jobs: /cron add [--stateful] "<schedule>" <prompt> — /cron help',
 		getArgumentCompletions: cronCompletions,
 		handler: cronHandler,
 	});
-	registerCommand("crontab", { description: "Alias of /cron", getArgumentCompletions: cronCompletions, handler: cronHandler });
-	registerCommand("loop", { description: "Alias of /cron", getArgumentCompletions: cronCompletions, handler: cronHandler });
+	pi.registerCommand("crontab", { description: "Alias of /cron", getArgumentCompletions: cronCompletions, handler: cronHandler });
+	pi.registerCommand("loop", { description: "Alias of /cron", getArgumentCompletions: cronCompletions, handler: cronHandler });
 
 	const INBOX_USAGE = "[list|all|claim <n>|dismiss <n> [reason]|cancel [n]|open <n>|clear|help] [--all]";
 
@@ -2089,7 +2074,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		`the agent is sent back to work at most ${MAX_CONTINUATIONS} times; an evaluator that cannot decide pauses instead of looping`,
 	];
 
-	registerCommand("goal", {
+	pi.registerCommand("goal", {
 		description: "Hold this session to a stop condition, evaluated after every turn",
 		getArgumentCompletions: (prefix) => {
 			const subs = ["pause", "resume", "clear", "help"];
@@ -2133,7 +2118,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		},
 	});
 
-	registerCommand("inbox", {
+	pi.registerCommand("inbox", {
 		description: "Triage findings from stateful cron jobs — /inbox help",
 		getArgumentCompletions: (prefix) => {
 			const subs = ["list", "all", "claim", "dismiss", "cancel", "open", "clear", "help", "--all"];
@@ -2325,7 +2310,7 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	const ruleLines = (rules: ReturnType<TriggerStore["load"]>, numbered: boolean) => listRules(rules, { numbered, sessionId: session.sessionId, cwd: session.cwd, home: process.env.HOME ?? "", sameProject, history: stores.history() });
 
-	registerCommand("triggers", {
+	pi.registerCommand("triggers", {
 		description: "Show trigger sources, rules, running actions, and recent audit — /triggers help",
 		getArgumentCompletions: (prefix) => {
 			const subs = ["status", "rules", "sources", "hooks", "enable", "disable", "remove", "set", "run", "running", "audit", "abort", "panel", "help"];
@@ -2618,7 +2603,7 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	const ARCHIVE_WARNING = `warning: ${ARCHIVE_EXT} archives include transcript and tool history. They do not include separate auth stores, provider credentials, OAuth tokens, MCP config, or the inbox.`;
 
-	registerCommand("pi-loops", {
+	pi.registerCommand("pi-loops", {
 		description: "About this extension; start | stop | restart | status the part that runs loops while no pi is open; web opens this conversation in the browser page; install-launcher puts the `pi-loops` command on your PATH, uninstall-launcher removes it",
 		handler: async (args, ctx) => {
 			lastCtx = ctx;
@@ -2925,7 +2910,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	
 	}
 
-	registerCommand("recipe", {
+	pi.registerCommand("recipe", {
 		description: "Install a packaged way of running this project on loops — /recipe help",
 		getArgumentCompletions: (prefix) => {
 			const subs = ["list", "show", "add", "update", "remove", "help"];
@@ -3094,7 +3079,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	// Not `share`: pi has a built-in `/share` of its own, and an extension command with a built-in's
 	// name is dropped from autocomplete and shadowed at the prompt. The name follows the two
 	// commands next to it (`/session-export`, `/session-import`), which are about the same object.
-	registerCommand("session-share", {
+	pi.registerCommand("session-share", {
 		description: "Upload this session's transcript as a private GitHub gist via `gh`, redacted and shown to you first",
 		handler: async (args, ctx) => {
 			lastCtx = ctx;
@@ -3162,7 +3147,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		},
 	});
 
-	registerCommand("session-export", {
+	pi.registerCommand("session-export", {
 		description: `Export this session + its cron jobs, trigger rules and loop state to a ${ARCHIVE_EXT} archive`,
 		handler: async (args, ctx) => {
 			lastCtx = ctx;
@@ -3198,7 +3183,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		},
 	});
 
-	registerCommand("session-import", {
+	pi.registerCommand("session-import", {
 		description: `Import a ${ARCHIVE_EXT} archive: new session file here, cron jobs / trigger rules / loop state restored`,
 		handler: async (args, ctx) => {
 			lastCtx = ctx;
@@ -3266,7 +3251,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		},
 	});
 
-	registerCommand("new-trigger", {
+	pi.registerCommand("new-trigger", {
 		description: "Create a dynamic natural-language trigger rule — /new-trigger <request>",
 		handler: async (args, ctx) => {
 			lastCtx = ctx;
@@ -3343,7 +3328,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 	/** The seats of this window's guard: `confirmTool` passes a scheduled turn's call only where the guard judged it in one. */
 	const windowSeats = new GuardSeats();
-	for (const def of automationTools({ hop, actor: "tool" }, toolHost)) pi.registerTool(whileAlone(def));
+	for (const def of automationTools({ hop, actor: "tool" }, toolHost)) pi.registerTool(def);
 	// The cap on a scheduled turn's calls while this window runs it (src/window-executor.ts
 	// `windowGuard`): the decision is there, this only hands it what pi is in, what config.toml says,
 	// the inbox a question is filed in, and where the turn's job is read.
@@ -3491,131 +3476,95 @@ export default function piLoops(pi: ExtensionAPI) {
 			// run too, which queues its conversation's due prompts but hands none to pi (the window
 			// executor delivers only in tui and rpc mode): a window or pi-loops in the background does.
 			const hostMode = ctx.mode === "tui" || ctx.mode === "rpc" || envFlag("LOOPS_HOST");
-			if (!hostMode) {
-				// A `pi -p` run converts what an older version left, as a window does, unless an older pi-loops is
-				// open here: then its pi-loops commands and tools answer with the line, as a waiting window's do.
-				const line = olderLine(olderPiLoops(dir, Date.now()), PI_LOOPS_VERSION);
-				if (line === undefined) convertDir(dir, (l) => log.info(l));
-				else {
-					waiting = line;
-					log.info(line);
-					if (!ctx.hasUI) process.stderr.write(`[pi-loops] ${line}\n`);
+			await convertWhenAlone(hostMode);
+			if (!hostMode) return;
+			// The host runs the loops; this window only makes sure there is one. Not awaited: a start can
+			// take seconds, and the session must not wait behind it. A probe here never counts toward
+			// evicting a host that is still starting.
+			watchStore();
+			// The session-start line below says a pause already in place when this project has loops or rules;
+			// the tick does not say it a second time. Elsewhere the tick is what says it.
+			const saysPause = loadOrNone(() => stores.jobs.load()).some((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful) || loadOrNone(() => stores.rules.load()).some((r) => sameProject(r.cwd, session.cwd) && r.enabled);
+			shownPause = saysPause && hostHasWork() ? hostPauseReason() : undefined;
+			hostTick(false).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
+			runsShownAfter = stamp();
+			ticker.start();
+			schedulerStarted = true;
+			refreshBadge();
+			pruneLogs(dir);
+			// What was loaded is printed on every start; without a line here a session
+			// can begin with loops and rules the user has entirely forgotten about.
+			// "Active here" means it: a plain job of another session is asleep, not active.
+			const myJobs = listedNow().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && runsHere(j, ownerView()));
+			const myRules = loadOrNone(() => stores.rules.load()).filter((r) => sameProject(r.cwd, session.cwd) && r.enabled);
+			// What is scheduled says nothing about what is working: a loop that has failed every night
+			// since Tuesday is still counted as active, and this line is the only one a user reads.
+			const failing = failingSummary(myJobs);
+			log.info(`session start: ${myJobs.length} enabled loop(s), ${myRules.length} enabled rule(s)${failing ? `, ${failing}` : ""} in ${session.cwd}`);
+			{
+				const line = awayLine(awayHere());
+				// After pi has drawn the resumed history: said now, a long conversation pushed it off the screen.
+				if (line) sayInfo(line);
+			}
+			// Said once, the first time this version starts: plain jobs used to sleep while their conversation
+			// was closed, and closing it was how people stopped one. Now the host runs them, and they cost turns.
+			if (ctx.hasUI && readUiPrefs(dir).heldJobsNotice !== "shown") {
+				// Every conversation's plain jobs (src/job-lines.ts heldJobsNotice): one an older pi-loops last
+				// had open runs in the background too, once it has been opened here; a count of what runs
+				// right now was spent on the first start and said nothing about the rest.
+				const line = heldJobsNotice(stores.jobs.load());
+				if (line) {
+					sayInfo(line);
+					// Marked only once it is on the screen: a notice used up unseen is never said again.
+					startShown.push(() => writeUiPref(dir, "heldJobsNotice", "shown"));
 				}
-				return;
 			}
-			// One version at a time (src/older.ts): while an older pi-loops is open in this loops directory,
-			// this window converts nothing and runs nothing, and says why; it starts once that one is gone.
-			const older = olderLine(olderPiLoops(dir, Date.now()), PI_LOOPS_VERSION);
-			if (older) {
-				waitForOlder(ctx, older);
-				return;
+			if (ctx.hasUI && readUiPrefs(dir).toolsCapNotice !== "shown") {
+				// A 0.22 plain job's `--tools` was never used; now it caps the job's turns (docs/loops.md).
+				const line = toolsCapNotice(stores.jobs.load(), capWords);
+				if (line) {
+					sayInfo(line);
+					startShown.push(() => writeUiPref(dir, "toolsCapNotice", "shown"));
+				}
 			}
-			convertDir(dir, (line) => log.info(line));
-			startWork(ctx);
+			if (ctx.hasUI) {
+				// A watch proposed here waits for its answer on every start, and says which command asks again (design 6.3).
+				const line = proposalsNotice(loadOrNone(() => stores.jobs.load()), loadOrNone(() => stores.rules.load()), session.sessionId);
+				if (line) sayInfo(line);
+			}
+			if (leftLine) {
+				sayInfo(leftLine);
+				leftLine = undefined;
+			}
+			const pausedLoops = stores.jobs.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful).length;
+			const pauseReason = hostPauseReason();
+			if (ctx.hasUI && pauseReason && (pausedLoops || myRules.length)) {
+				afterHistory(ctx, () => ctx.ui.notify(`[cron] ${plural(pausedLoops, "loop")} and ${plural(myRules.length, "rule")} here are paused: ${pauseReason}`, "warning"));
+			} else if (ctx.hasUI && (myJobs.length || myRules.length)) {
+				const next = myJobs
+					.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), fired: j.status.fired ? Date.parse(j.status.fired) : undefined }, Date.now()))
+					.filter((n): n is number => n !== undefined)
+					.sort((a, b) => a - b)[0];
+				const active = `[cron] ${plural(myJobs.length, "loop")} and ${plural(myRules.length, "rule")} active here${next ? ` · next ${formatLocal(next)}` : ""}${failing ? ` · ${failing} — /cron runs` : ""}`;
+				sayInfo(active);
+			}
 		} finally {
 			flushStartLines(ctx);
 		}
 	});
 
 	/**
-	 * While an older pi-loops is open here (src/older.ts): every pi-loops command and tool answers with
-	 * `waiting`, and the window starts its work once the older one is gone. The window holds its
-	 * conversation's lease meanwhile, so pi-loops in the background does not write into it.
+	 * What older versions left is converted once nothing older works here (src/older.ts). An older
+	 * pi-loops in the background, with no older window open, is replaced first, as an upgrade does, for
+	 * at most `REPLACE_WAIT_MS`: it may finish a turn in its page first. A `pi -p` run replaces nothing:
+	 * it converts only when nothing older is there at all.
 	 */
-	function waitForOlder(ctx: ExtensionContext, line: string): void {
-		waiting = line;
-		if (ctx.hasUI) afterHistory(ctx, () => ctx.ui.notify(`[pi-loops] ${line}`, "warning"));
-		log.info(line);
-		untilAlone(dir, { say: (next: string) => { waiting = next; log.info(next); }, self: PI_LOOPS_VERSION, unref: true, each: (now) => stopOlderBackground(dir, olderPiLoops(dir, now), (l) => log.info(l)) })
-			.then(() => {
-				waiting = undefined;
-				if (leaving) return;
-				const now = lastCtx ?? ctx;
-				convertDir(dir, (l) => log.info(l));
-				startLines = [];
-				startShown = [];
-				try {
-					startWork(now);
-				} finally {
-					flushStartLines(now);
-				}
-				if (now.hasUI) now.ui.notify("[pi-loops] the older pi-loops is gone: pi-loops runs here now", "info");
-			})
-			.catch((err: any) => log.info(`waiting for an older pi-loops: ${err?.message ?? err}`));
-	}
-
-	/** What a window starts once it may work here: the clock, the background process, and the start lines. */
-	function startWork(ctx: ExtensionContext): void {
-		// The host runs the loops; this window only makes sure there is one. Not awaited: a start can
-		// take seconds, and the session must not wait behind it. A probe here never counts toward
-		// evicting a host that is still starting.
-		watchStore();
-		// The session-start line below says a pause already in place when this project has loops or rules;
-		// the tick does not say it a second time. Elsewhere the tick is what says it.
-		const saysPause = loadOrNone(() => stores.jobs.load()).some((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful) || loadOrNone(() => stores.rules.load()).some((r) => sameProject(r.cwd, session.cwd) && r.enabled);
-		shownPause = saysPause && hostHasWork() ? hostPauseReason() : undefined;
-		hostTick(false).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
-		runsShownAfter = stamp();
-		ticker.start();
-		schedulerStarted = true;
-		refreshBadge();
-		pruneLogs(dir);
-		// What was loaded is printed on every start; without a line here a session
-		// can begin with loops and rules the user has entirely forgotten about.
-		// "Active here" means it: a plain job of another session is asleep, not active.
-		const myJobs = listedNow().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && runsHere(j, ownerView()));
-		const myRules = loadOrNone(() => stores.rules.load()).filter((r) => sameProject(r.cwd, session.cwd) && r.enabled);
-		// What is scheduled says nothing about what is working: a loop that has failed every night
-		// since Tuesday is still counted as active, and this line is the only one a user reads.
-		const failing = failingSummary(myJobs);
-		log.info(`session start: ${myJobs.length} enabled loop(s), ${myRules.length} enabled rule(s)${failing ? `, ${failing}` : ""} in ${session.cwd}`);
-		{
-			const line = awayLine(awayHere());
-			// After pi has drawn the resumed history: said now, a long conversation pushed it off the screen.
-			if (line) sayInfo(line);
+	async function convertWhenAlone(hostMode: boolean): Promise<void> {
+		if (olderPiLoops(dir, Date.now()).length && (!hostMode || !(await replaceOlderBackground(dir, (line) => log.info(line))))) {
+			log.info("not converted yet: an older pi-loops in the background is still running here");
+			return;
 		}
-		// Said once, the first time this version starts: plain jobs used to sleep while their conversation
-		// was closed, and closing it was how people stopped one. Now the host runs them, and they cost turns.
-		if (ctx.hasUI && readUiPrefs(dir).heldJobsNotice !== "shown") {
-			// Every conversation's plain jobs (src/job-lines.ts heldJobsNotice): one an older pi-loops last
-			// had open runs in the background too, once it has been opened here; a count of what runs
-			// right now was spent on the first start and said nothing about the rest.
-			const line = heldJobsNotice(stores.jobs.load());
-			if (line) {
-				sayInfo(line);
-				// Marked only once it is on the screen: a notice used up unseen is never said again.
-				startShown.push(() => writeUiPref(dir, "heldJobsNotice", "shown"));
-			}
-		}
-		if (ctx.hasUI && readUiPrefs(dir).toolsCapNotice !== "shown") {
-			// A 0.22 plain job's `--tools` was never used; now it caps the job's turns (docs/loops.md).
-			const line = toolsCapNotice(stores.jobs.load(), capWords);
-			if (line) {
-				sayInfo(line);
-				startShown.push(() => writeUiPref(dir, "toolsCapNotice", "shown"));
-			}
-		}
-		if (ctx.hasUI) {
-			// A watch proposed here waits for its answer on every start, and says which command asks again (design 6.3).
-			const line = proposalsNotice(loadOrNone(() => stores.jobs.load()), loadOrNone(() => stores.rules.load()), session.sessionId);
-			if (line) sayInfo(line);
-		}
-		if (leftLine) {
-			sayInfo(leftLine);
-			leftLine = undefined;
-		}
-		const pausedLoops = stores.jobs.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful).length;
-		const pauseReason = hostPauseReason();
-		if (ctx.hasUI && pauseReason && (pausedLoops || myRules.length)) {
-			afterHistory(ctx, () => ctx.ui.notify(`[cron] ${plural(pausedLoops, "loop")} and ${plural(myRules.length, "rule")} here are paused: ${pauseReason}`, "warning"));
-		} else if (ctx.hasUI && (myJobs.length || myRules.length)) {
-			const next = myJobs
-				.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), fired: j.status.fired ? Date.parse(j.status.fired) : undefined }, Date.now()))
-				.filter((n): n is number => n !== undefined)
-				.sort((a, b) => a - b)[0];
-			const active = `[cron] ${plural(myJobs.length, "loop")} and ${plural(myRules.length, "rule")} active here${next ? ` · next ${formatLocal(next)}` : ""}${failing ? ` · ${failing} — /cron runs` : ""}`;
-			sayInfo(active);
-		}
+		convertDir(dir, (line) => log.info(line));
 	}
 
 	/**
@@ -3727,8 +3676,6 @@ export default function piLoops(pi: ExtensionAPI) {
 		markTurn("agent_settled");
 		// pi is idle now: what it no longer has is offered again by the drain below, unless a stop named it.
 		executor.settled(event.aborted);
-		// While an older pi-loops is open here, a turn's end writes nothing: no answer, goal or offer (src/older.ts).
-		if (waiting !== undefined) return;
 		// An answer's turn that ran closes now; a stop closes it unfinished.
 		await windowAnswers.settled(event.aborted, Date.now()).catch((err: any) => log.info(`answers: ${err?.message ?? err}`));
 		// The tracker description `/recipe add` was waiting for: written during this turn, so the

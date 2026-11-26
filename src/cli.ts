@@ -304,13 +304,15 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	const cwd = path.resolve(str("cwd") ?? process.cwd());
 	// One version at a time (src/older.ts): while an older pi-loops is open in this loops directory, a
 	// verb that reads or writes its stores answers with the line, and a service verb says it first.
-	const older = olderLine(olderPiLoops(loopsDir, Date.now()), PI_LOOPS_VERSION);
-	if (older && WAITS_FOR_OLDER.has(command)) {
+	const olderNow = olderPiLoops(loopsDir, Date.now());
+	const older = olderLine(olderNow, PI_LOOPS_VERSION);
+	// A window of this version that a launcher opens beside an older window only waits: it is refused. Beside
+	// an older background alone, it is what replaces that background, so it opens.
+	if (older && (STORE_VERBS.has(verb) || (LAUNCH_VERBS.has(command) && olderNow.some((o) => o.kind === "window")))) {
 		out(older);
 		return 1;
 	}
-	// The page is not served while pi-loops in the background waits, so the launcher says it too.
-	if (older && (SERVICE_VERBS.has(command) || ["host", "web", "tui", "open"].includes(command))) out(older);
+	if (older) out(older);
 
 	if (command === "web" || command === "tui") return launch(argv, out);
 	// What the door tells a browser with no way in to run: the project's newest conversation, so
@@ -460,8 +462,13 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 }
 
 /** What runs loops while no pi is open, started, stopped and looked at by name. */
-/** The verbs that read or write pi-loops' stores, which wait while an older pi-loops is open (src/older.ts). */
-const WAITS_FOR_OLDER: ReadonlySet<string> = new Set(["inbox", "events", "recipe", "export", "import"]);
+/**
+ * The verbs that read or write pi-loops' stores, or queue a request, which answer with the line while an
+ * older pi-loops is open (src/older.ts). Every other verb runs and says the line first.
+ */
+const STORE_VERBS: ReadonlySet<string> = new Set(["inbox", "events", "recipe", "export", "import", "abort", "pair"]);
+/** The verbs that open a pi window or the page. */
+const LAUNCH_VERBS: ReadonlySet<string> = new Set(["web", "tui", "open"]);
 const SERVICE_VERBS = new Set(["start", "stop", "restart", "status", "abort", "pair"]);
 
 const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "host", "recipe", "inbox", "events", "web", "open", "upgrade", "install-launcher", "uninstall-launcher", "help"]);

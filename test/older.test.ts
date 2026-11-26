@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { LeaseBinding, LeaseStore, type LeaseHolder, type ProcessProbe } from "../src/lease.ts";
-import { olderPiLoops, stopOlderBackground, untilAlone, olderLine, type OlderPiLoops } from "../src/older.ts";
+import { olderPiLoops, replaceOlderBackground, stopOlderBackground, untilAlone, olderLine, type OlderPiLoops } from "../src/older.ts";
 import { PI_LOOPS_VERSION } from "../src/version.ts";
 
 const NOW = Date.parse("2026-11-26T12:00:00.000Z");
@@ -80,6 +80,10 @@ test("[older-lease] a live holder of a lease with no `version` is an older pi-lo
 	const current = tmp();
 	lease(current, "s1", { version: "0.24.3" });
 	assert.deepEqual(olderPiLoops(current, NOW, probe()), []);
+
+	const page = tmp();
+	lease(page, "s1", { page: true } as Partial<LeaseHolder>);
+	assert.deepEqual(olderPiLoops(page, NOW, probe()), [{ version: "0.24", kind: "window", pid: 5151, where: "/home/p/other", page: true }]);
 
 	const recycled = tmp();
 	lease(recycled, "s1");
@@ -159,12 +163,13 @@ test("[older-line] the line names the version, the pid, where it is open, and wh
 	const background24: OlderPiLoops = { version: "0.24", kind: "background", pid: 78 };
 	const remote: OlderPiLoops = { version: "0.22", kind: "background", pid: 1, elsewhere: "laptop-b" };
 	assert.equal(olderLine([], "0.24.3"), undefined);
-	assert.equal(olderLine([window22], "0.24.3"), "pi-loops 0.24.3 is waiting: a pi window with pi-loops 0.22 (pid 4242, /home/p/proj) is still open. Close it, and pi-loops 0.24.3 starts within a minute. Until then, that window runs your loops.");
-	assert.equal(olderLine([window24], "0.24.3"), "pi-loops 0.24.3 is waiting: a pi terminal with pi-loops 0.24.2 or earlier (pid 5151, /home/p/other) is still open. Restart it, and pi-loops 0.24.3 starts within a minute. Until then, pi-loops 0.24.3 runs nothing here, and pi-loops 0.24.2 in the background, while it still runs, runs your loops.");
-	assert.equal(olderLine([background], "0.24.3"), "pi-loops 0.24.3 is waiting: pi-loops 0.22 in the background (pid 77) is still running. A pi window of 0.24.3 that opens here, or `pi-loops start`, replaces it, and pi-loops 0.24.3 starts within a minute.");
-	assert.equal(olderLine([background24], "0.24.3"), "pi-loops 0.24.3 is waiting: pi-loops 0.24.2 or earlier in the background (pid 78) is still running. A pi window of 0.24.3 that opens here, or `pi-loops start`, replaces it, and pi-loops 0.24.3 starts within a minute.");
-	assert.equal(olderLine([remote], "0.24.3"), "pi-loops 0.24.3 is waiting: pi-loops 0.22 in the background on laptop-b (pid 1) is still running. Stop it on that machine, and pi-loops 0.24.3 starts within a minute.", "no pid of another machine to kill here");
+	assert.equal(olderLine([window22], "0.24.3"), "pi-loops 0.24.3 is waiting: a pi window with pi-loops 0.22 (pid 4242, /home/p/proj) is still open. Close it, and pi-loops 0.24.3 starts. Until then, that window runs your loops.");
+	assert.equal(olderLine([window24], "0.24.3"), "pi-loops 0.24.3 is waiting: a pi terminal with pi-loops 0.24.2 or earlier (pid 5151, /home/p/other) is still open. Restart it, and pi-loops 0.24.3 starts. Until then, pi-loops 0.24.3 runs nothing here, and pi-loops 0.24.2 in the background, while it still runs, runs your loops.");
+	assert.equal(olderLine([background], "0.24.3"), "pi-loops 0.24.3 is waiting: pi-loops 0.22 in the background (pid 77) is still running. A pi window of 0.24.3 that opens here replaces it, and pi-loops 0.24.3 starts.");
+	assert.equal(olderLine([background24], "0.24.3"), "pi-loops 0.24.3 is waiting: pi-loops 0.24.2 or earlier in the background (pid 78) is still running. A pi window of 0.24.3 that opens here replaces it, and pi-loops 0.24.3 starts.");
+	assert.equal(olderLine([remote], "0.24.3"), "pi-loops 0.24.3 is waiting: pi-loops 0.22 in the background on laptop-b (pid 1) is still running. Stop it on that machine, and pi-loops 0.24.3 starts.", "no pid of another machine to kill here");
 	assert.match(olderLine([{ ...window22, elsewhere: "laptop-b" }], "0.24.3") ?? "", /a pi window with pi-loops 0\.22 on laptop-b \(pid 4242/);
+	assert.match(olderLine([{ ...window24, page: true }], "0.24.3") ?? "", /a conversation is open in the browser page of pi-loops 0\.24\.2 or earlier \(pid 5151, \/home\/p\/other\)\. Close it in the page/, "a 0.24.2 page child is no terminal of the person's");
 	assert.equal(olderLine([window22, window24, background], "0.24.3"), `${olderLine([window22], "0.24.3")} 2 more older pi-loops processes are open: pids 5151, 77.`);
 });
 
@@ -252,4 +257,32 @@ test("[older-stop] once no older window is open, a waiting process replaces an o
 	const said: string[] = [];
 	assert.equal(await stopOlderBackground(dir, [{ version: "0.24", kind: "background", pid: 13 }], (l) => said.push(l), { kill, askUpgrade: async () => { upgrades.push("asked"); return true; } }), true);
 	assert.deepEqual([upgrades, said, killed], [["asked"], ["asked pi-loops 0.24.2 or earlier in the background (pid 13) to make way, as an upgrade does"], []], "0.24.2 in the background is asked over its socket, as an upgrade asks it");
+});
+
+test("[older-replace] a window that starts beside an older background alone asks it to make way and goes on once it is gone, or after the bound", async () => {
+	const { spawn } = await import("node:child_process");
+	const dir = tmp();
+	const entry = path.join(tmp(), "src", "host-entry.mjs");
+	fs.mkdirSync(path.dirname(entry), { recursive: true });
+	fs.writeFileSync(entry, "setInterval(() => {}, 1000);\n");
+	const child = spawn(process.execPath, [entry], { stdio: "ignore" });
+	try {
+		await new Promise((r) => setTimeout(r, 300));
+		presence(dir, { pid: child.pid, kind: "host", cwd: "", instance: "bg", heartbeatAt: new Date().toISOString() });
+		fs.writeFileSync(path.join(dir, "host.json"), JSON.stringify({ pid: child.pid, host: os.hostname(), startedAt: new Date().toISOString(), node: process.execPath, entry }));
+		const said: string[] = [];
+		const started = Date.now();
+		assert.equal(await replaceOlderBackground(dir, (l) => said.push(l), { boundMs: 5_000, pollMs: 20 }), true, "gone once it stopped");
+		assert.ok(Date.now() - started < 5_000);
+		assert.match(said[0] ?? "", /asked pi-loops 0\.22 in the background/);
+	} finally {
+		child.kill("SIGKILL");
+	}
+	assert.equal(await replaceOlderBackground(tmp(), () => undefined), true, "nothing older: at once");
+	const stays = tmp();
+	presence(stays, { pid: process.pid, kind: "host", cwd: "", instance: "bg", heartbeatAt: new Date().toISOString() });
+	assert.equal(await replaceOlderBackground(stays, () => undefined, { boundMs: 100, pollMs: 20 }), false, "one that does not go: not gone after the bound");
+	const window = tmp();
+	presence(window, { pid: process.pid, heartbeatAt: new Date().toISOString() });
+	assert.equal(await replaceOlderBackground(window, () => undefined, { boundMs: 100 }), false, "an older window: nothing is replaced");
 });

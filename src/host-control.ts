@@ -206,7 +206,10 @@ export interface HostServiceRecord {
 
 export function readHostService(dir: string): HostServiceRecord | undefined {
 	try {
-		const value: unknown = JSON.parse(fs.readFileSync(path.join(dir, HOST_SERVICE_FILE), "utf8"));
+		const file = path.join(dir, HOST_SERVICE_FILE);
+		// Only a regular file: a read of a FIFO or a device in its place waits for ever, and every verb reads this.
+		if (!fs.lstatSync(file).isFile()) return undefined;
+		const value: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
 		if (!value || typeof value !== "object") return undefined;
 		const rec = value as HostServiceRecord;
 		return rec.v === 1 && typeof rec.pid === "number" ? rec : undefined;

@@ -68,27 +68,29 @@ All notable changes to pi-loops are documented here. The format follows
   an MCP server, run. Nobody is asked about a tool that is refused, since a card cannot show what it
   would do. Before, the dialog let you allow it.
 - **pi-loops waits while an older pi-loops is open in its loops directory.** A pi window that
-  runs pi-loops 0.22, or a pi terminal that runs 0.24.2 or earlier, writes the loops directory in
-  its own shape: one claim or dismiss there removes from every finding the fields that this
-  version adds (a question waiting for your answer among them), and a 0.22 window checks its
-  project's rules beside pi-loops in the background. So while one is open, this version converts
-  nothing and runs nothing in that directory: no loop, rule, push, queued prompt or inbox write.
-  It says so in one line, with the pid and what to do, in a new pi window (when it starts, and
-  for each pi-loops command or tool), in `pi-loops status`, the launcher and `pi -p`, and in the
-  log: `pi-loops 0.24.3 is waiting: a pi window with pi-loops 0.22 (pid 12345, ~/proj) is still
-  open. Close it, and pi-loops 0.24.3 starts within a minute. Until then, that window runs your
-  loops.` A window that waits hands pi nothing queued, and a turn you run in it ends with
-  nothing that pi-loops writes. Close that window or restart that terminal, and this version
-  starts within a minute, with no restart of its own windows. A loop that came due meanwhile
-  runs once.
+  runs pi-loops 0.22, or a pi terminal (or a conversation open in the browser page) that runs
+  0.24.2 or earlier, writes the loops directory in its own shape: one claim or dismiss there
+  removes from every finding the fields that this version adds (a question waiting for your answer
+  among them), and a 0.22 window checks its project's rules beside pi-loops in the background. So
+  while one is open, this version converts nothing and runs nothing in that directory.
+  - A pi window of this version that starts then does not start pi-loops at all. Each pi-loops
+    command answers with one line, with the pid and what to do: `pi-loops 0.24.3 is waiting: a pi
+    window with pi-loops 0.22 (pid 12345, ~/proj) is still open. Close it, and pi-loops 0.24.3
+    starts. Until then, that window runs your loops. Then run /reload in this window.` It has no
+    pi-loops tool and no MCP connection of pi-loops, and it holds its conversation so that nothing
+    else writes into it. Once the older one is gone, it says to run `/reload`.
+  - pi-loops in the background, `pi -p`, and the `pi-loops` command say the same line. `pi-loops
+    inbox`, `events`, `recipe`, `export`, `import`, `abort` and `pair` do nothing else; `web`,
+    `tui` and `open` do nothing else while an older window or terminal is open.
   - While a window or terminal of the older version is open, its own pi-loops in the background
     goes on as before: a 0.22 window, which runs its loops itself, starts one when it closes, and
     pi-loops 0.24.2 in the background, which an upgrade of the package does not stop, runs the
-    loops and rules beside a 0.24.2 terminal. Once no such window or terminal is open, a process
-    of this version that waits replaces it, as an upgrade does, and says so in its log: 0.24.2 is
-    asked over its socket, and 0.22 gets SIGTERM when its own record (`host.json`) names that
-    process on this machine. A pi window of this version, or `pi-loops start`, is such a process.
-    Then it converts the directory.
+    loops and rules beside a 0.24.2 terminal. Once no such window or terminal is open, a pi window
+    of this version that starts, or pi-loops of this version in the background, replaces it as an
+    upgrade does, and says so in its log: 0.24.2 is asked over its socket, and 0.22 gets SIGTERM
+    when its own record (`host.json`) names that process on this machine. Then it converts the
+    directory. A window waits at most 15 seconds for it to go; 0.24.2 may first finish a turn in
+    its page, and the directory is then converted by pi-loops in the background once it starts.
   - With a 0.24.2 terminal open and no pi-loops 0.24.2 in the background (it was stopped, or it
     ended), no loop or rule runs until you restart that terminal, since what starts in the
     background now is this version, and it waits. That terminal does not say so.

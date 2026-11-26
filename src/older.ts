@@ -43,6 +43,8 @@ export interface OlderPiLoops {
 	where?: string;
 	/** The machine of a 0.22 entry from another machine that shares this directory: its pid is not one here. */
 	elsewhere?: string;
+	/** A conversation open in the browser page of 0.24.2, whose pi its background started: no terminal of the person's. */
+	page?: true;
 }
 
 /** Each older pi-loops open in `dir` now, one per process: windows first, the 0.22 ones first among each. */
@@ -69,7 +71,7 @@ export function olderPiLoops(dir: string, now: number, probe: ProcessProbe = sys
 		// The background of 0.24.2 is told by its service record below, not by a lease it holds for one turn.
 		if (!holder || holder.kind === "host" || holder.version !== undefined || !holderAlive(holder, probe)) continue;
 		const where = shown(lease.cwd);
-		add({ version: "0.24", kind: "window", pid: holder.pid, ...(where ? { where } : {}) }, `${machine}:${holder.pid}`);
+		add({ version: "0.24", kind: "window", pid: holder.pid, ...(where ? { where } : {}), ...((holder as { page?: unknown }).page === true ? { page: true as const } : {}) }, `${machine}:${holder.pid}`);
 	}
 	const rec = readHostService(dir);
 	if (rec && compareVersions(rec.version, self) < 0 && hostServiceAlive(rec)) add({ version: "0.24", kind: "background", pid: rec.pid }, `${machine}:${rec.pid}`);
@@ -122,15 +124,18 @@ export function olderLine(older: readonly OlderPiLoops[], self: string): string 
 	if (!first) return undefined;
 	const at = first.where ? `, ${first.where}` : "";
 	const on = first.elsewhere ? ` on ${first.elsewhere}` : "";
-	const starts = `pi-loops ${self} starts within a minute`;
+	const starts = `pi-loops ${self} starts`;
 	const named = first.version === "0.22" ? "0.22" : "0.24.2 or earlier";
+	const meanwhile = `Until then, pi-loops ${self} runs nothing here, and pi-loops 0.24.2 in the background, while it still runs, runs your loops.`;
 	const line = first.kind === "background"
 		? first.elsewhere
 			? `pi-loops ${self} is waiting: pi-loops 0.22 in the background${on} (pid ${first.pid}) is still running. Stop it on that machine, and ${starts}.`
-			: `pi-loops ${self} is waiting: pi-loops ${named} in the background (pid ${first.pid}) is still running. A pi window of ${self} that opens here, or \`pi-loops start\`, replaces it, and ${starts}.`
+			: `pi-loops ${self} is waiting: pi-loops ${named} in the background (pid ${first.pid}) is still running. A pi window of ${self} that opens here replaces it, and ${starts}.`
 		: first.version === "0.22"
 			? `pi-loops ${self} is waiting: a pi window with pi-loops 0.22${on} (pid ${first.pid}${at}) is still open. Close it, and ${starts}. Until then, that window runs your loops.`
-			: `pi-loops ${self} is waiting: a pi terminal with pi-loops 0.24.2 or earlier (pid ${first.pid}${at}) is still open. Restart it, and ${starts}. Until then, pi-loops ${self} runs nothing here, and pi-loops 0.24.2 in the background, while it still runs, runs your loops.`;
+			: first.page
+				? `pi-loops ${self} is waiting: a conversation is open in the browser page of pi-loops 0.24.2 or earlier (pid ${first.pid}${at}). Close it in the page (it also stops after 15 idle minutes), and ${starts}. ${meanwhile}`
+				: `pi-loops ${self} is waiting: a pi terminal with pi-loops 0.24.2 or earlier (pid ${first.pid}${at}) is still open. Restart it, and ${starts}. ${meanwhile}`;
 	if (!rest.length) return line;
 	return `${line} ${rest.length} more older pi-loops process${rest.length === 1 ? " is" : "es are"} open: pid${rest.length === 1 ? "" : "s"} ${rest.map((o) => o.pid).join(", ")}.`;
 }
@@ -233,4 +238,26 @@ function runsOldHost(dir: string, pid: number): boolean {
 	} catch {
 		return false; // not known to be that process: it is not stopped
 	}
+}
+
+/** How long a window that starts waits for an older background it asked to make way (`replaceOlderBackground`). */
+export const REPLACE_WAIT_MS = 15_000;
+
+/**
+ * For a window that starts with no older window or terminal open: asks an older pi-loops in the
+ * background to make way (`stopOlderBackground`) and waits until nothing older is there, for at most
+ * `boundMs`. Resolves whether it is gone. An older window that is open (it should not be, or the
+ * window would not start) is never waited out here.
+ */
+export async function replaceOlderBackground(dir: string, say: (line: string) => void, opts: { boundMs?: number; pollMs?: number; probe?: ProcessProbe } = {}): Promise<boolean> {
+	const end = Date.now() + (opts.boundMs ?? REPLACE_WAIT_MS);
+	const older = olderPiLoops(dir, Date.now(), opts.probe);
+	if (!older.length) return true;
+	if (!older.every((o) => o.kind === "background")) return false;
+	await stopOlderBackground(dir, older, say);
+	while (Date.now() < end) {
+		if (!olderPiLoops(dir, Date.now(), opts.probe).length) return true;
+		await new Promise((r) => setTimeout(r, opts.pollMs ?? 200));
+	}
+	return false;
 }

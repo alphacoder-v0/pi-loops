@@ -1976,7 +1976,7 @@ test("[older-cli] while an older pi-loops is open, a verb that reads or writes t
 	fs.writeFileSync(path.join(loops, "presence", "x.json"), JSON.stringify({ pid: process.pid, host: os.hostname(), instance: "i", sessionId: "s", cwd: root, kind: "interactive", heartbeatAt: new Date().toISOString() }));
 	fs.writeFileSync(path.join(loops, "jobs.json"), `${JSON.stringify({ version: 2, jobs: [] })}\n`);
 	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: "off" }, async () => {
-		for (const argv of [["inbox", "list", "--all"], ["events", "list"], ["recipe", "list"], ["export", "--session", "x"]]) {
+		for (const argv of [["inbox", "list", "--all"], ["events", "list"], ["recipe", "list"], ["export", "--session", "x"], ["abort", "01a1dce4-8ad1-77c0-89b0-475ccfeaf6ac"], ["web"]]) {
 			const lines: string[] = [];
 			assert.equal(await runCli(argv, (l) => lines.push(l)), 1, argv.join(" "));
 			assert.match(lines.join("\n"), /^pi-loops \S+ is waiting: a pi window with pi-loops 0\.22 \(pid \d+, /, argv.join(" "));
@@ -1985,6 +1985,7 @@ test("[older-cli] while an older pi-loops is open, a verb that reads or writes t
 		await runCli(["status"], (l) => status.push(l));
 		assert.match(status[0] ?? "", /is waiting: a pi window with pi-loops 0\.22/);
 		assert.equal(JSON.parse(fs.readFileSync(path.join(loops, "jobs.json"), "utf8")).version, 2, "nothing converted");
+		assert.equal(fs.existsSync(path.join(loops, "requests")), false, "abort queued no stop row");
 	});
 	fs.rmSync(path.join(loops, "presence"), { recursive: true });
 	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: "off" }, async () => {
