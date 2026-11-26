@@ -1,4 +1,5 @@
 import { type TestContext, test } from "node:test";
+import { loopLane } from "../src/lane.ts";
 import { holdUpgrade, resumeUpgrade } from "../src/upgrade-hold.ts";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -526,4 +527,16 @@ test("[upgrade-hold] while the upgrade's pause holds, pi-loops in the background
 	assert.deepEqual(resumeUpgrade(s.dir), { resumed: true, held: true });
 	await s.poll();
 	assert.equal(s.runner.calls.length, 1, "resumed: the rule is checked");
+});
+
+test("[upgrade-hold] while the upgrade's pause holds, the background's clock pass writes no loop row; resumed, it writes the due one", async (t) => {
+	const s = scene(t);
+	const project = s.project();
+	const job = await s.host.stores.jobs.add({ id: "cron-paused", name: "paused", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "report", cwd: project, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 3_600_000).toISOString() } as any);
+	holdUpgrade(s.dir);
+	await s.host.riders.clock(Date.now(), FACTS);
+	assert.deepEqual(s.host.stores.requests.list(loopLane(job.id)), [], "no row while paused");
+	resumeUpgrade(s.dir);
+	await s.host.riders.clock(Date.now(), FACTS);
+	assert.equal(s.host.stores.requests.list(loopLane(job.id)).length, 1, "resumed: the due slot's row");
 });
