@@ -466,8 +466,9 @@ To upgrade from 0.24.2 or earlier:
 ### Fixed
 
 - **An unattended run is asked before more ways to act for you.** It is asked before a pi-loops
-  verb or sub-verb, or a git sub-command or key, that holds a glob (`*`, `?`, `[`): with a matching
-  file in the directory, the shell runs another verb (`pi-loops st?p` is a stop). It is asked before
+  command with any word the shell rewrites (`$`, a brace, a backslash, or a glob: `*`, `?`, `[`), and
+  before a git sub-command or key that holds a glob: with a matching file in the directory, the
+  shell runs another verb (`pi-loops st?p` is a stop, `pi-loops inbox --reason r cl?im` a claim). It is asked before
   `grep -r`, `rg`, `ag`, `cp -r`, `tar`, `rsync`, `find` or `zip -r` of a directory that holds the
   loops directory (`~/.pi`, home, `/`), since such a command reads the page's token with the rest;
   `ls` and `du` of that directory are not asked about. It is asked before `pi-loops resume` and

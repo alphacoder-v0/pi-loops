@@ -546,9 +546,10 @@ export const UNREADABLE = "a quote is left open, so the command cannot be read";
 export const REWRITTEN = "a verb after pi-loops is spelled so the shell rewrites it, so the command cannot be read";
 
 /**
- * Whether the verb or the sub-verb after a `pi-loops` (its first two words that are not flags or `host`)
- * is one the shell rewrites (`literalWord`): `pi-loops st$'o'p` is a stop, `pi-loops inbox cl$'a'im` a
- * claim. A later word is an argument (`pi-loops inbox list $FLAGS`).
+ * Whether any word after a `pi-loops` is one the shell rewrites (`literalWord`): `pi-loops st$'o'p` is a
+ * stop, `pi-loops inbox --reason r cl?im` a claim. Every word counts, flags and their values too: which
+ * word is the verb depends on how the CLI reads its flags, and a copy of that rule missed a spelling
+ * each time it was written (`host --cwd x st?p`). The cost: `pi-loops export out-*.tar` is asked about.
  */
 function piLoopsWordRewritten(flat: string): boolean {
 	for (const sub of flat.split(SUBCOMMANDS)) {
@@ -556,10 +557,7 @@ function piLoopsWordRewritten(flat: string): boolean {
 		const words = sub.trim().split(/\s+/).filter(Boolean);
 		const at = words.findIndex((w) => PI_LOOPS_NAME.test(w));
 		if (at === -1) continue;
-		const [verb, second] = words.slice(at + 1).filter((w) => !w.startsWith("-") && w !== "host");
-		if (verb !== undefined && !literalWord(verb)) return true;
-		// A glob in the second word is a verb only after a group (`inbox cl?im`); after `export` it is a path.
-		if (second !== undefined && !literalWord(second) && (/[$`\\{}]/.test(second) || (verb !== undefined && ANSWER_SUBVERBS.has(verb)))) return true;
+		if (words.slice(at + 1).some((w) => !literalWord(w))) return true;
 	}
 	return false;
 }

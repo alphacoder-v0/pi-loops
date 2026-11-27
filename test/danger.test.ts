@@ -416,7 +416,7 @@ test("pi-loops abort / stop / restart is refused in any form the shell runs it",
 
 test("pi-loops with a verb the shell expands is refused: what it expands to is not known here", () => {
 	for (const c of ["pi-loops $V", "V=stop; pi-loops $V", "pi-loops ${V}", "pi-loops $'stop'", "pi-loops $(printf stop)", "pi-loops `echo stop`", 'pi-loops "$V"', "pi-loops host $V", "pi-loops --json $V"]) assert.match(dangerousCommandReason(c, HOME) ?? "", /pi-loops abort \/ stop \/ restart/, c);
-	assert.equal(dangerousCommandReason("pi-loops inbox list $FLAGS", HOME), undefined, "an expanded word after the verb is an argument");
+	assert.notEqual(dangerousCommandReason("pi-loops inbox list $FLAGS", HOME), undefined, "any word the shell rewrites is asked about: which word is the verb depends on the flags");
 });
 
 test("the pi-loops refusal is linear: 200 KB of open parentheses, quotes, comments or pi-loops is answered in under 500 ms of processor time, and so is every other pattern", () => {
@@ -1068,9 +1068,10 @@ test("[policy-glob-word] a verb after pi-loops or a git key or sub-command that 
 	for (const command of ["pi-loops st?p", "pi-loops st[o]p", "pi-loops w[e]b --no-open", "pi-loops op*n", "pi-loops inbox d?smiss x", "pi-loops inbox cl[a]im x", "git conf?g core.pager x", "git config core.pag[e]r /tmp/x.sh", "git config core.* x"]) {
 		assert.notEqual(reach(command), undefined, command);
 	}
-	for (const command of ["ls *.ts", "grep -r foo src/*", "cat src/[a-c]*.ts", "git add src/*.ts", "git log -- 'src/*.ts'", "pi-loops inbox list *.json", "find . -name '*.md'", "pi-loops export out-*.tar", "pi-loops inspect ./backup-*.pisession"]) assert.equal(reach(command), undefined, command);
-	// The rules of $ and a backtick stay as they were: any of the first two words.
-	assert.notEqual(reach("pi-loops export $OUT"), undefined, "a $ in the second word is still asked about");
+	for (const command of ["ls *.ts", "grep -r foo src/*", "cat src/[a-c]*.ts", "git add src/*.ts", "git log -- 'src/*.ts'", "find . -name '*.md'"]) assert.equal(reach(command), undefined, command);
+	// A flag's value can stand where the verb seems to be, so every word after pi-loops counts (decision 28's cost).
+	for (const command of ["pi-loops host --cwd x st?p", "npx pi-loops host --cwd x rest?rt", "pi-loops inbox --reason r cl?im id", "pi-loops recipe --cwd x a?d r", "pi-loops events --cwd x repl?y", "pi-loops export out-*.tar", "pi-loops export $OUT"]) assert.notEqual(reach(command), undefined, command);
+	assert.equal(reach("pi-loops inbox list --json"), undefined, "literal words are read as they are");
 });
 
 test("[policy-recursive-read] a recursive read or copy of a directory that holds the loops directory reads pi-loops' own files; a plain list of it, du, and a recursive read elsewhere do not", () => {
