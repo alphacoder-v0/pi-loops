@@ -1930,7 +1930,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		// A run log that cannot be read costs the card, not the cards.
 		let away: ReturnType<typeof awayIn> | null = null;
 		try {
-			away = cwd ? awayIn(LOOPS_DIR, cwd, here) : null;
+			away = cwd ? awayIn(LOOPS_DIR, cwd, here, now, all) : null;
 		} catch (err: any) {
 			opts.log(`pi-loops web: away summary: ${err?.message ?? err}`);
 		}

@@ -39,6 +39,21 @@ test("listNew puts checkpoints first and keeps file order inside each group; lis
 	assert.equal(inbox.list().find((e) => e.status === "claimed")?.kind, "checkpoint");
 });
 
+test("list(keep) picks by the stored fields and screens what it keeps as list() does; a second list reads the same words", async () => {
+	const dir = tmp("pi-loops-inbox-");
+	const inbox = new Inbox(dir);
+	const base = { source: "cron:demo", run_id: "r", cwd: "/p" };
+	await inbox.append({ ...base, job_id: "cron-a", text: "token=abcdefghijklmnop leaked" });
+	await inbox.append({ ...base, job_id: "cron-b", text: "other loop" });
+	// A line written by hand: its stored text is not on one line.
+	fs.appendFileSync(path.join(dir, "inbox.jsonl"), JSON.stringify({ id: findingId("hand"), created_at: "2026-01-01T00:00:00Z", status: "new", source: "cron:demo", run_id: "r", cwd: "/p", job_id: "cron-a", text: "two\nlines" }) + "\n");
+	const kept = inbox.list((f) => f.job_id === "cron-a");
+	assert.deepEqual(kept, inbox.list().filter((f) => f.job_id === "cron-a"));
+	assert.equal(kept.length, 2);
+	assert.doesNotMatch(kept.map((f) => f.text).join(" "), /abcdefghijklmnop|\n/, "redacted and on one line, as every reader reads a finding");
+	assert.deepEqual(inbox.list(), inbox.list());
+});
+
 test("an entry written before kind existed reads as news, and a kind that is not the word is ignored", () => {
 	const dir = tmp("pi-loops-inbox-");
 	const inbox = new Inbox(dir);

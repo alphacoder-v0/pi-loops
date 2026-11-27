@@ -6,7 +6,7 @@
 
 ![pi-loops 页面：项目里的 loop 报来的一条待决定和两条发现，旁边是一段对话，右边是这两个 loop](docs/screenshot.png)
 
-一个 loop 醒来时带着上次留下的笔记，在干净上下文的子代理里干完活，把 finding 归档；你想看的时候去看，值得认真处理的那条再 claim 成真正的一轮。加上 `--verify`，第二个对抗式子代理会先把每条 finding 挑一遍，留下的才到你面前。关掉 pi 之后，这些照样跑。
+一个 loop 醒来时带着上次留下的笔记，在干净上下文的子代理里干完活，把 finding 归档；你想看的时候去看，值得认真处理的那条就 claim：找到它的那个 loop 会在后台接着处理。加上 `--verify`，第二个对抗式子代理会先把每条 finding 挑一遍，留下的才到你面前。关掉 pi 之后，这些照样跑。
 
 ## 为什么需要它
 
@@ -84,11 +84,11 @@ pi-loops --model anthropic/claude-opus-5 -e .
 
 上次选的模型和思考等级它记着（存在 `ui.json`），下一个会话直接从它开始——`--continue` / `--resume` 除外，那种会话自己带着模型。
 
-重新开始不用回终端：**clear** 开一个新会话，**resume** 回到这个项目里早先的某个会话，**compact** 压缩当前上下文并告诉你压成了多少。三个都是按钮，也都可以在输入框里直接敲（`/clear` 或 `/new`、`/resume`、`/compact 保住 API 的形状`）。谁都不删东西：离开的那个会话就是磁盘上的一个文件，`resume` 里列的就是它，标题是当时说的第一句话。
+重新开始不用回终端：**+ New** 开一个新会话，**Resume** 回到这个项目里早先的某个会话，**Compact** 压缩当前上下文并告诉你做了什么。三个都是按钮，也都可以在输入框里直接敲（`/clear` 或 `/new`、`/resume`、`/compact 保住 API 的形状`）。谁都不删东西：离开的那个会话就是磁盘上的一个文件，`resume` 里列的就是它，标题是当时说的第一句话。
 
 浏览器那个页面由后台的 pi-loops 提供，地址是 **`http://127.0.0.1:4173/`**：`pi-loops` 把它打开就退出，关掉那个终端，页面照样开着。token 存在文件里，所以这个地址明天还是它，可以直接收藏（4173 被占了，用 `config.toml` 里的 `[page] port` 换一个）。第一次访问会留一个 cookie，之后再也看不到 token。token 去不掉：页面一直开着，所以一直挡在它后面。
 
-手机上用：最好的路是 `tailscale serve --bg 4173`——服务器仍然只绑 127.0.0.1，TLS 和身份都交给 tailnet，手机打开 `https://<机器>.<tailnet>.ts.net/`。同一个 wifi 里也可以在 `config.toml` 里写 `[page] host = "0.0.0.0"`，再 `pi-loops restart`。手机第一次进什么都不用输：在已经登录的浏览器里点 **add device**，拿手机扫那个二维码就进去了，之后一直是登录状态（不想扫也可以输下面那六位数）。加到主屏幕会以独立窗口打开（有 manifest，没有 service worker）。
+手机上用：最好的路是 `tailscale serve --bg 4173`——服务器仍然只绑 127.0.0.1，TLS 和身份都交给 tailnet，手机打开 `https://<机器>.<tailnet>.ts.net/`。同一个 wifi 里也可以在 `config.toml` 里写 `[page] host = "0.0.0.0"`，再 `pi-loops restart`。手机第一次进什么都不用输：在已经登录的浏览器里点 **Add a device**（窗口窄或在手机上时，它在 **⋯** 菜单里），拿手机扫那个二维码就进去了，之后一直是登录状态（不想扫也可以输下面那六位数）。加到主屏幕会以独立窗口打开（有 manifest，没有 service worker）。
 
 ### 4. 第一个 loop
 
@@ -125,7 +125,7 @@ Inbox (acme-api, 3 new, times +00:00):
 ```text
 /cron                                              # 这个项目里有什么、下次什么时候跑
 /cron run 1                                        # 不用等到早上九点，现在就跑一次看看
-/inbox claim 1                                     # 把第 1 条作为真实的一轮交给 agent
+/inbox claim 1                                     # 对第 1 条说 yes：找到它的那个 loop 在后台接着处理
 /inbox dismiss 2                                   # 不感兴趣
 /inbox dismiss 3 那个文件是生成的，别管它             # 理由会放进这个 loop 下一次 run 的 prompt 里
 ```
@@ -157,6 +157,8 @@ pi-loops upgrade --check                           # 只看看有没有新的
 从 GitHub 装的，只能靠它换版本：`pi update --extensions` **有意**不做这件事，pi 钉住你写的那个 ref，并且只把克隆对齐到**那个** ref。换版本是另一个决定，而做这个决定得先知道哪个 tag 最新——本该命令替你查，不是你查完再手打回来。从 npm 装、没写版本号的，`pi update --extensions` 本来就会升，`upgrade` 升完也保持不钉版本；钉了精确版本的，升完仍然钉着，钉到新版本上。
 
 装完重启 pi（或者再跑一次 `pi-loops`）就生效。启动器不用重装：pi 放包的路径不随版本变——`~/.pi/agent/npm/node_modules/<包名>` 或 `~/.pi/agent/git/<host>/<owner>/<repo>`。
+
+从 0.24.2 或更早的版本升级后，pi-loops 会先暂停：第一次启动时转换 loops 目录，之后任何 loop、普通任务和规则检查都不运行，直到你运行 `pi-loops resume`（或者在 pi 里 `/pi-loops resume`，或者点页面上的 **Resume pi-loops**）。先关掉所有还在跑旧版本的 pi。如果这台机器上还有 pi-loops 0.22 在运行，或者后台还有更旧的 pi-loops 在运行，`resume` 会拒绝，并给出它的 pid。它看不到你没有重启的 0.24.2 终端，这些请你自己关掉或重启。
 
 版本就是 GitHub 上的 tag，同一个版本号也发到 npm，每个 tag 里有什么见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -275,7 +277,7 @@ playbook 拷到 `.agents/skills/<name>/`，通过 `.git/info/exclude` 排除在�
                                     上传前先告诉你里面有什么、遮掉了几处、本地副本在哪
 
 /inbox                              本项目的新 findings（每行标出项目；`--all` 看全部项目，与 /cron、/triggers 同一套作用域）
-/inbox claim 1                      标记 claimed，并把它作为一个真实 user turn 交给主会话的 agent
+/inbox claim 1                      说 yes：标记 claimed，报告这条 finding 的那个 run 在后台接着处理
 /inbox dismiss 2 [理由]  ·  /inbox clear  ·  /inbox all     写了理由，报这条的 loop 下次 run 会看到；不写则沉默
 ```
 
@@ -340,7 +342,7 @@ maker 子代理照常跑，产出 `<inbox>` findings。任务带 `verify` 时，
 checker 拿到任务目标、maker 的笔记和编号好的 findings，prompt 明着要它**对抗式**地核：假定每条都可能错、过期、重复或者根本不值得看，自己动工具验，再对每条给 `<verdict n="i">keep|drop — 理由</verdict>`，措辞不对就用 `<rewrite n="i">…</rewrite>` 改。
 
 - **checker 自己挂了怎么办？** 失败或超时就 fail-open：findings 全部进 inbox，标记未核实，卡片里注明。坏掉的 checker 不能让 loop 失声。
-- 只有 keep 的进 inbox，`/inbox` 里带 `✓`，claim 时把 checker 的理由一并交给主 agent。
+- 只有 keep 的进 inbox，`/inbox` 里带 `✓`；在页面上把鼠标停在 `✓` 上能看到 checker 的理由。
 - drop 的连理由记进 run log，运行卡片里以 `✗` 列出，`/cron runs` 显示 `checker kept k/n`。
 - 没给判定的条目也进 inbox，只是不带 `✓`（unreviewed）。
 - 笔记是 maker 的，checker 只裁决输出——状态脊柱它一个字都不碰。
@@ -522,7 +524,7 @@ pi-loops，旧版窗口不会替换新版 pi-loops。升级前请关闭所有 pi
 - 只用 pi 公开导出的扩展 API：`ExtensionAPI` 的事件、命令、工具、`sendMessage/sendUserMessage/appendEntry/exec/registerFlag`，以及 `getAgentDir`、`readStoredCredential`、`@earendil-works/pi-tui` 的 `Box/Text`、`typebox`。
 - pi 的安装目录一个文件都没改（`find <pi包> -newer package.json` 为空）；`~/.pi/agent` 下只多了 `settings.json` 的一行 `extensions` 和运行时才会创建的 `loops/` 目录。
 - 不 monkeypatch，不碰私有字段；子代理是用 pi 公开 SDK 在同进程里开的会话，不起子进程。卸载就是删掉 settings.json 里那一行。
-- 接进去的地方就这么几个：定时器在 `session_start` 起、`session_shutdown` 停，状态是磁盘上的 Markdown，findings 进全局 JSONL inbox，`/inbox claim` 用 `pi.sendUserMessage()` 把一条 finding 变成主会话里一个真正的 agent turn。
+- 接进去的地方就这么几个：定时器在 `session_start` 起、`session_shutdown` 停，状态是磁盘上的 Markdown，findings 进全局 JSONL inbox；`/inbox claim` 不在会话里另起一轮，而是让报告这条 finding 的那个 run 在后台接着处理。
 
 ## 存储
 

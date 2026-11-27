@@ -268,7 +268,7 @@ test("the widget is the project's rules, loops, runs and MCP, with marks only wh
 	assert.equal(panelLines({ ...input, jobs: [shown(job())] }).find((l) => l.text.startsWith("Loops"))?.text, "Loops  1", "no disabled count when none is");
 });
 
-test("[6.8] /cron says a failing loop's last failure, how many in a row and its next try; a clock's note; and why a queued run waits, since when", () => {
+test("[6.8] [kept-cron-list-fields] /cron says a failing loop's last failure, how many in a row and its next try; a clock's note; and why a queued run waits, since when", () => {
 	const id = "cron-0123456789abcdef0123456789abcdef";
 	const hhmm = (ms: number) => formatLocal(ms).slice(11);
 	const failedAt = NOW - 6 * 3_600_000 + 30 * 60_000;

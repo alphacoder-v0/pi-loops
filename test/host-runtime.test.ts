@@ -1007,7 +1007,8 @@ test("Stop this run on a loop run, through the page's wiring: aborted at once, a
 		await addV2(host.stores, { id: "cron-loop", schedule: { kind: "every", ms: 3_600_000 }, stateful: true, prompt: "watch", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 3_700_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await tickHost(host);
 		assert.equal(await until(() => host.runs.all().length === 1, 5000), true);
-		const { runId } = host.runs.all()[0];
+		const { runId, promptPreview } = host.runs.all()[0];
+		assert.equal(promptPreview, "watch", "status and the page show the prompt, not the row's [Trigger <id>] prefix");
 		assert.deepEqual(stop(runId), { stopping: "run" });
 		await host.drain(5000);
 		const record = host.stores.jobs.listRuns("cron-loop")[0];

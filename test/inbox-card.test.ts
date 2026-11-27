@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { questionFinding } from "../src/ask.ts";
 import { type InboxEntry } from "../src/inbox.ts";
-import { CANCELLED_LINE, DISMISS_CHIPS, answerLine, answerWho, cancelRefusal, clearLeftTail, cardLine, cardLines, cardOrigin, cardsOf, dismissLine, dismissOutcome, dismissTail, inboxCard, noQuestionLine, questionActions, shellClaimOfQuestion, splitFinding, threadOrder, threadedLines, threads, yesPageLine, yesTerminalLine } from "../src/inbox-card.ts";
+import { CANCELLED_LINE, DISMISS_CHIPS, backgroundOff, answerLine, answerWho, cancelRefusal, clearLeftTail, cardLine, cardLines, cardOrigin, cardsOf, dismissLine, dismissOutcome, dismissTail, inboxCard, noQuestionLine, questionActions, shellClaimOfQuestion, splitFinding, threadOrder, threadedLines, threads, yesPageLine, yesTerminalLine } from "../src/inbox-card.ts";
 import type { LaneId } from "../src/lane.ts";
 import type { Row } from "../src/requests.ts";
 import { screenText } from "../src/redact.ts";
@@ -247,8 +247,20 @@ test("a yes and a no say what design 6.1 and 6.2 say, on each surface", () => {
 test("[yes-waits] a yes said while pi-loops is not running in the background says it runs when pi-loops does", () => {
 	const news = entry({ status: "claimed" });
 	const asked = entry({ status: "claimed", ask: QUESTION });
-	assert.equal(yesTerminalLine({ said: "Y1", finding: news }, "nightly", false), "claimed: nightly picks this up in the run that reported it, in the background. It runs when pi-loops runs in the background. A card comes here when it ends.");
-	assert.equal(yesTerminalLine({ said: "Y1", finding: asked }, "nightly", false), "approved: nightly resumes the run that asked, with this one command allowed. It runs when pi-loops runs in the background. A card comes here when it ends.");
+	assert.equal(yesTerminalLine({ said: "Y1", finding: news }, "nightly", false), "claimed: nightly picks this up in the run that reported it, in the background. It runs once pi-loops runs in the background. Run pi-loops start (or /pi-loops start) to start it. A card comes here when it ends.");
+	assert.equal(yesTerminalLine({ said: "Y1", finding: asked }, "nightly", false), "approved: nightly resumes the run that asked, with this one command allowed. It runs once pi-loops runs in the background. Run pi-loops start (or /pi-loops start) to start it. A card comes here when it ends.");
+});
+
+test("[yes-waits] a yes said while pi-loops is kept off says why, in the words of pi-loops status, and how to start it", () => {
+	const asked = entry({ status: "claimed", ask: QUESTION });
+	const line = (off: Parameters<typeof backgroundOff>[0]) => yesTerminalLine({ said: "Y1", finding: asked }, "nightly", false, undefined, backgroundOff(off));
+	const head = "approved: nightly resumes the run that asked, with this one command allowed. It runs once pi-loops runs in the background.";
+	const tail = "Run pi-loops start (or /pi-loops start) to start it. A card comes here when it ends.";
+	assert.equal(line({ stopped: true, envOff: true, auto: false }), `${head} It does not run now: it was stopped by hand. ${tail}`, "a stop by hand first, as status checks it");
+	assert.equal(line({ stopped: false, envOff: true, auto: false }), `${head} It does not run now: PI_LOOPS_HOST=off is set. Unset PI_LOOPS_HOST, then run pi-loops start (or /pi-loops start) to start it. A card comes here when it ends.`, "pi-loops start refuses while the setting holds");
+	assert.equal(line({ stopped: false, envOff: false, auto: false }), `${head} It does not run now: [host] auto = false in config.toml. ${tail}`);
+	assert.equal(line({ stopped: false, envOff: false, auto: true }), `${head} ${tail}`, "no known reason: none is said");
+	assert.equal(yesTerminalLine({ said: "Y1", finding: asked }, "nightly", true, undefined, "stopped"), "approved: nightly resumes the run that asked, with this one command allowed. A card comes here when it ends.", "running: no reason is said");
 });
 
 test("[clear] /inbox clear says how many questions it left, and nothing when it left none", () => {

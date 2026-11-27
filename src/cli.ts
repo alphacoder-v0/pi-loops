@@ -25,7 +25,7 @@ import { loopLane } from "./lane.ts";
 import { LeaseStore, procStart, sessionFileName } from "./lease.ts";
 import { RequestStore } from "./requests.ts";
 import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
-import { CANCELLED_LINE, answerWho, cancelRefusal, cardLine, cardOrigin, inboxCard, shellClaimOfQuestion } from "./inbox-card.ts";
+import { BACKGROUND_OFF_WHY, CANCELLED_LINE, answerWho, backgroundOff, cancelRefusal, cardLine, cardOrigin, inboxCard, shellClaimOfQuestion } from "./inbox-card.ts";
 import { type PersonAnswers, conversationFile, personAnswers } from "./answers.ts";
 import { ConversationIndex } from "./conversation-rows.ts";
 import { sameProject } from "./paths.ts";
@@ -382,6 +382,8 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		const summary = exportSession({ sessionFile: picked.file, cwd: picked.cwd, jobs, clock: stores.clock.read(), rules, states, excludeTriggers: flags.has("exclude-triggers"), outputPath, piVersion: process.env.PI_VERSION ?? "unknown", piLoopsVersion: PI_LOOPS_VERSION });
 		out(`exported ${picked.id} → ${outputPath}`);
 		out(`entries=${summary.entryCount} cron=${summary.hasCron ? jobs.length : 0} triggers=${summary.hasTriggers ? rules.length : 0} loop-state=${summary.loopStateCount}`);
+		// The conversion above may have paused pi-loops: this can be the first command after an upgrade.
+		if (upgradeHeld(loopsDir)) out(HOLD_LINE);
 		return 0;
 	}
 
@@ -420,6 +422,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		} : undefined);
 		if (enabled.jobs || enabled.rules) out(`enabled ${enabled.jobs} ${enabled.jobs === 1 ? "loop" : "loops"} and ${enabled.rules} ${enabled.rules === 1 ? "rule" : "rules"}`);
 		else if (!summary.automationEnabled && (summary.jobs.length || summary.rules.length)) out("automation is disabled; enable it with /cron enable <id> or re-import with --activate-triggers=on");
+		if (upgradeHeld(loopsDir)) out(HOLD_LINE);
 		return 0;
 	}
 
@@ -637,6 +640,11 @@ async function eventsCommand(positional: string[], loopsDir: string, out: (line:
 	if (!job) return refuse(`event ${shown}: ${owner.startsWith("cron-") ? "job" : "rule"} ${plainLine(owner)} is gone`);
 	const lane = job.stateful ? loopLane(job.id) : undefined;
 	if (!lane) return refuse(`event ${shown}: job ${plainLine(owner)} is not a loop`);
+	// A `cron-run:` row runs past the enabled check, the budget and the slots. A proposed loop is refused as
+	// `/cron run` refuses it; a disabled loop takes no gate reading, so its replay is refused too.
+	const name = plainLine(job.name ?? job.id);
+	if (job.proposed) return refuse(`event ${shown}: ${name} is proposed and waits for your yes: /cron enable ${name} asks again`);
+	if (!job.enabled) return refuse(`event ${shown}: ${name} is disabled — /cron enable ${name} first`);
 	const runSource = `cron-run:${job.id}` as const;
 	const base = plainJobRow({ ...job, sessionId: lane }, plainRunId(job.id, `replay ${event.id} ${at}`), runSource, "", by, now);
 	const row = { ...base, lane, mode: modeOf("loop", "input", runSource, "turn"), payload: { ...base.payload!, events: [event.id] } };
@@ -1809,6 +1817,8 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 		const running = live();
 		if (running) {
 			out("pi-loops is already running");
+			// A start after an upgrade converts the directory and pauses: the person is told here, not only in status.
+			if (upgradeHeld(loopsDir)) out(HOLD_LINE);
 			return 0;
 		}
 		const res = await ensureHost({
@@ -1829,6 +1839,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 		}
 		if (rec) {
 			out("pi-loops is running");
+			if (upgradeHeld(loopsDir)) out(HOLD_LINE);
 			return 0;
 		}
 		out(`pi-loops did not start: ${res.error ?? (res.action.kind === "none" ? res.action.reason : `see ${path.join(loopsDir, HOST_LOG)}`)}`);
@@ -1863,7 +1874,8 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 			}
 			// Why, when something keeps it from starting: each of these pauses every loop and check.
 			const spawns = readSpawnLog(loopsDir);
-			const why = readUiPrefs(loopsDir).host === "stopped" ? "it was stopped by hand; pi-loops start, or pi-loops opening the page, starts it" : process.env.PI_LOOPS_HOST?.toLowerCase() === "off" ? "PI_LOOPS_HOST=off is set" : !loadConfig(loopsDir).hostAuto ? "[host] auto = false in config.toml; pi-loops start starts it" : crashPaused(spawns, Date.now()) ? `${crashPauseText(spawns, "pi-loops start")} (last: ${spawns.lastError ?? "?"})` : spawns.notBefore && Date.now() < Date.parse(spawns.notBefore) ? `it could not start (${spawns.lastError ?? `see ${HOST_LOG}`}); retrying after ${formatLocal(Date.parse(spawns.notBefore))}` : undefined;
+			const off = backgroundOff({ stopped: readUiPrefs(loopsDir).host === "stopped", envOff: process.env.PI_LOOPS_HOST?.toLowerCase() === "off", auto: loadConfig(loopsDir).hostAuto });
+			const why = off === "stopped" ? `${BACKGROUND_OFF_WHY.stopped}; pi-loops start, or pi-loops opening the page, starts it` : off === "env-off" ? BACKGROUND_OFF_WHY["env-off"] : off === "auto-off" ? `${BACKGROUND_OFF_WHY["auto-off"]}; pi-loops start starts it` : crashPaused(spawns, Date.now()) ? `${crashPauseText(spawns, "pi-loops start")} (last: ${spawns.lastError ?? "?"})` : spawns.notBefore && Date.now() < Date.parse(spawns.notBefore) ? `it could not start (${spawns.lastError ?? `see ${HOST_LOG}`}); retrying after ${formatLocal(Date.parse(spawns.notBefore))}` : undefined;
 			out(why ? `pi-loops is not running: ${why}` : "pi-loops is not running (a pi window starts it when there is work to run)");
 			for (const l of queues()) out(l);
 			return 1;

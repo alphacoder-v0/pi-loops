@@ -491,9 +491,13 @@ weaker, and worth converting whenever one of them breaks.
       `test/ask-pure.test.ts`: *[6.4] the no a conversation reads names the command and the person's
       reason, as design 6.4 writes it*.
 - [x] **Yes, run it once** on a question that a conversation's scheduled turn asked says "Approved.
-      It runs in this conversation after the current turn." (design 6.4); the card then follows the
-      server under **Handled**. `test/inbox-card.test.ts`: *[6.4] a yes from the page to a question a
-      conversation's turn asked says it runs in that conversation after the current turn*.
+      It runs in this conversation after the current turn." (design 6.4) while a window has that
+      conversation open; otherwise it says "Waiting to run". The card then follows the server under
+      **Handled**. `test/inbox-card.test.ts`: *[6.4] a yes from the page to a question a
+      conversation's turn asked says it runs in that conversation after the current turn, only while
+      a window has the conversation open*; `test/page-server.test.ts`: *GET /inbox says a yes to a
+      conversation's question runs after the current turn only while a window has that conversation
+      open*.
 - [x] A question, its answer and its news are one thread: a news finding with `re` (a `not-run` or
       an `outcome`) is drawn right under its root's card, in the root's group, and not in **News**
       too; one whose root is not listed is a card of its own. `test/web-page.test.ts`: *[thread] a
@@ -949,11 +953,11 @@ weaker, and worth converting whenever one of them breaks.
 
 - **A watch card posts only the plan's id, the verdict and the two choices to `POST /c/<sid>/watch`.**
   The route, the desk that kept the plan and the `/pi-loops watch` line pi read from its stdin are
-  gone: the card answers pi's own select through `/ui-response`, as every dialog does, with one
-  option of a fixed vocabulary that the tool checks against what it offered.
+  gone: the card posts one option of a fixed vocabulary to `POST /watch/answer`, and the server
+  takes it only when that proposal offered it.
 - **The `pi-loops:watch` note as the receipt, and Read it again on a card that failed or was gone.**
-  The tool result in the same turn is the receipt now, and the model reads that result; nothing
-  else is written into the conversation. A failure keeps the box open with the sentence in it, so
+  The receipt now is one `pi-loops:trigger` message that the answer writes into the conversation,
+  and the agent reads it at its next turn. A failure keeps the box open with the sentence in it, so
   the box's own Read it does what Read it again did; a plan cannot be gone while its question is open.
 - **A waiting card kept in the box, there again when the box reopens.** The box and the transcript
   each drew a live copy of one question. Now one copy is live: closing the box moves the waiting
@@ -1074,7 +1078,7 @@ weaker, and worth converting whenever one of them breaks.
       in. `test/page-server.test.ts`: *a foreign Host is refused, whatever it carries*.
 - [x] Every write is checked for where it came from before its body is read. A POST carries the
       token in the `x-pi-web-token` header, never in its URL and never in a cookie; it is JSON or it
-      is refused. A form post that the browser attached the device cookie to writes nothing.
+      is refused, except the waiting page's bodiless `/stop-turn`, which still needs the header. A form post that the browser attached the device cookie to writes nothing.
       `test/page-server.test.ts`: *a POST takes the token from the header, never from its URL*, *a
       refused POST writes nothing under the loops directory*.
 - [x] The token never rides in a cookie, which every port on this machine is sent. A reload gets
@@ -1088,11 +1092,15 @@ weaker, and worth converting whenever one of them breaks.
       `test/page-server.test.ts`: *an allow-listed name passes, in any case*, *a foreign Host is
       refused, whatever it carries*.
 - [x] **Every route keeps its own guards, the escape hatch included.** `/rpc` carries anything in
-      pi's protocol this front end has not grown a button for, and refuses the commands that do have
-      a route here — reaching pi through it skipped the mid-turn refusal, the "one of this project's
-      sessions" check, and the reset the attached browsers are owed when a session is swapped. It
-      also refuses `new_session` and `clone`, which replace that session with no route to do the
-      resetting: opening a fresh session is `/switch_session`-shaped work.
+      pi's protocol this front end has not grown a button for, and refuses the commands of the routes
+      that guard them (`prompt`, `steer`, `follow_up`, `abort`, `compact`, `fork`, `switch_session`,
+      `cycle_model`, `cycle_thinking_level`, `extension_ui_response`) — reaching pi through it
+      skipped the mid-turn refusal, the "one of this project's sessions" check, and the reset the
+      attached browsers are owed when a session is swapped. It also refuses `new_session` and
+      `clone`, which replace that session with no route to do the resetting: opening a fresh session
+      is `/switch_session`-shaped work. `set_model`, `set_thinking_level` and `export_html` go
+      through to pi as they are: a model set that way is not kept for the next session, as one set
+      through `/model` is.
       `test/web.test.ts`: *the escape hatch cannot be used to skip a route's own guards*.
 - [x] The routes that only read are only read from: `/state`, `/history` and `/stats` answer GET and
       nothing else. `test/web.test.ts`: *the routes that only read are only read from*.

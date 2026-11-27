@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { tmp } from "./tmp.ts";
-import { HOLD_FILE, HOLD_LINE, holdUpgrade, olderBackground, olderRunningLine, olderStillRunning, resumeUpgrade, upgradeHeld } from "../src/upgrade-hold.ts";
+import { HOLD_FILE, HOLD_LINE, holdLineForNoUi, holdUpgrade, olderBackground, olderRunningLine, olderStillRunning, resumeUpgrade, upgradeHeld } from "../src/upgrade-hold.ts";
 import { procStart } from "../src/lease.ts";
 import { RunList } from "../src/run-list.ts";
 
@@ -91,4 +91,12 @@ test("[upgrade-hold] a run list that is held claims no row, and writes no claim"
 	held = false;
 	assert.ok(list.claim(requests as any, row, { pid: 1, procStart: undefined }, run, NOW));
 	assert.deepEqual(claims, ["r1"]);
+});
+
+test("[upgrade-hold] a pi with no UI says the pause on stderr, a window says it in its notice instead, and with no pause nothing is said", () => {
+	const dir = tmp();
+	assert.equal(holdLineForNoUi(dir, false), undefined);
+	holdUpgrade(dir, NOW);
+	assert.equal(holdLineForNoUi(dir, false), `[pi-loops] ${HOLD_LINE}\n`);
+	assert.equal(holdLineForNoUi(dir, true), undefined);
 });

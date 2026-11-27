@@ -37,6 +37,14 @@ export function upgradeHeld(dir: string): boolean {
 	catch { return false; /* no file: nothing holds */ }
 }
 
+/**
+ * What a pi with no UI (`pi -p`, `--mode json`) says of the pause: the line once on stderr, so that
+ * stdout stays the answer. It can be the first process after an upgrade, and so the one that paused.
+ */
+export function holdLineForNoUi(dir: string, hasUI: boolean): string | undefined {
+	return !hasUI && upgradeHeld(dir) ? `[pi-loops] ${HOLD_LINE}\n` : undefined;
+}
+
 /** Writes the pause. The conversion calls it before its commit point, so a start that stops between the two holds anyway. */
 export function holdUpgrade(dir: string, now = Date.now()): void {
 	writeFileAtomic(path.join(dir, HOLD_FILE), `${JSON.stringify({ at: stamp(now) })}\n`);

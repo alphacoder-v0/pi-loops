@@ -422,6 +422,12 @@ Importing the same archive twice adds nothing the second time.
 jobs and rules run again. It refuses while an older pi-loops still runs in this loops directory (a
 window of 0.22, or an older pi-loops in the background), and names its pid. With no pause it says `pi-loops is not paused`.
 
+While the pause holds, `pi-loops status` prints the pause line first, and `start`, `restart`,
+`export` and `import` print it after their own lines, because any of them can be the first command
+after an upgrade. A `pi -p`
+or `pi --mode json` run that starts with the pause in place writes the line once to stderr, so its
+stdout stays the answer.
+
 ## pi-loops in the background
 
 `pi-loops status` prints the process status, including its pid, version, start time, current work,
@@ -623,5 +629,7 @@ sees the lane files change and runs the rows; while it is not running, the comma
 rows wait. Each of these is refused in one line, with exit code 1: an id that is not in the file
 (`no event <id> in events.jsonl`), an event that is neither a push nor a gate reading, a push that no
 project's enabled rule checks, a push that was put in a chat (a window stored it, or `mcp.toml` marks its
-server `inject_summary` or `inject_and_run`), and a gate reading whose rule or job is gone. A replay costs what the
+server `inject_summary` or `inject_and_run`), a gate reading whose rule or job is gone, and the gate
+reading of a loop that is proposed or disabled (`<loop> is disabled — /cron enable <loop> first`;
+a proposal gets the words of `/cron run`). A replay costs what the
 first run cost: a check or a loop run is a model call.

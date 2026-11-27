@@ -21,6 +21,7 @@ import { JobStore } from "../src/store.ts";
 import { API_KEY_REFUSAL, type HostChannelHandlers, type PageOpenRequest, serveHostChannel } from "../src/host-control-channel.ts";
 import { decideEnsure, HOST_SERVICE_FILE, hostCommand, leavesWithWindows, openWindows, type HostServiceRecord, recordSpawn, RESTART_WAIT_LINE, WINDOWS_GRACE_MS } from "../src/host-control.ts";
 import { PI_LOOPS_VERSION } from "../src/version.ts";
+import { HOLD_LINE, holdUpgrade } from "../src/upgrade-hold.ts";
 
 test("the CLI parses every flag form", () => {
 	const a = parseCliArgs(["export", "--session", "abc", "--output=out.pisession", "--exclude-triggers"]);
@@ -1224,6 +1225,7 @@ test("pi-loops export carries what the picked session created, not everything in
 	const { inspectArchive } = await import("../src/archive.ts");
 	assert.deepEqual(inspectArchive(out).jobs.map((j) => j.prompt), ["cron-mine"], "another session's loop stays where it is");
 	assert.match(lines.join("\n"), /cron=1/);
+	assert.equal(lines.at(-1), HOLD_LINE, "the first command after an upgrade converted the directory and says the pause");
 });
 
 test("pi-loops import refuses an --activate-triggers it does not know, before it writes anything", async () => {
@@ -1265,6 +1267,26 @@ test("[import-gates-first] pi-loops import --activate-triggers=on prints each ga
 	assert.deepEqual(lines.slice(0, 3), ["These gates run a command in the background before each run:", '- loop "prs" runs first: gh pr list', `- rule ${rule.id} runs first: git log -1`], lines.join("\n"));
 	assert.deepEqual(enabledWhenSaid, [false, false], "each gate is said before anything is enabled");
 	assert.deepEqual([new JobStore(loops).load().map((j) => j.enabled), new TriggerStore(loops).load().map((r) => r.enabled)], [[true], [true]], "and then the flag enables them");
+});
+
+test("[upgrade-hold] pi-loops import says the pause after its lines while the upgrade's pause holds", async () => {
+	const { exportSession } = await import("../src/archive.ts");
+	const root = tmp("pi-loops-import-held-");
+	const loops = path.join(root, "loops");
+	const project = path.join(root, "project");
+	fs.mkdirSync(loops);
+	fs.mkdirSync(project);
+	holdUpgrade(loops);
+	const sessionFile = path.join(root, "s.jsonl");
+	fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "01a08416-0000-0000-0000-00000000000d", cwd: "/old" })}\n`);
+	const archive = path.join(root, "a.pisession");
+	exportSession({ sessionFile, cwd: "/old", jobs: [], clock: { v: 1, jobs: {} }, rules: [], states: {}, outputPath: archive, piVersion: "x", piLoopsVersion: "y" });
+	const lines: string[] = [];
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: "off" }, async () => {
+		assert.equal(await runCli(["import", archive, "--cwd", project, "--activate-triggers=off"], (l) => void lines.push(l)), 0);
+	});
+	assert.match(lines[0], /^imported /);
+	assert.equal(lines.at(-1), HOLD_LINE, lines.join("\n"));
 });
 
 test("pi-loops start --foreground leaves cleanly on SIGHUP: exit 0, its record gone", { timeout: 60_000, skip: process.platform === "win32" ? "POSIX signals" : false }, async () => {
@@ -1837,6 +1859,28 @@ test("pi-loops start while a window is starting it waits for that start and repo
 		});
 	} finally {
 		await bg.close();
+	}
+});
+
+test("[upgrade-hold] pi-loops start after an upgrade says the pause after its line, whether it started pi-loops or found it running", { timeout: 30_000 }, async () => {
+	for (const already of [false, true]) {
+		const root = tmp("pi-loops-start-held-");
+		const loops = path.join(root, "loops");
+		fs.mkdirSync(loops, { recursive: true });
+		holdUpgrade(loops);
+		if (!already) recordSpawn(loops, { kind: "attempt", by: process.pid });
+		const bg = await fakeBackground(loops, {});
+		if (already) bg.write();
+		else setTimeout(bg.write, 500);
+		try {
+			await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: undefined }, async () => {
+				const lines: string[] = [];
+				assert.equal(await runCli(["start"], (l) => void lines.push(l)), 0);
+				assert.deepEqual(lines, [already ? "pi-loops is already running" : "pi-loops is running", HOLD_LINE]);
+			});
+		} finally {
+			await bg.close();
+		}
 	}
 });
 

@@ -5,6 +5,8 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.24.3] - 2026-11-27
+
 ### Upgrade notes
 
 To upgrade from 0.24.2 or earlier:
@@ -416,9 +418,81 @@ To upgrade from 0.24.2 or earlier:
   with its job, failed because the process running it stopped, or parked, and the removal of a
   one-shot that has finished. The second try of a failed one-shot is listed with the time it runs,
   not the time it was first due.
+- **A plain job that pi-loops runs in a closed conversation is counted when its turn starts, as in
+  a window.** `runs N` rises when the slot fires, not when the turn ends, and it counts a turn
+  that you stopped. `last error` is cleared when the slot fires. While the turn runs,
+  `last_completed_at` in `cron_list` is the time the slot fired.
+- **A turn that did not get to write its prompt waits as a queued prompt.** When a window takes
+  the conversation in the middle of a turn, or pi-loops stops the turn itself (a quit, an upgrade,
+  the daily budget), `/cron` shows `[queued …]` for the job and `next` is the following slot. It
+  showed the slot as due again. The prompt runs once, in whichever of the two has the conversation
+  next. A one-shot's one retry shows `[queued …]` as well. A turn that pi-loops stopped before it
+  wrote its prompt, and the run of that prompt afterwards, are two lines of `/cron runs`; in the
+  run log the two records have one run id.
+- **A turn whose process stopped is in the run log.** `/cron runs` lists it as a failed run, "the
+  process running it stopped". If its prompt was not written, the prompt is tried again after a
+  wait, and after the third time it goes to the inbox as a request that could not be delivered.
+  A job whose turns were interrupted three times in a row is turned off, as before, and says
+  `parked: its last 3 runs were interrupted before they finished`. A turn is now counted also
+  when other runs were going in the process that stopped. So a job whose turn only ran beside the
+  run that stops the process can be turned off with it, and a loop that ran beside a turn is
+  counted as if it ran alone. `/cron enable` turns the job on again. Before, runs that stopped
+  together were not counted. The message of a job that is turned off for its turns leaves out
+  "with no other loop running", which is no longer what it means. The line "cleared stale running
+  state" is no longer written for a plain job's turn that this version ran. A turn that you stopped, or that a window took
+  back, is not counted as a failure or as an interruption when its process stops before the turn
+  is closed: its record says how it ended.
+- **One more line in the audit of requests.** A turn you stopped before its prompt was written
+  leaves a `stopped` line. A stop that names a prompt whose turn has not started cancels the
+  prompt, and no run is recorded for it.
+- **A prompt that a window left queued and that fails in the background is not tried again.** A
+  turn that fails spends its slot, as a slot the background fired itself always did: the failure
+  is in the run log and in the job's `last error`.
+- **A loop or a rule check that keeps failing waits 1 minute after the third failure, then 5
+  minutes, 30 minutes, 2 hours and 6 hours.** It waited 5 minutes after the third and doubled to
+  6 hours. A queued prompt, a loop and a rule check now take their waits from one table. A plain
+  job that pi-loops runs in a closed conversation waits the same way.
+- **The page works out each job's next run when it is asked.** `next-runs.json` is gone: nothing
+  writes it and nothing reads it. A loop's next run on the page is right at once after an edit or
+  a run; it could be one tick behind.
+- **A finding names where it was filed from.** `inbox.jsonl` has a new last field, `lane`: a
+  conversation's session id, `@` and the job's id for a loop's run, `@check-<project>` for a rule check.
+  `pi-loops inbox --json` prints what it printed.
+- **The bridge for pi-loops 0.22 windows is removed** (see the upgrade note). pi-loops no longer
+  reads `presence/` or writes `scheduler.json`, and the Background view no longer has the holder
+  `a pi-loops 0.22 window`. When pi-loops in the background or a window starts, it removes
+  `next-runs.json`, `scheduler.json` and `presence/` from the loops directory: nothing reads them.
 
 ### Fixed
 
+- **A goal's next step that the page's "Clear queue" took out does not come back.** A window that
+  did not hold the conversation did not read the cancel for its own goal's continuation, so it
+  counted the dropped step as a failure and gave it to pi again after the wait. A stop or a cancel
+  (the page's ✕ too) that names a row a live window made is now that window's to apply, whichever
+  process reads it first, so that window's pi is told to stop it.
+- **An unattended run is asked before more ways to act for you.** It is asked before a pi-loops
+  command with any word the shell rewrites (`$`, a brace, a backslash, or a glob: `*`, `?`, `[`), and
+  before a git sub-command or key that holds a glob: with a matching file in the directory, the
+  shell runs another verb (`pi-loops st?p` is a stop, `pi-loops inbox --reason r cl?im` a claim). It is asked before
+  `grep -r`, `rg`, `ag`, `cp -r`, `tar`, `rsync`, `find` or `zip -r` of a directory that holds the
+  loops directory (`~/.pi`, home, `/`), since such a command reads the page's token with the rest;
+  `ls` and `du` of that directory are not asked about. It is asked before `pi-loops resume` and
+  `pi-loops events replay`.
+- **pi-loops in the background keeps running when a push cannot be turned into rows.** A push that
+  arrived while `triggers.json` did not parse ended the process. The push stays in `events.jsonl`,
+  the error goes to `host.log`, and `pi-loops events replay <id>` writes its rows. A start with such
+  a file also keeps running.
+- **Every first command after an upgrade says that pi-loops is paused.** `pi-loops start`,
+  `restart`, `export` and `import` print the pause line after their own lines. A `pi -p` or
+  `pi --mode json` run writes it once to stderr.
+- **A yes said while pi-loops does not run in the background says how to start it, and why it is
+  off when known** (stopped by hand, `PI_LOOPS_HOST=off`, `[host] auto = false`).
+- **The terminal's "Allow this once?" selector and the line after its No say that a No refuses
+  the same command for 14 days.**
+- **The running line of a loop shows its prompt without the `[Trigger <id>]` prefix,** in
+  `pi-loops status` and on the page.
+- **`pi-loops events replay` refuses the gate reading of a loop that is proposed or disabled,** and
+  writes no row.
 - **A yes to an ecosystem draft posts it again.** In this version a claim goes to the run that
   drafted the finding, and the ecosystem playbook told that run never to post, so a claim sent
   nothing. The playbook now has one exception: after a person says yes, that run posts that one
@@ -549,53 +623,6 @@ To upgrade from 0.24.2 or earlier:
   upgrade waited 180 s on every tick for a process that could not receive the request. A window
   with a newer version now stops such a process with SIGTERM, only when the socket file is not
   there and the process has finished starting, and does not count a crash (#224).
-
-### Changed
-
-- **A plain job that pi-loops runs in a closed conversation is counted when its turn starts, as in
-  a window.** `runs N` rises when the slot fires, not when the turn ends, and it counts a turn
-  that you stopped. `last error` is cleared when the slot fires. While the turn runs,
-  `last_completed_at` in `cron_list` is the time the slot fired.
-- **A turn that did not get to write its prompt waits as a queued prompt.** When a window takes
-  the conversation in the middle of a turn, or pi-loops stops the turn itself (a quit, an upgrade,
-  the daily budget), `/cron` shows `[queued …]` for the job and `next` is the following slot. It
-  showed the slot as due again. The prompt runs once, in whichever of the two has the conversation
-  next. A one-shot's one retry shows `[queued …]` as well. A turn that pi-loops stopped before it
-  wrote its prompt, and the run of that prompt afterwards, are two lines of `/cron runs`; in the
-  run log the two records have one run id.
-- **A turn whose process stopped is in the run log.** `/cron runs` lists it as a failed run, "the
-  process running it stopped". If its prompt was not written, the prompt is tried again after a
-  wait, and after the third time it goes to the inbox as a request that could not be delivered.
-  A job whose turns were interrupted three times in a row is turned off, as before, and says
-  `parked: its last 3 runs were interrupted before they finished`. A turn is now counted also
-  when other runs were going in the process that stopped. So a job whose turn only ran beside the
-  run that stops the process can be turned off with it, and a loop that ran beside a turn is
-  counted as if it ran alone. `/cron enable` turns the job on again. Before, runs that stopped
-  together were not counted. The message of a job that is turned off for its turns leaves out
-  "with no other loop running", which is no longer what it means. The line "cleared stale running
-  state" is no longer written for a plain job's turn that this version ran. A turn that you stopped, or that a window took
-  back, is not counted as a failure or as an interruption when its process stops before the turn
-  is closed: its record says how it ended.
-- **One more line in the audit of requests.** A turn you stopped before its prompt was written
-  leaves a `stopped` line. A stop that names a prompt whose turn has not started cancels the
-  prompt, and no run is recorded for it.
-- **A prompt that a window left queued and that fails in the background is not tried again.** A
-  turn that fails spends its slot, as a slot the background fired itself always did: the failure
-  is in the run log and in the job's `last error`.
-- **A loop or a rule check that keeps failing waits 1 minute after the third failure, then 5
-  minutes, 30 minutes, 2 hours and 6 hours.** It waited 5 minutes after the third and doubled to
-  6 hours. A queued prompt, a loop and a rule check now take their waits from one table. A plain
-  job that pi-loops runs in a closed conversation waits the same way.
-- **The page works out each job's next run when it is asked.** `next-runs.json` is gone: nothing
-  writes it and nothing reads it. A loop's next run on the page is right at once after an edit or
-  a run; it could be one tick behind.
-- **A finding names where it was filed from.** `inbox.jsonl` has a new last field, `lane`: a
-  conversation's session id, `@` and the job's id for a loop's run, `@check-<project>` for a rule check.
-  `pi-loops inbox --json` prints what it printed.
-- **The bridge for pi-loops 0.22 windows is removed** (see the upgrade note). pi-loops no longer
-  reads `presence/` or writes `scheduler.json`, and the Background view no longer has the holder
-  `a pi-loops 0.22 window`. When pi-loops in the background or a window starts, it removes
-  `next-runs.json`, `scheduler.json` and `presence/` from the loops directory: nothing reads them.
 
 ## [0.24.2] - 2026-11-11
 

@@ -455,9 +455,10 @@ const ANSWERS = "answers for a person";
 /**
  * Verbs of pi-loops that answer or change state on their own. `abort`, `stop` and `restart` are
  * `PI_LOOPS_STOP`'s. `open`, `web` and `tui` print a link with a one-use key that signs a browser in
- * to the page, or start a pi of the person's.
+ * to the page, or start a pi of the person's. `resume` ends the upgrade's pause; `events replay` (an
+ * `ANSWER_SUBVERBS` entry) writes rows that run a loop or a check again.
  */
-const ANSWER_VERBS = new Set(["start", "import", "pair", "open", "web", "tui"]);
+const ANSWER_VERBS = new Set(["start", "import", "pair", "open", "web", "tui", "resume"]);
 /** The first words after pi-loops that print and leave, where any other flag there opens the page (`cliRoute`). */
 const NOT_A_LAUNCH = new Set(["--help", "-h", "--version", "-v"]);
 /** The flags only a launch takes (`LAUNCH_FLAGS` of src/cli.ts): a launch wherever pi-loops is, the head of a sub-command or not. */
@@ -466,6 +467,7 @@ const LAUNCH_FLAG = /^--(?:web|tui|port|host|allow-host|no-open|no-auth|loops-di
 const ANSWER_SUBVERBS = new Map<string, ReadonlySet<string>>([
 	["inbox", new Set(["claim", "dismiss", "cancel", "clear"])],
 	["recipe", new Set(["add"])],
+	["events", new Set(["replay"])],
 ]);
 /** Where the shell cuts a word for this rule: whitespace, a brace or comma (brace expansion), `$IFS`. */
 const ANSWER_WORDS = /\$\{?IFS\}?|[\s{},]+/;
@@ -544,9 +546,10 @@ export const UNREADABLE = "a quote is left open, so the command cannot be read";
 export const REWRITTEN = "a verb after pi-loops is spelled so the shell rewrites it, so the command cannot be read";
 
 /**
- * Whether the verb or the sub-verb after a `pi-loops` (its first two words that are not flags or `host`)
- * is one the shell rewrites (`literalWord`): `pi-loops st$'o'p` is a stop, `pi-loops inbox cl$'a'im` a
- * claim. A later word is an argument (`pi-loops inbox list $FLAGS`).
+ * Whether any word after a `pi-loops` is one the shell rewrites (`literalWord`): `pi-loops st$'o'p` is a
+ * stop, `pi-loops inbox --reason r cl?im` a claim. Every word counts, flags and their values too: which
+ * word is the verb depends on how the CLI reads its flags, and a copy of that rule missed a spelling
+ * each time it was written (`host --cwd x st?p`). The cost: `pi-loops export out-*.tar` is asked about.
  */
 function piLoopsWordRewritten(flat: string): boolean {
 	for (const sub of flat.split(SUBCOMMANDS)) {
@@ -554,8 +557,7 @@ function piLoopsWordRewritten(flat: string): boolean {
 		const words = sub.trim().split(/\s+/).filter(Boolean);
 		const at = words.findIndex((w) => PI_LOOPS_NAME.test(w));
 		if (at === -1) continue;
-		const verbs = words.slice(at + 1).filter((w) => !w.startsWith("-") && w !== "host").slice(0, 2);
-		if (verbs.some((w) => !literalWord(w))) return true;
+		if (words.slice(at + 1).some((w) => !literalWord(w))) return true;
 	}
 	return false;
 }
@@ -630,7 +632,8 @@ export function gitSettingRunsProgram(key: string, value: string | undefined): b
 
 /** Whether a shell word runs git: `git` or a path to it, after a `$(`, a `(`, a backtick, a `{` or an assignment. */
 function isGitWord(w: string): boolean {
-	return (w.replace(/^.*[=(`{]/, "").split("/").pop() ?? "") === "git";
+	const word = w.replace(/^.*[=(`{]/, "");
+	return (word.split("/").pop() ?? "") === "git";
 }
 
 /**
@@ -664,11 +667,12 @@ const GIT_WRITES_FILE = /^(?:--p(?:r(?:e(?:f(?:ix?)?)?)?)?|--o(?:u(?:t(?:p(?:ut?
 
 /**
  * Whether a word, as `flatCommand` leaves it (quotes removed), is what the shell passes on: no `$`
- * (a variable, `$'…'`, `$(…)`), no backtick, no backslash, no brace (`{a,b}`). The rules read such a
- * word as written, and bash would pass another (#231: `pi-loops st$'o'p` is a stop).
+ * (a variable, `$'…'`, `$(…)`), no backtick, no backslash, no brace (`{a,b}`), no glob (`*`, `?`,
+ * `[`: a file of that name in the cwd takes its place). The rules read such a word as written, and
+ * bash would pass another (#231: `pi-loops st$'o'p` is a stop, and so is `pi-loops st?p` beside a file `stop`).
  */
 function literalWord(w: string): boolean {
-	return !/[$`\\{}]/.test(w);
+	return !/[$`\\{}*?[]/.test(w);
 }
 
 /** How an option word reads against a set of flags and a set of options with a value: known (and whether it takes the next word), or not known. */
@@ -878,22 +882,66 @@ function spelt(dir: string, homes: ReadonlySet<string>): string[] {
  * directory, `pi-loops-<uid>` in the temporary directory, which takes the socket when the loops
  * directory's path is too long for one (src/host-control-channel.ts `hostSocketPath`): the socket
  * hands out a one-use key and a pairing code. And the directories that hold the loops directory
- * (`parents`): the same for the directory above each, and `$PI_CODING_AGENT_DIR`.
+ * (`parents`): the same for the directory above each, and `$PI_CODING_AGENT_DIR`. And every directory
+ * above the loops directory up to `/` (`holders`), home as `~`, `$HOME` and `${HOME}` too.
  */
-function loopsDirSpellings(loopsDir: string, home: string | undefined): { named: string[]; parents: string[] } {
+function loopsDirSpellings(loopsDir: string, home: string | undefined): { named: string[]; parents: string[]; holders: string[] } {
 	const dirs = new Set([path.resolve(loopsDir), realpathish(loopsDir)]);
 	const homes = home ? new Set([path.resolve(home), realpathish(home)]) : new Set<string>();
 	for (const h of homes) dirs.add(path.join(h, ".pi", "agent", "loops"));
 	const named = new Set(["$PI_LOOPS_DIR", "${PI_LOOPS_DIR}", "$PI_CODING_AGENT_DIR/loops", "${PI_CODING_AGENT_DIR}/loops"]);
 	const parents = new Set(["$PI_CODING_AGENT_DIR", "${PI_CODING_AGENT_DIR}"]);
+	const holders = new Set(parents);
 	for (const dir of dirs) {
 		for (const s of spelt(dir, homes)) named.add(s);
 		const parent = path.dirname(dir);
 		if (parent !== path.dirname(parent)) for (const s of spelt(parent, homes)) parents.add(s);
+		for (let up = parent; ; up = path.dirname(up)) {
+			for (const s of spelt(up, homes)) holders.add(s);
+			if (homes.has(up)) for (const s of ["~", "$HOME", "${HOME}"]) holders.add(s);
+			if (up === path.dirname(up)) break;
+		}
 	}
 	const socketDir = `pi-loops-${process.getuid?.() ?? "u"}`;
 	for (const tmp of new Set([os.tmpdir(), realpathish(os.tmpdir()), "/tmp", "$TMPDIR", "${TMPDIR}"])) named.add(`${tmp}/${socketDir}`);
-	return { named: [...named], parents: [...parents] };
+	return { named: [...named], parents: [...parents], holders: [...holders] };
+}
+
+/**
+ * Programs that read every file below a directory they are given, each with the option that has it
+ * do so, or none when it always does. `du` and `ls` only name the files.
+ */
+const RECURSIVE_READERS = new Map<string, RegExp | undefined>([
+	["grep", /^(?:-[^-]*[rR]|--recursive$|--dereference-recursive$|--directories=recurse$)/],
+	["egrep", /^(?:-[^-]*[rR]|--recursive$|--dereference-recursive$|--directories=recurse$)/],
+	["fgrep", /^(?:-[^-]*[rR]|--recursive$|--dereference-recursive$|--directories=recurse$)/],
+	["rg", undefined],
+	["ag", undefined],
+	["find", undefined],
+	["tar", undefined],
+	["rsync", undefined],
+	["cp", /^(?:-[^-]*[rRa]|--recursive$|--archive$)/],
+	["zip", /^(?:-[^-]*r|--recurse-paths$)/],
+]);
+const RECURSIVE_READER_NAME = new RegExp(`^(?:${[...RECURSIVE_READERS.keys()].join("|")})$`);
+
+/**
+ * Whether a program of `RECURSIVE_READERS`, with its recursive option, is given a directory that holds
+ * the loops directory (`holders`) as a whole word: `grep -r x ~/.pi`, `cp -r ~ /tmp/x`. It reads
+ * `web-token` with the rest, as pi's `grep` tool over such a directory does (`pathToolReason`).
+ */
+function readsHolderRecursively(text: string, holders: readonly string[], foldCase: boolean): boolean {
+	const fold = (s: string) => (foldCase ? s.toLowerCase() : s);
+	const held = new Set(holders.map(fold));
+	return programRuns(text, undefined, RECURSIVE_READER_NAME).some(({ rest }) => {
+		const words = rest.split(/\s+/).filter(Boolean);
+		const option = RECURSIVE_READERS.get(words[0]);
+		if (option && !words.some((w) => option.test(w))) return false;
+		return words.slice(1).some((w) => {
+			const run = /(?:^|\/)\.\.?(?:\/|$)|\/\//.test(w) ? path.posix.normalize(w) : w;
+			return held.has(fold(run.length > 1 ? run.replace(/\/+$/, "") : run));
+		});
+	});
 }
 
 /** What `inertQuotes` puts in place of a `~` or a `$` the shell does not expand. */
@@ -962,24 +1010,27 @@ const PATH_RUN = /[^\s;&|<>()`]+/g;
  *   - it names the directory in a spelling of `loopsDirSpellings` as a whole path component at its
  *     end (`/x/loops-old` is not `/x/loops`), after `.`, `..` and `//` in each path are normalised;
  *   - or it names a directory that holds it followed by a glob, a brace or `..`
- *     (`~/.pi/agent/loo*`, `~/.pi/agent/{loops,x}`, `~/.pi/agent/../agent/loops`).
+ *     (`~/.pi/agent/loo*`, `~/.pi/agent/{loops,x}`, `~/.pi/agent/../agent/loops`);
+ *   - or a program reads a directory above it recursively (`readsHolderRecursively`).
  * On `darwin` and `win32` letter case is ignored, as their file systems do. Reading is not exempted:
  * a loop rarely reads pi-loops' own files, and a read cannot be told from a write reliably. This is a
  * guard, not a sandbox. Known gaps: a path the shell builds at run time (`D=~/.pi; cat
  * $D/agent/loops/x`, `cd ~/.pi/agent && cat loops/x`), a glob above the directory that holds it
- * (`~/.pi/*\/loops`), a `..` that climbs out of `~` or `$HOME`, a symlink to the directory made
+ * (`~/.pi/*\/loops`, and a recursive read of `~/.pi/*` or `~/*`), a recursive read of the cwd after a
+ * `cd` (`cd ~ && grep -r x .`), `grep -d recurse`, a copy tool the list does not name (`scp -r`, `cpio`),
+ * a `..` that climbs out of `~` or `$HOME`, a symlink to the directory made
  * elsewhere or earlier, and an interpreter or program that reaches the file from a name it is handed
  * another way.
  */
 function reachesLoopsDir(text: string, loopsDir: string, home: string | undefined, platform: NodeJS.Platform): boolean {
-	const { named, parents } = loopsDirSpellings(loopsDir, home);
+	const { named, parents, holders } = loopsDirSpellings(loopsDir, home);
 	const flags = foldsCase(platform) ? "i" : "";
 	const before = "(?<![\\w.~$-])";
 	const seg = "[^\\s/;&|<>()`]";
 	const names = new RegExp(`${before}(?:${named.map(literal).join("|")})(?![\\w.-])`, flags);
 	const near = new RegExp(`${before}(?:${parents.map(literal).join("|")})(?:[*?[{]|/${seg}*[*?[{]|/\\.\\.(?!${seg}))`, flags);
 	const normalised = text.replace(PATH_RUN, (run) => (/(?:^|\/)\.\.?(?:\/|$)|\/\//.test(run) ? path.posix.normalize(run) : run));
-	return names.test(normalised) || near.test(text);
+	return names.test(normalised) || near.test(text) || readsHolderRecursively(text, holders, flags === "i");
 }
 
 /** pi's built-in tools that read or write by a `path` input. */

@@ -116,6 +116,21 @@ test("[events-replay] an unknown id, an event that is no push or gate reading, a
 	assert.deepEqual(fs.readdirSync(s.dir).filter((f) => f.startsWith("requests")).flatMap((d) => fs.readdirSync(path.join(s.dir, d))), [], "nothing written");
 });
 
+test("[events-replay] a loop's gate reading is refused while the loop is proposed or disabled, in the words /cron run and /triggers run use, and writes no row", async () => {
+	const s = shell();
+	const project = tmp("replay-off-");
+	const base = { schedule: { kind: "every", ms: 3_600_000 }, stateful: true, prompt: "look", cwd: project, catchUp: false, createdAt: stamp(Date.now()), runCount: 0, skippedOverlap: 0 };
+	const off = "cron-" + "1".repeat(32);
+	const proposed = "cron-" + "2".repeat(32);
+	await s.jobs.add({ ...base, id: off, name: "queue-watch", enabled: false } as LoopJob);
+	await s.jobs.add({ ...base, id: proposed, enabled: false, proposed: true } as LoopJob);
+	const offEvent = s.events.append(`gate:${off}`, "reading");
+	const proposedEvent = s.events.append(`gate:${proposed}`, "reading");
+	assert.deepEqual(await s.replay(offEvent.id), { code: 1, lines: [`event ${offEvent.id}: queue-watch is disabled — /cron enable queue-watch first`] });
+	assert.deepEqual(await s.replay(proposedEvent.id), { code: 1, lines: [`event ${proposedEvent.id}: ${proposed} is proposed and waits for your yes: /cron enable ${proposed} asks again`] });
+	assert.deepEqual([s.requests.list(loopLane(off)!), s.requests.list(loopLane(proposed)!)], [[], []], "nothing written");
+});
+
 test("[events-replay] a project's own server's push is replayed in that project only; one its server injected is refused", async () => {
 	const s = shell();
 	const a = path.join(s.dir, "a");
