@@ -158,7 +158,7 @@ pi-loops upgrade --check                           # 只看看有没有新的
 
 装完重启 pi（或者再跑一次 `pi-loops`）就生效。启动器不用重装：pi 放包的路径不随版本变——`~/.pi/agent/npm/node_modules/<包名>` 或 `~/.pi/agent/git/<host>/<owner>/<repo>`。
 
-从 0.24.2 或更早的版本升级后，pi-loops 会先暂停：第一次启动时转换 loops 目录，之后任何 loop、普通任务和规则检查都不运行，直到你运行 `pi-loops resume`（或者在 pi 里 `/pi-loops resume`，或者点页面上的 **Resume pi-loops**）。先关掉所有还在跑旧版本的 pi。如果这台机器上还有 pi-loops 0.22，或者后台还有更旧的 pi-loops 在运行，`resume` 会拒绝，并给出它的 pid。它看不到你没有重启的 0.24.2 终端，这些请你自己关掉或重启。
+从 0.24.2 或更早的版本升级后，pi-loops 会先暂停：第一次启动时转换 loops 目录，之后任何 loop、普通任务和规则检查都不运行，直到你运行 `pi-loops resume`（或者在 pi 里 `/pi-loops resume`，或者点页面上的 **Resume pi-loops**）。先关掉所有还在跑旧版本的 pi。如果这台机器上还有 pi-loops 0.22 在运行，或者后台还有更旧的 pi-loops 在运行，`resume` 会拒绝，并给出它的 pid。它看不到你没有重启的 0.24.2 终端，这些请你自己关掉或重启。
 
 版本就是 GitHub 上的 tag，同一个版本号也发到 npm，每个 tag 里有什么见 [CHANGELOG.md](CHANGELOG.md)。
 

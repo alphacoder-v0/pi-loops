@@ -257,7 +257,7 @@ test("[yes-waits] a yes said while pi-loops is kept off says why, in the words o
 	const head = "approved: nightly resumes the run that asked, with this one command allowed. It runs once pi-loops runs in the background.";
 	const tail = "Run pi-loops start (or /pi-loops start) to start it. A card comes here when it ends.";
 	assert.equal(line({ stopped: true, envOff: true, auto: false }), `${head} It does not run now: it was stopped by hand. ${tail}`, "a stop by hand first, as status checks it");
-	assert.equal(line({ stopped: false, envOff: true, auto: false }), `${head} It does not run now: PI_LOOPS_HOST=off is set. ${tail}`);
+	assert.equal(line({ stopped: false, envOff: true, auto: false }), `${head} It does not run now: PI_LOOPS_HOST=off is set. Unset PI_LOOPS_HOST, then run pi-loops start (or /pi-loops start) to start it. A card comes here when it ends.`, "pi-loops start refuses while the setting holds");
 	assert.equal(line({ stopped: false, envOff: false, auto: false }), `${head} It does not run now: [host] auto = false in config.toml. ${tail}`);
 	assert.equal(line({ stopped: false, envOff: false, auto: true }), `${head} ${tail}`, "no known reason: none is said");
 	assert.equal(yesTerminalLine({ said: "Y1", finding: asked }, "nightly", true, undefined, "stopped"), "approved: nightly resumes the run that asked, with this one command allowed. A card comes here when it ends.", "running: no reason is said");

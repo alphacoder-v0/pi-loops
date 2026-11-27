@@ -1017,7 +1017,9 @@ const PATH_RUN = /[^\s;&|<>()`]+/g;
  * a loop rarely reads pi-loops' own files, and a read cannot be told from a write reliably. This is a
  * guard, not a sandbox. Known gaps: a path the shell builds at run time (`D=~/.pi; cat
  * $D/agent/loops/x`, `cd ~/.pi/agent && cat loops/x`), a glob above the directory that holds it
- * (`~/.pi/*\/loops`), a `..` that climbs out of `~` or `$HOME`, a symlink to the directory made
+ * (`~/.pi/*\/loops`, and a recursive read of `~/.pi/*` or `~/*`), a recursive read of the cwd after a
+ * `cd` (`cd ~ && grep -r x .`), `grep -d recurse`, a copy tool the list does not name (`scp -r`, `cpio`),
+ * a `..` that climbs out of `~` or `$HOME`, a symlink to the directory made
  * elsewhere or earlier, and an interpreter or program that reaches the file from a name it is handed
  * another way.
  */

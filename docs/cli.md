@@ -422,8 +422,9 @@ Importing the same archive twice adds nothing the second time.
 jobs and rules run again. It refuses while an older pi-loops still runs in this loops directory (a
 window of 0.22, or an older pi-loops in the background), and names its pid. With no pause it says `pi-loops is not paused`.
 
-While the pause holds, `pi-loops status`, `start`, `restart`, `export` and `import` print the pause
-line after their own lines, because any of them can be the first command after an upgrade. A `pi -p`
+While the pause holds, `pi-loops status` prints the pause line first, and `start`, `restart`,
+`export` and `import` print it after their own lines, because any of them can be the first command
+after an upgrade. A `pi -p`
 or `pi --mode json` run that starts with the pause in place writes the line once to stderr, so its
 stdout stays the answer.
 

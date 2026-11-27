@@ -437,7 +437,7 @@ machine. Everything here follows from that, and each one has a price.
     one row that goes as a user message, in their words alone. The cost: a page message that a
     terminal holding the conversation delivers goes as a `pi-loops:turn` message, so the page labels
     it "pi-loops", not as the person's, and the page's undo goes back past it to the last user
-    message; 0.24.2 sent it as a user message. For it the window keeps one list of what it gave pi and of the inputs of others,
+    message; 0.24.2 sent it as a user message. For the person's page message the window keeps one list of what it gave pi and of the inputs of others,
     and decides as each user message starts whose it is (`claimOf`, `src/window-claim.ts`): an input
     of someone else with the very same words is theirs; a person row with them is that row's;
     otherwise the input or row whose words start the message, the longest, someone else's before
@@ -619,7 +619,8 @@ machine. Everything here follows from that, and each one has a price.
     finding reads `0 findings` on its card, in `/cron runs` and in `/cron cost`: the record keeps
     `repeats`, and only the loop's quiet streak reads it. The card of a yes's run has the same shape
     as a scheduled run's and does not name the finding it answered, so two cards of one loop can
-    look the same. Both were accepted for 0.24.3 to keep one card shape for every run.
+    look the same. The first keeps the count a run filed; the second keeps one card shape for every
+    run. Both were accepted for 0.24.3.
 
     Every matched rule result is one finding in the inbox, whatever `promote_to_chat` says; with
     `promote_to_chat` it is also in the conversation. `Inbox.appendOnce` is the one rule that keeps
@@ -694,7 +695,8 @@ machine. Everything here follows from that, and each one has a price.
     that something other than an unattended turn wrote (a person, another tool, a clone), which a later
     unattended `git` call runs as you; a setting given for one command (git's global `-c`, `GIT_*`
     variables) other than a template, which runs a program the way the run could run it itself; a
-    path or a name the shell builds at run time or reaches after a `cd`; a program that runs git
+    path or a name the shell builds at run time or reaches after a `cd` (a recursive read of `.` after
+    `cd ~` too), and a glob below the directory that holds it; a program that runs git
     another way; a setting the list does not name. Reading a repository's setup before each unattended
     git call was built and withdrawn: four reviews each found programs git runs that the read did not
     see (a hooksPath an `includeIf` sets, submodule hooks, `ext::` remote URLs, the scripts a setting
@@ -714,8 +716,8 @@ machine. Everything here follows from that, and each one has a price.
       every session that loads the skill pays those tokens, for the notes, `[reported]` and the
       guard's words.
     - With many findings, reads are slower: `pi-loops status` by about 60% (421 ms), and the page's
-      inbox read with 2,000 findings about three times (92 ms). Both stay below what a person
-      notices.
+      inbox read with 2,000 findings about three times (92 ms). Both stay under half a
+      second.
     - A project's checks fail and back off as one, counted from the run log: after the third
       failure in a row they wait 1, 5 and 30 minutes, then 2 and 6 hours. A `/triggers run` that
       fails counts too. 0.24.2 counted per rule, so one failing rule now delays every rule of its

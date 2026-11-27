@@ -395,7 +395,9 @@ export function backgroundOff(facts: { stopped: boolean; envOff: boolean; auto: 
 /** What a Y1 adds when pi-loops is not running in the background: only that process runs a yes. */
 export function yesWaitsForBackground(off?: BackgroundOff): string {
 	const why = off === undefined ? "" : ` It does not run now: ${BACKGROUND_OFF_WHY[off]}.`;
-	return `It runs once pi-loops runs in the background.${why} Run pi-loops start (or /pi-loops start) to start it.`;
+	// pi-loops start refuses while PI_LOOPS_HOST=off is set, so the line names the setting first.
+	const start = off === "env-off" ? "Unset PI_LOOPS_HOST, then run pi-loops start (or /pi-loops start) to start it." : "Run pi-loops start (or /pi-loops start) to start it.";
+	return `It runs once pi-loops runs in the background.${why} ${start}`;
 }
 
 /**

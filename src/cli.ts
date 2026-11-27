@@ -640,7 +640,8 @@ async function eventsCommand(positional: string[], loopsDir: string, out: (line:
 	if (!job) return refuse(`event ${shown}: ${owner.startsWith("cron-") ? "job" : "rule"} ${plainLine(owner)} is gone`);
 	const lane = job.stateful ? loopLane(job.id) : undefined;
 	if (!lane) return refuse(`event ${shown}: job ${plainLine(owner)} is not a loop`);
-	// A `cron-run:` row runs past the enabled check, the budget and the slots: refused here as `/cron run` refuses.
+	// A `cron-run:` row runs past the enabled check, the budget and the slots. A proposed loop is refused as
+	// `/cron run` refuses it; a disabled loop takes no gate reading, so its replay is refused too.
 	const name = plainLine(job.name ?? job.id);
 	if (job.proposed) return refuse(`event ${shown}: ${name} is proposed and waits for your yes: /cron enable ${name} asks again`);
 	if (!job.enabled) return refuse(`event ${shown}: ${name} is disabled — /cron enable ${name} first`);

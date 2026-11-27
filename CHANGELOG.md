@@ -465,6 +465,30 @@ To upgrade from 0.24.2 or earlier:
 
 ### Fixed
 
+- **An unattended run is asked before more ways to act for you.** It is asked before a pi-loops
+  verb or sub-verb, or a git sub-command or key, that holds a glob (`*`, `?`, `[`): with a matching
+  file in the directory, the shell runs another verb (`pi-loops st?p` is a stop). It is asked before
+  `grep -r`, `rg`, `ag`, `cp -r`, `tar`, `rsync`, `find` or `zip -r` of a directory that holds the
+  loops directory (`~/.pi`, home, `/`), since such a command reads the page's token with the rest;
+  `ls` and `du` of that directory are not asked about. It is asked before `pi-loops resume` and
+  `pi-loops events replay`.
+- **`ls ~/.config/git` is no longer asked about.** It reads the same as `ls ~/.config/git/`. A
+  write into that directory is still asked about.
+- **pi-loops in the background keeps running when a push cannot be turned into rows.** A push that
+  arrived while `triggers.json` did not parse ended the process. The push stays in `events.jsonl`,
+  the error goes to `host.log`, and `pi-loops events replay <id>` writes its rows. A start with such
+  a file also keeps running.
+- **Every first command after an upgrade says that pi-loops is paused.** `pi-loops start`,
+  `restart`, `export` and `import` print the pause line after their own lines. A `pi -p` or
+  `pi --mode json` run writes it once to stderr.
+- **A yes said while pi-loops does not run in the background says how to start it, and why it is
+  off when known** (stopped by hand, `PI_LOOPS_HOST=off`, `[host] auto = false`).
+- **The terminal's "Allow this once?" selector and the line after its No say that a No refuses
+  the same command for 14 days.**
+- **The running line of a loop shows its prompt without the `[Trigger <id>]` prefix,** in
+  `pi-loops status` and on the page.
+- **`pi-loops events replay` refuses the gate reading of a loop that is proposed or disabled,** and
+  writes no row.
 - **A yes to an ecosystem draft posts it again.** In this version a claim goes to the run that
   drafted the finding, and the ecosystem playbook told that run never to post, so a claim sent
   nothing. The playbook now has one exception: after a person says yes, that run posts that one

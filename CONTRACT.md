@@ -31,7 +31,7 @@ talks to it only through a recipe directory, `hooks.toml`, and the `pi-loops inb
 
 ### 2.1 Instance
 
-- Instance data in the loops directory: the jobs, the trigger rules, the findings, the notes, the run records (including each run's transcript), `hooks.toml`, `config.toml`, `mcp.toml`. Every other file and directory there is private state and can be deleted while no pi and no pi-loops runs, at two costs: a message still queued in `requests/` is lost, and with no `upgrade-hold.json` the upgrade's pause ends without the check that `pi-loops resume` makes.
+- Instance data in the loops directory: the jobs, the trigger rules, the findings, the notes, the run records (including each run's transcript), `hooks.toml`, `config.toml`, `mcp.toml`. Every other file and directory there is private state and can be deleted while no pi and no pi-loops runs, at costs that include these: a message still queued in `requests/` is lost; with no `upgrade-hold.json` the upgrade's pause ends without the check that `pi-loops resume` makes; with no `web-token` the page's address changes and every paired device pairs again; with no `events.jsonl` nothing is left to replay.
 - Instance data in a project: the playbooks and recipe files installed under `.agents/skills/<recipe>/`, and, when a recipe declares `needs_tracker`, `docs/agents/issue-tracker.md`.
 - Tool code does not enter an instance. Instance data does not enter the tool.
 
