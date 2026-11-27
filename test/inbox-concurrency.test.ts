@@ -55,7 +55,11 @@ test("a leftover lock never blocks the event loop", async () => {
 	const dir = tmp("pi-loops-inbox-lock-");
 	const inbox = new Inbox(dir);
 	// A lock directory left behind by a process that was killed while holding it.
-	fs.mkdirSync(path.join(dir, "inbox.lock"), { recursive: true });
+	const lock = path.join(dir, "inbox.lock");
+	fs.mkdirSync(lock, { recursive: true });
+	// Make the lock almost stale (the default staleMs is 10 s), so the wait is about 600 ms.
+	const almostStale = (Date.now() - 10_000 + 600) / 1000;
+	fs.utimesSync(lock, almostStale, almostStale);
 
 	let ticks = 0;
 	const timer = setInterval(() => ticks++, 10);

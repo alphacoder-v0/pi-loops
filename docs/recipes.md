@@ -35,8 +35,7 @@ answered. `/recipe list` shows them in those two groups.
 1. **Tracker first, if the recipe needs one.** issue-loop reads `docs/agents/issue-tracker.md` on
    every run to learn where the project's work items live — GitHub Issues, or one Markdown file
    per item under `.scratch/issues/` — and how to list, comment, label and close them. If the file
-   is missing, the wizard hands that one step to the agent in your chat (the way `/inbox claim`
-   hands over a finding): it looks at the remote, proposes, writes the file after you agree — and
+   is missing, the wizard hands that one step to the agent in your chat: it looks at the remote, proposes, writes the file after you agree — and
    the moment that turn ends with the file in place, the wizard resumes on its own with the
    question below. Everything else is done without a model. The file's layout
    is the one Matt Pocock's engineering skills use, so a repository that has `/triage` reads the
@@ -87,8 +86,9 @@ answered. `/recipe list` shows them in those two groups.
    The jobs belong to the conversation that ran `/recipe add`, which is told of their findings. A
    conversation pi has not saved yet cannot own one: pi writes a conversation's file only once it
    holds a message, and `/recipe add` is none (a starter's **Add** in a new page conversation is the
-   usual case). Then the jobs belong to the project, the install says so, and a finding runs in the
-   conversation it is claimed from; no conversation counts it as its own.
+   usual case). Then the jobs belong to the project, the install says so, and no conversation counts
+   a finding as its own. A claimed finding is picked up in the background by the run that reported
+   it, as any claim is.
 
 `pi-loops recipe list|show|add` in a shell does step 6 and nothing after: the setup script and the
 jobs are things a person should see before they exist, and only the pi inside `/recipe add` can show
@@ -314,8 +314,8 @@ Mondays, once. It searches for repositories that use, mention or fork this proje
 into integrations, derivatives, mentions and noise, and for each integration or derivative looks
 for **one** thing worth a word: a problem they hit that is fixed upstream, a fork commit worth
 bringing back, an unanswered question. Each draft is a finding with the text ready to post;
-claiming the finding is what sends it, as the person, from their chat. The loop itself never
-posts, comments or opens anything anywhere, which is why its only level is `propose`.
+claiming the finding is the person's yes to send it, and the run that drafted it picks that yes up
+in the background. The loop never posts, comments or opens anything on its own, which is why its only level is `propose`.
 
 ## deps-sweeper
 

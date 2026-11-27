@@ -4,8 +4,8 @@
  * Nothing in pi is patched: timers start in session_start and stop in session_shutdown. A loop run
  * is an in-process `AgentSession` through pi's SDK (`src/sdk-runner.ts`) — never a child process —
  * so it shares this session's MCP clients, extensions and model. A loop's state is Markdown on
- * disk, findings go to a global JSONL inbox, and `/inbox claim` turns a finding into a real user
- * turn. Every prompt pi-loops has for the chat (a plain job, a push, a claim, a goal continuation)
+ * disk, findings go to a global JSONL inbox, and `/inbox claim` is a yes that the run which reported
+ * the finding picks up in the background. Every prompt pi-loops has for the chat (a plain job, a push, a claim, a goal continuation)
  * is a request addressed to the conversation (src/requests.ts), and reaches pi through the window
  * executor only (src/window-executor.ts), once pi is idle.
  *
@@ -16,10 +16,9 @@
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { ProjectTrustStore, SessionManager, VERSION as PI_VERSION, copyToClipboard, formatDimensionNote, getAgentDir, readStoredCredential, resizeImage } from "@earendil-works/pi-coding-agent";
+import { SessionManager, VERSION as PI_VERSION, copyToClipboard, formatDimensionNote, getAgentDir, readStoredCredential, resizeImage } from "@earendil-works/pi-coding-agent";
 import { ARCHIVE_EXT, type ActivateMode, GATES_HEAD, applyImport, automationOf, defaultExportPath, exportSession, importSession, importedGateLines, offerToEnable, parseActivateMode } from "./archive.ts";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
 import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "./args.ts";
 import { envFlag, loadConfig } from "./config.ts";
 import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, answeredGoal, applyDecision, branchMovedSince, clearGoal, continuationPrompt, evaluationApplies, evaluatorPrompt, goalPursued, heldOutcome, judgeCaughtUp, latestGoal, newGoal, parseDecision, pauseFor, pauseGoal, resumeGoal, goalWaitingLine, settledTurn, transcriptFromMessages } from "./goal.ts";
@@ -29,7 +28,7 @@ import { HookRunner, type HookEventData, messageKind, messageSummary, resultSumm
 import { failingSummary, ruleFailureMark } from "./job-health.ts";
 import { loopSignal, signalSummary } from "./job-signal.ts";
 import { LoopsLog, pruneLogs } from "./log.ts";
-import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
+import { type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { capRedacted, plainLine, previewRedacted, redact, screenText } from "./redact.ts";
@@ -37,12 +36,12 @@ import { CANCELLED_LINE, answerLine, answerWho, cancelRefusal, cardLines, cardOr
 import { type Answers, conversationFile, createAnswers } from "./answers.ts";
 import { type StepRefusal, answerOpen, answerRowId } from "./ask.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
-import { FRESH_RUNS_READ, burstLine, freshRuns, notesCutWords, panelRuns, placeRunCards, runCardDelivery, runCardLines, runCardsHere, runLine } from "./run-card.ts";
+import { FRESH_RUNS_READ, burstLine, freshRuns, notesCutWords, panelRuns, placeRunCards, runCardDelivery, runCardLines, runCardsHere, runLine, warningWords } from "./run-card.ts";
 import { type ShareMessage, renderShare, shareSummary, shareableMessages } from "./share.ts";
 import { UsageError, addLauncher, installLauncherWithConfirm, installedByPi, launcherAction, launcherSource, launcherState, launcherTarget, openPage, pageLaunchHost, refreshLauncher, slashDir, stopAndWait, stopService, uninstallLauncher, webPageRequest } from "./cli.ts";
 import { copyText, isRemoteTty } from "./browser-open.ts";
 import { execFile } from "node:child_process";
-import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
+import { computeNext, formatLocal, formatSchedule, localOffset, stamp } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
 import { gateShown } from "./gate.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
@@ -65,7 +64,7 @@ import { openStores, removeJob } from "./stores.ts";
 import { Ticker, WINDOW_RIDERS, type Riders } from "./ticker.ts";
 import { TURN_TYPE } from "./mark.ts";
 import { renderTurn } from "./turn-render.ts";
-import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
+import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef } from "./store.ts";
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
 import { GuardSeats, capWords } from "./guard.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
@@ -76,9 +75,9 @@ import { summarizeSessionFile } from "./transcript.ts";
 import { type PromoteTarget, promotionToInbox, checkSessionDir } from "./check-run.ts";
 import { EventLog, type RawEvent } from "./events.ts";
 import { type TriggerOutcome, deliveryOf, eventsInRows, injectPush, pushTrigger, rawPush } from "./push.ts";
-import { checkRow, ruleLook } from "./check-tick.ts";
+import { checkRow } from "./check-tick.ts";
 import { scheduleAudit } from "./job-tune.ts";
-import { type Trigger, auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTrigger, resolveRuleRef } from "./triggers.ts";
+import { type Trigger, auditArgs, newTraceId, TriggerStore, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ConfirmTurn, type ToolHost, automationTools, checkJobName, confirmControlPlane, controlTarget, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
 import { claimPageChild } from "./page-children.ts";
 import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
@@ -834,7 +833,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		// `[host] auto = false` pauses nothing while a window is open: this window starts the process, and
 		// it leaves with the last window (src/host-control.ts leavesWithWindows).
 		const spawns = readSpawnLog(dir);
-		if (crashPaused(spawns, Date.now())) return crashPauseText(spawns);
+		if (crashPaused(spawns, Date.now())) return crashPauseText(spawns, "/pi-loops start");
 		if (hostState?.kind === "start-failed") return `pi-loops could not start — ${hostState.detail}`;
 		return undefined;
 	}
@@ -1194,7 +1193,6 @@ export default function piLoops(pi: ExtensionAPI) {
 		else console.log([title, ...lines].join("\n"));
 	}
 
-	const short = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 	const homeRel = (p: string) => projectLabel(p, process.env.HOME ?? "");
 
 	function jobLines(jobs: LoopJob[], showCwd = false): string[] {
@@ -1276,7 +1274,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		"/cron snapshot                 what only this process knows — connected MCP servers and their tools, whether pi-loops runs — written into the session, for a front end that is not a terminal",
 		"/cron gc                       remove plain jobs whose session was deleted (they are parked as disabled first)",
 		"/cron cost [today|7d|all]      what automation has cost, by job, and today's budget if one is set",
-		"/cron clear <n|id|name>        nothing to clear: a run's claim closes when its process is gone",
+		"/triggers abort <run id>       stop a running loop run (/triggers running shows its id)",
 		"/cron remove <ref> [--purge]   remove a job; its loop state is kept unless --purge",
 		"/cron disable --all            pause every job in this project (--all-projects for the machine); /cron enable --all resumes",
 		"/inbox                         triage findings from stateful jobs (/inbox help)",
@@ -1287,7 +1285,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	// The accepted source check carries no quoted scheduler name; the command is still `/cron scheduler`.
 	const schedulerCommand = "sched" + "uler";
 	const cronCompletions = (prefix: string) => {
-		const subs = ["add", "list", "all", "enable", "disable", "remove", "set", "queue", "clear", "cost", "gc", "run", "state", "runs", "trace", schedulerCommand, "panel", "snapshot", "help"];
+		const subs = ["add", "list", "all", "enable", "disable", "remove", "set", "queue", "cost", "gc", "run", "state", "runs", "trace", schedulerCommand, "panel", "snapshot", "help"];
 		const items = subs.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
 		return items.length ? items : null;
 	};
@@ -1305,12 +1303,11 @@ export default function piLoops(pi: ExtensionAPI) {
 			// Every subcommand, by name only: with five more of them the argument spellings no longer fit
 			// on a line a notification can show, and `/cron help` has them all. A name left out of here
 			// is a subcommand nobody finds, which is the worse of the two.
-			const CRON_USAGE = "[list|all|add|set|run|queue|enable|disable|remove|state|runs|trace|cost|clear|gc|sched" + "uler|panel|snapshot|help] — /cron help for the arguments";
+			const CRON_USAGE = "[list|all|add|set|run|queue|enable|disable|remove|state|runs|trace|cost|gc|sched" + "uler|panel|snapshot|help] — /cron help for the arguments";
 			try {
 				switch (sub) {
 					case "":
 					case "list":
-					case "ls":
 					case "status":
 					case "all": {
 						const all = jobs();
@@ -1458,10 +1455,8 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "enable":
-					case "resume":
-					case "disable":
-					case "pause": {
-						const enable = sub === "enable" || sub === "resume";
+					case "disable": {
+						const enable = sub === "enable";
 						// Quitting pi is the *on* switch here (the host takes over), so "stop everything"
 						// has to be one command rather than one per job.
 						const scope = rest.trim();
@@ -1491,9 +1486,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						ctx.ui.notify(`${enable ? "enabled" : "disabled"} cron job ${job.name ? `"${job.name}"` : job.id}`, "info");
 						return;
 					}
-					case "remove":
-					case "rm":
-					case "delete": {
+					case "remove": {
 						// `--purge` also deletes the loop's notes and transcripts. Without it they are kept:
 						// remove-and-re-add is how a schedule or prompt gets changed, and that must not
 						// throw away months of accumulated state.
@@ -1523,14 +1516,6 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "host": {
 						// 0.22.8's spelling of /pi-loops start | stop | status.
 						await backgroundCommand(rest.trim() || "status", ctx);
-						return;
-					}
-					case "clear": {
-						// A run is the claim on its row now, and a claim is closed when its process is gone:
-						// there is no marker to clear (0.24.2's are converted at the start, src/convert-v2.ts).
-						const job = pick(rest);
-						if (!job) return;
-						ctx.ui.notify(`${job.name ?? job.id} has no running marker to clear: a run's claim is closed when its process is gone`, "info");
 						return;
 					}
 					case "cost": {
@@ -1668,7 +1653,7 @@ export default function piLoops(pi: ExtensionAPI) {
 								const cost = r.usage?.cost ? ` $${r.usage.cost.toFixed(3)}` : "";
 								const chk = r.checker ? (r.checker.ok ? `, checker kept ${r.checker.kept}/${r.checker.kept + r.checker.dropped.length + r.checker.unreviewed}` : ", checker FAILED") : "";
 								const tail = r.ok ? `${plural(r.findings, "finding")}${chk}${r.stateUpdated ? ", state updated" : ""}${notesCutWords(r)}${wokeWords(r)}` : r.stoppedBy === "person" ? `stopped by you ${r.stoppedFrom === "page" ? "from the page" : "from a terminal"}` : r.aborted ? "stopped" : `FAILED: ${previewRedacted(r.error ?? "?", 80)}`;
-								return `${String(i + 1).padStart(2)}. ${formatLocal(Date.parse(r.startedAt))} ${who}${secs}s${cost} · ${tail}${r.sessionFile ? "" : " (no transcript)"}`;
+								return `${String(i + 1).padStart(2)}. ${formatLocal(Date.parse(r.startedAt))} ${who}${secs}s${cost} · ${tail}${warningWords(r)}${r.sessionFile ? "" : " (no transcript)"}`;
 							}),
 							job ? `transcript: /cron trace ${job.name ?? job.id} <k>` : "transcript: /cron trace <job> <k>",
 						].map(plainLine));
@@ -2294,7 +2279,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		"/triggers run <n|id>           check one rule now — dedup, audit, sub-agent and promotion as on a poll",
 		"/triggers running              actions in flight (dynamic checks and cron runs), and the sub-agent slots in use",
 		"/triggers audit [N] [--all]    recent decisions, with each run's transcript path (default 10)",
-		"/triggers abort <trace_id>     stop one running action             /triggers abort --all   stop every one",
+		"/triggers abort <run|trace id> stop a running run or check        /triggers abort --all   stop every one",
 		"/triggers panel on|off         side panel above the editor (Rules / Loops / Runs / MCP)",
 		"create one: /new-trigger when ~/build.done exists, run cargo test and show me the result",
 		"config: ~/.pi/agent/loops/config.toml [triggers] poll_interval_secs, mcp.toml for push sources, hooks.toml for lifecycle hooks",
@@ -2316,7 +2301,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			const pickRule = (ref: string) => {
 				const all = store.load();
 				const rule = /^\d+$/.test(ref.trim()) ? resolveRuleRef(all.filter((r) => sameProject(r.cwd, session.cwd)), ref, { ordinals: true }) : resolveRuleRef(all, ref);
-				if (!rule) ctx.ui.notify(ref ? `no dynamic trigger rule with id '${ref}'` : `usage: /triggers ${sub} <id>${sub === "remove" || sub === "rm" || sub === "delete" ? "|--all" : ""}`, "warning");
+				if (!rule) ctx.ui.notify(ref ? `no dynamic trigger rule with id '${ref}'` : `usage: /triggers ${sub} <id>${sub === "remove" ? "|--all" : ""}`, "warning");
 				return rule;
 			};
 			try {
@@ -2385,10 +2370,8 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "enable":
-					case "resume":
-					case "disable":
-					case "pause": {
-						const enable = sub === "enable" || sub === "resume";
+					case "disable": {
+						const enable = sub === "enable";
 						const scope = rest.trim();
 						if (scope === "--all" || scope === "--all-projects") {
 							const everywhere = scope === "--all-projects";
@@ -2412,9 +2395,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						]);
 						return;
 					}
-					case "remove":
-					case "rm":
-					case "delete": {
+					case "remove": {
 						// `--all` means "all of this project's", scoped to the project, not the machine; wiping every
 						// project on the machine needs saying so.
 						if (rest.trim() === "--all" || rest.trim() === "--all-projects") {
@@ -2538,11 +2519,12 @@ export default function piLoops(pi: ExtensionAPI) {
 							return !!answer?.ok && !!answer.aborted;
 						};
 						if (rest.trim() === "--all") {
-							let n = 0;
+							let runs = 0;
+							let checks = 0;
 							const host = await refreshHostSnapshot();
-							for (const r of host?.runs ?? []) if (await askHostAbort(r.runId, true)) n++;
-							for (const c of host?.checks ?? []) if (await askHostAbort(c.traceId, false)) n++;
-							ctx.ui.notify(`requested abort for ${plural(n, "running trigger")}`, "info");
+							for (const r of host?.runs ?? []) if (await askHostAbort(r.runId, true)) runs++;
+							for (const c of host?.checks ?? []) if (await askHostAbort(c.traceId, false)) checks++;
+							ctx.ui.notify(`requested abort for ${plural(runs, "run")} and ${plural(checks, "check")}`, "info");
 							return;
 						}
 						const target = rest.trim();
@@ -2570,7 +2552,7 @@ export default function piLoops(pi: ExtensionAPI) {
 								return;
 							}
 						}
-						ctx.ui.notify(target ? `no running trigger with trace_id '${target}'` : "usage: /triggers abort <trace_id>|--all", "warning");
+						ctx.ui.notify(target ? `nothing running with id '${target}'` : "usage: /triggers abort <run|trace id>|--all", "warning");
 						return;
 					}
 					case "panel": {
@@ -2802,7 +2784,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const recipe = loadRecipe(resolved.dir);
 		const m = recipe.manifest;
 		// The one step a template cannot do: describe this project's tracker. Handed to the
-		// session the way /inbox claim hands over a finding; the wizard resumes when the file exists.
+		// session as a turn row of this conversation; the wizard resumes when the file exists.
 		if (m.needsTracker && !fs.existsSync(path.join(project, TRACKER_FILE))) {
 			if (resumed) {
 				ctx.ui.notify(`${m.name} still has no ${TRACKER_FILE} to read; /recipe add ${ref} when it exists`, "warning");
@@ -2890,7 +2872,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		}
 		// A conversation pi has not saved yet (a starter's Add in a new page conversation) cannot own a loop.
 		const owner = installScope(ctx.sessionManager.getSessionFile());
-		if (owner.projectOwned) lines.push("  the loops belong to this project: this conversation is not saved yet, so a finding runs in the conversation you claim it from");
+		if (owner.projectOwned) lines.push("  the loops belong to this project, because this conversation is not saved yet");
 		for (const line of plan.addLines) {
 			const parsed = parseAddArgs(line);
 			const job = await createJob({ schedule: parsed.schedule, prompt: parsed.prompt, stateful: parsed.stateful, name: parsed.name, model: parsed.model, thinking: parsed.thinking, tools: parsed.tools, timeoutMs: parsed.timeoutMs, catchUp: parsed.catchUp, verify: parsed.verify, checkerModel: parsed.checkerModel, recipe: m.name, ...(parsed.gate !== undefined ? { gate: { kind: "command" as const, command: parsed.gate } } : {}) }, owner);
@@ -2924,8 +2906,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			try {
 				switch (sub) {
 					case "":
-					case "list":
-					case "ls": {
+					case "list": {
 						const packaged = listRecipes();
 						const installed = new Map(installedRecipes(project).map((r) => [r.recipe, r]));
 						const jobs = stores.jobs.load().filter((j) => j.recipe && sameProject(j.cwd, project));
@@ -3012,8 +2993,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						show(ctx, `recipe ${name}: merged pi-loops ${PI_LOOPS_VERSION} playbooks into ${homeRel(dir)}/`, lines);
 						return;
 					}
-					case "remove":
-					case "rm": {
+					case "remove": {
 						pendingRecipeAdd = undefined;
 						const purge = words.includes("--purge");
 						const name = words.find((w) => !w.startsWith("--"));

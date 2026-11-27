@@ -15,8 +15,8 @@ import type { AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ConversationIndex, holderOf, NeedsYouCounts, plainText, projectArgs, type RowReaders, titleOf } from "./conversation-rows.ts";
-import { cancelRow, jobClaim, personRow, queueOrder, requestFingerprint } from "./engine.ts";
+import { ConversationIndex, holderOf, NeedsYouCounts, plainText, projectArgs, type RowReaders } from "./conversation-rows.ts";
+import { cancelRow, jobClaim, NO_TURN_WHY, personRow, queueOrder, requestFingerprint } from "./engine.ts";
 import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines, type StopAnswer } from "./host-control-channel.ts";
 import { buildSessionProjection, migrateSessionEntries, parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName, shouldReadAgain } from "./lease.ts";
@@ -43,7 +43,7 @@ import { summarizeSessionFile } from "./transcript.ts";
 import { conversationLabel } from "./session-head.ts";
 import { pidAlive, withFileLockSync } from "./lock.ts";
 import { asleepNote, type OwnerView, runsSomewhere, whereRuns } from "./job-owner.ts";
-import { loopLabel, snapshotLoopLabel } from "./job-lines.ts";
+import { loopLabel, queueSourceLabel, snapshotLoopLabel } from "./job-lines.ts";
 import { plural } from "./plural.ts";
 import {
 	type ChildPool,
@@ -461,17 +461,6 @@ export function ring(child: PageChild, id?: string, fingerprint?: string): Promi
 		if (!r?.success) child.log(`pi-loops web: ring: ${r?.error ?? "no answer"}`);
 		return r;
 	});
-}
-
-/** The source of a row as the queue names it: "you", "cron nightly", "rule 3f2a…". */
-function labelOf(row: any, jobNames: Map<any, any>) {
-	const [kind, ...rest] = row.source.split(":");
-	const arg = rest.join(":");
-	if (row.source === "person") return "you";
-	if (kind === "cron" || kind === "cron-run") return `cron ${jobNames.get(arg) ?? arg}`;
-	if (kind === "rule" || kind === "inbox") return `${kind} ${arg.slice(0, 8)}`;
-	if (kind === "push" || kind === "recipe") return `${kind} ${arg}`;
-	return row.source;
 }
 
 /**
@@ -1466,16 +1455,21 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			// The bytes first: removing the row removes its image file.
 			const images = imagesOf(row);
 			requests.remove(sessionId, [row.id]);
-			audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "failed", sourceLabel: row.source, eventLabel: sessionId, details: { session_id: sessionId, error: row.last_error, returned: "to the composer" } });
-			child.broadcast({ type: "send_failed", id: row.id, text: row.payload?.text ?? "", images, error: row.last_error });
+			// pi's own reason, when it refused a send after this row was written: it names what is missing
+			// (a model, a key) and how to set it up, where the holder can only say no turn started. A row
+			// that failed for another reason keeps its own.
+			const refused = child.live.refusedSend;
+			const error = refused && row.last_error === NO_TURN_WHY && refused.at >= Date.parse(row.created_at) ? redact(refused.error) : row.last_error;
+			audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "failed", sourceLabel: row.source, eventLabel: sessionId, details: { session_id: sessionId, error, returned: "to the composer" } });
+			child.broadcast({ type: "send_failed", id: row.id, text: row.payload?.text ?? "", images, error });
 		}
-		const jobNames = new Map((readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs ?? []).map((j: any) => [j?.id, j?.name]).filter(([id, name]: any) => typeof id === "string" && typeof name === "string"));
+		const jobNames = new Map<string, string>((readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs ?? []).map((j: any) => [j?.id, j?.name]).filter(([id, name]: any) => typeof id === "string" && typeof name === "string"));
 		return rows
 			.filter((row) => !failed.includes(row))
 			.map((row) => ({
 				id: row.id,
 				source: row.source,
-				label: labelOf(row, jobNames),
+				label: queueSourceLabel(row.source, (id) => jobNames.get(id)),
 				// An offered row is shown whole: send vouches for all of it, so all of it is what you read.
 				text: maskSecrets(String(row.payload?.text ?? "").replace(/^\[Trigger [^\]]+\]\s*/, "")).slice(0, row.source === "person" && !producerAlive(row) ? Infinity : TEXT_PREVIEW),
 				images: row.payload?.images?.length ?? 0,

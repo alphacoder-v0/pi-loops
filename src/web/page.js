@@ -1972,12 +1972,17 @@ $("findq").oninput = () => {
   }, 250);
 };
 $("undo").onclick = async () => {
+  const from = SESSION;
   const r = await api("/undo", {});
   if (!r.success) return row("err", "Error", r.error || "cannot undo");
   if (r.data?.cancelled) return row("notice", "", "undo was cancelled by an extension");
-  // pi hands back the forked message; put it where it came from.
+  // pi hands back the forked message; put it where it came from. pi forked into a new conversation,
+  // and the page usually hears of that after this answer: the text then moves with the composer.
   $("input").value = r.data?.text ?? "";
+  // Kept as this conversation's draft until pi's fork moves the page, which takes it along; if
+  // that move is late or never comes, the text is still saved here.
   saveDraft();
+  if (SESSION === from && $("input").value) carryComposer = $("input").value;
   autoGrow();
   // The branch moved, so the conversation is taken again — through resync, which is the one path
   // that also resets what the page is counting against and drains what arrived meanwhile. This used
@@ -2051,6 +2056,7 @@ async function swap(call, body, why) {
   const held = waiting.splice(0, waiting.length);
   if (r.success && !r.data?.cancelled && typeof r.sessionId === "string" && r.sessionId && r.sessionId !== SESSION) {
     // Moved first, then one reload, for the reason given; what waited is applied after it.
+    carryComposer = null;
     moveTo(r.sessionId);
     waiting.push(...held);
     await resync(reloadReason());
@@ -2333,6 +2339,19 @@ function remember(key, value) {
  */
 /** One draft per conversation: a row of the list loads another conversation in this same tab. */
 const draftKey = () => "pi-web-draft:" + SESSION;
+/**
+ * The text an Undo put back, until pi's move to the forked conversation arrives: the composer goes
+ * with it while it still holds that text. A send or an edit in between keeps it where it is.
+ * @type {string | null}
+ */
+let carryComposer = null;
+function forgetDraft() {
+  try {
+    sessionStorage.removeItem(draftKey());
+  } catch (_) {
+    // Storage is blocked, so there is no draft to forget.
+  }
+}
 function savedDraft() {
   try {
     const own = sessionStorage.getItem(draftKey());
@@ -2647,12 +2666,16 @@ async function resync(why) {
  * list follow at once: what was typed stays with the conversation it was typed in.
  */
 function moveTo(id) {
+  const carry = carryComposer !== null && $("input").value === carryComposer;
+  carryComposer = null;
+  if (carry) forgetDraft();
   SESSION = id;
   history.replaceState(null, "", "/c/" + SESSION + "/");
   openTitle = "";
   firstSaid = "";
   drawTitle();
-  $("input").value = savedDraft();
+  if (carry) saveDraft();
+  else $("input").value = savedDraft();
   autoGrow();
   $("input").focus();
   refreshList().catch(() => {});
@@ -3562,7 +3585,7 @@ function drawFrame(s) {
     const resume = document.createElement("button");
     resume.type = "button";
     resume.className = "sm";
-    resume.textContent = "Resume";
+    resume.textContent = "Resume pi-loops";
     resume.onclick = () => resumeFromPage(resume);
     line.append(resume);
   }
@@ -3581,7 +3604,7 @@ function drawFrame(s) {
   drawStarters();
 }
 
-/** The page's Resume: `POST /resume`. A refusal (an older pi-loops still runs here) is said in the line. */
+/** The page's Resume pi-loops: `POST /resume`. A refusal (an older pi-loops still runs here) is said in the line. */
 async function resumeFromPage(button) {
   if (!TOKEN) await tokenReady;
   button.disabled = true;
@@ -3657,6 +3680,7 @@ function activityLine(i) {
   if (i.stopped) bits.push(i.stoppedBy === "person" ? "stopped by you" : "stopped");
   else if (i.ok === false) bits.push(plain(str(i.error || "failed")));
   else bits.push(num(i.findings) + " finding" + (num(i.findings) === 1 ? "" : "s"));
+  if (i.warning) bits.push("! " + plain(str(i.warning)));
   if (num(i.seconds)) bits.push(num(i.seconds) + "s");
   if (num(i.costUsd)) bits.push("$" + num(i.costUsd).toFixed(3));
   // Only a card this conversation got is in the chat on the screen (src/run-card.ts runCardsHere).

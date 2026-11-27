@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { tmp } from "./tmp.ts";
-import { claimHostService, clearCrashes, decideEnsure, decideEviction, ensureHost, evictHost, heartbeatFresh, HOST_SERVICE_FILE, HOST_SPAWNS_FILE, hostServiceNames, hostCommand, leavesWithWindows, nodeOnPath, readHostService, readSpawnLog, recentCrashes, recordCrash, recordSpawn, removeHostService, updateHostService, WINDOWS_GRACE_MS, type EnsureInput, type HostServiceRecord } from "../src/host-control.ts";
+import { claimHostService, clearCrashes, crashPauseText, decideEnsure, decideEviction, ensureHost, evictHost, heartbeatFresh, HOST_SERVICE_FILE, HOST_SPAWNS_FILE, hostServiceNames, hostCommand, leavesWithWindows, nodeOnPath, readHostService, readSpawnLog, recentCrashes, recordCrash, recordSpawn, removeHostService, updateHostService, WINDOWS_GRACE_MS, type EnsureInput, type HostServiceRecord } from "../src/host-control.ts";
 import { spawn } from "node:child_process";
 import { procStart } from "../src/lease.ts";
 import { compareVersions } from "../src/pi-floor.ts";
@@ -181,6 +181,8 @@ test("three crashes at one window's pace pause the host for half an hour, longer
 	assert.equal(paused.kind, "none");
 	assert.match((paused as any).reason, /^paused: pi-loops stopped unexpectedly 3 times within 5 minutes/);
 	assert.match((paused as any).reason, /it tries again at .*, or \/pi-loops start resumes it now$/);
+	// A shell has no slash commands: `pi-loops status` names `pi-loops start`, which a shell can run.
+	assert.match(crashPauseText(spawns, "pi-loops start"), /\d, or pi-loops start resumes it now$/);
 	assert.equal(decideEnsure(base({ automation, spawns, now: t0 + 60_000 + 29 * 60_000 })).kind, "none", "still paused at 29 minutes");
 	// It used to stay paused until a person came back: every project's loops stopped overnight for one bad one.
 	assert.deepEqual(decideEnsure(base({ automation, spawns, now: t0 + 60_000 + 30 * 60_000 })), { kind: "spawn" }, "after half an hour it tries again on its own");

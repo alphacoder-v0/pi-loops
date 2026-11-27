@@ -109,7 +109,8 @@ const COMMANDS = [
 		completionsAfter: "const cronCompletions",
 		// Second spellings of the case they fall through to: deliberately in none of the three lists.
 		// `host` is 0.22.8's spelling of /pi-loops status|start|stop: it still works, and a person never meets the word.
-		aliases: ["", "ls", "status", "resume", "pause", "rm", "delete", "host"],
+		// `status` stays because README.zh-CN.md tells people it is another name for the bare `/cron`.
+		aliases: ["", "status", "host"],
 		// In the menu and the completions, but not written `/cron <sub>` in the help text — and why.
 		helpSpellsDifferently: { list: "the first line of the help shows it as the bare `/cron`", help: "it is the text being read" },
 		alsoCompleted: [],
@@ -129,7 +130,7 @@ const COMMANDS = [
 		usage: "RECIPE_USAGE",
 		help: "RECIPE_HELP",
 		completionsAfter: 'registerCommand("recipe"',
-		aliases: ["", "ls", "rm"],
+		aliases: [""],
 		helpSpellsDifferently: { list: "the first line of the help shows it as the bare `/recipe`", help: "it is the text being read" },
 		alsoCompleted: [],
 	},
@@ -138,7 +139,7 @@ const COMMANDS = [
 		usage: "TRIGGERS_USAGE",
 		help: "TRIGGERS_HELP",
 		completionsAfter: 'registerCommand("triggers"',
-		aliases: ["", "resume", "pause", "rm", "delete"],
+		aliases: [""],
 		helpSpellsDifferently: { help: "it is the text being read" },
 		alsoCompleted: [],
 	},

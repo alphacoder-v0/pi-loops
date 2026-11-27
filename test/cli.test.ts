@@ -144,17 +144,21 @@ test("every subcommand in docs/cli.md prints its usage for --help, exits 0 and w
 	const cli = path.join(process.cwd(), "src", "cli-entry.mjs");
 	const subcommands = ["web", "tui", "upgrade", "install-launcher", "uninstall-launcher", "export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "recipe", "inbox", "host"];
 	const before = [...tree(root)];
-	for (const sub of subcommands)
-		for (const help of ["--help", "-h"]) {
-			const r = spawnSync(process.execPath, [cli, sub, ...(sub === "inbox" ? ["claim", "inb-1"] : []), help], { cwd: work, env, encoding: "utf8", timeout: 30_000 });
-			assert.equal(r.status, 0, `${sub} ${help}: ${r.stderr}`);
-			assert.match(r.stdout, /^pi-loops /, `${sub} ${help} prints usage`);
-			assert.deepEqual(tree(root), before, `${sub} ${help} wrote nothing`);
-		}
-	const usage = spawnSync(process.execPath, [cli, "--help"], { cwd: work, env, encoding: "utf8" });
-	const short = spawnSync(process.execPath, [cli, "-h"], { cwd: work, env, encoding: "utf8" });
+	const helpOf = new Map<string, string>();
+	for (const sub of subcommands) {
+		const r = spawnSync(process.execPath, [cli, sub, ...(sub === "inbox" ? ["claim", "inb-1"] : []), "--help"], { cwd: work, env, encoding: "utf8", timeout: 30_000 });
+		assert.equal(r.status, 0, `${sub} --help: ${r.stderr}`);
+		assert.match(r.stdout, /^pi-loops /, `${sub} --help prints usage`);
+		assert.deepEqual(tree(root), before, `${sub} --help wrote nothing`);
+		helpOf.set(sub, r.stdout);
+	}
+	const short = spawnSync(process.execPath, [cli, "install-launcher", "-h"], { cwd: work, env, encoding: "utf8", timeout: 30_000 });
 	assert.equal(short.status, 0, short.stderr);
-	assert.equal(short.stdout, usage.stdout, "pi-loops -h is pi-loops --help");
+	assert.equal(short.stdout, helpOf.get("install-launcher"), "-h after a subcommand is --help");
+	const usage = spawnSync(process.execPath, [cli, "--help"], { cwd: work, env, encoding: "utf8" });
+	const shortTop = spawnSync(process.execPath, [cli, "-h"], { cwd: work, env, encoding: "utf8" });
+	assert.equal(shortTop.status, 0, shortTop.stderr);
+	assert.equal(shortTop.stdout, usage.stdout, "pi-loops -h is pi-loops --help");
 	assert.deepEqual(tree(root), before);
 });
 

@@ -382,8 +382,8 @@ test("cron_list promises no next run for a plain job of a session that is not op
  */
 test("/cron remove resolves a reference the way cron_remove does, not the way /cron run does", () => {
 	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
-	const start = source.indexOf('case "delete": {');
-	assert.ok(start > 0, "no `case \"delete\"` arm in src/pi-loops.ts — this test's parser has gone stale");
+	const start = source.indexOf('case "remove": {\n\t\t\t\t\t\t// `--purge`');
+	assert.ok(start > 0, "no /cron `case \"remove\"` arm in src/pi-loops.ts — this test's parser has gone stale");
 	const arm = source.slice(start, source.indexOf("\t\t\t\t\tcase ", start + 20));
 	assert.match(arm, /resolveJobRefScoped\(all, ref, session\.cwd\)/, "a bare name must resolve in this project only");
 	assert.doesNotMatch(arm, /\bpick\(/, "the machine-wide helper must not decide what a removal deletes");

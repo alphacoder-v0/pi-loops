@@ -12,11 +12,10 @@ import { gateFields, statusField, statusWord, wakeFields } from "./job-lines.ts"
 import { gateCommandWhy, gateShown } from "./gate.ts";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
-import * as os from "node:os";
 import * as path from "node:path";
 import { Type, type TSchema } from "typebox";
 import { plainLine, previewRedacted } from "./redact.ts";
-import { computeNext, formatLocal, formatSchedule, nextRunAt, parseSchedule, stamp } from "./schedule.ts";
+import { computeNext, formatSchedule, nextRunAt, parseSchedule, stamp } from "./schedule.ts";
 import type { SessionSnapshot } from "./job-owner.ts";
 import { removeJob } from "./stores.ts";
 import type { Stores } from "./stores.ts";

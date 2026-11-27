@@ -261,7 +261,7 @@ playbook 拷到 `.agents/skills/<name>/`，通过 `.git/info/exclude` 排除在�
 /cron trace ci 2                    第 2 新那次运行的 transcript：prompt、工具调用、结果、回复
 /cron scheduler                     当前窗口、它的会话、pi-loops 状态（`/cron status` 是 `/cron` 的别名）
 /cron cost [today|7d|all]           自动化花了多少，按任务分，对照 [limits] daily_budget_usd
-/cron disable --all                 本项目全停（--all-projects 停整台机器）；/cron clear <ref> 不再需要：运行进程不在了，它的认领会自动关闭
+/cron disable --all                 本项目全停（--all-projects 停整台机器）
 /cron gc                            清掉会话已消失的任务（本项目；--all 才跨项目）
 /pi-loops [start|stop]             查看、启动或停止后台运行的 pi-loops
 /cron snapshot                      把「只有这个进程知道的状态」写进会话：哪些 MCP 连上了、暴露了什么工具、
@@ -387,7 +387,7 @@ backup.pisession                 无压缩 ustar，0600，拒绝覆盖已有文�
 /triggers rules [--all]      规则列表：id [enabled, fire_once|repeat, audit_only|promote_to_chat, fired_at] when … -> …
 /triggers sources            trigger 源：本地轮询器 + 每个 MCP 服务器的连接状态、queued/dropped/deduped、最近错误
 /triggers enable|disable|remove <id>  ·  /triggers remove --all（本项目）| --all-projects（本机全部）
-/triggers running  ·  /triggers abort <trace>|--all
+/triggers running  ·  /triggers abort <run|trace id>|--all
 /triggers audit [N]          最近 N 条 audit：accepted / deduped / running / completed / failed / promoted
 ```
 

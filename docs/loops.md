@@ -391,6 +391,9 @@ A run writes into the conversation that created its loop only when there is some
   conversation that asked, whatever its place among the loop's runs and whichever conversation created
   the loop. Its card also shows the first line of the run's reply, cut at 120 characters, with escape
   codes and bidi controls taken out;
+- a run that fell back from its pinned model says so on its card, under the title:
+  `! pinned model <model> is unavailable (<reason>); using <model>`, redacted and cut at 120
+  characters;
 - a terminal and the page's pi save a card the same way: the page draws it when it is saved and when
   it reads the conversation again. A window that does not hold the conversation only shows the line.
   The page does not draw the cards of a conversation whose session file is over 32 MB: reading its
@@ -600,7 +603,10 @@ running (catch-up disabled)` in a window, or `while pi-loops was not running` in
 a server pushing many distinct events cannot open one sub-agent per event.
 Jobs run with the model and thinking level recorded
 on them (`/cron set <id> --model … --thinking … --timeout …`; `-` clears one: a loop then uses pi's
-default, a plain job its conversation's).
+default, a plain job its conversation's). When a loop's model is not available (no auth, or the
+model no longer exists), the run uses the model it would use with no pin, and says so: its card and its activity strip
+row add `! pinned model <model> is unavailable (<reason>); using <model>`, and `/cron runs` adds
+the same words, cut at 80 characters.
 `/cron scheduler` shows this window (its pid, and whether its conversation's plain jobs run here),
 pi-loops (pid, version, start time), the store and the log. `/cron` marks another conversation's plain
 job `open in a terminal`, `in the page`, `in the background`, `paused: <why>`, or `resume it to run` (pi-loops never saw its file), parks it as disabled once that session's file has been
@@ -763,7 +769,7 @@ running, so this is how you actually go quiet; `/pi-loops stop` pauses every loo
 machine until `/pi-loops start`.
 
 A loop shows `running` while a live process holds the claim on its run's row; the claim is closed
-when that process is gone, so there is nothing to release by hand. `/cron clear <ref>` says so.
+when that process is gone, so there is nothing to release by hand.
 
 `/cron remove` takes a name of this project, a number from its listing, or the exact id of a job
 anywhere — the rule `cron_remove` follows, because a removal cannot be undone and a name this

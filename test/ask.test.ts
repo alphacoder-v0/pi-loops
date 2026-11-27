@@ -1282,3 +1282,70 @@ test("[copied-ask] a copy of a question under another id is E1: a yes to it star
 	assert.equal(w.starts.get(f.id), 1, "the question's own finding runs once");
 	assert.equal(find(w, f.id)?.answer?.state, "done");
 });
+
+test("[scene e-no-lock] section E reads pending, a cancel lands, the first yes's late Y1b comes back: no run after the cancel", async () => {
+	const w = await world();
+	const f = await ask(w, "loop");
+	await yes(w, f);
+	const firstRow = answerRows(w)[0];
+	const real = w.wrapped.inbox.section;
+	let open!: () => void;
+	const gate = new Promise<void>((resolve) => (open = resolve));
+	// The next section waits: the executor has read the finding before inbox.lock and not yet taken it.
+	w.wrapped.inbox.section = (<T>(fn: (tx: InboxSection) => Sync<T>): Promise<T> => {
+		w.wrapped.inbox.section = real;
+		return gate.then(() => real(fn));
+	}) as typeof real;
+	const met = meetRow(w, f);
+	assert.ok("cancelled" in (await w.answers.cancel(f.id)), "the cancel goes through");
+	w.requests.appendIfAbsent({ ...firstRow } as never);
+	open();
+	const out = await met;
+	if (out.met === "E4") await run(w, out.start);
+	assert.equal(w.starts.get(f.id) ?? 0, 0, `the command of a cancelled yes ran (met ${out.met})`);
+	assert.equal(find(w, f.id)?.status, "new");
+});
+
+test("[scene c3-no-call-check] the session file is deleted after the prompt and comes back without the call: the news is careful", async () => {
+	const w = await world();
+	const f = await ask(w, "loop");
+	const start = await started(w, f);
+	const file = path.join(w.jobs.sessionDirFor(JOB), `t1_${SID}.jsonl`);
+	fs.appendFileSync(file, `${JSON.stringify({ type: "message", message: { role: "user", content: [{ type: "text", text: `[Trigger ${start.row.id}] run it` }] } })}\n`);
+	fs.rmSync(file);
+	// The run appends after the file was deleted: the file is back with its header, no call and no prompt.
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", id: SID })}\n${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "done" }] } })}\n`);
+	await run(w, start, { aborted: true });
+	const a = find(w, f.id)?.answer;
+	assert.equal(a?.state, "unfinished");
+	assert.equal(a?.state === "unfinished" && a.ending, "The command may or may not have run.");
+});
+
+test("[scene e4b-first] E4b durable and E4a not (the crash the swap opens): E1, H1 and F2 end it unfinished, and nothing runs", async () => {
+	const w = await world();
+	const f = await ask(w, "loop");
+	await yes(w, f);
+	const claim = { id: answerRowId(f.id), pid: 999_999, started_at: stamp(NOW) };
+	await w.inbox.section((tx) => {
+		const step = answerStep("E4", tx.find(f.id), { to: "started", run: claim as never }, { at: stamp(NOW), lane: LOOP });
+		assert.ok(!("refused" in step));
+		tx.write(step);
+	});
+	assert.equal(answerRows(w)[0].run, undefined, "the row has no claim");
+	restart(w);
+	const metOnce = await meetRow(w, f);
+	assert.equal(metOnce.met, "E1", "a row with no run beside started is stale");
+	assert.equal(answerRows(w).length, 0);
+	assert.deepEqual(await w.answers.repair(() => true, NOW), [answerRowId(f.id)], "H1 puts the row back with answer.run");
+	assert.deepEqual(answerRows(w)[0].run, claim);
+	const metTwice = await meetRow(w, f);
+	assert.equal(metTwice.met, "F2");
+	await settle(w);
+	invariants(w);
+	const a = find(w, f.id)?.answer;
+	assert.equal(w.starts.size, 0, "nothing ran");
+	assert.equal(a?.state, "unfinished");
+	assert.equal(a?.state === "unfinished" && a.why, WHY.died);
+	assert.equal(a?.state === "unfinished" && a.ending, "The command was not run.");
+	assert.ok(find(w, besideId(f.id, "outcome")), "the news outcome is filed");
+});

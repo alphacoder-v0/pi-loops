@@ -838,7 +838,7 @@ test("[overlap-at-drain] the pre-pass leaves a dead own claim on an ans- row; a 
 		s.host.runs.add({ runId: ansId, jobId: id, label: "look", startedAt: new Date(t0 - 60_000).toISOString(), promptPreview: "", ctrl: new AbortController(), answer: { lane, finding: `inb-${"a".repeat(32)}` } });
 		await s.host.loops.drain(parseLane(lane) as any, t0);
 		const rows = s.requests.list(lane) as any[];
-		assert.deepEqual(rows.map((row) => [row.id, row.collapsed, row.collapsed_slot, row.skipped]), [[ansId, 1, slot, 1]], "the slot is skipped and counted on the answer's row");
+		assert.deepEqual(rows.map((row) => [row.id, row.collapsed_slot, row.skipped]), [[ansId, slot, 1]], "the slot is skipped and counted on the answer's row");
 		assert.equal(s.host.stores.clock.read().jobs[id]?.collapsed, 1, "one skipped overlap on the loop's cursor");
 		assert.equal(s.calls.length, 0, "nothing ran beside the answer");
 		s.host.runs.remove(ansId);

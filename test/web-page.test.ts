@@ -2363,6 +2363,60 @@ test("undoing the only message empties the conversation and puts the message bac
 	dom.dispose();
 });
 
+test("undo puts the withdrawn message in the composer of the conversation pi forked into, and leaves no draft in the one it left", { timeout: 20_000 }, async () => {
+	// pi's fork answers first and the page hears of the new conversation later, at a poll. The move
+	// loaded the new conversation's empty draft over the withdrawn text, and the text stayed as an
+	// unsent draft of the conversation where it was sent.
+	const g = globalThis as any;
+	const tab = new Map<string, string>();
+	const dom = stubDom(STATE, { messages: [{ role: "user", content: [{ type: "text", text: "the withdrawn one" }] }] }, tab);
+	const realFetch = g.fetch;
+	g.fetch = async (url: unknown, opts: any) => {
+		if (String(url).includes("/undo")) return { json: async () => ({ success: true, data: { text: "the withdrawn one" } }) };
+		return realFetch(url, opts);
+	};
+	await new Function(pageScript())();
+	await dom.started();
+	const doc = g.document;
+	await doc.getElementById("undo").onclick();
+	await settled();
+	// pi's move can come late or not at all: until it comes, the text is saved where it is.
+	assert.equal(tab.get(`pi-web-draft:${SESSION_UNDER_TEST}`), "the withdrawn one", "before the move, the text is this conversation's draft");
+	await new Promise((r) => setTimeout(r, 50));
+	dom.source().onmessage({ data: JSON.stringify({ type: "page_moved", sessionId: "01b0-forked", seq: 1, epoch: "e1" }) });
+	await settled();
+	assert.equal(doc.getElementById("input").value, "the withdrawn one", "the text is in the composer after the move");
+	assert.equal(tab.get(`pi-web-draft:${SESSION_UNDER_TEST}`), undefined, "the conversation it was sent in keeps no draft of it");
+	assert.equal(tab.get("pi-web-draft:01b0-forked"), "the withdrawn one", "it is the draft of the conversation the person is in");
+	g.fetch = realFetch;
+	dom.dispose();
+});
+
+test("after an undo, a composer the person emptied is not carried over a draft of the conversation the page moves to", { timeout: 20_000 }, async () => {
+	// pi's move to the fork can be lost; the next move the page hears of must not replace that
+	// conversation's draft with what the composer holds now.
+	const g = globalThis as any;
+	const tab = new Map<string, string>([["pi-web-draft:01b0-other", "a draft typed there"]]);
+	const dom = stubDom(STATE, { messages: [{ role: "user", content: [{ type: "text", text: "the withdrawn one" }] }] }, tab);
+	const realFetch = g.fetch;
+	g.fetch = async (url: unknown, opts: any) => {
+		if (String(url).includes("/undo")) return { json: async () => ({ success: true, data: { text: "the withdrawn one" } }) };
+		return realFetch(url, opts);
+	};
+	await new Function(pageScript())();
+	await dom.started();
+	const doc = g.document;
+	await doc.getElementById("undo").onclick();
+	await settled();
+	doc.getElementById("input").value = "";
+	dom.source().onmessage({ data: JSON.stringify({ type: "page_moved", sessionId: "01b0-other", seq: 1, epoch: "e1" }) });
+	await settled();
+	assert.equal(doc.getElementById("input").value, "a draft typed there", "the draft of the conversation moved to is loaded");
+	assert.equal(tab.get("pi-web-draft:01b0-other"), "a draft typed there", "and kept");
+	g.fetch = realFetch;
+	dom.dispose();
+});
+
 test("a disabled job or rule says so in words, not only by being faint", { timeout: 20_000 }, async () => {
 	/**
 	 * `/cron` prints `disabled` and the terminal panel `[disabled]`; the browser card only dimmed,
@@ -4364,6 +4418,21 @@ test("the activity strip is one line until opened, then lists every run and rule
 	}
 });
 
+test("[run-warning-visible] a strip row says the run fell back from its pinned model", { timeout: 20_000 }, async () => {
+	const answer = activityAnswer();
+	answer.items[1] = { ...answer.items[1], warning: "pinned model a/b is unavailable (no auth configured); using fake/fake-model <b>x</b>" };
+	const { dom, slot, texts, done } = await activityPage(answer);
+	try {
+		slot().children[0]._on.click();
+		const rows = slot().children[1].children.map((li: any) => texts(li).join("|"));
+		assert.match(rows[1], /issue-triage · 0 findings · ! pinned model a\/b is unavailable \(no auth configured\); using fake\/fake-model <b>x<\/b>/);
+		assert.doesNotMatch(rows[2], /pinned model/, "a clean run says nothing more");
+		assert.ok(!dom.made.some((m: any) => m.tag === "b"), "drawn as text");
+	} finally {
+		done();
+	}
+});
+
 test("the strip draws 96 items open within 200 ms", { timeout: 20_000 }, async () => {
 	const answer = activityAnswer();
 	answer.items = Array.from({ length: 96 }, (_, i) => ({ ...answer.items[1], id: `run-${i}`, finishedAt: minAgo(i * 15) }));
@@ -5302,8 +5371,8 @@ test("[gate-held-count] a gated loop's row says no model call while its command 
 	}
 });
 
-test("[upgrade-hold] while the upgrade's pause holds, the page says so above the conversation with a Resume button that posts /resume", { timeout: 20_000 }, async () => {
-	const hold = "pi-loops is paused after the upgrade, so that a pi that still runs an older pi-loops does not run your loops and rules a second time. Close every such pi, then run `pi-loops resume` (or Resume on the page).";
+test("[upgrade-hold] while the upgrade's pause holds, the page says so above the conversation with a Resume pi-loops button that posts /resume", { timeout: 20_000 }, async () => {
+	const hold = "pi-loops is paused after the upgrade, so that a pi that still runs an older pi-loops does not run your loops and rules a second time. Close every such pi, then run `pi-loops resume` (or Resume pi-loops on the page).";
 	const state = { ...STATE, automation: { ...(STATE as any).automation, upgradeHold: hold } };
 	const dom = await startPage(state, { "/conversations": listAnswer(ROWS), "/resume": { ok: true, held: true } });
 	const doc = (globalThis as any).document;
@@ -5311,8 +5380,8 @@ test("[upgrade-hold] while the upgrade's pause holds, the page says so above the
 	const line = doc.getElementById("held");
 	assert.match(textOf(line), /paused after the upgrade/);
 	const button = (line.children as any[]).find((c) => c && c.tag === "button");
-	assert.ok(button, "a Resume button");
-	assert.equal(button._text ?? button.textContent, "Resume");
+	assert.ok(button, "a Resume pi-loops button");
+	assert.equal(button._text ?? button.textContent, "Resume pi-loops");
 	await button.onclick();
 	await until(() => dom.calls.some((c) => c.url === "/resume"), "it posts /resume");
 	const call = dom.calls.find((c) => c.url === "/resume")!;

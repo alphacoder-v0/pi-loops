@@ -5,7 +5,6 @@ import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { RequestStore } from "../src/requests.ts";
 import type { Row } from "../src/requests.ts";
-type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
 import { plainRunId } from "../src/engine.ts";
 import { withFileLockSync, writeFileAtomic } from "../src/lock.ts";
 import { formatLocal, formatLocalZoned, stamp } from "../src/schedule.ts";
@@ -22,7 +21,7 @@ const job = (over: Partial<LoopJob> = {}): LoopJob => ({ id: "cron-job", schedul
 const file = (jobs: ClockFile["jobs"] = {}): ClockFile => ({ v: 1, jobs });
 const self = { pid: 1, instance: "test", version: "1" };
 const input = (jobs: LoopJob[], mine = new Map<string, Mine>(jobs.map((j) => [j.id, { kind: "loop" }])), startedAt = now): TickInput => ({ jobs, clock: file(), view: { now, startedAt, tickMs: 30_000, catchUp: true, budgetOver: false, kind: "background", self, mine, read: new Map(jobs.map((j) => [j.id, { rows: [], history: undefined, cwdMissing: false }])) } });
-const row = (id: string, lane = "@cron-job"): CountedRow => ({ v: 3, id, lane, kind: "input", source: "cron:cron-job", mode: "unattended", wake: "turn", collapse_key: "cron:cron-job", created_at: stamp(now), created_by: self, attempts: 0 });
+const row = (id: string, lane = "@cron-job"): Row => ({ v: 3, id, lane, kind: "input", source: "cron:cron-job", mode: "unattended", wake: "turn", collapse_key: "cron:cron-job", created_at: stamp(now), created_by: self, attempts: 0 });
 const stores = (dir: string): { requests: RequestStore; clock: ClockStore; deps: TickStores } => {
 	const requests = new RequestStore(dir);
 	const clock = new ClockStore({ file: path.join(dir, "clock.json"), lock: path.join(dir, "clock.lock") }, { locked: withFileLockSync, write: writeFileAtomic });
@@ -359,7 +358,7 @@ test("[proposed] A proposal is passed over by the tick, named by no `wanted`, an
 const clockAt = (dir: string) => new ClockStore({ file: path.join(dir, "clock.json"), lock: path.join(dir, "clock.lock") }, { locked: withFileLockSync, write: writeFileAtomic });
 const hhmm = (ms: number) => formatLocal(ms).slice(11);
 const wakeRun = (startedAt: number, cause?: "wake") => ({ jobId: "cron-job", startedAt: stamp(startedAt), ...(cause ? { cause } : {}) });
-const loopTick = (clock: ClockFile, rows: CountedRow[] = [], spent: string[] = [], at = now) => ({ jobs: [job()], clock, view: { ...input([job()]).view, now: at, read: new Map([["cron-job", { rows, history: spent.length ? { ordinal: 1, streak: 0, interrupted: [], spent: new Set(spent) } : undefined, cwdMissing: false }]]) } });
+const loopTick = (clock: ClockFile, rows: Row[] = [], spent: string[] = [], at = now) => ({ jobs: [job()], clock, view: { ...input([job()]).view, now: at, read: new Map([["cron-job", { rows, history: spent.length ? { ordinal: 1, streak: 0, interrupted: [], spent: new Set(spent) } : undefined, cwdMissing: false }]]) } });
 
 test("[wake-me] wake_me's write: the job's follow-up in clock.json under clock.lock, the cursor kept, and design 6.6's words", () => {
 	const dir = tmp();
@@ -396,7 +395,7 @@ test("[wake-me] a follow-up that came due writes its row (source wake:, woken = 
 	assert.deepEqual(requests.list("@cron-job").map((r) => r.id), [woke.followup.id]);
 	assert.equal(clock.read().jobs["cron-job"].followup, undefined);
 	assert.equal(clock.read().jobs["cron-job"].slot, stamp(now), "the cursor is untouched");
-	assert.deepEqual(decideTick(loopTick(clock.read(), requests.list("@cron-job") as CountedRow[])).map((d) => d.do), ["pass"], "and the next tick has nothing more to do");
+	assert.deepEqual(decideTick(loopTick(clock.read(), requests.list("@cron-job"))).map((d) => d.do), ["pass"], "and the next tick has nothing more to do");
 });
 
 test("[wake-bounds] when: at least 60 seconds ahead", () => {
@@ -465,11 +464,11 @@ test("[wake-quiet] a slot before quietUntil is skipped with the loop's words; th
 test("[wake-collapse] a follow-up that comes due while a slot's row is queued adds its note to that row: one run with both reasons", () => {
 	const dir = tmp();
 	const { requests, clock, deps } = stores(dir);
-	const queued = { ...row(plainRunId("cron-job", stamp(now - 60_000)), "@cron-job"), payload: { text: "go", cwd: "/" } } as CountedRow;
+	const queued = { ...row(plainRunId("cron-job", stamp(now - 60_000)), "@cron-job"), payload: { text: "go", cwd: "/" } } as Row;
 	requests.appendIfAbsent(queued as never);
 	clock.seed({ "cron-job": { slot: stamp(now), fired: stamp(now - 60_000), runs: 1 } });
 	clock.setFollowup("cron-job", { at: stamp(now - 1_000), note: "look at #12", set_by: "run-a" }, false, now - 600_000);
-	const decisions = decideTick(loopTick(clock.read(), requests.list("@cron-job") as CountedRow[]));
+	const decisions = decideTick(loopTick(clock.read(), requests.list("@cron-job")));
 	assert.deepEqual(decisions.map((d) => d.do === "followup" ? `followup ${d.write}` : d.do), ["pass", "followup onto"]);
 	applyTick(decisions, deps, now);
 	assert.deepEqual(requests.list("@cron-job").map((r) => [r.id, r.payload?.woken]), [[queued.id, ["look at #12"]]]);
@@ -490,12 +489,12 @@ test("[wake-collapse] a slot that comes due while the follow-up's row is queued 
 	applyTick(decideTick(loopTick(clock.read())), deps, now);
 	const [woke] = requests.list("@cron-job");
 	assert.equal(woke.source, "wake:cron-job");
-	const [slot] = decideTick(loopTick(clock.read(), requests.list("@cron-job") as CountedRow[], [], now + 60_000));
+	const [slot] = decideTick(loopTick(clock.read(), requests.list("@cron-job"), [], now + 60_000));
 	assert.equal(slot.do, "collapse");
 	if (slot.do !== "collapse") return;
 	assert.equal(slot.onto, woke.id);
 	assert.equal(commitSlot(writeSlot(slot, deps), deps).t3, "moved");
-	assert.deepEqual(requests.list("@cron-job").map((r) => [r.id, (r as CountedRow).collapsed, r.payload?.woken]), [[woke.id, 1, ["look at #12"]]]);
+	assert.deepEqual(requests.list("@cron-job").map((r) => [r.id, r.collapsed_slot, r.payload?.woken]), [[woke.id, slot.slot, ["look at #12"]]]);
 });
 
 test("[wake-me] a disabled or proposed loop's follow-up waits, and a wake the file holds in a shape this build does not write is dropped with the cursor kept", () => {

@@ -102,7 +102,7 @@ machine. Everything here follows from that, and each one has a price.
    claim (`RunList`), and the clock and the rule checks do not pass, so no slot is decided and no
    gate's command runs. Two places, not one per caller: two rounds of review found a caller that the
    per-rider gates missed (the requests watcher, the doorbell). Each job and rule keeps the on or off it had, so an archive, a downgrade and the lists see them
-   as they were. `pi-loops resume` (or `/pi-loops resume`, or the page's Resume) ends it, and refuses
+   as they were. `pi-loops resume` (or `/pi-loops resume`, or the page's Resume pi-loops) ends it, and refuses
    while a fresh `presence/` entry of a live pid says pi-loops 0.22 still runs here, or
    `host-service.json` names a live older pi-loops in the background; while the pause holds, a start
    keeps `presence/`, which it otherwise removes. Two designs that
@@ -239,7 +239,7 @@ machine. Everything here follows from that, and each one has a price.
     copy and the `/cron add` lines run with no model and end in a confirmation that shows exactly
     what will be created. The one thing a template cannot do — describe *this* project's tracker —
     is a request addressed to the running session (`requests/<session>.jsonl`), handed to the agent
-    once it is idle, the way `/inbox claim` hands over a finding: explore the remote, propose, confirm, write the file — and when that turn settles with
+    once it is idle: explore the remote, propose, confirm, write the file — and when that turn settles with
     the file there, the wizard resumes by itself, so the command is typed once. `pi-loops recipe`
     in the terminal does the deterministic part only.
 
@@ -376,8 +376,8 @@ machine. Everything here follows from that, and each one has a price.
 
 22. **A scheduled prompt runs under its own cap, whichever process runs it.** Every request row
     carries the `mode` its source gets: `attended` for what you typed, a `/goal` continuation, a
-    claim, a recipe hand-off and `/new-trigger`; `unattended` for the clock and an `inject_and_run`
-    push; `none` for a result. The process that runs a row recomputes it and refuses, audited, one
+    recipe hand-off and `/new-trigger`; `unattended` for the clock, an `inject_and_run` push and a
+    yes to a finding (an answer row, src/ask.ts); `none` for a result. The process that runs a row recomputes it and refuses, audited, one
     that says otherwise, and a window believes an attended source only on a row it wrote itself,
     so a line in the file cannot widen a turn. An unattended turn runs under
     the job's declared tools and the dangerous-command policy in a window exactly as in the
@@ -409,7 +409,7 @@ machine. Everything here follows from that, and each one has a price.
     itself still holds (a command typed while busy) after them, labelled "pi". Every row has one
     proof of delivery, whatever its source: the mark `{ lane, id }` in the entry pi persists for it
     (`src/mark.ts`). A turn row that pi-loops writes (a plain job's, a rule's or a push's turn, a
-    claim, a recipe hand-off, `/new-trigger`, a goal's continuation) goes to pi as a custom message
+    yes to a question of the conversation, a recipe hand-off, `/new-trigger`, a goal's continuation) goes to pi as a custom message
     of type `pi-loops:turn` (`pi.sendMessage` with `triggerTurn`), its mark and its cap in the
     message's `details`. The owner chose this on 2026-11-16, after a review of eight rounds of fixes
     found the window inferring our messages from their words over a channel that carries no

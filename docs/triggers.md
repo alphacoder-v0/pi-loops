@@ -203,8 +203,9 @@ or cancel with nothing to act on, a goal row without a goal, or a person's messa
 conversation is gone), `job-removed`, `refused` (the row's
 `mode` is not the one its source gets, so a line edited in the file, or written by another version,
 cannot widen what a turn may do; the row never runs). Two more come from the inbox in the browser
-page: `claimed` (a finding's claim was queued for the conversation that created its loop; the row
-is the `inbox:<id>` one `/inbox claim` writes, and the trace id is its id) and `dismissed` (a
+page: `claimed` (a finding was claimed from the page: its yes was queued in the lane the finding
+names, or, when there is no lane to run it in, the yes is recorded and is not run; the trace id
+is the finding's id) and `dismissed` (a
 finding was dismissed from the page; the trace id is the finding's, and `details.reason` is what the
 person gave, redacted, or null).
 
@@ -230,7 +231,7 @@ for rule evaluation, per process for injected pushes. For rule evaluation it is 
 /triggers enable <id> /triggers disable <id> /triggers remove <id>   also --all | --all-projects
 /triggers set <id>    --model | --thinking | --timeout: what the action runs with
 /triggers run <id>    check one rule now, without waiting for its poll slot
-/triggers running     sub-agents in flight (dynamic checks and cron runs)   /triggers abort <trace>|--all
+/triggers running     sub-agents in flight (dynamic checks and cron runs)   /triggers abort <run|trace id>|--all
 /triggers audit [N]
 /triggers panel on|off
 /triggers help        all of the above, in the terminal

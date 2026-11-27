@@ -893,6 +893,8 @@ export interface DrainOptions {
  * check failed a send pi then ran. The name stays: src/web/page.js reads it for its follow-up ring.
  */
 export const PERSON_SEND_GRACE_MS = 10_000;
+/** Why a person's message failed when pi started no turn for it: the page puts pi's own reason in its place. */
+export const NO_TURN_WHY = "pi did not start a turn for it";
 
 /**
  * How long a person row nobody rang for waits before it is handed over capped: the page appends
@@ -1147,13 +1149,13 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 				return done();
 			}
 			if (refused) {
-				actions.push({ do: "fail", row, why: "pi did not start a turn for it", retry: "never" });
+				actions.push({ do: "fail", row, why: NO_TURN_WHY, retry: "never" });
 				return done();
 			}
 		} else if (refused) {
 			// A pi-loops row is proved by its mark, so offering it again is safe; one refusal must not
 			// hold the slot for ever, nor the job's later slots, which collapse onto a queued row.
-			actions.push({ do: "fail", row, why: "pi did not start a turn for it", retry: "backoff" });
+			actions.push({ do: "fail", row, why: NO_TURN_WHY, retry: "backoff" });
 			return done();
 		}
 		// What pi no longer has (`ExecutorView.gone`). A person row a stop took out is offered again
