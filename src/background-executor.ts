@@ -609,7 +609,7 @@ export function createLoopLanes(deps: LoopLaneDeps): LoopLanes {
 				if (!permit) return "no-slot";
 				const job = laneJobs().get(lane.id);
 				if (!job) { permit.release(); return "sent"; }
-				const claimed = runs.claim(stores.requests, row, deps.holder(), { jobId, label: job.name ?? job.id, promptPreview: previewRedacted(row.payload?.text ?? job.prompt, 120), ctrl: new AbortController() }, now);
+				const claimed = runs.claim(stores.requests, row, deps.holder(), { jobId, label: job.name ?? job.id, promptPreview: previewRedacted(job.prompt, 120), ctrl: new AbortController() }, now);
 				if (!claimed) { permit.release(); return "sent"; }
 				const task = runLoop(claimed, job, deps).finally(() => { permit.release(); inFlight.delete(task); }).catch((error) => deps.sinks.log(`loop ${jobId}: ${error instanceof Error ? error.message : String(error)}`));
 				inFlight.add(task);

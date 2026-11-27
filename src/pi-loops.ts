@@ -32,7 +32,7 @@ import { type InboxEntry, belongsToProject, inProject, resolveInboxRef } from ".
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { capRedacted, plainLine, previewRedacted, redact, screenText } from "./redact.ts";
-import { CANCELLED_LINE, answerLine, answerWho, cancelRefusal, cardLines, cardOrigin, clearLeftTail, dismissOutcome, dismissTail, inboxCard, noQuestionLine, questionActions, threadOrder, threadedLines, threads, yesTerminalLine } from "./inbox-card.ts";
+import { CANCELLED_LINE, answerLine, answerWho, backgroundOff, cancelRefusal, cardLines, cardOrigin, clearLeftTail, dismissOutcome, dismissTail, inboxCard, noQuestionLine, questionActions, threadOrder, threadedLines, threads, yesTerminalLine } from "./inbox-card.ts";
 import { type Answers, conversationFile, createAnswers } from "./answers.ts";
 import { type StepRefusal, answerOpen, answerRowId } from "./ask.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
@@ -81,7 +81,7 @@ import { type Trigger, auditArgs, newTraceId, TriggerStore, resolveRuleRef } fro
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ConfirmTurn, type ToolHost, automationTools, checkJobName, confirmControlPlane, controlTarget, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
 import { claimPageChild } from "./page-children.ts";
 import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
-import { HOLD_LINE, olderRunningLine, resumeUpgrade, upgradeHeld } from "./upgrade-hold.ts";
+import { HOLD_LINE, holdLineForNoUi, olderRunningLine, resumeUpgrade, upgradeHeld } from "./upgrade-hold.ts";
 import { ALL_PROJECTS, awayIn, awayLine, markProjectSeen } from "./seen.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -2218,7 +2218,8 @@ export default function piLoops(pi: ExtensionAPI) {
 							ctx.ui.notify(said.said === "nothing" ? refusedLine(target, said.refusal) : `inbox entry ${target}: a yes came to ${said.said}`, "warning");
 							return;
 						}
-						ctx.ui.notify(yesTerminalLine(said, whoOf(said.finding, said.said === "Y1" ? said.lane : said.finding.lane), !!liveHostRecord(), from.session), said.said === "Y1" ? "info" : "warning");
+						const off = backgroundOff({ stopped: readUiPrefs(dir).host === "stopped", envOff: process.env.PI_LOOPS_HOST?.toLowerCase() === "off", auto: config.hostAuto });
+						ctx.ui.notify(yesTerminalLine(said, whoOf(said.finding, said.said === "Y1" ? said.lane : said.finding.lane), !!liveHostRecord(), from.session, off), said.said === "Y1" ? "info" : "warning");
 						return;
 					}
 					case "cancel": {
@@ -3454,6 +3455,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			// tui and rpc processes stay alive and run the clock; `PI_LOOPS_HOST=1` starts it in a `pi -p`
 			// run too, which queues its conversation's due prompts but hands none to pi (the window
 			// executor delivers only in tui and rpc mode): a window or pi-loops in the background does.
+			const holdLine = holdLineForNoUi(dir, ctx.hasUI);
+			if (holdLine) process.stderr.write(holdLine);
 			const hostMode = ctx.mode === "tui" || ctx.mode === "rpc" || envFlag("LOOPS_HOST");
 			if (!hostMode) return;
 			// The host runs the loops; this window only makes sure there is one. Not awaited: a start can

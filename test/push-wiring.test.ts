@@ -264,3 +264,15 @@ test("[upgrade-hold] while the upgrade's pause holds, a push is stored and its r
 	await b.host.drain(5000);
 	assert.equal(b.calls.length, 1, "resumed: checked once");
 });
+
+test("[push-raw-first] a push whose rows cannot be written (triggers.json does not parse) stays stored, is logged, and does not end pi-loops in the background", async () => {
+	const dir = tmp("pi-loops-push-corrupt-");
+	const logged: string[] = [];
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: async () => ({ ok: true, exitCode: 0, timedOut: false, text: "", usage: USAGE }), mcpTools: () => [], log: (line) => logged.push(line) });
+	host.rederivePushes((server) => server === "ci");
+	fs.writeFileSync(path.join(dir, "triggers.json"), `{"version":1,"rules":[`);
+	assert.equal(host.receivePush("ci", "sub_agent", note("k1")), true);
+	const [stored] = fs.readFileSync(path.join(dir, "events.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+	assert.deepEqual(JSON.parse(stored.raw), note("k1"), "stored as received, for a replay");
+	assert.ok(logged.some((line) => line.includes(stored.id) && line.includes("triggers.json")), `logged: ${logged.join(" | ")}`);
+});

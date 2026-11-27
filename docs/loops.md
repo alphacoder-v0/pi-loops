@@ -464,7 +464,9 @@ the last two minutes is left for a later tick. A yes to a finding of a conversat
 does not run, and says why. `/inbox cancel` takes back a yes while it waits; a yes that has
 started or ended cannot be cancelled. A yes to a loop's or a rule check's finding, and one of a
 closed conversation, is work for pi-loops in the background, so a window starts it, and while it is
-not running the line after `/inbox claim` adds "It runs when pi-loops runs in the background."
+not running the line after `/inbox claim` adds "It runs once pi-loops runs in the background. Run
+pi-loops start (or /pi-loops start) to start it." When a stop by hand, `PI_LOOPS_HOST=off` or
+`[host] auto = false` keeps it off, the line names that reason before it, in the words of `pi-loops status`.
 `/inbox claim` on a question of the window's own conversation prints `approved: it runs in this
 conversation after the current turn, with this one command allowed.`
 
@@ -911,13 +913,13 @@ in pi's selector when a turn settles (see "A proposed watch" above):
 Allow this once?
 The scheduled prompt "deploy-check" asked to run bash: sudo invocation.
 sudo systemctl restart api
-It went on without it. Yes runs it once in a new turn. Esc leaves the question open (/inbox).
+It went on without it. Yes runs it once in a new turn. No refuses the same command for 14 days. Esc leaves the question open (/inbox).
   No, do not run it
   Yes, run it once
 ```
 
 Yes prints `queued: your yes to "deploy-check" runs after the current turn`, and the yes runs as a
-turn in that window. No prints `said no: "deploy-check" is told in this conversation`. The model
+turn in that window. No prints `said no: "deploy-check" is told in this conversation; the same command is refused for 14 days`. The model
 reads the no as a message in the conversation, with the reason when you gave one:
 
 ```
