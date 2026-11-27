@@ -93,14 +93,18 @@ machine. Everything here follows from that, and each one has a price.
    `jobs.json` and the queue are as they were and no backoff has ended; it remembers the three at
    the last "nothing to do" and reads again when one moves. The inbox gets a result only when the conversation cannot
    be written; shell-created rules go to the inbox. An older pi-loops gets no special treatment while it
-   runs: nothing reads `presence/` or writes `scheduler.json` for it. Instead the conversion of a
+   runs: nothing writes `presence/` or `scheduler.json` for it. Instead the conversion of a
    directory an older version worked in pauses pi-loops (`upgrade-hold.json`, written before the
    version 3 `jobs.json`, the conversion's one commit point; src/upgrade-hold.ts), owner decision of
-   2026-11-26. While it holds, nothing automated starts in a window or in the background: no clock
-   pass, rule check, answer, lane run or delivery into a closed conversation; a person's own messages
-   go. Each job and rule keeps the on or off it had, so an archive, a downgrade and the lists see them
+   2026-11-26. While it holds, nothing automated starts in a window or in the background, whoever
+   drains: the engine holds every row but a person's own (`decideDrain`), the run list refuses every
+   claim (`RunList`), and the clock and the rule checks do not pass, so no slot is decided and no
+   gate's command runs. Two places, not one per caller: two rounds of review found a caller that the
+   per-rider gates missed (the requests watcher, the doorbell). Each job and rule keeps the on or off it had, so an archive, a downgrade and the lists see them
    as they were. `pi-loops resume` (or `/pi-loops resume`, or the page's Resume) ends it, and refuses
-   while a fresh `presence/` entry of a live pid says pi-loops 0.22 still runs here. Two designs that
+   while a fresh `presence/` entry of a live pid says pi-loops 0.22 still runs here, or
+   `host-service.json` names a live older pi-loops in the background; while the pause holds, a start
+   keeps `presence/`, which it otherwise removes. Two designs that
    detected an older pi-loops and waited for it, and one that turned every job and rule off and marked
    each, were withdrawn: reviews found one more path around the first two each round, and the third
    carried its marks into archives, downgrades and answers. The cost: every person who upgrades runs

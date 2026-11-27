@@ -1994,7 +1994,7 @@ function runInForeground(loopsDir: string): Promise<number> {
 	});
 }
 
-/** `pi-loops resume`: the end of the upgrade's pause (src/upgrade-hold.ts). Refused while pi-loops 0.22 still runs here. */
+/** `pi-loops resume`: the end of the upgrade's pause (src/upgrade-hold.ts). Refused while an older pi-loops still runs here. */
 export function resumeCommand(loopsDir: string, out: (line: string) => void): number {
 	const result = resumeUpgrade(loopsDir);
 	if (!result.resumed) {

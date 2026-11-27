@@ -6,15 +6,21 @@
  * say why, and `pi-loops resume` (or the page's Resume) removes the file. Each job and rule keeps the on
  * or off it had: archives, a downgrade and the lists see them as they were.
  *
- * `resume` refuses while pi-loops 0.22 still runs here: its `presence/` entry is fresh, names a live pid on
- * this machine and has no `leases` field. A window of 0.22 checks its project's rules itself, so this
- * version's checks beside it would run each rule twice.
+ * `resume` refuses while an older pi-loops still runs here. pi-loops 0.22: its `presence/` entry is fresh,
+ * names a live pid on this machine and has no `leases` field; a window of 0.22 checks its project's rules
+ * itself, so this version's checks beside it would run each rule twice. An older pi-loops in the
+ * background: `host-service.json` names a live process of a lower version; 0.24.2 in the background
+ * checks every rule that is on until the first window of this version replaces it.
  */
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { readHostService } from "./host-control.ts";
+import { procStart } from "./lease.ts";
 import { pidAlive, writeFileAtomic } from "./lock.ts";
+import { compareVersions } from "./pi-floor.ts";
 import { stamp } from "./schedule.ts";
+import { PI_LOOPS_VERSION } from "./version.ts";
 
 export const HOLD_FILE = "upgrade-hold.json";
 /** pi-loops 0.22 prunes a presence entry whose heartbeat is further than this from now (v0.22.8 src/presence.ts). */
@@ -38,10 +44,11 @@ export function holdUpgrade(dir: string, now = Date.now()): void {
 
 export type Resumed = { readonly resumed: true; readonly held: boolean } | { readonly resumed: false; readonly olderPids: readonly number[] };
 
-/** Ends the pause, unless pi-loops 0.22 still runs here. Idempotent: with no pause it says so and changes nothing. */
+/** Ends the pause, unless an older pi-loops still runs here. Idempotent: with no pause it says so and changes nothing. */
 export function resumeUpgrade(dir: string, now = Date.now(), alive: (pid: number) => boolean = pidAlive): Resumed {
 	if (!upgradeHeld(dir)) return { resumed: true, held: false };
-	const olderPids = olderStillRunning(dir, now, alive);
+	const background = olderBackground(dir, alive);
+	const olderPids = [...new Set([...olderStillRunning(dir, now, alive), ...(background === undefined ? [] : [background])])].sort((a, b) => a - b);
 	if (olderPids.length) return { resumed: false, olderPids };
 	fs.rmSync(path.join(dir, HOLD_FILE), { force: true });
 	return { resumed: true, held: true };
@@ -49,7 +56,17 @@ export function resumeUpgrade(dir: string, now = Date.now(), alive: (pid: number
 
 /** What `resume` says when it refuses. */
 export function olderRunningLine(pids: readonly number[]): string {
-	return `pi-loops 0.22 still runs here (pid ${pids.join(", ")}): close that pi, or end it (kill ${pids.join(" ")}), then run \`pi-loops resume\` again.`;
+	return `an older pi-loops still runs here (pid ${pids.join(", ")}): close that pi, or end it (kill ${pids.join(" ")}), then run \`pi-loops resume\` again.`;
+}
+
+/** The pid of an older pi-loops in the background of `dir`, by `host-service.json`: a live process, the one the record names (its start time), of a lower version. */
+export function olderBackground(dir: string, alive: (pid: number) => boolean = pidAlive): number | undefined {
+	const rec = readHostService(dir);
+	if (!rec || !Number.isInteger(rec.pid) || rec.pid <= 0 || typeof rec.version !== "string") return undefined;
+	if (compareVersions(rec.version, PI_LOOPS_VERSION) >= 0 || !alive(rec.pid)) return undefined;
+	// A recycled pid is not that process: the record's start time must match when it has one.
+	if (rec.procStart !== undefined && procStart(rec.pid) !== rec.procStart) return undefined;
+	return rec.pid;
 }
 
 /** The pids of pi-loops 0.22 that run in `dir` now, on this machine, by the presence entries 0.22.8 writes every 30 s. */

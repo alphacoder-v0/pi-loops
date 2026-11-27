@@ -261,7 +261,7 @@ function convertJobs(dir: string, log: (line: string) => void): { jobs: number; 
 		}
 		clockStore(dir).seed(entries);
 		// Step 2, the owed slots: none is queued. The upgrade's pause holds every job until a person resumes
-		// it (src/upgrade-hold.ts), and the clock then catches up as each job's catch-up says.
+		// it (src/upgrade-hold.ts); then the loop runs as a loop turned on again does.
 		for (const { job, slot } of owed) log(`cron ${job.name ?? job.id}: its owed run of ${slot} is not queued: after \`pi-loops resume\` the loop runs as a loop turned on again does`);
 		// Step 3: the pause, before the commit point, so a start that stops between the two holds anyway.
 		holdUpgrade(dir);

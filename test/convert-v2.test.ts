@@ -140,7 +140,7 @@ test("[convert-disabled] A disabled job of version 2 gets its code from its reas
 	assert.deepEqual(clock.jobs["cron-noted"].note, { at: "2026-01-05T09:00:00.000Z", text: "missed 09:00 while no pi was running (catch-up disabled)" });
 });
 
-test("[convert-owed] An owed slot and a dead run marker are not queued: the upgrade's pause holds the job, and the clock catches up after resume.", () => {
+test("[convert-owed] An owed slot and a dead run marker are not queued: the upgrade's pause holds the job, and after resume it runs as a loop turned on again does.", () => {
 	const dir = tmp("pi-loops-convert-");
 	const slot = new Date(Date.now() - 60_000).toISOString();
 	writeV2(dir, [v2Loop(dir, { lastDueAt: slot, owedSlot: slot, interruptions: 2, running: { runId: "old-run", pid: 2_000_000_000, startedAt: slot } })]);

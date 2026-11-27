@@ -89,8 +89,8 @@ All notable changes to pi-loops are documented here. The format follows
   `pi-loops status` says so first, and the page says so above the conversation with a Resume button:
   `pi-loops is paused after the upgrade, so that a pi that still runs an older pi-loops does not run
   your loops and rules a second time. Close every such pi, then run \`pi-loops resume\` (or Resume
-  on the page).` Close those pis first: `resume` refuses while pi-loops 0.22 still runs here, and
-  names its pid. Nothing else changes: each loop, plain job and rule keeps the on or off it had,
+  on the page).` Close those pis first: `resume` refuses while pi-loops 0.22 still runs here, or an
+  older pi-loops in the background, and names its pid. Nothing else changes: each loop, plain job and rule keeps the on or off it had,
   with its run count, findings and notes, and the version 2 file is kept as `jobs.json.v2.bak`. A
   run that 0.24.2 owed is not queued. Once resumed, a loop whose slots came due during the pause runs
   as a loop turned on again does: once, for its latest slot, while pi-loops ran through the pause;
@@ -98,8 +98,8 @@ All notable changes to pi-loops are documented here. The format follows
   - The check is made once, when the directory is converted. Putting `jobs.json.v2.bak` back as
     `jobs.json` is an upgrade again, and pauses again.
   - pi-loops 0.24.2 in the background, which an upgrade of the package does not stop, is replaced
-    by the first pi window of this version, as before. While the pause holds it runs nothing: it
-    cannot read the converted `jobs.json`.
+    by the first pi window of this version, as before. Until then it still checks every rule that
+    is on, so `resume` refuses while it runs.
   - A terminal of 0.24.2 that you do not restart cannot be seen from here: `resume` cannot refuse
     for it. Restart every terminal of an older pi-loops before you resume.
 - **A loop's notes file from 0.24.2 needs no conversion.** `state/<id>.md` is read as it is. A

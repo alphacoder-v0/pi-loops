@@ -3581,7 +3581,7 @@ function drawFrame(s) {
   drawStarters();
 }
 
-/** The page's Resume: `POST /resume`. A refusal (pi-loops 0.22 still runs here) is said in the line. */
+/** The page's Resume: `POST /resume`. A refusal (an older pi-loops still runs here) is said in the line. */
 async function resumeFromPage(button) {
   if (!TOKEN) await tokenReady;
   button.disabled = true;

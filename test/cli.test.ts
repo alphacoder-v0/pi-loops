@@ -1984,12 +1984,12 @@ test("[upgrade-hold] pi-loops status says the upgrade's pause first; pi-loops re
 		assert.match(status[0] ?? "", /^pi-loops is paused after the upgrade, .* run `pi-loops resume`/);
 		const refused: string[] = [];
 		assert.equal(await runCli(["resume"], (l) => refused.push(l)), 1);
-		assert.deepEqual(refused, [`pi-loops 0.22 still runs here (pid ${process.pid}): close that pi, or end it (kill ${process.pid}), then run \`pi-loops resume\` again.`]);
+		assert.deepEqual(refused, [`an older pi-loops still runs here (pid ${process.pid}): close that pi, or end it (kill ${process.pid}), then run \`pi-loops resume\` again.`]);
 		assert.equal(fs.existsSync(path.join(loops, "upgrade-hold.json")), true);
 		fs.rmSync(path.join(loops, "presence"), { recursive: true });
 		const done: string[] = [];
 		assert.equal(await runCli(["resume"], (l) => done.push(l)), 0);
-		assert.match(done[0] ?? "", /^pi-loops resumed: /);
+		assert.equal(done[0], "pi-loops resumed: loops, plain jobs and rules run again; a loop whose slots came due during the pause runs as a loop turned on again does");
 		assert.equal(fs.existsSync(path.join(loops, "upgrade-hold.json")), false);
 		const again: string[] = [];
 		assert.equal(await runCli(["resume"], (l) => again.push(l)), 0);

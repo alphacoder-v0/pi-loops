@@ -7,6 +7,7 @@
  *
  * A caller cannot start a turn but through `fire`: it holds neither a lease nor an executor.
  */
+import { HOLD_FILE } from "./upgrade-hold.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -473,7 +474,8 @@ export function createBackgroundExecutor(deps: BackgroundDeps): BackgroundExecut
 		// the read, so a write that lands during it shows as a change on the next tick, not a miss.
 		const file = lease?.sessionFile;
 		if (!file) return;
-		const files = [fileMark(file), fileMark(path.join(deps.dir, "jobs.json"))];
+		// The upgrade's pause is part of the decision (src/engine.ts): its end is a change, as jobs.json's is.
+		const files = [fileMark(file), fileMark(path.join(deps.dir, "jobs.json")), fileMark(path.join(deps.dir, HOLD_FILE))];
 		const now = Date.now();
 		const queued = requests.list(sessionId);
 		if (stillQuiet(quiet.get(sessionId), files, queued, now)) return;

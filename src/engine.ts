@@ -1120,6 +1120,12 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 			return done();
 		}
 		const wait = (why: string, until?: number) => actions.push({ do: "wait", row, why, ...(until === undefined ? {} : { until }) });
+		// The upgrade's pause (src/upgrade-hold.ts): every row but a person's own waits, in every lane and
+		// from every caller (a tick, a bell, a watcher, the control channel), until a person resumes.
+		if (row.source !== "person" && jobs.paused?.()) {
+			wait("pi-loops is paused after the upgrade: pi-loops resume");
+			return done();
+		}
 		// A row that leaves while pi holds its prompt and has not begun it (its job removed, its goal
 		// cleared): the window aborts the prompt if pi writes it after all, as for a cancel.
 		const leaveHeld = (): void => {
@@ -1197,11 +1203,6 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 			if (!job.exists) {
 				leaveHeld();
 				actions.push({ do: "exit", row, exit: "job-removed" });
-				return done();
-			}
-			// The upgrade's pause holds every job's row, `/cron run` too, until a person resumes (src/upgrade-hold.ts).
-			if (jobs.paused?.()) {
-				wait("pi-loops is paused after the upgrade: pi-loops resume");
 				return done();
 			}
 			// The clock's prompt and a loop's follow-up wait with its clock; `/cron run` was asked for, and

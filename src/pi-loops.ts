@@ -143,7 +143,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** This process, as the rows it produces name it: the one that runs them while it is on the conversation. */
 	const self: Producer = { pid: process.pid, procStart: ownStart };
 	/** The answers' turns this window runs (src/window-executor.ts createWindowAnswers): a claim of this window is live while its run is here. */
-	const windowRuns = new RunList();
+	const windowRuns = new RunList(() => upgradeHeld(dir));
 	const executor = new WindowExecutor(
 		pi,
 		binding,

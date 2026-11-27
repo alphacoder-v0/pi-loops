@@ -33,6 +33,12 @@ export interface Running {
 /** The list. A caller gets it as a parameter; nothing reaches it through module state. */
 export class RunList {
 	#runs = new Map<string, Running>();
+	readonly #held: () => boolean;
+
+	/** `held`: whether no run may start now (the upgrade's pause, src/upgrade-hold.ts). Every unattended run claims its row here, so this is the one place that holds them all. */
+	constructor(held: () => boolean = () => false) {
+		this.#held = held;
+	}
 
 	/** Add a run under its id, replacing any run already there. */
 	add(run: Running): void {
@@ -44,13 +50,13 @@ export class RunList {
 	 * the claim is written under the lane's lock. So no claim is on disk without its run in the list,
 	 * and a stop cannot fall between the two. The run id is the row's id, and the run's `startedAt`
 	 * and the claim's `started_at` are one stamp of `now`: a record written for this run is found by
-	 * them. Returns the claimed row, or undefined when the row is gone, another run has it, or its run
-	 * is in the list already; the run is then not in the list. When the write throws, the run is
+	 * them. Returns the claimed row, or undefined when the row is gone, another run has it, its run
+	 * is in the list already, or no run may start now (`held`); the run is then not in the list. When the write throws, the run is
 	 * taken out and the error goes on: no claim was written. This is the one caller of
 	 * `RequestStore.claim`. `lock` bounds the wait for the lane's lock, for a caller that holds `inbox.lock`.
 	 */
 	claim(requests: Pick<RequestStore, "claim">, row: UnclaimedRow, by: { readonly pid: number; readonly procStart: string | undefined }, run: Omit<Running, "runId" | "startedAt">, now: number, lock?: LockOptions): ClaimedRow | undefined {
-		if (this.#runs.has(row.id)) return undefined;
+		if (this.#runs.has(row.id) || this.#held()) return undefined;
 		const startedAt = stamp(now);
 		this.#runs.set(row.id, { ...run, runId: row.id, startedAt });
 		const claim = { id: row.id, pid: by.pid, started_at: startedAt, ...(by.procStart === undefined ? {} : { procStart: by.procStart }) } as Listed;

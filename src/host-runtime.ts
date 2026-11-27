@@ -149,7 +149,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		}
 	};
 	/** The runs that are going in this process: the loops' runs and the held turns, one list. */
-	const runs = new RunList();
+	const runs = new RunList(() => upgradeHeld(dir));
 	/** What this process does to the queue of a closed conversation (src/background-executor.ts). Made below, once the stores are there. */
 	let background: BackgroundExecutor;
 	/** A plain job the host may fire: a conversation pi-loops knows the file of, that nobody holds and the page does not have open. */
@@ -639,12 +639,13 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	}
 	let lastDeadSessionScan = 0;
 	let tickerFacts: TickFacts = { startedAt: Date.now(), tickMs: 30_000 };
-	// While the upgrade's pause holds (src/upgrade-hold.ts), nothing automated starts: no clock pass (a
-	// gate's command included), rule check, answer, lane run or delivery into a closed conversation.
+	// While the upgrade's pause holds (src/upgrade-hold.ts), the engine holds every row but a person's
+	// and the run list refuses every claim, whoever drains. The two riders that write rows and run a
+	// gate's command first, the clock and the rule checks, do not pass at all: a slot is not decided.
 	const unlessPaused = (rider: Rider): Rider => (now, facts) => (upgradeHeld(dir) ? undefined : rider(now, facts));
 	const riders: Riders<(typeof RUNTIME_RIDERS)[number]> = {
 		"stray-leases": (now) => releaseStrayLeases(now),
-		"closed-conversations": unlessPaused(() => deliverToClosed()),
+		"closed-conversations": () => deliverToClosed(),
 		"rule-checks": unlessPaused((now) => checkTick.tick(now)),
 		"removed-jobs": () => { abortRemovedJobs(runs, (id) => stores.jobs.load().some((job) => job.id === id), log); },
 		"dead-sessions": async (now) => {
@@ -678,9 +679,9 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			firePlain(now);
 		},
 		// Before the loop lanes: an answer E4 starts here holds its lane, so a slot due beside it is skipped as an overlap in this tick.
-		answers: unlessPaused((now) => answerLanes.tick(now)),
-		"check-lanes": unlessPaused((now) => checks.drainAll(now)),
-		"loop-lanes": unlessPaused((now) => loops.drainAll(now)),
+		answers: (now) => answerLanes.tick(now),
+		"check-lanes": (now) => checks.drainAll(now),
+		"loop-lanes": (now) => loops.drainAll(now),
 		notices: (now, facts) => {
 			const budget = budgetState(stores.jobs, deps.config().dailyBudgetUsd, now);
 			const day = stamp(now).slice(0, 10);
@@ -743,8 +744,6 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			if (delivery === "sub_agent") {
 				const lanes = derivePush(pushDeps, event, trigger, Date.now());
 				derived(event.seq);
-				// While the upgrade's pause holds, the rows wait: the check-lanes rider runs them after `pi-loops resume`.
-				if (upgradeHeld(dir)) return true;
 				for (const lane of lanes) {
 					checks.drain(lane, Date.now()).catch((error) => log(`check lane ${lane}: ${error instanceof Error ? error.message : String(error)}`));
 				}

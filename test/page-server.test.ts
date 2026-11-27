@@ -2669,7 +2669,7 @@ test("[upgrade-hold] the page's state says the upgrade's pause; POST /resume ref
 		fs.writeFileSync(path.join(page.loops, "presence", "old.json"), JSON.stringify({ pid: process.pid, host: (await import("node:os")).hostname(), instance: "i", cwd: dir, kind: "interactive", heartbeatAt: new Date().toISOString() }));
 		const refused = await page.post("resume", {});
 		assert.equal(refused.status, 409);
-		assert.match(String(refused.body.error), /^pi-loops 0\.22 still runs here \(pid \d+\)/);
+		assert.match(String(refused.body.error), /^an older pi-loops still runs here \(pid \d+\)/);
 		fs.rmSync(path.join(page.loops, "presence"), { recursive: true });
 		assert.deepEqual(await page.post("resume", {}), { status: 200, body: { ok: true, held: true } });
 		assert.equal((await page.get("c/s1/state")).body.automation?.upgradeHold, undefined);

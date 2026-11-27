@@ -5,7 +5,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { tmp } from "./tmp.ts";
-import { HOLD_FILE, HOLD_LINE, holdUpgrade, olderRunningLine, olderStillRunning, resumeUpgrade, upgradeHeld } from "../src/upgrade-hold.ts";
+import { HOLD_FILE, HOLD_LINE, holdUpgrade, olderBackground, olderRunningLine, olderStillRunning, resumeUpgrade, upgradeHeld } from "../src/upgrade-hold.ts";
+import { procStart } from "../src/lease.ts";
+import { RunList } from "../src/run-list.ts";
 
 const NOW = Date.parse("2026-11-26T12:00:00.000Z");
 /** An entry as pi-loops 0.22.8 writes it under `presence/`. */
@@ -39,7 +41,7 @@ test("[upgrade-hold] resume refuses while pi-loops 0.22 still runs here, by a fr
 	const refused = resumeUpgrade(dir, NOW, () => true);
 	assert.deepEqual(refused, { resumed: false, olderPids: [4242, 4343] });
 	assert.equal(upgradeHeld(dir), true, "still paused");
-	assert.equal(olderRunningLine([4242, 4343]), "pi-loops 0.22 still runs here (pid 4242, 4343): close that pi, or end it (kill 4242 4343), then run `pi-loops resume` again.");
+	assert.equal(olderRunningLine([4242, 4343]), "an older pi-loops still runs here (pid 4242, 4343): close that pi, or end it (kill 4242 4343), then run `pi-loops resume` again.");
 	assert.deepEqual(resumeUpgrade(dir, NOW, () => false), { resumed: true, held: true }, "the pids are gone: it resumes");
 });
 
@@ -58,4 +60,35 @@ test("[upgrade-hold] a stale, future, dead, leasing, foreign, torn, oversized or
 	presence(dir, "dead.json");
 	assert.deepEqual(olderStillRunning(dir, NOW, () => false), [], "a pid that is gone");
 	assert.deepEqual(olderStillRunning(tmp(), NOW, () => true), [], "no presence directory");
+});
+
+test("[upgrade-hold] resume refuses while an older pi-loops in the background still runs here, by host-service.json; a newer one, a dead one or a recycled pid is not it", () => {
+	const dir = tmp();
+	holdUpgrade(dir, NOW);
+	const service = (over: Record<string, unknown>) => fs.writeFileSync(path.join(dir, "host-service.json"), JSON.stringify({ v: 1, pid: process.pid, procStart: procStart(process.pid), version: "0.22.8", startedAt: "x", entry: "e", node: "n", dir, socket: "s", token: "t", ...over }));
+	// 0.22.8: lower than any version this is tested at (the release bumps package.json to 0.24.3).
+	service({});
+	assert.equal(olderBackground(dir, () => true), process.pid);
+	assert.deepEqual(resumeUpgrade(dir, NOW, () => true), { resumed: false, olderPids: [process.pid] });
+	service({ version: "99.0.0" });
+	assert.equal(olderBackground(dir, () => true), undefined, "a newer one");
+	service({});
+	assert.equal(olderBackground(dir, () => false), undefined, "a dead one");
+	service({ procStart: "another start" });
+	assert.equal(olderBackground(dir, () => true), undefined, "a recycled pid");
+	assert.deepEqual(resumeUpgrade(dir, NOW, () => true), { resumed: true, held: true });
+});
+
+test("[upgrade-hold] a run list that is held claims no row, and writes no claim", () => {
+	let held = true;
+	const list = new RunList(() => held);
+	const claims: string[] = [];
+	const requests = { claim: (_lane: string, id: string) => { claims.push(id); return true; } };
+	const row = { id: "r1", lane: "@cron-a", kind: "input" } as any;
+	const run = { jobId: "a", label: "a", promptPreview: "", ctrl: new AbortController() };
+	assert.equal(list.claim(requests as any, row, { pid: 1, procStart: undefined }, run, NOW), undefined);
+	assert.deepEqual([claims, list.all()], [[], []]);
+	held = false;
+	assert.ok(list.claim(requests as any, row, { pid: 1, procStart: undefined }, run, NOW));
+	assert.deepEqual(claims, ["r1"]);
 });
