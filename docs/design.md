@@ -167,8 +167,9 @@ machine. Everything here follows from that, and each one has a price.
     `[host] auto = false` and `PI_LOOPS_HOST=off` prevent automatic starts. When pi-loops cannot start, it is retried after 1, 5 and 30 minutes. pi-loops does not catch an error and carry on from inside the
     process, because its state after an uncaught error cannot be trusted. An uncaught exception is logged first, with the runs in
     flight, then counted and the process exits; a record left naming a dead process (SIGKILL, OOM)
-    counts the same, and so does an eviction. Three of those within five minutes pause pi-loops,
-    and it stays paused until `/pi-loops start`; a job whose runs die with their process three
+    counts the same, and so does an eviction. Three of those within five minutes pause pi-loops
+    for half an hour, twice as long for each pause in a row and a day at most, and `/pi-loops
+    start` ends the pause at once; a job whose runs die with their process three
     times in a row is parked with the reason. When pi-loops cannot run here at all, it exits with code 78, which a systemd unit configured as in [cli.md](cli.md#running-pi-loops-under-your-own-service-manager) does not restart. A
     window replaces pi-loops (SIGTERM, then SIGKILL after 10 seconds) only after three unanswered
     control-socket probes and a heartbeat pi-loops stopped writing; pi-loops still ticking
@@ -176,7 +177,11 @@ machine. Everything here follows from that, and each one has a price.
     window replaces an older pi-loops process and starts its own at once; an older window never replaces a newer
     pi-loops process, nor starts an old one while the newer window that asked for the upgrade is open. Under bun
     pi-loops runs on the `node` found on PATH; with none, loops pause and say why. A pi-loops
-    0.22 window that is still open is not held back (decision 2): close it before an upgrade. After a reboot nothing runs until a pi opens, or under a service manager configured by the user. The costs are decision 2's.
+    0.22 window that is still open is not held back (decision 2): close it before an upgrade. After a reboot nothing runs until a pi opens, or under a service manager configured by the user. The costs are decision 2's, and one more:
+    when pi-loops is updated while only a browser page is open, the page's pi loads the new
+    version and asks the older pi-loops in the background to leave, which stops the page's pi too.
+    Nothing starts pi-loops again until a pi or `pi-loops` runs, as in 0.24.2; the upgrade notes
+    say to start one pi.
 
     The claim on a job is a read-modify-write of `jobs.json` under `jobs.lock`, a directory lock
     that is broken as stale after 10 seconds (`src/lock.ts`). It has no fencing token. A process
@@ -191,6 +196,13 @@ machine. Everything here follows from that, and each one has a price.
     16 per run, prompts ≤ 8 KB. A job disappears when you remove it, when a one-shot has fired, or
     when `/cron gc` collects one whose session is gone — never because time passed. Each of the
     three is recorded in the control-plane audit, the self-removals included.
+
+    The cost: a loop sees what it reported only through `[reported]` in its prompt, which lists its
+    newest 12 new findings and its newest 12 claimed or dismissed in the last 14 days; the prompt
+    tells it not to keep ids in its notes. A finding outside that window, or a dismiss reason older
+    than 14 days, can be reported again in other words. pr-watch counts a pull request's stall days
+    from its line in `[reported]`, so with more than 12 open findings an older pull request
+    can be reported again as if new. The bound keeps the prompt small.
 
 12. **Cycle suppression by hop count.** Sub-agents run at hop 1 and keep the cron and trigger tools
     (`cron_create`, listing, disabling), so a loop can manage automation; the tools whose every
@@ -290,8 +302,8 @@ machine. Everything here follows from that, and each one has a price.
     testable without pi; the extension is the caller.
 
     The cost: a write outside the loops directory, which the Non-invasive invariant names as one of
-    its two exceptions, and a question on somebody's first start — an interruption this project
-    otherwise does not make.
+    its two exceptions, and a file written on somebody's first start without asking, announced in
+    one line.
 
 21. **The background process serves the one page.** pi-loops in the background owns the browser
     page: `127.0.0.1:4173` for the default loops directory (`[page] port`), a free port for a moved
@@ -422,7 +434,10 @@ machine. Everything here follows from that, and each one has a price.
     proves only the row queued at its `at`, never a row of the same id queued later, which runs
     (#262). An answered message proves its id, so a slot the clock queues again is not
     written twice. The person's own page message (a person row the page's pi was rung for) is the
-    one row that goes as a user message, in their words alone. For it the window keeps one list of what it gave pi and of the inputs of others,
+    one row that goes as a user message, in their words alone. The cost: a page message that a
+    terminal holding the conversation delivers goes as a `pi-loops:turn` message, so the page labels
+    it "pi-loops", not as the person's, and the page's undo goes back past it to the last user
+    message; 0.24.2 sent it as a user message. For it the window keeps one list of what it gave pi and of the inputs of others,
     and decides as each user message starts whose it is (`claimOf`, `src/window-claim.ts`): an input
     of someone else with the very same words is theirs; a person row with them is that row's;
     otherwise the input or row whose words start the message, the longest, someone else's before
@@ -441,7 +456,9 @@ machine. Everything here follows from that, and each one has a price.
     that no hand-over of this window sent (pi kept it over a `/reload`, or another extension sent a
     message of that type) runs under the cap of its row in the file, read as a row this instance did
     not write, and under the strictest cap when the file has no such row: unattended, no tool
-    declared, so every tool but pi-loops' own read-only and self-gated ones is asked about. The cap
+    declared. Under that cap a shell command and a control-plane call are asked about. Every other
+    tool, except pi-loops' own read-only and self-gated ones, is refused and nobody is asked, since a
+    card cannot show what it would read or write. The cap
     in the details is a record and is never read for a cap. A turn row of a source that asks for no
     turn (a rule's result written into the file as a turn) runs as unattended. A user message lifts
     a row's cap, since it is the person's, except while an input of another extension was seen since
@@ -501,9 +518,13 @@ machine. Everything here follows from that, and each one has a price.
     session's queue has its own lock (`requests/<session>.lock`): one `requests.lock` left by a
     process killed mid-rewrite held every writer of every session for the stale wait, and now holds
     that session's alone. A queue is a lane's (`src/lane.ts`): a conversation's lane is its
-    session id, and a name that starts with `@` is a loop's or a project's checks' lane, which
-    nothing writes yet. The engine takes a row out of its queue by a named exit and in no other
-    way: delivered, dead, cancelled, stale, refused, job-removed, stopped. Three others remove
+    session id, and a name that starts with `@` is a loop's lane (`@cron-<id>`) or a project's
+    checks' lane (`@check-<project>`). The clock writes each slot row of a loop into its loop's
+    lane. A check tick, a push and `/triggers run` write `check:` rows into the project's check
+    lane. A yes writes its answer row into the lane that its finding names. The engine takes a row
+    out of its queue by a named exit and in no other way: delivered, dead, cancelled, stale,
+    refused, job-removed, stopped, parked (a loop's row, when its third interrupted run in a row
+    turns the loop off). Three others remove
     rows, each for a reason of its own and with its own audit line where one is due: the page,
     which takes back or cancels a message it queued; a window, which drops its own goal's
     continuations and what it queued once that ran; and a clock. A window's clock puts a job's
@@ -551,7 +572,17 @@ machine. Everything here follows from that, and each one has a price.
     the one call the person saw, once. A conversation's answer runs in the window that holds the
     conversation once pi is idle (`createWindowAnswers`), and in the background when nobody has it
     open. The cost: a yes waits while its conversation is busy, and a yes to a finding whose
-    transcript is gone starts from the finding's text.
+    transcript is gone starts from the finding's text. A yes to a loop's or a check's finding starts
+    at the next tick of pi-loops in the background, up to 30 seconds later, since nothing rings it
+    for an answer lane. `/inbox` and the status bar count new findings only; a yes that waits or
+    runs is listed by `/inbox all` and `/inbox cancel`. A yes with no lane is recorded and not run:
+    a finding that a 0.24.2 rule filed names no lane and no job of today, and a one-shot loop removes
+    itself once it is done, so a yes to its findings reads "the loop was removed". In 0.24.2 a claim
+    of such a finding was a turn in the conversation; a yes now runs only where the finding came
+    from, so that it admits the call the person saw and nothing wider. A question stays open after
+    its loop is removed, and its card names the loop by its id. A yes to a question finds the
+    blocked call by its tool-call id, at the first assistant message that uses that id; a provider
+    that uses one id twice in a conversation makes the yes fail closed ("it could not be started").
 
 24. **A watch is a proposal, not a held turn.** In the person's own turn (hop 0, a UI, not a
     scheduled turn), `cron_create` and `new_trigger` run every check a create would, then write the
@@ -571,17 +602,24 @@ machine. Everything here follows from that, and each one has a price.
     the tool is called. A proposal needs a saved conversation, for its receipt. What it costs: the
     agent learns the answer only at a later turn, never in the call that proposed the watch, and a
     second identical call is a second proposal; the result tells the model not to call again, and
-    nothing enforces it.
+    nothing enforces it. A `pi --mode rpc` that the page did not start (another client) offers no
+    proposal and no question when a turn settles, but the tool result still says that the person
+    sees a card; the proposal waits until a person runs `/cron enable` or `/triggers enable`. Such a client is not a surface this project serves.
 
 25. **A run writes into the conversation only when there is something to see.** A loop's first three
     runs and every failed run are one compact card each, saved in the conversation that created the
-    loop; every other run is a line in the terminal's panel and the page's activity strip, read from
-    `runs.jsonl` when asked, with no store of its own. Deciding needs to know which run of its loop a
+    loop, and every run a person asked for (`/cron run`, or a yes given in a conversation) is a
+    card in the conversation it was asked from; every other run is a line in the terminal's panel
+    and the page's activity strip, read from `runs.jsonl` when asked, with no store of its own. Deciding needs to know which run of its loop a
     run was, and the run log is halved as it grows, so the record carries it (`ordinal`), and a
     stopped run carries `aborted`, which is neither a failure nor a card. A 15-minute loop writes
     three entries into its conversation, not 96 a day. The cost: a loop that has worked for a week
     and then fails at night shows that failure, and nothing of the runs before it, in the
-    conversation; the strip and `/cron runs` have those.
+    conversation; the strip and `/cron runs` have those. A run whose every finding repeats an open
+    finding reads `0 findings` on its card, in `/cron runs` and in `/cron cost`: the record keeps
+    `repeats`, and only the loop's quiet streak reads it. The card of a yes's run has the same shape
+    as a scheduled run's and does not name the finding it answered, so two cards of one loop can
+    look the same. Both were accepted for 0.24.3 to keep one card shape for every run.
 
     Every matched rule result is one finding in the inbox, whatever `promote_to_chat` says; with
     `promote_to_chat` it is also in the conversation. `Inbox.appendOnce` is the one rule that keeps
@@ -614,7 +652,13 @@ machine. Everything here follows from that, and each one has a price.
     match. The costs: a condition worded outside the grammar still bills; the grammar knows English
     and Chinese only; a rule created before 0.24.0 keeps billing until it is created again, because
     the path was never resolved by the person's own process; and a repeating rule still matches
-    every poll while the file stays, as it always did.
+    every poll while the file stays, as it always did. An export writes a rule's `gate` and
+    `precheck` as they are, with the exporting machine's path. 0.24.2 resolves only `precheck` again
+    when it imports, and this version reads `gate` first and fills it from `precheck` only when it
+    is not there. So a path rule exported by this version, imported by 0.24.2 on another machine and
+    upgraded there again looks at the first machine's path and never wakes; created again, it looks
+    at its own. The sequence needs a downgrade between two machines, and an import by this version
+    resolves the path again.
 
 27. **What happened while you were away is counted per project.** One cursor per project in
     `seen.json`, moved by `/inbox` in any of its conversations and by the page's **Mark all seen**;
@@ -653,6 +697,39 @@ machine. Everything here follows from that, and each one has a price.
     see (a hooksPath an `includeIf` sets, submodule hooks, `ext::` remote URLs, the scripts a setting
     names). The policy
     is a guard against mistakes and a plain injection, not a sandbox.
+
+29. **0.24.3 keeps some losses against 0.24.2.** Each was found in the review before the release
+    and accepted, so that the release carries the queue, the guard and the inbox as one design. Each
+    is a candidate for a later release.
+
+    - An archive carries neither the inbox nor a loop's notes directory (`state/<id>/`). A recipe
+      now keeps what it reported in `[reported]` and in its notes directory, so a moved loop starts
+      with neither, and its first runs can report again what it reported before the move.
+    - A loop run's request is larger: the first run's prompt by about 88%, the tool schemas by about
+      1.5 KB (`wake_me` is always offered), and the whole request by about 21% (10,739 to 12,987
+      bytes with the stand-in model). The skill text grew from 4,318 to 8,298 bytes. Every run and
+      every session that loads the skill pays those tokens, for the notes, `[reported]` and the
+      guard's words.
+    - With many findings, reads are slower: `pi-loops status` by about 60% (421 ms), and the page's
+      inbox read with 2,000 findings about three times (92 ms). Both stay below what a person
+      notices.
+    - A project's checks fail and back off as one, counted from the run log: after the third
+      failure in a row they wait 1, 5 and 30 minutes, then 2 and 6 hours. A `/triggers run` that
+      fails counts too. 0.24.2 counted per rule, so one failing rule now delays every rule of its
+      project.
+    - An unattended run's shell command that reads or writes pi-loops' own files (`runs.jsonl`,
+      `host.log`, `jobs.json`, `web-token`) is asked about, and pi's file tools are refused there,
+      except in a loop's own notes directory. A loop that watched other loops by reading the run log
+      now asks each run; `pi-loops status` and `pi-loops inbox list --json` are the reads to use.
+      The rule also keeps `web-token` away from a run.
+    - `pi-loops inbox list --json` does not mark a question, so a script that claims every new
+      finding stops at a question with exit 1.
+    - On the page, a project with no loop and no rule shows "+ Add a loop" in place of the runtime
+      box, so its MCP servers and an `mcp.toml` error are not shown there. Loops and rules are
+      what use those servers, and `pi-loops status` lists the servers pi-loops connected. During a turn Stop takes the place of Send, and only Enter queues a message. A watch's
+      receipt shows as a raw `pi-loops:trigger` message with its `[Trigger rcp-…]` id, and after a
+      reload it is folded into the step group. While a terminal runs a turn that the page sent, the
+      page shows no "working…" and no Stop, as in 0.24.2.
 
 ## Where the browser front end came from
 
