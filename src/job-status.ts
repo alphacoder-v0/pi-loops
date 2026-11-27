@@ -166,8 +166,8 @@ export function loopWait(job: Pick<LoopJob, "cwd">, cwdMissing: string | undefin
  *   error      the first that applies: a disabled job's reason; why a waiting row waits
  *              (`Row.waiting`, which the background writes); an interrupted run's retry; a slot
  *              skipped while the run goes (`Row.skipped`); nothing else while it goes (the launch
- *              cleared it); then the later of the last failure (while it is the newest run that
- *              ended, and not one before an enable) and the clock's note
+ *              cleared it); then the last failure (while it is the newest run that ended, and
+ *              not one before an enable); then the clock's note
  *
  * A plain job's values come from its cursor and its run log in the same way; its last error stays
  * until a success, as its turns wrote it.
@@ -240,10 +240,10 @@ export function listedJob(job: LoopJob, clock: JobClock | undefined, rows: reado
 	const afterEnable = (at: string) => !(cleared && Date.parse(at) <= Date.parse(cleared));
 	// A note older than the last run that ended is gone: main's launch, and a plain turn's success, cleared the field.
 	const note = job.enabled && clock?.note && !(history?.completed && Date.parse(clock.note.at) <= Date.parse(history.completed)) ? clock.note : undefined;
-	// Main's last writer won: the later of the last failure and the clock's note.
+	// The last failure stays until a run succeeds; a later clock note does not hide why the job fails (#229).
 	type Word = { readonly text: string; readonly is?: ListedStatus["errorIs"] };
 	const lastWord = (failed: { readonly at: string; readonly error: string } | undefined, retrying: boolean): Word | undefined =>
-		failed && !(note && Date.parse(note.at) > Date.parse(failed.at)) ? { text: retrying ? `${failed.error} (one-shot: retrying once)` : failed.error, is: { kind: "failed", at: failed.at } } : note ? { text: note.text, is: { kind: "note" } } : undefined;
+		failed ? { text: retrying ? `${failed.error} (one-shot: retrying once)` : failed.error, is: { kind: "failed", at: failed.at } } : note ? { text: note.text, is: { kind: "note" } } : undefined;
 	const word = (w: Word | string | undefined): Pick<ListedStatus, "error" | "errorIs"> => (typeof w === "string" ? { error: w } : w ? { error: w.text, ...(w.is ? { errorIs: w.is } : {}) } : {});
 	// A person's disable wrote no error on main; any other disable wrote its reason.
 	const offWord = (failed: { readonly error: string } | undefined): string | undefined =>

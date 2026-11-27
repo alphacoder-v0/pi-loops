@@ -125,3 +125,16 @@ test("A list of every job's runs leaves a project's checks out; a job's own list
 	assert.deepEqual(jobRuns(records, undefined, 1).map((r) => r.runId), ["b"], "the limit counts jobs' records only");
 	assert.deepEqual(jobRuns(records, "cron-job", 10).map((r) => r.runId), ["a"]);
 });
+
+test("[listed-failure-kept] A loop's failure stays its last error when a later clock note is written; the note shows only with no failure (#229).", () => {
+	// A missed-slot note written after a 401 took its place, so the person did not see why the loop failed.
+	const failedAt = T(2);
+	const note = { at: T(3), text: "missed 2026-01-02 03:07 while pi-loops was not running (catch-up disabled)" };
+	const history = runHistory([record({ error: "401 Unauthorized", finishedAt: failedAt })]).get("cron-job");
+	const listed = listedJob(job(), { runs: 1, note }, [], history);
+	assert.deepEqual([listed.status.error, listed.status.errorIs], ["401 Unauthorized", { kind: "failed", at: failedAt }]);
+	const plain = listedJob(job({ stateful: false, sessionId: "s" }), { runs: 1, note }, [], history);
+	assert.equal(plain.status.error, "401 Unauthorized", "a plain job's too");
+	const clean = listedJob(job(), { runs: 1, note }, [], runHistory([record({ ok: true, finishedAt: T(1) })]).get("cron-job"));
+	assert.deepEqual([clean.status.error, clean.status.errorIs], [note.text, { kind: "note" }], "with no failure, the note shows");
+});
