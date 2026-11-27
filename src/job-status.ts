@@ -166,8 +166,8 @@ export function loopWait(job: Pick<LoopJob, "cwd">, cwdMissing: string | undefin
  *   error      the first that applies: a disabled job's reason; why a waiting row waits
  *              (`Row.waiting`, which the background writes); an interrupted run's retry; a slot
  *              skipped while the run goes (`Row.skipped`); nothing else while it goes (the launch
- *              cleared it); then the later of the last failure (while it is the newest run that
- *              ended, and not one before an enable) and the clock's note
+ *              cleared it); then the last failure (while it is the newest run that ended, and
+ *              not one before an enable); then the clock's note
  *
  * A plain job's values come from its cursor and its run log in the same way; its last error stays
  * until a success, as its turns wrote it.

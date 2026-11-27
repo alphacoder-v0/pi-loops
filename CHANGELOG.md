@@ -430,7 +430,8 @@ To upgrade from 0.24.2 or earlier:
 - **A loop's failure is not hidden by a later note (#229).** A note such as `missed … (catch-up
   disabled)` written after a failed run took the place of the failure in `/cron`, `cron_list` and
   the page, so a loop that failed with `401 Unauthorized` showed only the missed run. The failure
-  now stays until a run succeeds; the note shows when there is no failure.
+  now stays until a run succeeds, a person stops a run, or the loop is enabled again; the note
+  shows when there is no failure.
 - **Undo in the page puts the withdrawn text back in the composer.** The text is in the composer of
   the conversation that pi forked into, as in 0.24.2, and is no longer kept as an unsent draft of
   the conversation it was sent in. pi gives back only the text, so an image of that message is not
