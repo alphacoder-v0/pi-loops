@@ -148,6 +148,55 @@ test("viewer does not drain", async () => {
 	assert.equal(store.list("s").length, 1);
 });
 
+test("[cleared-own-row] a window that does not hold the conversation applies the page's cancel of its own goal row: the row leaves as cancelled, and is not counted as failed", async () => {
+	const { store, sinks } = world();
+	const by = { pid: 99, instance: "w", version: "0" };
+	const goal = goalRow("go on", { condition: "c", iterations: 1, updatedAt: "t" }, { sessionId: "s", cwd: "/", createdBy: by }, T0);
+	store.append(goal);
+	store.append(row("held"));
+	// The page's "clear queue": a cancel for every input row, then pi lets go of what it held.
+	const own = cancelRow("s", { id: goal.id }, "person", by, T0);
+	const other = cancelRow("s", { id: "held" }, "person", by, T0);
+	store.append(own);
+	store.append(other);
+	const fake = fakeExecutor({ holds: () => false, deliver: () => assert.fail("a viewer delivered") });
+	fake.inFlight.add(goal.id);
+	const out = await drain("s", store, fake.executor, T0, sinks);
+	assert.deepEqual([out.failed, out.removed.sort()], [[], [goal.id, own.id].sort()]);
+	assert.deepEqual(store.list("s").map((r) => r.id), ["held", other.id], "a cancel of a row that is not this window's is the holder's");
+});
+
+test("[cleared-own-row] a stop or a cancel of a goal row of another live window is that window's, whichever drains first: the holder leaves it, the window's pi is told", async () => {
+	const by = { pid: 99, instance: "w", version: "0" };
+	const run = async (kind: "stop" | "cancel") => {
+		const { store, sinks } = world();
+		const goal = goalRow("go on", { condition: "c", iterations: 1, updatedAt: "t" }, { sessionId: "s", cwd: "/", createdBy: by }, T0);
+		store.append(goal);
+		const named = (kind === "stop" ? stopRow : cancelRow)("s", { id: goal.id }, "person", by, T0);
+		store.append(named);
+		const told: string[] = [];
+		const executor = (holds: boolean): Executor => ({
+			...fakeExecutor({ holds: () => holds, deliver: () => assert.fail("nothing is delivered") }).executor,
+			view: () => ({
+				kind: "window", ceiling: () => true, blocked: () => undefined, claimLive: () => false, connected: () => true, producerAlive: () => true,
+				// The window's pi runs the goal's turn for a stop, and holds it unstarted for a cancel.
+				idle: holds || kind === "cancel", inFlight: new Set(holds || kind === "stop" ? [] : [goal.id]),
+				running: holds || kind === "cancel" ? undefined : { requestId: goal.id, startedAt: "2026-06-01T11:59:00Z" },
+				mine: (r: Row) => (r.created_by.pid === by.pid) !== holds,
+			}),
+			abort: () => void told.push(`${holds ? "holder" : "window"}: abort`),
+			abortWhenStarted: (id) => void told.push(`${holds ? "holder" : "window"}: abort ${id === goal.id ? "the goal" : id} when started`),
+		});
+		const label = (ids: string[]) => ids.map((id) => (id === goal.id ? "goal" : id === named.id ? kind : id)).sort();
+		const holder = await drain("s", store, executor(true), T0, sinks);
+		const window = await drain("s", store, executor(false), T0, sinks);
+		return { holder: label(holder.removed), window: label(window.removed), told, left: label(store.list("s").map((r) => r.id)) };
+	};
+	// The stop is delivered; the goal's row leaves through its turn's end.
+	assert.deepEqual(await run("stop"), { holder: [], window: ["stop"], told: ["window: abort"], left: ["goal"] });
+	assert.deepEqual(await run("cancel"), { holder: [], window: ["cancel", "goal"], told: ["window: abort the goal when started"], left: [] });
+});
+
 test("delivery failure keeps that entry and later entries", async () => {
 	const { store, sinks, audit } = world();
 	store.append(row("1"));

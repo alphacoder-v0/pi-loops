@@ -1072,6 +1072,10 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 		if (row.kind === "input") continue;
 		let done = false;
 		const target = row.target;
+		// A stop or a cancel of a row another live window produced is that window's: only its pi
+		// holds that row, so it decides (drainOnce, `ours`), as it runs the row.
+		const named = target && "id" in target ? queued.get(target.id) : undefined;
+		if (named && isLocal(named) && !view.mine(named) && view.producerAlive(named)) continue;
 		if (target && "id" in target) {
 			if (row.kind === "stop" && view.running?.requestId === target.id) {
 				actions.push({ do: "abort", stop: row });
@@ -1525,8 +1529,13 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 	// still runs what the person typed into it and its own goal's continuations; and the browser
 	// page's rows it was rung for, when the holder will not deliver them (`ExecutorView.holderDelivers`).
 	const own = (row: Row) => view.mine(row) && (isLocal(row) || (row.source === "person" && view.holderDelivers === false));
-	const may = (row?: Row) => executor.holds(sessionId) || (!!row && own(row));
-	const rows = may() ? store.list(sessionId) : store.list(sessionId).filter(own);
+	const listed = store.list(sessionId);
+	// A stop or a cancel that names one of those rows is this window's too: only its pi holds that
+	// row, so only it can take it out (the page's "clear queue" writes a cancel for each input row).
+	const ownIds = new Set(listed.filter(own).map((row) => row.id));
+	const ours = (row: Row) => own(row) || ((row.kind === "stop" || row.kind === "cancel") && !!row.target && "id" in row.target && ownIds.has(row.target.id));
+	const may = (row?: Row) => executor.holds(sessionId) || (!!row && ours(row));
+	const rows = may() ? listed : listed.filter(ours);
 	const lane = parseLane(sessionId);
 	if (!rows.length || !lane) return out;
 	const actions = decideDrain(lane.kind, rows, executor.proof(sessionId), sinks.jobs, view, now, opts);
@@ -1540,7 +1549,7 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 	};
 	apply: for (const action of actions) {
 		// Before each one, not once: the conversation can be taken while this drains.
-		if (!may("row" in action ? action.row : undefined)) break;
+		if (!may("row" in action ? action.row : "stop" in action ? action.stop : undefined)) break;
 		switch (action.do) {
 			case "wait":
 				out.waiting.push(action.row.id);

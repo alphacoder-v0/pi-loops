@@ -465,6 +465,11 @@ To upgrade from 0.24.2 or earlier:
 
 ### Fixed
 
+- **A goal's next step that the page's "Clear queue" took out does not come back.** A window that
+  did not hold the conversation did not read the cancel for its own goal's continuation, so it
+  counted the dropped step as a failure and gave it to pi again after the wait. A stop or a cancel
+  (the page's ✕ too) that names a row a live window made is now that window's to apply, whichever
+  process reads it first, so that window's pi is told to stop it.
 - **An unattended run is asked before more ways to act for you.** It is asked before a pi-loops
   command with any word the shell rewrites (`$`, a brace, a backslash, or a glob: `*`, `?`, `[`), and
   before a git sub-command or key that holds a glob: with a matching file in the directory, the
