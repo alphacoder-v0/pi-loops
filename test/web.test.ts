@@ -1840,6 +1840,25 @@ test("after Stop, the queue is untouched and runs on its own: Stop is pi's abort
 	}
 });
 
+test("the page's queue names each source in the words /cron queue uses", { timeout: 30_000 }, async () => {
+	// The page had its own copy of the labels, and a row of /cron run read "cron nightly" there.
+	const dir = tmp("pi-loops-web-");
+	const web = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), path.join(dir, "sent.jsonl"), false, {}, ["pi-loops"]), { named: "s1" });
+	try {
+		const loops = path.join(dir, "loops");
+		fs.writeFileSync(path.join(loops, "jobs.json"), JSON.stringify({ version: 3, jobs: [{ id: "cron-a", name: "nightly" }] }));
+		const store = new RequestStore(loops);
+		const row = (id: string, source: string) => ({ v: 3, id, lane: "s1", kind: "input", source, mode: "unattended", wake: "turn", payload: { text: "go" }, created_at: new Date().toISOString(), created_by: { pid: 1, instance: "t", version: "0" }, attempts: 0 }) as any;
+		store.append(row("r1", "cron:cron-a"));
+		store.append(row("r2", "cron-run:cron-a"));
+		store.append(row("r3", "inbox:0123456789abcdef"));
+		const labels = (await web.state()).requests.map((r: any) => [r.id, r.label]).sort();
+		assert.deepEqual(labels, [["r1", "cron nightly"], ["r2", "/cron run nightly"], ["r3", "claim 01234567"]]);
+	} finally {
+		await web.stop();
+	}
+});
+
 test("a send pi refuses comes back to the composer with the error", { timeout: 30_000 }, async () => {
 	// The holder writes `last_error` on a person row pi never started (test/engine.test.ts). The page
 	// reads the file for /state: the row leaves it, the audit says failed, and the stream carries the

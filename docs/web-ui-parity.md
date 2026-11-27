@@ -27,11 +27,13 @@ weaker, and worth converting whenever one of them breaks.
       `test/web.test.ts`: *clear cancels every row the badge counts, pi-loops' included, and empties
       pi's own queue*.
 - [x] What pi-loops addressed to this conversation is in the same queue as your messages, with its
-      source ("you", "cron nightly", "rule 3f2a…"), in the order it runs, cancellable one at a time.
+      source in the words `/cron queue` uses ("you", "cron nightly", "/cron run nightly", "rule
+      3f2a…", "claim 3f2a…"), in the order it runs, cancellable one at a time.
       A chat message is a request row in `requests/<session>.jsonl`, the file the pi holding the
       session drains; the page reads the file for the list and the count. What pi itself still holds
       (a slash command typed while busy) is listed after them as "pi", counted with them, and cleared
-      with them. `test/web-page.test.ts`: *the queue lists requests from every source, in order*.
+      with them. `test/web-page.test.ts`: *the queue lists requests from every source, in order*;
+      `test/web.test.ts`: *the page's queue names each source in the words /cron queue uses*.
 - [x] A message you sent survives pi stopping and is offered, never sent on its own, by the next
       page: "not sent before pi stopped", with send and discard. `test/web.test.ts`: *a message typed
       before pi exits is offered, not sent, by the next page*.
