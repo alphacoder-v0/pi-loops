@@ -17,7 +17,7 @@ import { findingKind, parseRunOutput, stripProtocolTags } from "./protocol.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { shortSessionId } from "./session-head.ts";
 import type { ClaimedRow } from "./requests.ts";
-import { type RunList, STOPPED_BY_PERSON } from "./run-list.ts";
+import { PAUSED_WHY, type RunList, STOPPED_BY_PERSON } from "./run-list.ts";
 import { type RunnerResult, type SubagentRequest, type SubagentRunner, failedRun } from "./runner.ts";
 import { stamp } from "./schedule.ts";
 import type { SubagentSlot, SubagentSlots } from "./slots.ts";
@@ -114,6 +114,8 @@ export function createAnswerLanes(deps: AnswerLaneDeps): AnswerLanes {
 		return {
 			blocked: (_lane, finding, transcript) => {
 				if (stopped) return "pi-loops is stopping";
+				// Before any lease is taken: the run list would refuse the claim (src/run-list.ts).
+				if (runs.held()) return PAUSED_WHY;
 				const job = loopOf(stores.book().jobs, lane);
 				// A removed loop is E2's, before any hold.
 				if (lane.kind === "loop" && !job) return undefined;

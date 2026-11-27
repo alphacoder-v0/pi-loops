@@ -115,6 +115,7 @@ src/events.ts               events.jsonl: what arrived from outside (an MCP push
 src/archive.ts              .pisession export/import
 src/lock.ts                 the mkdir lock, atomic writes, is-that-pid-alive
 src/convert-v2.ts           what older versions left in the loops directory, at every start: a version 2 jobs.json converted to version 3 (cursors to clock.json, owed slots to rows), retired files removed; version 2's shape (`V2Job`, `fromV2`) lives here, and the store and an archive's import read through it
+src/upgrade-hold.ts         the upgrade's pause: upgrade-hold.json, which the conversion writes and `pi-loops resume` removes, and the check that pi-loops 0.22 no longer runs here
 src/paths.ts                realpathish: the deepest existing ancestor's realpath, so a path that is not there yet resolves as its parent does
 src/snapshot.ts             the pi_loops_snapshot fingerprint, and when a new entry is worth writing
 src/config.ts               config.toml and the environment overrides

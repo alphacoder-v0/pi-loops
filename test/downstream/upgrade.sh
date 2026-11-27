@@ -1,12 +1,12 @@
 #!/bin/sh
 # A loops directory that 0.24.2 left, started once from the outside: its jobs.json is version 2 with a
 # loop three runs in, and no run log (it may have been removed), so the count lives only in the file.
-# The start converts it, and turns the loop off: a pi of an older pi-loops that is still open would
-# run it beside this one (owner decision, 2026-11-26). Not one of docs/downstream.md's three: the
+# The start converts it and pauses pi-loops until a person resumes it: a pi of an older pi-loops that
+# is still open would run it beside this one (owner decision, 2026-11-26). Not one of docs/downstream.md's three: the
 # files read here are private. It is here because it is checked as a person meets it, with
-# `pi-loops` and jq, and what it holds is that an upgrade keeps a person's loops off and says so,
-# with the definition, the file before, and the count of runs, so the run after a person turns it on
-# is the fourth. It also holds two claims 0.24.2 queued in a
+# `pi-loops` and jq, and what it holds is that an upgrade pauses a person's loops and says so, with
+# the definition, the file before, and the count of runs, so the run after a person resumes is the
+# fourth. It also holds two claims 0.24.2 queued in a
 # conversation: the one pi had before the upgrade stays claimed, and the one it never had is new again.
 . "$(dirname "$0")/lib.sh"
 fresh_home
@@ -37,20 +37,22 @@ i=0
 while [ "$(jq -c .version "$PI_LOOPS_DIR/jobs.json" 2>/dev/null)" != 3 ]; do [ "$i" -ge 100 ] && break; sleep 0.2; i=$((i + 1)); done
 sleep 3
 
-echo "the upgrade turns the loop off, runs nothing, and says so"
-expect_eq "the loop is off, for the upgrade" "$(jq -c '.jobs[0] | [.enabled, .disabled.code]' "$PI_LOOPS_DIR/jobs.json")" '[false,"upgrade"]'
-[ ! -e "$ROOT/run_end.json" ] || fail "a run ran after the upgrade turned the loop off"
+echo "the upgrade pauses pi-loops, runs nothing, and says so; the loop keeps its on"
+expect_eq "the loop is still on" "$(jq -c '.jobs[0].enabled' "$PI_LOOPS_DIR/jobs.json")" 'true'
+[ -e "$PI_LOOPS_DIR/upgrade-hold.json" ] || fail "no upgrade-hold.json after the conversion"
+[ ! -e "$ROOT/run_end.json" ] || fail "a run ran while the upgrade's pause holds"
 STATUS=$($PI_LOOPS status 2>&1 | head -n 1)
 case "$STATUS" in
-	"pi-loops turned off 1 loop when it upgraded this loops directory"*"/cron enable <id> (cron-00000000000000000000000000000002)."*) ok "status line" ;;
-	*) fail "status does not say what the upgrade turned off: $STATUS" ;;
+	"pi-loops is paused after the upgrade"*"pi-loops resume"*) ok "status line" ;;
+	*) fail "status does not say the upgrade's pause: $STATUS" ;;
 esac
 
-echo "a person turns it on, and it runs"
-jq '.jobs[0].enabled = true | del(.jobs[0].disabled)' "$PI_LOOPS_DIR/jobs.json" >"$ROOT/jobs.on.json" && mv "$ROOT/jobs.on.json" "$PI_LOOPS_DIR/jobs.json"
+echo "pi-loops resume ends the pause, and the loop runs"
+$PI_LOOPS resume >"$ROOT/resume.out" 2>&1 || fail "pi-loops resume failed: $(cat "$ROOT/resume.out")"
+grep -q -F "pi-loops resumed" "$ROOT/resume.out" || fail "resume does not say it resumed: $(cat "$ROOT/resume.out")"
 wait_for "$ROOT/run_end.json" 90 || fail "the run never ended (host log: $(tail -5 "$PI_LOOPS_DIR/host.log" 2>/dev/null))"
 stop_host
-[ -z "$($PI_LOOPS status 2>&1 | grep -F 'pi-loops turned off')" ] || fail "status still says it is off"
+[ -z "$($PI_LOOPS status 2>&1 | grep -F 'paused after the upgrade')" ] || fail "status still says the pause"
 
 echo "jobs.json is version 3, definitions only"
 jq -e '.version == 3' "$PI_LOOPS_DIR/jobs.json" >/dev/null || fail "jobs.json is not version 3: $(jq -c .version "$PI_LOOPS_DIR/jobs.json")"

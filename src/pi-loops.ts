@@ -82,7 +82,7 @@ import { type Trigger, auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTr
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ConfirmTurn, type ToolHost, automationTools, checkJobName, confirmControlPlane, controlTarget, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
 import { claimPageChild } from "./page-children.ts";
 import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
-import { upgradeOffLine } from "./convert-v2.ts";
+import { HOLD_LINE, olderRunningLine, resumeUpgrade, upgradeHeld } from "./upgrade-hold.ts";
 import { ALL_PROJECTS, awayIn, awayLine, markProjectSeen } from "./seen.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -143,7 +143,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** This process, as the rows it produces name it: the one that runs them while it is on the conversation. */
 	const self: Producer = { pid: process.pid, procStart: ownStart };
 	/** The answers' turns this window runs (src/window-executor.ts createWindowAnswers): a claim of this window is live while its run is here. */
-	const windowRuns = new RunList();
+	const windowRuns = new RunList(() => upgradeHeld(dir));
 	const executor = new WindowExecutor(
 		pi,
 		binding,
@@ -281,7 +281,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			if (binding.here().holds) void hostTick(true).then(() => refreshBadge()).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
 			else refreshBadge();
 		},
-		clock: (now, facts) => runClockTick({
+		// While the upgrade's pause holds, the window fires nothing either (src/upgrade-hold.ts).
+		clock: (now, facts) => upgradeHeld(dir) ? undefined : runClockTick({
 			kind: "window", self: createdBy(), startedAt: facts.startedAt, tickMs: facts.tickMs,
 			catchUp: config.cronCatchUp, budgetOver: budgetState(stores.jobs, config.dailyBudgetUsd, now).over,
 			mine: (job) => {
@@ -632,7 +633,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
-	const engineSinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => goalPursued(goal) }, inbox: stores.inbox, audit: stores.rules, ledger: stores.jobs, counts: (id) => jobCounts(stores.history().get(id), stores.clock.read().jobs[id]?.cleared), self: () => createdBy() });
+	const engineSinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => goalPursued(goal), paused: () => upgradeHeld(dir) }, inbox: stores.inbox, audit: stores.rules, ledger: stores.jobs, counts: (id) => jobCounts(stores.history().get(id), stores.clock.read().jobs[id]?.cleared), self: () => createdBy() });
 	/** One drain per session for when a wait ends on its own (the ring wait on a page's row), replaced, never stacked. */
 	const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	/**
@@ -1453,7 +1454,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						}
 						// A refusal comes back as the reason, phrased to follow the job's name — the shape
 						// this line has always had ("nightly is already running").
-						ctx.ui.notify(ran === true ? `running ${job.name ?? job.id} in the background…` : `${job.name ?? job.id} ${ran}`, ran === true ? "info" : "warning");
+						ctx.ui.notify(ran === true ? (upgradeHeld(dir) ? `${job.name ?? job.id} runs after \`pi-loops resume\`: ${HOLD_LINE}` : `running ${job.name ?? job.id} in the background…`) : `${job.name ?? job.id} ${ran}`, ran === true ? "info" : "warning");
 						return;
 					}
 					case "enable":
@@ -2476,6 +2477,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const row = checkRow(rule.cwd, [rule.id], createdBy(), Date.now());
 						requests.appendIfAbsent(row);
 						const running = !!liveHostRecord();
+						if (upgradeHeld(dir)) return show(ctx, `trigger ${rule.id} will be checked after \`pi-loops resume\` (trace ${row.id.slice(0, 8)})`, [`  ${HOLD_LINE}`, ...(running ? [] : ["  pi-loops is not running in the background: pi-loops start runs it"])]);
 						show(ctx, running ? `checking trigger ${rule.id} now (trace ${row.id.slice(0, 8)})` : `trigger ${rule.id} will be checked when pi-loops runs in the background (trace ${row.id.slice(0, 8)})`, [
 							`  condition: ${previewRedacted(rule.condition, 120)}`,
 							running ? "  the result appears here when the check finishes — /triggers running shows it meanwhile" : "  pi-loops is not running in the background: pi-loops start runs it",
@@ -2595,10 +2597,16 @@ export default function piLoops(pi: ExtensionAPI) {
 	const ARCHIVE_WARNING = `warning: ${ARCHIVE_EXT} archives include transcript and tool history. They do not include separate auth stores, provider credentials, OAuth tokens, MCP config, or the inbox.`;
 
 	pi.registerCommand("pi-loops", {
-		description: "About this extension; start | stop | restart | status the part that runs loops while no pi is open; web opens this conversation in the browser page; install-launcher puts the `pi-loops` command on your PATH, uninstall-launcher removes it",
+		description: "About this extension; start | stop | restart | status the part that runs loops while no pi is open; resume ends the pause after an upgrade; web opens this conversation in the browser page; install-launcher puts the `pi-loops` command on your PATH, uninstall-launcher removes it",
 		handler: async (args, ctx) => {
 			lastCtx = ctx;
 			const sub = args.trim().split(/\s+/)[0] ?? "";
+			if (sub === "resume") {
+				// The end of the upgrade's pause (src/upgrade-hold.ts), as `pi-loops resume` says it.
+				const result = resumeUpgrade(dir);
+				notifyOrLog(ctx, `[pi-loops] ${result.resumed ? (result.held ? "resumed: loops, plain jobs and rules run again" : "pi-loops is not paused") : olderRunningLine(result.olderPids)}`, result.resumed ? "info" : "warning");
+				return;
+			}
 			if (sub === "start" || sub === "stop" || sub === "restart" || sub === "status") {
 				await backgroundCommand(sub, ctx);
 				return;
@@ -3492,9 +3500,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			const failing = failingSummary(myJobs);
 			log.info(`session start: ${myJobs.length} enabled loop(s), ${myRules.length} enabled rule(s)${failing ? `, ${failing}` : ""} in ${session.cwd}`);
 			{
-				// What the upgrade turned off, while any of it is still off (src/convert-v2.ts).
-				const line = upgradeOffLine(loadOrNone(() => stores.jobs.load()), loadOrNone(() => stores.rules.load()));
-				if (line && ctx.hasUI) afterHistory(ctx, () => ctx.ui.notify(`[pi-loops] ${line}`, "warning"));
+				// While the upgrade's pause holds (src/upgrade-hold.ts), every start says so first.
+				if (upgradeHeld(dir) && ctx.hasUI) afterHistory(ctx, () => ctx.ui.notify(`[pi-loops] ${HOLD_LINE}`, "warning"));
 			}
 			{
 				const line = awayLine(awayHere());

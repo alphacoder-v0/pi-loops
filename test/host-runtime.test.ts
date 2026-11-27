@@ -128,6 +128,7 @@ test("a quiet queue is decided again when a row's backoff ends, with no file cha
 	}
 });
 import { stamp } from "../src/schedule.ts";
+import { holdUpgrade, resumeUpgrade } from "../src/upgrade-hold.ts";
 
 
 test("the host runs a due loop on its tick", async () => {
@@ -1243,5 +1244,39 @@ test("[M5b.9] a yes run in the background for a job that declares its tools is o
 	} finally {
 		await w.host.stop();
 		w.fake.kill();
+	}
+});
+
+test("[upgrade-hold] while the upgrade's pause holds, no caller starts anything: the requests watcher, a ring and every rider leave a rule's result and a check row waiting; resumed, both go", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const runner = fakeRunner();
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined });
+	try {
+		const { sessionId, file } = closedConversation(dir);
+		const project = path.join(dir, "project");
+		fs.mkdirSync(project, { recursive: true });
+		const rule = await host.stores.rules.add({ condition: "a build fails", action: "say so", cwd: project });
+		holdUpgrade(dir);
+		host.start();
+		await new Promise((r) => setTimeout(r, 100));
+		// Each append rings the watcher; the ring and the riders are the other callers.
+		new RequestStore(dir).append(resultRow(sessionId, "t-paused", dir));
+		host.stores.requests.appendIfAbsent(checkRow(project, [rule.id], { pid: process.pid, instance: "test", version: "0" }, Date.now()));
+		host.ring(sessionId);
+		await new Promise((r) => setTimeout(r, 1000));
+		await tickHost(host);
+		await host.drain(5000);
+		assert.equal(inConversation(file, "t-paused"), false, "the rule's result is not written into the closed conversation");
+		assert.equal(runner.calls.length, 0, "the check row is not run");
+		assert.equal(host.runs.held(), true, "the run list of pi-loops in the background is held: it refuses every claim");
+		assert.equal(new LeaseStore(dir).read(sessionId)?.epoch, 1, "and no lease was taken for the conversation");
+		assert.deepEqual(resumeUpgrade(dir, Date.now(), () => false), { resumed: true, held: true });
+		assert.equal(host.runs.held(), false);
+		await tickHost(host);
+		await host.drain(5000);
+		assert.equal(await until(() => inConversation(file, "t-paused"), 5000), true, "resumed: the next tick delivers the result; the end of the pause is a change to the quiet mark");
+		assert.equal(runner.calls.length, 1, "and the check runs once");
+	} finally {
+		await host.stop();
 	}
 });

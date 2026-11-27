@@ -38,7 +38,7 @@ import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { type RowMark, TURN_TYPE, type TurnDetails, markDetails, markFor, markOn, turnOn, withMark } from "./mark.ts";
 import { previewRedacted } from "./redact.ts";
 import type { ClaimedRow, ImageContent, RequestMode, RequestStore, Row, UnclaimedRow } from "./requests.ts";
-import { type RunList, STOPPED_BY_PERSON } from "./run-list.ts";
+import { PAUSED_WHY, type RunList, STOPPED_BY_PERSON } from "./run-list.ts";
 import { type LoopJob, type RunRecord, defaultLoopsDir } from "./store.ts";
 import { stamp } from "./schedule.ts";
 import { shortSessionId } from "./session-head.ts";
@@ -871,6 +871,7 @@ export function createWindowAnswers(deps: WindowAnswerDeps): WindowAnswers {
 		/** Why E4 waits in this window now: it holds the conversation no more, the finding's job is off (as the background holds a disabled loop's answer), another answer runs here, or pi would not take a turn row now. */
 		const why = (finding: { job_id?: string } | undefined): string | undefined => {
 			if (!deps.executor.holds(lane.id)) return "this window does not hold the conversation";
+			if (deps.runs.held()) return PAUSED_WHY;
 			const job = plainOf(deps.jobs(), lane, finding?.job_id);
 			if (job && !job.enabled) return "its job is disabled";
 			if (deps.runs.all().some((run) => run.answer?.lane === lane.id)) return "another answer runs in this conversation";

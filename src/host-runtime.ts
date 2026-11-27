@@ -22,6 +22,7 @@ import { type Answers, conversationFile, createAnswers } from "./answers.ts";
 import { ConversationIndex } from "./conversation-rows.ts";
 import { type LaneId, checkLane, parseLane } from "./lane.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
+import { upgradeHeld } from "./upgrade-hold.ts";
 import { type BackgroundExecutor, createBackgroundExecutor } from "./background-executor.ts";
 import { RunList } from "./run-list.ts";
 import type { OwnerView, SessionSnapshot } from "./job-owner.ts";
@@ -31,7 +32,7 @@ import { budgetState, jobCounts, runHistory } from "./job-status.ts";
 import { createCheckTick } from "./check-tick.ts";
 import { SubagentSlots } from "./slots.ts";
 import { type LoopJob, type RunRecord, newId } from "./store.ts";
-import { RUNTIME_RIDERS, type Riders, type TickFacts } from "./ticker.ts";
+import { RUNTIME_RIDERS, type Rider, type Riders, type TickFacts } from "./ticker.ts";
 import { openStores, type Stores } from "./stores.ts";
 import { createLoopLanes, createCheckLanes, abortRemovedJobs, type CheckLanes, type LoopLanes } from "./background-executor.ts";
 import { gateSources, runClockTick, type TickScope } from "./clock.ts";
@@ -148,7 +149,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		}
 	};
 	/** The runs that are going in this process: the loops' runs and the held turns, one list. */
-	const runs = new RunList();
+	const runs = new RunList(() => upgradeHeld(dir));
 	/** What this process does to the queue of a closed conversation (src/background-executor.ts). Made below, once the stores are there. */
 	let background: BackgroundExecutor;
 	/** A plain job the host may fire: a conversation pi-loops knows the file of, that nobody holds and the page does not have open. */
@@ -157,7 +158,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const ownerView: OwnerView = { holdsOwn: false, hostRuns: (sessionId) => canHold(sessionId) };
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
-	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: stores.inbox, audit: stores.rules, ledger: stores.jobs, counts: (id) => jobCounts(stores.history().get(id), stores.clock.read().jobs[id]?.cleared), self: createdBy });
+	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => stores.jobs.load().some((j) => j.id === id), enabled: (id) => stores.jobs.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false, paused: () => upgradeHeld(dir) }, inbox: stores.inbox, audit: stores.rules, ledger: stores.jobs, counts: (id) => jobCounts(stores.history().get(id), stores.clock.read().jobs[id]?.cleared), self: createdBy });
 
 	/* ------------------------------------------------------ lifecycle hooks */
 
@@ -638,10 +639,14 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	}
 	let lastDeadSessionScan = 0;
 	let tickerFacts: TickFacts = { startedAt: Date.now(), tickMs: 30_000 };
+	// While the upgrade's pause holds (src/upgrade-hold.ts), the engine holds every row but a person's
+	// and the run list refuses every claim, whoever drains. The two riders that write rows and run a
+	// gate's command first, the clock and the rule checks, do not pass at all: a slot is not decided.
+	const unlessPaused = (rider: Rider): Rider => (now, facts) => (upgradeHeld(dir) ? undefined : rider(now, facts));
 	const riders: Riders<(typeof RUNTIME_RIDERS)[number]> = {
 		"stray-leases": (now) => releaseStrayLeases(now),
 		"closed-conversations": () => deliverToClosed(),
-		"rule-checks": (now) => checkTick.tick(now),
+		"rule-checks": unlessPaused((now) => checkTick.tick(now)),
 		"removed-jobs": () => { abortRemovedJobs(runs, (id) => stores.jobs.load().some((job) => job.id === id), log); },
 		"dead-sessions": async (now) => {
 			if (!deps.sessionExists || now - lastDeadSessionScan < 10 * 60_000) return;
@@ -655,6 +660,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		},
 		clock: async (now, facts) => {
 			tickerFacts = facts;
+			if (upgradeHeld(dir)) return;
 			const sources = {
 				book: () => stores.book(), history: () => stores.history(), requests: stores.requests, clock: stores.clock,
 				proof: (lane: string) => {

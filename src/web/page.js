@@ -3551,9 +3551,21 @@ function drawFrame(s) {
   const held = terminal && h.piLoops !== false;
   const beside = terminal && h.piLoops === false;
   const line = $("held");
-  line.hidden = !held && !beside && !down;
+  const a0 = s.automation || {};
+  const hold = !down && typeof a0.upgradeHold === "string" ? a0.upgradeHold : "";
+  line.hidden = !held && !beside && !down && !hold;
   line.innerHTML = "";
   if (down) line.append(spanOf("", DOWN_LINE));
+  else if (hold) {
+    // The upgrade's pause: every loop and rule waits until a person resumes (src/upgrade-hold.ts).
+    line.append(spanOf("", "⏸"), spanOf("", plain(hold)));
+    const resume = document.createElement("button");
+    resume.type = "button";
+    resume.className = "sm";
+    resume.textContent = "Resume";
+    resume.onclick = () => resumeFromPage(resume);
+    line.append(resume);
+  }
   else if (held) line.append(spanOf("", "⌨"), spanOf("", HELD_LINE));
   // A terminal says on its lease when a turn started; the page reads the file again when it ends.
   if (held && h.turnSince && Number.isFinite(Date.parse(h.turnSince))) line.append(spanOf("", "· answering since " + clock(h.turnSince)));
@@ -3567,6 +3579,25 @@ function drawFrame(s) {
   drawTitle();
   // Who holds the conversation decides whether a starter's Add runs here or names the terminal command.
   drawStarters();
+}
+
+/** The page's Resume: `POST /resume`. A refusal (an older pi-loops still runs here) is said in the line. */
+async function resumeFromPage(button) {
+  if (!TOKEN) await tokenReady;
+  button.disabled = true;
+  let body;
+  try {
+    const r = await fetch("/resume", { method: "POST", headers: { "x-pi-web-token": TOKEN, "content-type": "application/json" }, body: "{}" });
+    body = await r.json();
+  } catch (e) {
+    body = { error: "pi-loops cannot be reached" };
+  }
+  if (body && body.error) {
+    button.disabled = false;
+    button.after(spanOf("", plain(str(body.error))));
+    return;
+  }
+  refresh();
 }
 
 /* ---------------- loop activity, the tab title and notifications (GET /activity, docs/loops.md) ---------------- */

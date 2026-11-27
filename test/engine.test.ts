@@ -77,6 +77,7 @@ test("a quiet mark holds while the files and the rows are as they were, and unti
 import { WindowExecutor, producerAlive, showsTriggeredTurnLine } from "../src/window-executor.ts";
 import { LeaseStore, procStart } from "../src/lease.ts";
 import { stamp } from "../src/schedule.ts";
+import { PAUSED_WHY } from "../src/run-list.ts";
 import { TURN_TYPE, markDetails, markFor, withMark } from "../src/mark.ts";
 
 const row = (id: string, over: Partial<UnclaimedRow> = {}): UnclaimedRow => ({ v: 3, id, lane: "s", kind: "input", source: "rule:local:dynamic", mode: "none", wake: "append", payload: { text: `[Trigger ${id}] hello`, cwd: "/" }, created_at: "2026-01-01T00:00:00Z", created_by: { pid: 1, instance: "w", version: "0" }, attempts: 0, ...over });
@@ -2638,4 +2639,31 @@ test("[fifo-session-file] a session file that is not a regular file holds no ent
 	assert.equal(child.signal, null, "the read returned instead of blocking");
 	assert.equal(child.stdout, "[]");
 	assert.deepEqual(sessionFileEntries(path.join(dir, "missing.jsonl")), []);
+});
+
+test("[upgrade-hold] while the upgrade's pause holds, every job's row waits, /cron run's too; a person's row, a command typed in the window and a goal's continuation are not held; resumed, the job's row runs", async () => {
+	const { store, inbox, audit } = world();
+	const page = personRow("11111111-2222-3333-4444-555555555556", "hello from the browser", undefined, { sessionId: "s", cwd: "/p", createdBy: plainBy }, T0);
+	const clock = plainJobRow(plainJob(), plainRunId("j1", "2026-06-01T12:00:00Z"), "cron:j1", "", plainBy, T0 + 1);
+	store.append(page);
+	store.append(clock);
+	let paused = true;
+	const sinks: EngineSinks = { jobs: { exists: () => true, enabled: () => true, goalActive: () => true, paused: () => paused }, inbox, audit };
+	const w = windowOn(store);
+	const why = decideDrain("conversation", store.list("s"), proofOf("s", () => [], () => []), sinks.jobs, w.executor.view("s"), T0).find((a) => a.row?.id === clock.id);
+	assert.deepEqual(why?.do === "wait" ? why.why : why?.do, "pi-loops is paused after the upgrade: pi-loops resume");
+	const asked = plainJobRow(plainJob(), "run-asked-by-a-person", "cron-run:j1", "", plainBy, T0 + 2);
+	assert.equal(decideDrain("conversation", [asked], proofOf("s", () => [], () => []), sinks.jobs, w.executor.view("s"), T0).find((a) => a.row?.id === asked.id)?.do, "wait", "/cron run's row waits too");
+	// What runs in the window the person looks at goes: a command they typed there, their goal's continuation.
+	const to = { sessionId: "s", cwd: "/p", createdBy: plainBy };
+	for (const typed of [newTriggerRow("make a rule", to, T0), goalRow("keep going", { condition: "done", iterations: 1, updatedAt: stamp(T0) }, to, T0)]) {
+		const action = decideDrain("conversation", [typed], proofOf("s", () => [], () => []), sinks.jobs, w.executor.view("s"), T0).find((a) => a.row?.id === typed.id);
+		assert.ok(!(action?.do === "wait" && action.why === PAUSED_WHY), `${typed.source} is not held by the pause`);
+	}
+	const out = await drain("s", store, w.executor, T0 + 5_000, sinks);
+	assert.deepEqual([out.delivered, out.waiting], [[page.id], [clock.id]], "the person's own message goes; the job's row waits");
+	paused = false;
+	const fresh = windowOn(store);
+	const after = decideDrain("conversation", [clock], proofOf("s", () => [], () => []), sinks.jobs, fresh.executor.view("s"), T0 + 6_000).find((a) => a.row?.id === clock.id);
+	assert.notEqual(after?.do, "wait", "resumed: the job's row is no longer held");
 });

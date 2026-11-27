@@ -12,6 +12,7 @@
  * waits out a backoff and blocks nothing behind it; at three failures it is a dead letter: an inbox
  * finding first, then an audit line, then the removal, so a crash in between loses no row.
  */
+import { PAUSED_WHY } from "./run-list.ts";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { isAnswerRow } from "./ask.ts";
@@ -928,6 +929,8 @@ export interface JobsView {
 	enabled(id: string): boolean;
 	/** Whether the session has a goal being pursued: a `goal` row without one is stale. */
 	goalActive(sessionId: string): boolean;
+	/** Whether the upgrade's pause holds (src/upgrade-hold.ts): every job's row waits. */
+	paused?(): boolean;
 }
 
 /** The job a row names: the clock's slot (`cron:`), `/cron run` (`cron-run:`), or a loop's follow-up (`wake:`). */
@@ -1118,6 +1121,14 @@ export function decideDrain(lane: Lane["kind"], rows: readonly Row[], proof: Pro
 			return done();
 		}
 		const wait = (why: string, until?: number) => actions.push({ do: "wait", row, why, ...(until === undefined ? {} : { until }) });
+		// The upgrade's pause (src/upgrade-hold.ts): every row that no person is there for waits, in every
+		// lane and from every caller (a tick, a bell, a watcher, the control channel), until a person
+		// resumes. A person's message goes, and so does what runs in the window they look at
+		// (`isLocal`: a command they typed there, their goal's continuation). `/cron run` waits.
+		if (row.source !== "person" && !isLocal(row) && jobs.paused?.()) {
+			wait(PAUSED_WHY);
+			return done();
+		}
 		// A row that leaves while pi holds its prompt and has not begun it (its job removed, its goal
 		// cleared): the window aborts the prompt if pi writes it after all, as for a cancel.
 		const leaveHeld = (): void => {

@@ -289,7 +289,11 @@ pi-loops stop
 pi install npm:@alphacoder-v0/pi-loops@<version>   # <version> is 0.22.8
 ```
 
-0.22.8 reads your jobs and rules as they are. It does not run the plain jobs of closed
+This version writes `jobs.json` in a form 0.22.8 does not read: before you start 0.22.8, put back
+the file the upgrade kept (`mv ~/.pi/agent/loops/jobs.json.v2.bak ~/.pi/agent/loops/jobs.json`).
+Loops you made or changed since the upgrade are not in it. With no such file (this version was the
+first you installed), move `jobs.json` away instead: 0.22.8 refuses the version 3 file, and starts with
+no loops only when there is none. Rules are read as they are. 0.22.8 does not run the plain jobs of closed
 conversations, and it ignores the files that only later versions write, so nothing still waiting
 for a conversation is delivered: rule results, plain-job prompts waiting for their conversation, claimed
 findings, `/goal` continuations, recipe hand-offs, `inject_and_run` pushes and messages sent from

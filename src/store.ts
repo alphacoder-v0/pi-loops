@@ -90,8 +90,7 @@ export const DISABLED_BY_PERSON = "disabled by a person";
 
 /** Why a job does not run, and who said so. `at` is a stamp. */
 export interface Disabled {
-	/** "upgrade": turned off by the conversion of a directory an older pi-loops worked in (src/convert-v2.ts). */
-	code: "person" | "session-gone" | "cwd-missing" | "schedule" | "interrupted" | "upgrade";
+	code: "person" | "session-gone" | "cwd-missing" | "schedule" | "interrupted";
 	/** One line for a person. It ends with what to do when there is something to do. */
 	why: string;
 	at: string;
@@ -476,13 +475,9 @@ export class JobStore {
 		return this.mutate((jobs) => ({ jobs: [...jobs, job], result: job }));
 	}
 
-	/**
-	 * Turn a job off with its reason. A job already off keeps the reason it has, but for one the upgrade
-	 * turned off that a person now turns off: it is theirs from now on, and the upgrade's line drops it.
-	 */
+	/** Turn a job off with its reason. A job already off keeps the reason it has. */
 	async disable(id: string, disabled: Disabled): Promise<LoopJob | undefined> {
 		return this.update(id, (job) => {
-			if (!job.enabled && job.disabled?.code === "upgrade" && disabled.code === "person") job.disabled = disabled;
 			if (!job.enabled) return;
 			job.enabled = false;
 			job.disabled = disabled;

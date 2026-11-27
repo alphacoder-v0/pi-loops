@@ -2655,3 +2655,25 @@ test("[gate-held-count] a gated loop's row carries its gate: the command, its he
 		await page.stop();
 	}
 });
+
+test("[upgrade-hold] the page's state says the upgrade's pause; POST /resume refuses while pi-loops 0.22 still runs here, then ends it", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-resume-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		fs.writeFileSync(path.join(page.loops, "upgrade-hold.json"), JSON.stringify({ at: new Date().toISOString() }));
+		const held = (await page.get("c/s1/state")).body;
+		assert.match(String(held.automation?.upgradeHold ?? ""), /paused after the upgrade/);
+		fs.mkdirSync(path.join(page.loops, "presence"), { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "presence", "old.json"), JSON.stringify({ pid: process.pid, host: (await import("node:os")).hostname(), instance: "i", cwd: dir, kind: "interactive", heartbeatAt: new Date().toISOString() }));
+		const refused = await page.post("resume", {});
+		assert.equal(refused.status, 409);
+		assert.match(String(refused.body.error), /^an older pi-loops still runs here \(pid \d+\)/);
+		fs.rmSync(path.join(page.loops, "presence"), { recursive: true });
+		assert.deepEqual(await page.post("resume", {}), { status: 200, body: { ok: true, held: true } });
+		assert.equal((await page.get("c/s1/state")).body.automation?.upgradeHold, undefined);
+	} finally {
+		await page.stop();
+	}
+});

@@ -10,6 +10,7 @@ import { checkLane } from "../src/lane.ts";
 import { injectPush, pushRowId, pushTrigger } from "../src/push.ts";
 import { RequestStore } from "../src/requests.ts";
 import { TriggerStore } from "../src/triggers.ts";
+import { holdUpgrade, resumeUpgrade } from "../src/upgrade-hold.ts";
 
 const USAGE = { input: 1, output: 1, cost: 0.01, turns: 1 };
 const note = (key: string | undefined, summary = "build red") => ({ method: "ci/build", params: { _meta: { ...(key ? { pi_dedup_key: key } : {}), pi_summary: summary } } });
@@ -245,4 +246,21 @@ test("[push-rederive-on-start] a cursor past the last number (events.seq and the
 	assert.equal(b.host.rederivePushes((server) => server === "ci"), 0);
 	assert.deepEqual(b.requests.list(b.lane), []);
 	assert.equal(JSON.parse(fs.readFileSync(path.join(b.dir, "clock.json"), "utf8")).pushes.derived, 2, "the cursor starts again at the last number");
+});
+
+test("[upgrade-hold] while the upgrade's pause holds, a push is stored and its row waits, with no check; resumed, the check-lanes rider runs it", async () => {
+	const b = await background();
+	holdUpgrade(b.dir);
+	assert.equal(b.host.receivePush("ci", "sub_agent", note("k1")), true);
+	await b.host.drain(5000);
+	assert.equal(b.lines().length, 1, "stored first");
+	assert.equal(b.requests.list(b.lane).length, 1, "its row waits");
+	assert.equal(b.calls.length, 0, "no check while paused");
+	await b.host.riders["check-lanes"](Date.now(), { startedAt: 0, tickMs: 30_000 });
+	await b.host.drain(5000);
+	assert.equal(b.calls.length, 0, "the rider waits too");
+	resumeUpgrade(b.dir);
+	await b.host.riders["check-lanes"](Date.now(), { startedAt: 0, tickMs: 30_000 });
+	await b.host.drain(5000);
+	assert.equal(b.calls.length, 1, "resumed: checked once");
 });
