@@ -1903,6 +1903,14 @@ test("a send pi refuses with no model or no credentials comes back with pi's own
 		assert.doesNotMatch(error, /abcdefghijklmnop/, "and no secret in it");
 		const audit = new TriggerStore(path.join(dir, "loops")).listAudit(5, (r) => r.type === "request" && r.traceId === queued);
 		assert.equal(audit[0]?.details?.error, error, "the audit says the same");
+		// A later row that failed for another reason keeps its own words, not pi's earlier refusal.
+		const other = (await web.post("prompt", { text: "and this?" })).queued;
+		assert.ok(await until(() => ringsIn(log).some((m) => m.includes(other)), 5000), "the second send rings");
+		await new Promise((r) => setTimeout(r, 200));
+		new RequestStore(path.join(dir, "loops")).update("s1", other, { attempts: 1, last_error: "the holder gave it back" });
+		assert.deepEqual((await web.state()).requests, [], "the second is taken out too");
+		const again = await replayEvents(await eventsAt(web.url, web.token));
+		assert.equal(again.find((e: any) => e.type === "send_failed" && e.id === other)?.error, "the holder gave it back");
 	} finally {
 		await web.stop();
 	}

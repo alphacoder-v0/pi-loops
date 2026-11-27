@@ -16,7 +16,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConversationIndex, holderOf, NeedsYouCounts, plainText, projectArgs, type RowReaders } from "./conversation-rows.ts";
-import { cancelRow, jobClaim, personRow, queueOrder, requestFingerprint } from "./engine.ts";
+import { cancelRow, jobClaim, NO_TURN_WHY, personRow, queueOrder, requestFingerprint } from "./engine.ts";
 import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines, type StopAnswer } from "./host-control-channel.ts";
 import { buildSessionProjection, migrateSessionEntries, parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName, shouldReadAgain } from "./lease.ts";
@@ -1456,9 +1456,10 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			const images = imagesOf(row);
 			requests.remove(sessionId, [row.id]);
 			// pi's own reason, when it refused a send after this row was written: it names what is missing
-			// (a model, a key) and how to set it up, where the holder can only say no turn started.
+			// (a model, a key) and how to set it up, where the holder can only say no turn started. A row
+			// that failed for another reason keeps its own.
 			const refused = child.live.refusedSend;
-			const error = refused && refused.at >= Date.parse(row.created_at) ? redact(refused.error) : row.last_error;
+			const error = refused && row.last_error === NO_TURN_WHY && refused.at >= Date.parse(row.created_at) ? redact(refused.error) : row.last_error;
 			audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "failed", sourceLabel: row.source, eventLabel: sessionId, details: { session_id: sessionId, error, returned: "to the composer" } });
 			child.broadcast({ type: "send_failed", id: row.id, text: row.payload?.text ?? "", images, error });
 		}
