@@ -329,10 +329,10 @@ export function pauseEndsAt(log: Pick<HostSpawnLog, "pausedAt" | "pauses">): num
 	return Date.parse(log.pausedAt) + Math.min(CRASH_PAUSE.firstMs * 2 ** (n - 1), CRASH_PAUSE.maxMs);
 }
 
-/** What a crash-pause is, in the words every surface uses for it. */
-export function crashPauseText(log: Pick<HostSpawnLog, "pausedAt" | "pauses">): string {
+/** What a crash-pause is, in the words every surface uses for it; `start` is how that surface spells the start command. */
+export function crashPauseText(log: Pick<HostSpawnLog, "pausedAt" | "pauses">, start: "/pi-loops start" | "pi-loops start"): string {
 	const ends = pauseEndsAt(log);
-	return `pi-loops stopped unexpectedly ${CRASH_BUDGET.count} times within ${CRASH_BUDGET.windowMs / 60_000} minutes — see ${HOST_LOG}; it tries again at ${ends === undefined ? "?" : formatLocal(ends)}, or /pi-loops start resumes it now`;
+	return `pi-loops stopped unexpectedly ${CRASH_BUDGET.count} times within ${CRASH_BUDGET.windowMs / 60_000} minutes — see ${HOST_LOG}; it tries again at ${ends === undefined ? "?" : formatLocal(ends)}, or ${start} resumes it now`;
 }
 
 /** Whether the host is paused at `now` by its crash budget. */
@@ -470,7 +470,7 @@ export function decideEnsure(input: EnsureInput): EnsureAction {
 	// The newer client that asked the old host to make way starts its own; an older one starting the
 	// old code in the gap is how two versions traded the host back and forth, aborting runs each time.
 	if (input.upgrader?.alive && compareVersions(input.myVersion, input.upgrader.version) < 0) return { kind: "none", reason: `a newer pi-loops (pid ${input.upgrader.pid}) is already running` };
-	if (!input.asked && crashPaused(input.spawns, input.now)) return { kind: "none", reason: `paused: ${crashPauseText(input.spawns)}` };
+	if (!input.asked && crashPaused(input.spawns, input.now)) return { kind: "none", reason: `paused: ${crashPauseText(input.spawns, "/pi-loops start")}` };
 	// `[host] auto = false` does not keep a window from starting it: it makes the process leave once
 	// no window is open (`leavesWithWindows`), as 0.22.8 ran loops only while a pi was open.
 	if (input.stopped) return { kind: "none", reason: "stopped (/pi-loops start resumes it)" };

@@ -1865,7 +1865,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 			}
 			// Why, when something keeps it from starting: each of these pauses every loop and check.
 			const spawns = readSpawnLog(loopsDir);
-			const why = readUiPrefs(loopsDir).host === "stopped" ? "it was stopped by hand; pi-loops start, or pi-loops opening the page, starts it" : process.env.PI_LOOPS_HOST?.toLowerCase() === "off" ? "PI_LOOPS_HOST=off is set" : !loadConfig(loopsDir).hostAuto ? "[host] auto = false in config.toml; pi-loops start starts it" : crashPaused(spawns, Date.now()) ? `${crashPauseText(spawns).replace("/pi-loops start", "pi-loops start")} (last: ${spawns.lastError ?? "?"})` : spawns.notBefore && Date.now() < Date.parse(spawns.notBefore) ? `it could not start (${spawns.lastError ?? `see ${HOST_LOG}`}); retrying after ${formatLocal(Date.parse(spawns.notBefore))}` : undefined;
+			const why = readUiPrefs(loopsDir).host === "stopped" ? "it was stopped by hand; pi-loops start, or pi-loops opening the page, starts it" : process.env.PI_LOOPS_HOST?.toLowerCase() === "off" ? "PI_LOOPS_HOST=off is set" : !loadConfig(loopsDir).hostAuto ? "[host] auto = false in config.toml; pi-loops start starts it" : crashPaused(spawns, Date.now()) ? `${crashPauseText(spawns, "pi-loops start")} (last: ${spawns.lastError ?? "?"})` : spawns.notBefore && Date.now() < Date.parse(spawns.notBefore) ? `it could not start (${spawns.lastError ?? `see ${HOST_LOG}`}); retrying after ${formatLocal(Date.parse(spawns.notBefore))}` : undefined;
 			out(why ? `pi-loops is not running: ${why}` : "pi-loops is not running (a pi window starts it when there is work to run)");
 			for (const l of queues()) out(l);
 			return 1;

@@ -399,7 +399,7 @@ const managed: HostServiceRecord["managed"] = process.env.PI_LOOPS_HOST_MANAGED 
 // it waits the pause out instead, as a window does, and goes on early when /pi-loops start ends it.
 // A stop while it waits is a clean stop (the signal handlers above).
 if (managed === "foreground" && crashPaused(readSpawnLog(dir), Date.now())) {
-	log(`paused: ${crashPauseText(readSpawnLog(dir))}`);
+	log(`paused: ${crashPauseText(readSpawnLog(dir), "/pi-loops start")}`);
 	await new Promise<void>((resolve) => {
 		const wait = setInterval(() => {
 			if (crashPaused(readSpawnLog(dir), Date.now())) return;
