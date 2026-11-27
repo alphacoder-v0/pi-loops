@@ -27,17 +27,21 @@ weaker, and worth converting whenever one of them breaks.
       `test/web.test.ts`: *clear cancels every row the badge counts, pi-loops' included, and empties
       pi's own queue*.
 - [x] What pi-loops addressed to this conversation is in the same queue as your messages, with its
-      source ("you", "cron nightly", "rule 3f2a…"), in the order it runs, cancellable one at a time.
+      source in the words `/cron queue` uses ("you", "cron nightly", "/cron run nightly", "rule
+      3f2a…", "claim 3f2a…"), in the order it runs, cancellable one at a time.
       A chat message is a request row in `requests/<session>.jsonl`, the file the pi holding the
       session drains; the page reads the file for the list and the count. What pi itself still holds
       (a slash command typed while busy) is listed after them as "pi", counted with them, and cleared
-      with them. `test/web-page.test.ts`: *the queue lists requests from every source, in order*.
+      with them. `test/web-page.test.ts`: *the queue lists requests from every source, in order*;
+      `test/web.test.ts`: *the page's queue names each source in the words /cron queue uses*.
 - [x] A message you sent survives pi stopping and is offered, never sent on its own, by the next
       page: "not sent before pi stopped", with send and discard. `test/web.test.ts`: *a message typed
       before pi exits is offered, not sent, by the next page*.
 - [x] A send pi refuses (compaction in progress, no credentials) comes back to the composer with the
-      error, images included. `test/web.test.ts`: *a send pi refuses comes back to the composer with
-      the error*.
+      error, images included. The Not sent line says pi's own reason, redacted, with its `/login`
+      hint when no model or no credentials are set up. `test/web.test.ts`: *a send pi refuses comes
+      back to the composer with the error*; *a send pi refuses with no model or no credentials comes
+      back with pi's own reason, redacted*.
 - [x] A session also open in a terminal is answered by that terminal, and the page says so: "open in
       a terminal: answered there", with no pid. `test/web.test.ts`: *a page's message for
       a session a terminal holds is answered there*; `test/web-page.test.ts`: *a send answered
@@ -270,10 +274,10 @@ weaker, and worth converting whenever one of them breaks.
 ## Automation, which is the reason this project exists
 
 - [x] **After an upgrade, the pause and its way out.** While the upgrade's pause holds, the line above
-      the conversation says so in the words `pi-loops status` uses, with a Resume button that ends it
+      the conversation says so in the words `pi-loops status` uses, with a Resume pi-loops button that ends it
       as `pi-loops resume` does; a refusal (an older pi-loops still runs here) is said beside the button.
       `test/web-page.test.ts`: *[upgrade-hold] while the upgrade's pause holds, the page says so above the
-      conversation with a Resume button that posts /resume*; `test/page-server.test.ts`: *[upgrade-hold] the page's
+      conversation with a Resume pi-loops button that posts /resume*; `test/page-server.test.ts`: *[upgrade-hold] the page's
       state says the upgrade's pause; POST /resume refuses while pi-loops 0.22 still runs here, then
       ends it*.
 - [x] Jobs, loops and rules: what they are, whether they are enabled, and what the last error was.
@@ -783,8 +787,12 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Compact, undo (fork from your last message), find across the whole session including
       abandoned branches, export to HTML, and share as a redacted gist. Undo reloads the
       conversation through the one path every other thing that empties the feed uses, so an undone
-      session is as empty as a new one. `test/web-page.test.ts`: *undoing the only message empties
-      the conversation and puts the message back in the composer*.
+      session is as empty as a new one. The withdrawn text is in the composer of the conversation
+      pi forked into, and is not kept as a draft of the one it was sent in. pi gives back the text
+      only, so an image of that message is not put back. `test/web-page.test.ts`: *undoing the only
+      message empties the conversation and puts the message back in the composer*; *undo puts the
+      withdrawn message in the composer of the conversation pi forked into, and leaves no draft in
+      the one it left*.
 - [x] Compaction says what it did — what the context was and what it became, and what the summary
       cost — and what it keeps can be steered: `/compact keep the API shapes`, as in the terminal.
       A line that reports neither is a line asking to be taken on faith.

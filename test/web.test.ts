@@ -814,7 +814,7 @@ test("a session an extension switched to inside pi is followed: the page is told
  * was sent. Starting a session and going back to one are the two things that are only visible in
  * what reaches pi: the HTTP answer to both is the same "success".
  */
-function sessionAwarePi(sessionFile: string, log: string, streaming = false, session: { entries?: unknown[]; leafId?: string } = {}, commands: string[] | { file: string } = [], pidFile?: string): string {
+function sessionAwarePi(sessionFile: string, log: string, streaming = false, session: { entries?: unknown[]; leafId?: string } = {}, commands: string[] | { file: string } = [], pidFile?: string, refuse?: string): string {
 	return [
 		"#!/usr/bin/env node",
 		'const fs = require("node:fs");',
@@ -841,6 +841,8 @@ function sessionAwarePi(sessionFile: string, log: string, streaming = false, ses
 		// inside pi, and nothing the front end sent asked for it.
 		'    if (m.type === "prompt" && m.message.startsWith("/switch-to ")) file = m.message.slice("/switch-to ".length);',
 		'    if (m.type === "set_model") model = { provider: m.provider, id: m.modelId };',
+		// What pi says in rpc mode when the extension's `sendUserMessage` for a rung row cannot start.
+		...(refuse === undefined ? [] : [`    if (m.type === "prompt" && m.message.startsWith("/pi-loops ring ")) process.stdout.write(JSON.stringify({ type: "extension_error", extensionPath: "<runtime>", event: "send_user_message", error: ${JSON.stringify(refuse)} }) + "\\n");`]),
 		"    const data =",
 		`      m.type === "get_state" ? { cwd: ${JSON.stringify(path.dirname(sessionFile))}, sessionId: "s1", sessionFile: file, isStreaming: ${streaming}, model }`,
 		'      : m.type === "get_commands" ? { commands: commandList().map((name) => ({ name, description: name + " does something", source: "extension" })) }',
@@ -1840,6 +1842,25 @@ test("after Stop, the queue is untouched and runs on its own: Stop is pi's abort
 	}
 });
 
+test("the page's queue names each source in the words /cron queue uses", { timeout: 30_000 }, async () => {
+	// The page had its own copy of the labels, and a row of /cron run read "cron nightly" there.
+	const dir = tmp("pi-loops-web-");
+	const web = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), path.join(dir, "sent.jsonl"), false, {}, ["pi-loops"]), { named: "s1" });
+	try {
+		const loops = path.join(dir, "loops");
+		fs.writeFileSync(path.join(loops, "jobs.json"), JSON.stringify({ version: 3, jobs: [{ id: "cron-a", name: "nightly" }] }));
+		const store = new RequestStore(loops);
+		const row = (id: string, source: string) => ({ v: 3, id, lane: "s1", kind: "input", source, mode: "unattended", wake: "turn", payload: { text: "go" }, created_at: new Date().toISOString(), created_by: { pid: 1, instance: "t", version: "0" }, attempts: 0 }) as any;
+		store.append(row("r1", "cron:cron-a"));
+		store.append(row("r2", "cron-run:cron-a"));
+		store.append(row("r3", "inbox:0123456789abcdef"));
+		const labels = (await web.state()).requests.map((r: any) => [r.id, r.label]).sort();
+		assert.deepEqual(labels, [["r1", "cron nightly"], ["r2", "/cron run nightly"], ["r3", "claim 01234567"]]);
+	} finally {
+		await web.stop();
+	}
+});
+
 test("a send pi refuses comes back to the composer with the error", { timeout: 30_000 }, async () => {
 	// The holder writes `last_error` on a person row pi never started (test/engine.test.ts). The page
 	// reads the file for /state: the row leaves it, the audit says failed, and the stream carries the
@@ -1858,6 +1879,30 @@ test("a send pi refuses comes back to the composer with the error", { timeout: 3
 		const events = await replayEvents(await eventsAt(web.url, web.token));
 		const failed = events.find((e: any) => e.type === "send_failed");
 		assert.deepEqual([failed?.id, failed?.text, failed?.images?.length, failed?.error], [queued, "hello?", 1, "pi did not start a turn for it"], "the text and its image come back, with the reason");
+	} finally {
+		await web.stop();
+	}
+});
+
+test("a send pi refuses with no model or no credentials comes back with pi's own reason, redacted", { timeout: 30_000 }, async () => {
+	// pi says why on stdout (`extension_error` of `send_user_message`); the holder only knows that no
+	// turn started. The page said the holder's words, and the /login hint was lost.
+	const dir = tmp("pi-loops-web-");
+	const log = path.join(dir, "sent.jsonl");
+	const why = "No API key found for anthropic. Use /login to log into a provider. Tried key sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789";
+	const web = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), log, false, {}, ["pi-loops"], undefined, why), { named: "s1" });
+	try {
+		const { queued } = await web.post("prompt", { text: "hello?" });
+		assert.ok(await until(() => ringsIn(log).some((m) => m.includes(queued)), 5000), "the send rings");
+		await new Promise((r) => setTimeout(r, 200));
+		new RequestStore(path.join(dir, "loops")).update("s1", queued, { attempts: 1, last_error: "pi did not start a turn for it" });
+		assert.deepEqual((await web.state()).requests, [], "taken out of the queue");
+		const events = await replayEvents(await eventsAt(web.url, web.token));
+		const error = String(events.find((e: any) => e.type === "send_failed")?.error);
+		assert.match(error, /^No API key found for anthropic\. Use \/login to log into a provider\./, "pi's reason, with its hint");
+		assert.doesNotMatch(error, /abcdefghijklmnop/, "and no secret in it");
+		const audit = new TriggerStore(path.join(dir, "loops")).listAudit(5, (r) => r.type === "request" && r.traceId === queued);
+		assert.equal(audit[0]?.details?.error, error, "the audit says the same");
 	} finally {
 		await web.stop();
 	}

@@ -102,7 +102,7 @@ machine. Everything here follows from that, and each one has a price.
    claim (`RunList`), and the clock and the rule checks do not pass, so no slot is decided and no
    gate's command runs. Two places, not one per caller: two rounds of review found a caller that the
    per-rider gates missed (the requests watcher, the doorbell). Each job and rule keeps the on or off it had, so an archive, a downgrade and the lists see them
-   as they were. `pi-loops resume` (or `/pi-loops resume`, or the page's Resume) ends it, and refuses
+   as they were. `pi-loops resume` (or `/pi-loops resume`, or the page's Resume pi-loops) ends it, and refuses
    while a fresh `presence/` entry of a live pid says pi-loops 0.22 still runs here, or
    `host-service.json` names a live older pi-loops in the background; while the pause holds, a start
    keeps `presence/`, which it otherwise removes. Two designs that

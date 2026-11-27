@@ -270,6 +270,8 @@ export class PageChild {
 		lastPoll: undefined as any,
 		runtime: undefined as any,
 		lastError: undefined as any,
+		/** pi's reason for the last `sendUserMessage` it refused, and when it said it. */
+		refusedSend: undefined as { error: string; at: number } | undefined,
 		pendingAsks: new Map<string, any>(), // dialogs asked while no browser was attached
 	};
 
@@ -512,6 +514,8 @@ export class PageChild {
 		// pi refused a `sendUserMessage` (compaction in progress, no credentials). The holder finds the
 		// row it handed over and never saw start once the grace has passed; ring it then, so the row
 		// comes back to the composer without waiting for the tick.
+		// pi's reason is kept for the page's Not sent line: the holder knows only that no turn started.
+		if (ev.type === "extension_error" && ev.event === "send_user_message" && typeof ev.error === "string" && ev.error) this.live.refusedSend = { error: ev.error, at: Date.now() };
 		if (ev.type === "extension_error" && ev.event === "send_user_message") setTimeout(guard(this.log, "ring after a refused send", () => this.opts.ring()), PERSON_SEND_GRACE_MS + 500).unref();
 		if (ev.type === "extension_ui_request") {
 			if (isDialog(ev)) {

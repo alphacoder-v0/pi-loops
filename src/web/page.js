@@ -1972,12 +1972,15 @@ $("findq").oninput = () => {
   }, 250);
 };
 $("undo").onclick = async () => {
+  const from = SESSION;
   const r = await api("/undo", {});
   if (!r.success) return row("err", "Error", r.error || "cannot undo");
   if (r.data?.cancelled) return row("notice", "", "undo was cancelled by an extension");
-  // pi hands back the forked message; put it where it came from.
+  // pi hands back the forked message; put it where it came from. pi forked into a new conversation,
+  // and the page usually hears of that after this answer: the text then moves with the composer.
   $("input").value = r.data?.text ?? "";
-  saveDraft();
+  if (SESSION === from) carryComposer = true;
+  else saveDraft();
   autoGrow();
   // The branch moved, so the conversation is taken again — through resync, which is the one path
   // that also resets what the page is counting against and drains what arrived meanwhile. This used
@@ -2333,6 +2336,15 @@ function remember(key, value) {
  */
 /** One draft per conversation: a row of the list loads another conversation in this same tab. */
 const draftKey = () => "pi-web-draft:" + SESSION;
+/** True from an Undo until pi's move to the forked conversation arrives: the composer goes with it. */
+let carryComposer = false;
+function forgetDraft() {
+  try {
+    sessionStorage.removeItem(draftKey());
+  } catch (_) {
+    // Storage is blocked, so there is no draft to forget.
+  }
+}
 function savedDraft() {
   try {
     const own = sessionStorage.getItem(draftKey());
@@ -2647,12 +2659,16 @@ async function resync(why) {
  * list follow at once: what was typed stays with the conversation it was typed in.
  */
 function moveTo(id) {
+  const carry = carryComposer;
+  carryComposer = false;
+  if (carry) forgetDraft();
   SESSION = id;
   history.replaceState(null, "", "/c/" + SESSION + "/");
   openTitle = "";
   firstSaid = "";
   drawTitle();
-  $("input").value = savedDraft();
+  if (carry) saveDraft();
+  else $("input").value = savedDraft();
   autoGrow();
   $("input").focus();
   refreshList().catch(() => {});
@@ -3562,7 +3578,7 @@ function drawFrame(s) {
     const resume = document.createElement("button");
     resume.type = "button";
     resume.className = "sm";
-    resume.textContent = "Resume";
+    resume.textContent = "Resume pi-loops";
     resume.onclick = () => resumeFromPage(resume);
     line.append(resume);
   }
@@ -3581,7 +3597,7 @@ function drawFrame(s) {
   drawStarters();
 }
 
-/** The page's Resume: `POST /resume`. A refusal (an older pi-loops still runs here) is said in the line. */
+/** The page's Resume pi-loops: `POST /resume`. A refusal (an older pi-loops still runs here) is said in the line. */
 async function resumeFromPage(button) {
   if (!TOKEN) await tokenReady;
   button.disabled = true;
