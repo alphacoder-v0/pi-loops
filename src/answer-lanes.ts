@@ -11,7 +11,7 @@ import { type Held, type HeldConversations, heldCap } from "./background-executo
 import { answerClaimLive } from "./engine.ts";
 import { budgetState, loopWait } from "./job-status.ts";
 import type { SessionSnapshot } from "./job-owner.ts";
-import { type Lane, type LaneId, parseLane } from "./lane.ts";
+import { type Lane, parseLane } from "./lane.ts";
 import { DEFAULT_RUN_TIMEOUT_MS, type RunRecordM4b } from "./loop-run.ts";
 import { findingKind, parseRunOutput, stripProtocolTags } from "./protocol.ts";
 import { previewRedacted, redact } from "./redact.ts";

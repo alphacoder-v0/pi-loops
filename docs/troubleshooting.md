@@ -4,12 +4,13 @@
 `pi-loops status` then prints this line first:
 
 ```text
-pi-loops is paused after the upgrade, so that a pi that still runs an older pi-loops does not run your loops and rules a second time. Close every such pi, then run `pi-loops resume` (or Resume on the page).
+pi-loops is paused after the upgrade, so that a pi that still runs an older pi-loops does not run your loops and rules a second time. Close every such pi, then run `pi-loops resume` (or Resume pi-loops on the page).
 ```
 
 Close every pi that runs the older version, then run `pi-loops resume` (or `/pi-loops resume`, or
-**Resume** on the page) to end the pause. It refuses while an older pi-loops still runs here, and
-names its pid.
+**Resume pi-loops** on the page) to end the pause. It refuses while pi-loops 0.22 or an older
+pi-loops in the background still runs here, and names its pid. It cannot see a 0.24.2 terminal that
+you did not restart, so close or restart those yourself.
 
 Otherwise, `/pi-loops status` shows whether pi-loops is running. If it cannot start, the window
 shows `loops paused: pi-loops could not start`; `/pi-loops status` gives the reason and log path. A job shows

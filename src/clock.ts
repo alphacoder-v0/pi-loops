@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import * as path from "node:path";
-import { DEAD_AFTER_ATTEMPTS, failurePause } from "./backoff.ts";
+import { failurePause } from "./backoff.ts";
 import { landed, plainCollapseKey, plainJobRow, plainRunId } from "./engine.ts";
 import { loopLane, type LaneId } from "./lane.ts";
 import { openWhere, ownerSession, whereRuns, type OwnerView } from "./job-owner.ts";
@@ -10,7 +9,7 @@ import type { RequestStore, Row, UnclaimedRow } from "./requests.ts";
 
 import { computeDue, formatLocal, formatLocalZoned, isValidSchedule, nextRunAt, parseSchedule, stamp } from "./schedule.ts";
 import type { Disabled, JobStore, LoopJob, RunRecord } from "./store.ts";
-import { firedBy, jobStatus, runHistory, type JobHistory } from "./job-status.ts";
+import { firedBy, jobStatus, type JobHistory } from "./job-status.ts";
 import { oneShotDoneV3 } from "./settle.ts";
 import type { Book } from "./stores.ts";
 import { GATE_LOOK_EVERY_MS, type Look, type PathState, type Reading, gateDecision } from "./gate.ts";

@@ -267,8 +267,9 @@ package at the same path whatever its version — `~/.pi/agent/npm/node_modules/
 
 An upgrade from 0.24.2 or earlier pauses pi-loops: the first start converts the loops directory, and
 no loop, plain job or rule check runs until you run `pi-loops resume` (or `/pi-loops resume`, or
-**Resume** on the page). Close every pi that runs the older version first: `resume` refuses while
-one still runs here, and names its pid.
+**Resume pi-loops** on the page). Close every pi that runs the older version first. `resume` refuses
+while pi-loops 0.22 or an older pi-loops in the background still runs here, and names its pid. It
+cannot see a 0.24.2 terminal that you did not restart, so close or restart those yourself.
 
 Releases are tags on GitHub, published to npm under the same version; [CHANGELOG.md](CHANGELOG.md)
 says what is in each one.

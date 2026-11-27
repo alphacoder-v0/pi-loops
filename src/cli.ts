@@ -8,7 +8,7 @@
  *   pi-loops export [--session <id>] [--cwd <dir>] [--output <file>] [--exclude-triggers]
  *   pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]
  */
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { plural } from "./plural.ts";
 import * as fs from "node:fs";
 import * as net from "node:net";
@@ -455,8 +455,6 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 
 /** What runs loops while no pi is open, started, stopped and looked at by name. */
 const SERVICE_VERBS = new Set(["start", "stop", "restart", "status", "abort", "pair"]);
-
-const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "resume", "start", "stop", "restart", "status", "abort", "pair", "host", "recipe", "inbox", "events", "web", "open", "upgrade", "install-launcher", "uninstall-launcher", "help"]);
 
 /**
  * `pi-loops inbox`: `/inbox list|claim|dismiss` for a shell with no pi open, and — with `--json` —

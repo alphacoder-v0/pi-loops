@@ -4,8 +4,8 @@
  * Nothing in pi is patched: timers start in session_start and stop in session_shutdown. A loop run
  * is an in-process `AgentSession` through pi's SDK (`src/sdk-runner.ts`) — never a child process —
  * so it shares this session's MCP clients, extensions and model. A loop's state is Markdown on
- * disk, findings go to a global JSONL inbox, and `/inbox claim` turns a finding into a real user
- * turn. Every prompt pi-loops has for the chat (a plain job, a push, a claim, a goal continuation)
+ * disk, findings go to a global JSONL inbox, and `/inbox claim` is a yes that the run which reported
+ * the finding picks up in the background. Every prompt pi-loops has for the chat (a plain job, a push, a claim, a goal continuation)
  * is a request addressed to the conversation (src/requests.ts), and reaches pi through the window
  * executor only (src/window-executor.ts), once pi is idle.
  *
@@ -16,10 +16,9 @@
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { ProjectTrustStore, SessionManager, VERSION as PI_VERSION, copyToClipboard, formatDimensionNote, getAgentDir, readStoredCredential, resizeImage } from "@earendil-works/pi-coding-agent";
+import { SessionManager, VERSION as PI_VERSION, copyToClipboard, formatDimensionNote, getAgentDir, readStoredCredential, resizeImage } from "@earendil-works/pi-coding-agent";
 import { ARCHIVE_EXT, type ActivateMode, GATES_HEAD, applyImport, automationOf, defaultExportPath, exportSession, importSession, importedGateLines, offerToEnable, parseActivateMode } from "./archive.ts";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
 import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "./args.ts";
 import { envFlag, loadConfig } from "./config.ts";
 import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, answeredGoal, applyDecision, branchMovedSince, clearGoal, continuationPrompt, evaluationApplies, evaluatorPrompt, goalPursued, heldOutcome, judgeCaughtUp, latestGoal, newGoal, parseDecision, pauseFor, pauseGoal, resumeGoal, goalWaitingLine, settledTurn, transcriptFromMessages } from "./goal.ts";
@@ -29,7 +28,7 @@ import { HookRunner, type HookEventData, messageKind, messageSummary, resultSumm
 import { failingSummary, ruleFailureMark } from "./job-health.ts";
 import { loopSignal, signalSummary } from "./job-signal.ts";
 import { LoopsLog, pruneLogs } from "./log.ts";
-import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
+import { type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { capRedacted, plainLine, previewRedacted, redact, screenText } from "./redact.ts";
@@ -42,7 +41,7 @@ import { type ShareMessage, renderShare, shareSummary, shareableMessages } from 
 import { UsageError, addLauncher, installLauncherWithConfirm, installedByPi, launcherAction, launcherSource, launcherState, launcherTarget, openPage, pageLaunchHost, refreshLauncher, slashDir, stopAndWait, stopService, uninstallLauncher, webPageRequest } from "./cli.ts";
 import { copyText, isRemoteTty } from "./browser-open.ts";
 import { execFile } from "node:child_process";
-import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
+import { computeNext, formatLocal, formatSchedule, localOffset, stamp } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
 import { gateShown } from "./gate.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
@@ -65,7 +64,7 @@ import { openStores, removeJob } from "./stores.ts";
 import { Ticker, WINDOW_RIDERS, type Riders } from "./ticker.ts";
 import { TURN_TYPE } from "./mark.ts";
 import { renderTurn } from "./turn-render.ts";
-import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
+import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef } from "./store.ts";
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
 import { GuardSeats, capWords } from "./guard.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
@@ -76,9 +75,9 @@ import { summarizeSessionFile } from "./transcript.ts";
 import { type PromoteTarget, promotionToInbox, checkSessionDir } from "./check-run.ts";
 import { EventLog, type RawEvent } from "./events.ts";
 import { type TriggerOutcome, deliveryOf, eventsInRows, injectPush, pushTrigger, rawPush } from "./push.ts";
-import { checkRow, ruleLook } from "./check-tick.ts";
+import { checkRow } from "./check-tick.ts";
 import { scheduleAudit } from "./job-tune.ts";
-import { type Trigger, auditArgs, newTraceId, TriggerStore, buildPeriodicCheckTrigger, resolveRuleRef } from "./triggers.ts";
+import { type Trigger, auditArgs, newTraceId, TriggerStore, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ConfirmTurn, type ToolHost, automationTools, checkJobName, confirmControlPlane, controlTarget, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
 import { claimPageChild } from "./page-children.ts";
 import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
@@ -1194,7 +1193,6 @@ export default function piLoops(pi: ExtensionAPI) {
 		else console.log([title, ...lines].join("\n"));
 	}
 
-	const short = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 	const homeRel = (p: string) => projectLabel(p, process.env.HOME ?? "");
 
 	function jobLines(jobs: LoopJob[], showCwd = false): string[] {
@@ -2786,7 +2784,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const recipe = loadRecipe(resolved.dir);
 		const m = recipe.manifest;
 		// The one step a template cannot do: describe this project's tracker. Handed to the
-		// session the way /inbox claim hands over a finding; the wizard resumes when the file exists.
+		// session as a turn row of this conversation; the wizard resumes when the file exists.
 		if (m.needsTracker && !fs.existsSync(path.join(project, TRACKER_FILE))) {
 			if (resumed) {
 				ctx.ui.notify(`${m.name} still has no ${TRACKER_FILE} to read; /recipe add ${ref} when it exists`, "warning");
@@ -2874,7 +2872,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		}
 		// A conversation pi has not saved yet (a starter's Add in a new page conversation) cannot own a loop.
 		const owner = installScope(ctx.sessionManager.getSessionFile());
-		if (owner.projectOwned) lines.push("  the loops belong to this project: this conversation is not saved yet, so a finding runs in the conversation you claim it from");
+		if (owner.projectOwned) lines.push("  the loops belong to this project, because this conversation is not saved yet");
 		for (const line of plan.addLines) {
 			const parsed = parseAddArgs(line);
 			const job = await createJob({ schedule: parsed.schedule, prompt: parsed.prompt, stateful: parsed.stateful, name: parsed.name, model: parsed.model, thinking: parsed.thinking, tools: parsed.tools, timeoutMs: parsed.timeoutMs, catchUp: parsed.catchUp, verify: parsed.verify, checkerModel: parsed.checkerModel, recipe: m.name, ...(parsed.gate !== undefined ? { gate: { kind: "command" as const, command: parsed.gate } } : {}) }, owner);

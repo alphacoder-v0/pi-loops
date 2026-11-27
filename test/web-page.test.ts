@@ -5344,7 +5344,7 @@ test("[gate-held-count] a gated loop's row says no model call while its command 
 });
 
 test("[upgrade-hold] while the upgrade's pause holds, the page says so above the conversation with a Resume pi-loops button that posts /resume", { timeout: 20_000 }, async () => {
-	const hold = "pi-loops is paused after the upgrade, so that a pi that still runs an older pi-loops does not run your loops and rules a second time. Close every such pi, then run `pi-loops resume` (or Resume on the page).";
+	const hold = "pi-loops is paused after the upgrade, so that a pi that still runs an older pi-loops does not run your loops and rules a second time. Close every such pi, then run `pi-loops resume` (or Resume pi-loops on the page).";
 	const state = { ...STATE, automation: { ...(STATE as any).automation, upgradeHold: hold } };
 	const dom = await startPage(state, { "/conversations": listAnswer(ROWS), "/resume": { ok: true, held: true } });
 	const doc = (globalThis as any).document;

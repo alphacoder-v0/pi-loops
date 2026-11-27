@@ -41,7 +41,7 @@ export function runCardsHere<R extends Pick<RunRecord, "cwd" | "forSession" | "r
  * for a run someone asked for that finished, the first line of its reply.
  */
 export function runCardLines(r: Pick<RunRecord, "ok" | "requestedBy" | "summary" | "warning">): string[] {
-	const lines = r.warning ? [`! ${previewRedacted(r.warning, ERROR_CHARS)}`] : [];
+	const lines = r.warning ? [`! ${screenText(previewRedacted(r.warning, ERROR_CHARS))}`] : [];
 	if (!r.requestedBy || !r.ok || !r.summary) return lines;
 	const first = screenText(r.summary.split("\n").find((line) => line.trim()) ?? "").trim();
 	return first ? [...lines, first.length > ERROR_CHARS ? `${first.slice(0, ERROR_CHARS - 1)}…` : first] : lines;

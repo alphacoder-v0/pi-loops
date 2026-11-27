@@ -19,7 +19,7 @@ const nm = fs.existsSync(path.join(pkg, "node_modules")) || path.basename(hoiste
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-tsc-"));
 const tsconfig = {
 	compilerOptions: {
-		target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true, noEmit: true,
+		target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true, noEmit: true, noUnusedLocals: true,
 		skipLibCheck: true, allowImportingTsExtensions: true, types: ["node"], typeRoots: [path.join(nm, "@types")], baseUrl: ".",
 		paths: {
 			"@earendil-works/pi-coding-agent": [path.join(pkg, "dist/index.d.ts")],

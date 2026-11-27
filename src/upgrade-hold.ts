@@ -3,7 +3,7 @@
  * an older pi-loops worked in converts it and writes `upgrade-hold.json` before the version 3
  * `jobs.json` (src/convert-v2.ts). While the file is there, nothing automated runs: no loop, plain job,
  * rule check, push check or answer; a person's own messages do. A window, `pi-loops status` and the page
- * say why, and `pi-loops resume` (or the page's Resume) removes the file. Each job and rule keeps the on
+ * say why, and `pi-loops resume` (or the page's Resume pi-loops) removes the file. Each job and rule keeps the on
  * or off it had: archives, a downgrade and the lists see them as they were.
  *
  * `resume` refuses while an older pi-loops still runs here. pi-loops 0.22: its `presence/` entry is fresh,
@@ -29,7 +29,7 @@ const PRESENCE_STALE_MS = 90_000;
 const PRESENCE_MAX_BYTES = 16 * 1024;
 
 /** The line every surface shows while the upgrade's pause holds. */
-export const HOLD_LINE = "pi-loops is paused after the upgrade, so that a pi that still runs an older pi-loops does not run your loops and rules a second time. Close every such pi, then run `pi-loops resume` (or Resume on the page).";
+export const HOLD_LINE = "pi-loops is paused after the upgrade, so that a pi that still runs an older pi-loops does not run your loops and rules a second time. Close every such pi, then run `pi-loops resume` (or Resume pi-loops on the page).";
 
 /** Whether the upgrade's pause holds in `dir`. Only a regular file counts: a read of anything else could wait for ever. */
 export function upgradeHeld(dir: string): boolean {

@@ -9,14 +9,12 @@ All notable changes to pi-loops are documented here. The format follows
 
 To upgrade from 0.24.2 or earlier:
 
-1. Close every pi that runs pi-loops 0.24.2 or earlier, windows and terminals. A 0.24.2 terminal
-   that stays open cannot read what this version queues for its conversation, so a rule's result,
-   a queued prompt, a message or a claim sent from the page, and a stop or a cancel wait there until
-   you restart it (`pi-loops abort <session>` says the stop is queued, and the turn goes on), and it
-   does not run a scheduled prompt that pi-loops in the background queued for a closed conversation
-   it opens, though its turn is counted. A request that the earlier version queued itself stays
-   readable to it, except a scheduled prompt that pi-loops in the background has started to run in a
-   closed conversation.
+1. Close every pi that runs pi-loops 0.24.2 or earlier, windows and terminals. Until you restart
+   it, a 0.24.2 terminal does not get what this version queues for its conversation (a rule's
+   result, a queued prompt, a message, claim, stop or cancel from the page; `pi-loops abort
+   <session>` says the stop is queued, and the turn goes on), and it does not run a scheduled prompt
+   that pi-loops in the background queued for a closed conversation it opens, though the turn is
+   counted.
 2. Update pi-loops.
 3. Start one pi. The first start of this version in a loops directory that pi-loops 0.24.2 or
    earlier worked in converts it and pauses pi-loops:
@@ -32,13 +30,13 @@ To upgrade from 0.24.2 or earlier:
      starts. Your own messages are answered as usual, and so are the commands you type in a window
      (`/new-trigger`, a recipe's hand-off) and your `/goal`; a run you ask for with `/cron run` or
      `/triggers run` waits for `resume`, and says so. Each pi window says so when it starts,
-     `pi-loops status` says so first, and the page says so above the conversation with a Resume
+     `pi-loops status` says so first, and the page says so above the conversation with a Resume pi-loops
      button: `pi-loops is paused after the upgrade, so that a pi that still runs an older pi-loops
      does not run your loops and rules a second time. Close every such pi, then run \`pi-loops
-     resume\` (or Resume on the page).`
+     resume\` (or Resume pi-loops on the page).`
    - Nothing else changes: each loop, plain job and rule keeps the on or off it had, with its run
      count, findings and notes. A run that 0.24.2 owed is not queued.
-4. Run `pi-loops resume` (or `/pi-loops resume`, or Resume on the page). The pause is there because
+4. Run `pi-loops resume` (or `/pi-loops resume`, or **Resume pi-loops** on the page). The pause is there because
    a pi that still runs an older pi-loops (a 0.22 window, a 0.24.2 terminal, or 0.22 in the
    background) would otherwise run your loops and rules beside this version: a 0.22 window checks
    its project's rules itself, and a claim or a dismiss in an older version writes `inbox.jsonl`
@@ -400,8 +398,21 @@ To upgrade from 0.24.2 or earlier:
   middle of a run, that run is not counted as a failure, where it was counted once from the mark
   it left. `[failing ×N]` counts the failed runs that `runs.jsonl` still holds: past 1 MB it keeps its
   newer half. A failing loop that you import from an archive starts with no failures.
-- **`/cron clear` says there is no running marker to clear.** A run's claim is closed when its
-  process is gone, so there is nothing to clear by hand.
+- **`/cron clear` is removed.** A run's claim is closed when its process is gone, so there is
+  nothing to clear by hand; `/cron clear` now gets the `/cron` usage line. `/cron queue clear` does
+  not change.
+- **Undocumented command spellings are removed.** Use `/cron list` (or `/cron`) for `/cron ls`,
+  `/cron enable` for `/cron resume`, `/cron disable` for `/cron pause`, `/cron remove` for `/cron rm`
+  and `/cron delete`; `/triggers enable`, `/triggers disable` and `/triggers remove` for
+  `/triggers resume`, `pause`, `rm` and `delete`; `/recipe list` and `/recipe remove` for
+  `/recipe ls` and `/recipe rm`. A removed spelling gets the usage line.
+- **`/triggers abort` says that it stops runs and checks.** Its help says it takes a run or trace
+  id. When nothing matches, it says `nothing running with id '<id>'`. `/triggers abort --all`
+  reports `requested abort for N runs and M checks`. `/cron help` says that a running loop run
+  stops with `/triggers abort <run id>`.
+- **The page's queue names each source in the words `/cron queue` uses.** A `/cron run` row says
+  `/cron run <name>` (it said `cron <name>`), and a claimed finding's row says `claim <id>` (it said
+  `inbox <id>`).
 - **`/triggers audit` says more about a loop's runs.** It also lists a run that is stopped, removed
   with its job, failed because the process running it stopped, or parked, and the removal of a
   one-shot that has finished. The second try of a failed one-shot is listed with the time it runs,
@@ -409,6 +420,16 @@ To upgrade from 0.24.2 or earlier:
 
 ### Fixed
 
+- **Undo in the page puts the withdrawn text back in the composer.** The text is in the composer of
+  the conversation that pi forked into, as in 0.24.2, and is no longer kept as an unsent draft of
+  the conversation it was sent in. pi gives back only the text, so an image of that message is not
+  put back.
+- **The page says why pi did not start a turn for a message.** With no model or no credentials, the
+  Not sent line and the audit give pi's own reason and its `/login` hint, with secrets redacted,
+  instead of `pi did not start a turn for it`.
+- **A loop run that falls back from an unavailable pinned model says so again.** Its `/cron runs`
+  line, its row in the page's activity strip and its run card show `! pinned model <model> is
+  unavailable (<reason>); using <model>`.
 - **The dangerous-command policy reads `$$'`, `gh cs` and `$'…'` paths as the shell does, and asks
   about a word it cannot read (#231).** In an unattended run, `echo $$'a\'; pi-loops stop; …`,
   `gh cs ssh -- 'pi-loops stop'` and a read of the loops directory after a `$'…'` string

@@ -25,7 +25,7 @@ import { shortSessionId } from "./session-head.ts";
 import { oneShotDoneV3 } from "./settle.ts";
 import type { SubagentSlot, SubagentSlots } from "./slots.ts";
 import type { JobStore, LoopJob, RunRecord } from "./store.ts";
-import { FAILING_AFTER, failurePause } from "./backoff.ts";
+import { FAILING_AFTER } from "./backoff.ts";
 import { loopLane, type LaneId } from "./lane.ts";
 import { type CheckDeps, type GateLet, envelopeOf, runCheck } from "./check-run.ts";
 import type { EventLog } from "./events.ts";

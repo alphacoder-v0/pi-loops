@@ -10,7 +10,7 @@ import { failingJobs } from "./job-health.ts";
 import { redact } from "./redact.ts";
 import { runCardFor, runCardsHere } from "./run-card.ts";
 import type { ListedJob } from "./job-status.ts";
-import type { LoopJob, RunRecord } from "./store.ts";
+import type { RunRecord } from "./store.ts";
 import type { AuditRecord } from "./triggers.ts";
 
 /** Items the strip is given at most; `more` counts the rest of the window. */

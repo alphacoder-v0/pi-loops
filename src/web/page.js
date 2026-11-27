@@ -1979,7 +1979,8 @@ $("undo").onclick = async () => {
   // pi hands back the forked message; put it where it came from. pi forked into a new conversation,
   // and the page usually hears of that after this answer: the text then moves with the composer.
   $("input").value = r.data?.text ?? "";
-  if (SESSION === from) carryComposer = true;
+  // pi's fork moves the page soon; if that move never comes, the next unrelated move must not carry it.
+  if (SESSION === from) { carryComposer = true; setTimeout(() => { carryComposer = false; }, 10_000); }
   else saveDraft();
   autoGrow();
   // The branch moved, so the conversation is taken again — through resync, which is the one path
