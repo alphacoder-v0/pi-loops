@@ -4,6 +4,8 @@
  * `RunList` of `createHostRuntime`. The first two scenes run pi's real SDK against the stand-in
  * model of test/downstream/fake-model.mjs; the others script the runner.
  */
+import { holdUpgrade, resumeUpgrade } from "../src/upgrade-hold.ts";
+import { PAUSED_WHY } from "../src/run-list.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -919,6 +921,34 @@ test("[answer-conversation-one-path] a closed conversation's answer is met by it
 		s.release();
 		await w.host.drain(5_000);
 		assert.equal(w.find(finding.id)!.answer?.state, "done");
+	} finally {
+		await w.host.stop();
+	}
+});
+
+test("[upgrade-hold] a yes in a closed conversation while the upgrade's pause holds waits with the pause's reason and takes no lease; resumed, it runs once", async () => {
+	const s = scripted();
+	const w = world(() => s.runner);
+	try {
+		const { sessionId } = closedConversation(w);
+		holdUpgrade(w.dir);
+		const finding = await yesInConversation(w, sessionId, "the release notes are stale");
+		const rowId = answerRowId(finding.id);
+		const leases = new LeaseStore(w.dir);
+		const epoch = leases.read(sessionId)!.epoch;
+		for (let i = 0; i < 3; i++) {
+			await w.tick();
+			w.host.ring(sessionId);
+		}
+		await w.host.drain(5_000);
+		assert.equal(s.answerCalls().length, 0, "nothing runs while paused");
+		assert.equal(leases.read(sessionId)!.epoch, epoch, "the conversation's lease was not taken");
+		assert.equal(w.stores.requests.list(sessionId).find((r) => r.id === rowId)?.waiting, PAUSED_WHY);
+		assert.deepEqual(resumeUpgrade(w.dir, Date.now(), () => false), { resumed: true, held: true });
+		await w.tick();
+		s.release();
+		await w.host.drain(10_000);
+		assert.equal(s.answerCalls().length, 1, "resumed: it runs once");
 	} finally {
 		await w.host.stop();
 	}

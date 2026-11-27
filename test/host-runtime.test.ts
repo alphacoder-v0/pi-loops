@@ -1268,7 +1268,10 @@ test("[upgrade-hold] while the upgrade's pause holds, no caller starts anything:
 		await host.drain(5000);
 		assert.equal(inConversation(file, "t-paused"), false, "the rule's result is not written into the closed conversation");
 		assert.equal(runner.calls.length, 0, "the check row is not run");
+		assert.equal(host.runs.held(), true, "the run list of pi-loops in the background is held: it refuses every claim");
+		assert.equal(new LeaseStore(dir).read(sessionId)?.epoch, 1, "and no lease was taken for the conversation");
 		assert.deepEqual(resumeUpgrade(dir, Date.now(), () => false), { resumed: true, held: true });
+		assert.equal(host.runs.held(), false);
 		await tickHost(host);
 		await host.drain(5000);
 		assert.equal(await until(() => inConversation(file, "t-paused"), 5000), true, "resumed: the next tick delivers the result; the end of the pause is a change to the quiet mark");

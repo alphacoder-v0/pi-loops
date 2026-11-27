@@ -271,7 +271,7 @@ weaker, and worth converting whenever one of them breaks.
 
 - [x] **After an upgrade, the pause and its way out.** While the upgrade's pause holds, the line above
       the conversation says so in the words `pi-loops status` uses, with a Resume button that ends it
-      as `pi-loops resume` does; a refusal (pi-loops 0.22 still runs here) is said beside the button.
+      as `pi-loops resume` does; a refusal (an older pi-loops still runs here) is said beside the button.
       `test/web-page.test.ts`: *[upgrade-hold] while the upgrade's pause holds, the page says so above the
       conversation with a Resume button that posts /resume*; `test/page-server.test.ts`: *[upgrade-hold] the page's
       state says the upgrade's pause; POST /resume refuses while pi-loops 0.22 still runs here, then

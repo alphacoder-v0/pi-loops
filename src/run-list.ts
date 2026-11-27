@@ -8,6 +8,9 @@ import type { LockOptions } from "./lock.ts";
 import type { ClaimedRow, Listed, RequestStore, UnclaimedRow } from "./requests.ts";
 import { stamp } from "./schedule.ts";
 
+/** Why a row or an answer waits while the upgrade's pause holds (src/upgrade-hold.ts): the engine, the answer lanes and a window say it alike. */
+export const PAUSED_WHY = "pi-loops is paused after the upgrade: pi-loops resume";
+
 /** The reason of an abort that a person asked for (the page's Stop, `pi-loops abort`, `/triggers abort`). */
 export const STOPPED_BY_PERSON = "stopped by a person";
 
@@ -38,6 +41,11 @@ export class RunList {
 	/** `held`: whether no run may start now (the upgrade's pause, src/upgrade-hold.ts). Every unattended run claims its row here, so this is the one place that holds them all. */
 	constructor(held: () => boolean = () => false) {
 		this.#held = held;
+	}
+
+	/** Whether no run may start now: the upgrade's pause. An executor asks it before it takes a lease for a run. */
+	held(): boolean {
+		return this.#held();
 	}
 
 	/** Add a run under its id, replacing any run already there. */

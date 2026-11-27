@@ -97,7 +97,8 @@ machine. Everything here follows from that, and each one has a price.
    directory an older version worked in pauses pi-loops (`upgrade-hold.json`, written before the
    version 3 `jobs.json`, the conversion's one commit point; src/upgrade-hold.ts), owner decision of
    2026-11-26. While it holds, nothing automated starts in a window or in the background, whoever
-   drains: the engine holds every row but a person's own (`decideDrain`), the run list refuses every
+   drains: the engine holds every row that no person is there for (`decideDrain`: a person's message,
+   a command typed in a window and a goal's continuation go; `/cron run` waits), the run list refuses every
    claim (`RunList`), and the clock and the rule checks do not pass, so no slot is decided and no
    gate's command runs. Two places, not one per caller: two rounds of review found a caller that the
    per-rider gates missed (the requests watcher, the doorbell). Each job and rule keeps the on or off it had, so an archive, a downgrade and the lists see them

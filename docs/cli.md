@@ -419,8 +419,8 @@ Importing the same archive twice adds nothing the second time.
 ## resume
 
 `pi-loops resume` ends the pause that an upgrade begins (the CHANGELOG's upgrade notes): loops, plain
-jobs and rules run again. It refuses while pi-loops 0.22 still runs in this loops directory, and names
-its pid. With no pause it says `pi-loops is not paused`.
+jobs and rules run again. It refuses while an older pi-loops still runs in this loops directory (a
+window of 0.22, or an older pi-loops in the background), and names its pid. With no pause it says `pi-loops is not paused`.
 
 ## pi-loops in the background
 

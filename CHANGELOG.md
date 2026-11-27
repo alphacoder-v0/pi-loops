@@ -81,7 +81,9 @@ All notable changes to pi-loops are documented here. The format follows
 - **The upgrade pauses pi-loops until you resume it.** The first start of this version in a loops
   directory that pi-loops 0.24.2 or earlier worked in converts it and pauses: no loop, plain job,
   rule check or push check runs, and no answer to a question starts, until you run `pi-loops resume`
-  (or `/pi-loops resume`, or Resume on the page). Your own messages are answered as usual. A pi that
+  (or `/pi-loops resume`, or Resume on the page). Your own messages are answered as usual, and so
+  are the commands you type in a window (`/new-trigger`, a recipe's hand-off) and your `/goal`; a
+  run you ask for with `/cron run` or `/triggers run` waits for `resume`, and says so. A pi that
   still runs an older pi-loops (a 0.22 window, a 0.24.2 terminal, or 0.22 in the background) would
   otherwise run your loops and rules beside this version: a 0.22 window checks its project's rules
   itself, and a claim or a dismiss in an older version writes `inbox.jsonl` again in its own shape,
