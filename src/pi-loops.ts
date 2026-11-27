@@ -2477,7 +2477,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const row = checkRow(rule.cwd, [rule.id], createdBy(), Date.now());
 						requests.appendIfAbsent(row);
 						const running = !!liveHostRecord();
-						if (upgradeHeld(dir)) return show(ctx, `trigger ${rule.id} will be checked after \`pi-loops resume\` (trace ${row.id.slice(0, 8)})`, [`  ${HOLD_LINE}`]);
+						if (upgradeHeld(dir)) return show(ctx, `trigger ${rule.id} will be checked after \`pi-loops resume\` (trace ${row.id.slice(0, 8)})`, [`  ${HOLD_LINE}`, ...(running ? [] : ["  pi-loops is not running in the background: pi-loops start runs it"])]);
 						show(ctx, running ? `checking trigger ${rule.id} now (trace ${row.id.slice(0, 8)})` : `trigger ${rule.id} will be checked when pi-loops runs in the background (trace ${row.id.slice(0, 8)})`, [
 							`  condition: ${previewRedacted(rule.condition, 120)}`,
 							running ? "  the result appears here when the check finishes — /triggers running shows it meanwhile" : "  pi-loops is not running in the background: pi-loops start runs it",
