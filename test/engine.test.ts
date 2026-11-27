@@ -2443,13 +2443,14 @@ test("a hand-over that throws counts one attempt, and none for a row that has a 
 test("the drain does not remove a row that a run has claimed, though its prompt is written: it leaves through its closing only", async () => {
 	const w = closingWorld();
 	w.store.append(slotRow("t1"));
-	// The background's turn: the claim, then the prompt in the conversation, before the drain looks again.
+	// The claim, then the prompt in the conversation with its mark, before the drain looks again:
+	// the proof alone says the row landed, so only the claim keeps it.
 	const executor: Executor = {
 		...w.executor,
 		view: () => view({ claimLive: () => true }),
 		turn: (r) => {
 			assert.equal(w.store.claim("s", r.id, { id: "run-t1", pid: 4242, started_at: "2026-06-01T11:59:00Z" }), true);
-			w.written(r.id);
+			w.written(r.id, true);
 		},
 	};
 	const out = await drain("s", w.store, executor, T0, w.sinks);
