@@ -1982,7 +1982,7 @@ $("undo").onclick = async () => {
   // Kept as this conversation's draft until pi's fork moves the page, which takes it along; if
   // that move is late or never comes, the text is still saved here.
   saveDraft();
-  if (SESSION === from) carryComposer = true;
+  if (SESSION === from && $("input").value) carryComposer = $("input").value;
   autoGrow();
   // The branch moved, so the conversation is taken again — through resync, which is the one path
   // that also resets what the page is counting against and drains what arrived meanwhile. This used
@@ -2056,7 +2056,7 @@ async function swap(call, body, why) {
   const held = waiting.splice(0, waiting.length);
   if (r.success && !r.data?.cancelled && typeof r.sessionId === "string" && r.sessionId && r.sessionId !== SESSION) {
     // Moved first, then one reload, for the reason given; what waited is applied after it.
-    carryComposer = false;
+    carryComposer = null;
     moveTo(r.sessionId);
     waiting.push(...held);
     await resync(reloadReason());
@@ -2339,8 +2339,12 @@ function remember(key, value) {
  */
 /** One draft per conversation: a row of the list loads another conversation in this same tab. */
 const draftKey = () => "pi-web-draft:" + SESSION;
-/** True from an Undo until pi's move to the forked conversation arrives: the composer goes with it. */
-let carryComposer = false;
+/**
+ * The text an Undo put back, until pi's move to the forked conversation arrives: the composer goes
+ * with it while it still holds that text. A send or an edit in between keeps it where it is.
+ * @type {string | null}
+ */
+let carryComposer = null;
 function forgetDraft() {
   try {
     sessionStorage.removeItem(draftKey());
@@ -2662,8 +2666,8 @@ async function resync(why) {
  * list follow at once: what was typed stays with the conversation it was typed in.
  */
 function moveTo(id) {
-  const carry = carryComposer;
-  carryComposer = false;
+  const carry = carryComposer !== null && $("input").value === carryComposer;
+  carryComposer = null;
   if (carry) forgetDraft();
   SESSION = id;
   history.replaceState(null, "", "/c/" + SESSION + "/");

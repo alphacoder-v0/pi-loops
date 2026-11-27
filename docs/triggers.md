@@ -204,8 +204,8 @@ conversation is gone), `job-removed`, `refused` (the row's
 `mode` is not the one its source gets, so a line edited in the file, or written by another version,
 cannot widen what a turn may do; the row never runs). Two more come from the inbox in the browser
 page: `claimed` (a finding was claimed from the page: its yes was queued in the lane the finding
-names, or, when that lane is gone, the yes is recorded and is not run; the trace id is the
-finding's id) and `dismissed` (a
+names, or, when there is no lane to run it in, the yes is recorded and is not run; the trace id
+is the finding's id) and `dismissed` (a
 finding was dismissed from the page; the trace id is the finding's, and `details.reason` is what the
 person gave, redacted, or null).
 
