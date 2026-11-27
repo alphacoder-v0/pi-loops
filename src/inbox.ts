@@ -9,11 +9,11 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { type AnswerWrite, type AskFields, keptByRotation, readAskFields, screenAskFields } from "./ask.ts";
+import { type AnswerWrite, type AskFields, keptByRotation, readAskFields, screenAskFields, screenWords } from "./ask.ts";
 import type { LaneId } from "./lane.ts";
 import { type LockOptions, withFileLock, withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { INBOX_TEXT_MAX_CHARS, type FindingKind, capChars } from "./protocol.ts";
-import { cardText, redact, screenText } from "./redact.ts";
+import { redact, screenText } from "./redact.ts";
 import { newId } from "./store.ts";
 import { stamp } from "./schedule.ts";
 import { laneTranscripts } from "./session-head.ts";
@@ -354,16 +354,20 @@ export class Inbox {
 		}
 	}
 
-	/** All entries, oldest first. Unparseable lines are skipped. */
-	list(): InboxEntry[] {
-		return this.lines().flatMap(({ stored }) => (stored ? [screenFinding(stored)] : []));
+	/**
+	 * All entries, oldest first. Unparseable lines are skipped. `keep` picks entries by their stored
+	 * fields before they are screened, for a reader that needs a few of many (a loop run's prompt).
+	 */
+	list(keep?: (stored: InboxEntry) => boolean): InboxEntry[] {
+		return this.lines(false).flatMap(({ stored }) => (stored && (!keep || keep(stored)) ? [screenFinding(stored)] : []));
 	}
 
 	/**
 	 * Every non-blank line of the file, in order, with the entry it reads as; `entry` is missing for a
 	 * line that is not a finding (torn, not JSON). A rewrite writes such a line back as it found it.
+	 * `rest` is read only for a rewrite (`withRest`): a list does not write the fields it does not read.
 	 */
-	private lines(): Line[] {
+	private lines(withRest = true): Line[] {
 		let text: string;
 		try {
 			text = fs.readFileSync(this.file, "utf8");
@@ -381,7 +385,7 @@ export class Inbox {
 				/* a corrupt line: kept as raw text, read as nothing */
 			}
 			const stored = readFinding(parsed);
-			out.push(stored ? { raw, stored, rest: unread(parsed as Record<string, unknown>, stored) } : { raw });
+			out.push(stored ? { raw, stored, ...(withRest ? { rest: unread(parsed as Record<string, unknown>, stored) } : {}) } : { raw });
 		}
 		return out;
 	}
@@ -496,6 +500,14 @@ function readFinding(raw: any): InboxEntry | undefined {
 const LABEL_MAX_CHARS = 80;
 
 /**
+ * The `job_id` of a stored finding as every consumer reads it (`screenFinding`). A reader that picks
+ * stored findings for a loop (`list(keep)`) compares this, so it picks the ones the loop's readers own.
+ */
+export function screenedJobId(stored: Pick<InboxEntry, "job_id">): string | undefined {
+	return stored.job_id === undefined ? undefined : screenWords(stored.job_id, LABEL_MAX_CHARS);
+}
+
+/**
  * A finding as every consumer reads it: each field a surface shows, as the card shows it. The text,
  * the source, the reasons, the call and the answer are screened, redacted, on one line and capped.
  * `job_id` is an id, not words: readers match it against a job's or a rule's id. It goes through the
@@ -506,13 +518,13 @@ const LABEL_MAX_CHARS = 80;
  * rewrite read the stored words.
  */
 export function screenFinding(stored: InboxEntry): InboxEntry {
-	const words = (text: string, max: number): string => capChars(cardText(text), max);
+	const words = screenWords;
 	return {
 		...stored,
 		source: words(stored.source, LABEL_MAX_CHARS),
 		text: words(stored.text, INBOX_TEXT_MAX_CHARS),
 		dismiss_reason: stored.dismiss_reason === null ? null : words(stored.dismiss_reason, INBOX_TEXT_MAX_CHARS),
-		...(stored.job_id === undefined ? {} : { job_id: words(stored.job_id, LABEL_MAX_CHARS) }),
+		...(stored.job_id === undefined ? {} : { job_id: screenedJobId(stored) }),
 		...(stored.verified_reason === undefined ? {} : { verified_reason: capChars(redact(screenText(stored.verified_reason)), INBOX_TEXT_MAX_CHARS) }),
 		...screenAskFields(stored),
 	};

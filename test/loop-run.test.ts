@@ -22,6 +22,7 @@ import { tmp } from "./tmp.ts";
 import { fakeRunner } from "./fake-runner.ts";
 import { EventLog } from "../src/events.ts";
 import { commandDigest } from "../src/gate.ts";
+import { findingId } from "../src/inbox.ts";
 
 const now = Date.now();
 const makeJob = (over: Partial<LoopJob> = {}): LoopJob => ({
@@ -384,6 +385,16 @@ test("[repeat-rule] a loop run's finding with the words of a new finding of the 
 	const quiet = await oneRun(f, job, "run-00000000000000000000000000000004", "<loop-state>s</loop-state>");
 	assert.equal("repeats" in quiet.record, false, "a run with no repeat writes no count");
 	assert.deepEqual(f.stores.inbox.list().map((e) => e.text), ["PR #12 has failing CI", "main is behind", "PR #13 is new"]);
+});
+
+test("[reported] a finding whose job_id was edited by hand is the loop's when every reader reads it as the loop's id", async () => {
+	const f = setup();
+	const job = await f.stores.jobs.add(makeJob({ name: "watch" })) as LoopJob;
+	// A space before the id: every surface screens it to the loop's id, so the loop's prompt counts it too.
+	fs.appendFileSync(path.join(f.dir, "inbox.jsonl"), JSON.stringify({ id: findingId("hand-edited"), created_at: new Date().toISOString(), status: "new", source: "cron:watch", run_id: "r", cwd: "/p", job_id: ` ${job.id}`, text: "edited by hand" }) + "\n");
+	assert.equal(f.stores.inbox.list().find((e) => e.text === "edited by hand")?.job_id, job.id);
+	const { prompt } = await oneRun(f, job, "run-00000000000000000000000000000001", "<loop-state>s</loop-state>");
+	assert.match(prompt, /\[reported\][^\n]*\n- \d\d-\d\d new: edited by hand\n\[\/reported\]/, prompt);
 });
 
 test("[reported] [notes-files] the next run is told what its loop reported and what a person did with it, and which files its notes directory holds", async () => {

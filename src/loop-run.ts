@@ -4,6 +4,7 @@ import { type EngineSinks, applyFate, plainJobRow, plainRunId } from "./engine.t
 import { OVERFLOW_FILE, notesFileLines, notesFiles as listNotesFiles, notesWrite, reportedFor } from "./notes.ts";
 import { findingKind, composeCheckerPrompt, composeLoopPrompt, gateLines, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
 import type { EventLog } from "./events.ts";
+import { screenedJobId } from "./inbox.ts";
 import { commandReadingOf, readingDigest, type CommandReading } from "./gate.ts";
 import type { ClaimedRow, Row, UnclaimedRow } from "./requests.ts";
 import { RunList, STOPPED_BY_PERSON } from "./run-list.ts";
@@ -95,7 +96,8 @@ export async function runLoop(row: ClaimedRow, job: LoopJob, deps: LoopRunDeps):
 		let reported: string[] = [];
 		let asked: string[] = [];
 		try {
-			const findings = deps.stores.inbox.list();
+			// Only what the two blocks read: this loop's own findings and the questions of its lane.
+			const findings = deps.stores.inbox.list((f) => screenedJobId(f) === job.id || f.ask?.lane === row.lane);
 			reported = reportedFor(findings, job.id, now());
 			asked = askedLines(findings, row.lane);
 		} catch (error) { deps.sinks.log(`loop ${job.id}: inbox read failed: ${error instanceof Error ? error.message : String(error)}`, undefined, job); }

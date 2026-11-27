@@ -279,12 +279,39 @@ export function readAskFields(raw: Record<string, unknown>): AskFields {
 }
 
 /**
+ * Stored words as a card shows them: redacted, on one line, capped at `max` characters. Every list
+ * of the inbox screens every finding again, and the result depends on the words and the cap only,
+ * so it is kept: 2000 findings took four times as long to list without it. The kept words are
+ * dropped all at once when they pass `SCREENED_MAX_CHARS`.
+ */
+export function screenWords(text: string, max: number): string {
+	let kept = screened.get(max);
+	if (!kept) screened.set(max, (kept = new Map()));
+	let out = kept.get(text);
+	if (out === undefined) {
+		out = capChars(cardText(text), max);
+		if (screenedChars + text.length + out.length > SCREENED_MAX_CHARS) {
+			screened.clear();
+			screened.set(max, (kept = new Map()));
+			screenedChars = 0;
+		}
+		kept.set(text, out);
+		screenedChars += text.length + out.length;
+	}
+	return out;
+}
+const SCREENED_MAX_CHARS = 8_000_000;
+/** By cap, then by stored words. */
+const screened = new Map<number, Map<string, string>>();
+let screenedChars = 0;
+
+/**
  * `ask` and `answer` as a consumer reads them: the words of the call and of the answer as a card
  * shows them. Ids, hashes, stamps, the lane and the cap stay as they are. An unreadable answer is
  * as it was read: no surface shows it (`answerStatus`), and a rewrite writes the stored one.
  */
 export function screenAskFields({ ask, answer }: AskFields): Pick<AskFields, "ask" | "answer"> {
-	const words = (text: string, max: number): string => capChars(cardText(text), max);
+	const words = screenWords;
 	const call = (c: Call): Call => ({ ...c, ...(c.command === undefined ? {} : { command: words(c.command, ASK_COMMAND_MAX_CHARS) }), reason: words(c.reason, INBOX_TEXT_MAX_CHARS) });
 	return {
 		...(ask === undefined ? {} : { ask: { ...ask, title: words(ask.title, INBOX_TEXT_MAX_CHARS), call: call(ask.call) } }),

@@ -205,10 +205,11 @@ export function awayFor(input: AwayInput): AwaySummary {
 /**
  * The summary from the loops directory's files: the whole run log (halved past 1 MB, so it is
  * bounded), the inbox and `seen.json`. What the terminal's session-start line and the page's
- * `GET /inbox` both call, so the two cannot count differently.
+ * `GET /inbox` both call, so the two cannot count differently. `findings` is the inbox a caller
+ * has listed already, so one request does not read and screen it twice.
  */
-export function awayIn(dir: string, cwd: string, sessionId?: string, now = Date.now()): AwaySummary {
-	return awayFor({ seen: readSeen(dir), runs: new JobStore(dir).allRuns(), findings: new Inbox(dir).list(), cwd, sessionId, now, inProject: sameProject });
+export function awayIn(dir: string, cwd: string, sessionId?: string, now = Date.now(), findings: InboxEntry[] = new Inbox(dir).list()): AwaySummary {
+	return awayFor({ seen: readSeen(dir), runs: new JobStore(dir).allRuns(), findings, cwd, sessionId, now, inProject: sameProject });
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
