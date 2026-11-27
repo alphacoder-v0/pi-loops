@@ -53,7 +53,8 @@ It names this repository; the searches below take that name.
 A run that starts with "A person read a finding your earlier run reported and said yes" is that yes.
 Do no scan in that run. The quoted line at its end is one of your findings: one draft and one url.
 
-1. Check that it is still right to send: the url still opens, the thread is not locked, the
+1. Check that it is still right to send: the quoted line holds the whole draft (it has its closing
+   quote, and is not cut short with `…`), the url still opens, the thread is not locked, the
    repository has not asked not to be contacted, and your notes have no `posted: <url>` line. If one
    of these fails, say which in your report and do not post.
 2. Post the text between the quotes, exactly as it is, to that url, once. Give it on stdin so the
