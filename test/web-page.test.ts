@@ -2363,6 +2363,32 @@ test("undoing the only message empties the conversation and puts the message bac
 	dom.dispose();
 });
 
+test("undo puts the withdrawn message in the composer of the conversation pi forked into, and leaves no draft in the one it left", { timeout: 20_000 }, async () => {
+	// pi's fork answers first and the page hears of the new conversation later, at a poll. The move
+	// loaded the new conversation's empty draft over the withdrawn text, and the text stayed as an
+	// unsent draft of the conversation where it was sent.
+	const g = globalThis as any;
+	const tab = new Map<string, string>();
+	const dom = stubDom(STATE, { messages: [{ role: "user", content: [{ type: "text", text: "the withdrawn one" }] }] }, tab);
+	const realFetch = g.fetch;
+	g.fetch = async (url: unknown, opts: any) => {
+		if (String(url).includes("/undo")) return { json: async () => ({ success: true, data: { text: "the withdrawn one" } }) };
+		return realFetch(url, opts);
+	};
+	await new Function(pageScript())();
+	await dom.started();
+	const doc = g.document;
+	await doc.getElementById("undo").onclick();
+	await settled();
+	dom.source().onmessage({ data: JSON.stringify({ type: "page_moved", sessionId: "01b0-forked", seq: 1, epoch: "e1" }) });
+	await settled();
+	assert.equal(doc.getElementById("input").value, "the withdrawn one", "the text is in the composer after the move");
+	assert.equal(tab.get(`pi-web-draft:${SESSION_UNDER_TEST}`), undefined, "the conversation it was sent in keeps no draft of it");
+	assert.equal(tab.get("pi-web-draft:01b0-forked"), "the withdrawn one", "it is the draft of the conversation the person is in");
+	g.fetch = realFetch;
+	dom.dispose();
+});
+
 test("a disabled job or rule says so in words, not only by being faint", { timeout: 20_000 }, async () => {
 	/**
 	 * `/cron` prints `disabled` and the terminal panel `[disabled]`; the browser card only dimmed,

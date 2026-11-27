@@ -783,8 +783,12 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Compact, undo (fork from your last message), find across the whole session including
       abandoned branches, export to HTML, and share as a redacted gist. Undo reloads the
       conversation through the one path every other thing that empties the feed uses, so an undone
-      session is as empty as a new one. `test/web-page.test.ts`: *undoing the only message empties
-      the conversation and puts the message back in the composer*.
+      session is as empty as a new one. The withdrawn text is in the composer of the conversation
+      pi forked into, and is not kept as a draft of the one it was sent in. pi gives back the text
+      only, so an image of that message is not put back. `test/web-page.test.ts`: *undoing the only
+      message empties the conversation and puts the message back in the composer*; *undo puts the
+      withdrawn message in the composer of the conversation pi forked into, and leaves no draft in
+      the one it left*.
 - [x] Compaction says what it did — what the context was and what it became, and what the summary
       cost — and what it keeps can be steered: `/compact keep the API shapes`, as in the terminal.
       A line that reports neither is a line asking to be taken on faith.
