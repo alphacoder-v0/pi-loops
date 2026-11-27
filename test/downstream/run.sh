@@ -1,10 +1,11 @@
 #!/bin/sh
 # The downstream contract, checked from the outside: `npm run check:downstream`. Each check is a
 # shell script that drives `pi-loops` as a command and reads its output with jq; none imports this
-# package's code. One fails, this fails.
+# package's code. One fails, this fails. closed-loop.sh is not in the list: it runs once, in
+# `npm run check:contract` (CONTRACT.md §5.1), and ci runs both.
 HERE=$(cd "$(dirname "$0")" && pwd)
 status=0
-for check in recipe hooks inbox closed-loop upgrade; do
+for check in recipe hooks inbox upgrade; do
 	echo "downstream: $check"
 	if sh "$HERE/$check.sh"; then
 		echo "downstream: $check passed"
