@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CARDED_FIRST_RUNS, burstLine, freshRuns, notesCutWords, panelRuns, placeRunCards, runCardDelivery, runCardFor, runCardLines, runCardsHere, runLine } from "../src/run-card.ts";
+import { CARDED_FIRST_RUNS, burstLine, freshRuns, notesCutWords, panelRuns, placeRunCards, runCardDelivery, runCardFor, runCardLines, runCardsHere, runLine, warningWords } from "../src/run-card.ts";
+import { previewRedacted } from "../src/redact.ts";
 import type { RunRecord } from "../src/store.ts";
 
 const record = (over: Partial<RunRecord> = {}): RunRecord => ({
@@ -153,6 +154,24 @@ test("a card for a run someone asked for carries the first line of its reply, sc
 	const [long] = runCardLines(record({ ordinal: 4, requestedBy: asked, summary: "y".repeat(400) }));
 	assert.ok(long.length <= 120, `clipped to the card: ${long.length}`);
 	assert.deepEqual(runCardLines(record({ ordinal: 4, requestedBy: asked, ok: false, error: "provider 500", summary: "partial" })), [], "a failure's card says its error, as it does today");
+});
+
+const FELL_BACK = "pinned model anthropic/claude-sonnet-4-5 is unavailable (no auth configured); using fake/fake-model";
+
+test("[run-warning-visible] a run card says the run fell back from its pinned model, redacted and clipped", () => {
+	assert.deepEqual(runCardLines(record({ ordinal: 1, warning: FELL_BACK })), [`! ${FELL_BACK}`], "a scheduled run's card");
+	assert.deepEqual(runCardLines(record({ ordinal: 4, ok: false, error: "provider 500", warning: FELL_BACK })), [`! ${FELL_BACK}`], "a failure's card too");
+	assert.deepEqual(runCardLines(record({ ordinal: 4, requestedBy: { sessionId: "conv-b" }, summary: "All clear", warning: FELL_BACK })), [`! ${FELL_BACK}`, "All clear"], "before the reply's first line");
+	const [secret] = runCardLines(record({ ordinal: 1, warning: "pinned model x is unavailable (key sk-abcdefghijklmnopqrstuvwxyz012345)" }));
+	assert.doesNotMatch(secret, /sk-abcdefghijklmnopqrstuvwxyz012345/, "redacted");
+	const [long] = runCardLines(record({ ordinal: 1, warning: "w".repeat(400) }));
+	assert.ok(long.length <= 123, `clipped to the card: ${long.length}`);
+});
+
+test("[run-warning-visible] /cron runs says the run fell back from its pinned model, and a clean run says nothing more", () => {
+	assert.equal(warningWords(record({ warning: FELL_BACK })), `, ! ${previewRedacted(FELL_BACK, 80)}`);
+	assert.equal(warningWords(record()), "");
+	assert.doesNotMatch(warningWords(record({ warning: "key sk-abcdefghijklmnopqrstuvwxyz012345" })), /sk-abcdefghijklmnopqrstuvwxyz012345/, "redacted");
 });
 
 test("[notes-cut-visible] /cron runs says a run's notes were cut, by how much, and where the whole text is", () => {

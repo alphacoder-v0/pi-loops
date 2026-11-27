@@ -514,14 +514,15 @@ weaker, and worth converting whenever one of them breaks.
 - [x] **Loop activity** between the conversation and the composer: closed, one line ("loop
       activity · 5 runs today · 1 failed · 1 rule result"); open, a row for each loop run and each
       matched or failed rule check of this project over the last day, newest first, at most 100. A
-      run that carded in the conversation on the screen says `in chat`, and no other row does; a removed loop says `(removed)`; a rule result names its
+      run that carded in the conversation on the screen says `in chat`, and no other row does; a run that fell back from its pinned model says `! pinned model … is unavailable …`; a removed loop says `(removed)`; a rule result names its
       condition and points at its card. Only a loop's first three runs and its failures write into
       the conversation (docs/loops.md "Run cards"), so the strip is where every other run is seen.
       The rule rows come from the last 256 KB of the trigger audit, which can hold less than a day
       when checks write long summaries. All text is drawn as text. `test/web-page.test.ts`: *the
       activity strip is one line until opened, then lists every run and rule result as text*; *the
       strip draws 96 items open within 200 ms*; *the strip says in chat only for a carded run of the
-      conversation on the screen*. `test/page-server.test.ts`: *GET /activity: one
+      conversation on the screen*; *[run-warning-visible] a strip row says the run fell back from
+      its pinned model*. `test/page-server.test.ts`: *GET /activity: one
       project's runs and rule results*. `test/activity.test.ts`: *five runs of a loop are five items*.
 - [x] On a phone the strip stays one line closed and opens as a sheet that scrolls inside itself;
       nothing in it scrolls sideways. The open strip takes its own room below the conversation, and a

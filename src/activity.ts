@@ -40,6 +40,8 @@ export interface ActivityItem {
 	costUsd?: number;
 	/** Redacted and clipped. */
 	error?: string;
+	/** What the run survived (a pinned model it fell back from), redacted and clipped. */
+	warning?: string;
 	/** A rule check: the start of what it said, redacted and clipped. */
 	text?: string;
 	/** The run wrote a card into its conversation (src/run-card.ts). */
@@ -122,6 +124,7 @@ export function activityFrom(input: ActivityInput): { items: ActivityItem[]; mor
 			seconds: secondsBetween(r.startedAt, r.finishedAt),
 			...(typeof r.usage?.cost === "number" && r.usage.cost ? { costUsd: r.usage.cost } : {}),
 			...(!r.ok && r.error ? { error: clip(r.error) } : {}),
+			...(r.warning ? { warning: clip(r.warning) } : {}),
 			carded: runCardFor(r) === "card",
 			inboxIds: [],
 			// Where its card is: a run someone asked for cards where they asked, not where its loop was made.

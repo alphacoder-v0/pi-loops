@@ -57,6 +57,16 @@ test("a failure counts and cards, a stop does neither, a removed loop keeps its 
 	assert.deepEqual([mine.items[0].stopped, mine.items[0].stoppedBy, mine.failed], [true, "person", 0], "the strip says stopped by you");
 });
 
+test("[run-warning-visible] a run that fell back from its pinned model carries the warning, redacted and clipped; a clean run has none", () => {
+	const runs = [run({ runId: "fell", warning: `pinned model a/b is unavailable (no auth configured); key sk-abcdefghijklmnopqrstuvwxyz012345 ${"w".repeat(300)}` }), run({ runId: "clean", finishedAt: at(8) })];
+	const out = activityFrom({ runs, audit: [], findings: [], jobs: new Map([["cron-todo", { name: "todo" }]]), rules: new Map(), cwd: "/api", inProject: same, sinceMs: NOW - 86_400_000 });
+	const by = new Map(out.items.map((i) => [i.id, i]));
+	assert.match(by.get("fell")!.warning!, /^pinned model a\/b is unavailable \(no auth configured\)/);
+	assert.doesNotMatch(by.get("fell")!.warning!, /sk-abcdefghijklmnopqrstuvwxyz012345/, "redacted");
+	assert.ok(by.get("fell")!.warning!.length <= 160, "clipped to a row");
+	assert.equal(Object.hasOwn(by.get("clean")!, "warning"), false);
+});
+
 test("a rule check that matched is an item joined to its finding; a quiet check is not; a failed one is", () => {
 	const audit_ = [
 		audit({ ts: at(6), state: "running", traceId: "t-1" }),

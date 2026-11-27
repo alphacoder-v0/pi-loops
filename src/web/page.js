@@ -3673,6 +3673,7 @@ function activityLine(i) {
   if (i.stopped) bits.push(i.stoppedBy === "person" ? "stopped by you" : "stopped");
   else if (i.ok === false) bits.push(plain(str(i.error || "failed")));
   else bits.push(num(i.findings) + " finding" + (num(i.findings) === 1 ? "" : "s"));
+  if (i.warning) bits.push("! " + plain(str(i.warning)));
   if (num(i.seconds)) bits.push(num(i.seconds) + "s");
   if (num(i.costUsd)) bits.push("$" + num(i.costUsd).toFixed(3));
   // Only a card this conversation got is in the chat on the screen (src/run-card.ts runCardsHere).

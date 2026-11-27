@@ -228,7 +228,7 @@ test("[overlap-at-drain] A scheduled row that waits beside a run of the same loo
 	try {
 		await host.loops.drain(parseLane(lane) as any, t0);
 		const rows = host.stores.requests.list(lane) as any[];
-		assert.deepEqual(rows.map((row) => [row.id, row.collapsed, row.collapsed_slot, row.skipped]), [["run-asked", 1, slot, 1]]);
+		assert.deepEqual(rows.map((row) => [row.id, row.collapsed_slot, row.skipped]), [["run-asked", slot, 1]]);
 		assert.equal(host.stores.clock.read().jobs[ID]?.collapsed, 1, "one skipped overlap on the loop's cursor");
 		assert.equal(listedJobs(host.stores, () => true).find((j) => j.id === ID)?.status.error, "skipped: previous run still active");
 	} finally { await host.stop(); }

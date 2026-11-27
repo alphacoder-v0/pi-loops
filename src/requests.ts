@@ -101,12 +101,10 @@ interface RowBase {
 	/** stop, cancel. Never "whatever runs next". */
 	target?: { id: string } | { current: true; started_before: string };
 	collapse_key?: string;
-	/** Slots counted onto this queued row. Absent means zero. */
-	collapsed?: number;
-	/** The latest slot counted in `collapsed`. */
+	/** The latest slot counted onto this queued row: a slot at or before it is counted already. */
 	collapsed_slot?: string;
 	/**
-	 * Of the slots in `collapsed`, those counted while this row's run was going: main's skipped
+	 * Of the slots counted onto this row, those counted while this row's run was going: main's skipped
 	 * overlaps. A slot counted while the row waited to start, or while its claim's process was gone,
 	 * is no skip. Written by the writer that decides the overlap (the clock's collapse, the drain).
 	 */
@@ -386,7 +384,7 @@ export class RequestStore {
 				return { raw, row };
 			}
 			result = "counted";
-			return { raw: rowLine({ ...row, collapsed: (row.collapsed ?? 0) + 1, collapsed_slot: slot, ...(overlap && row.run ? { skipped: (row.skipped ?? 0) + 1 } : {}) }, version), row };
+			return { raw: rowLine({ ...row, collapsed_slot: slot, ...(overlap && row.run ? { skipped: (row.skipped ?? 0) + 1 } : {}) }, version), row };
 		}), lock);
 		return result;
 	}

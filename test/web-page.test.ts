@@ -4390,6 +4390,21 @@ test("the activity strip is one line until opened, then lists every run and rule
 	}
 });
 
+test("[run-warning-visible] a strip row says the run fell back from its pinned model", { timeout: 20_000 }, async () => {
+	const answer = activityAnswer();
+	answer.items[1] = { ...answer.items[1], warning: "pinned model a/b is unavailable (no auth configured); using fake/fake-model <b>x</b>" };
+	const { dom, slot, texts, done } = await activityPage(answer);
+	try {
+		slot().children[0]._on.click();
+		const rows = slot().children[1].children.map((li: any) => texts(li).join("|"));
+		assert.match(rows[1], /issue-triage · 0 findings · ! pinned model a\/b is unavailable \(no auth configured\); using fake\/fake-model <b>x<\/b>/);
+		assert.doesNotMatch(rows[2], /pinned model/, "a clean run says nothing more");
+		assert.ok(!dom.made.some((m: any) => m.tag === "b"), "drawn as text");
+	} finally {
+		done();
+	}
+});
+
 test("the strip draws 96 items open within 200 ms", { timeout: 20_000 }, async () => {
 	const answer = activityAnswer();
 	answer.items = Array.from({ length: 96 }, (_, i) => ({ ...answer.items[1], id: `run-${i}`, finishedAt: minAgo(i * 15) }));

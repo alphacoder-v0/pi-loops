@@ -8,7 +8,6 @@ import { openWhere, ownerSession, whereRuns, type OwnerView } from "./job-owner.
 import type { LockOptions } from "./lock.ts";
 import type { RequestStore, Row, UnclaimedRow } from "./requests.ts";
 
-type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
 import { computeDue, formatLocal, formatLocalZoned, isValidSchedule, nextRunAt, parseSchedule, stamp } from "./schedule.ts";
 import type { Disabled, JobStore, LoopJob, RunRecord } from "./store.ts";
 import { firedBy, jobStatus, runHistory, type JobHistory } from "./job-status.ts";
@@ -485,7 +484,7 @@ export function wanted(probe: TickProbe): ReadonlyMap<string, LaneId> {
 	return result;
 }
 
-export interface JobRead { readonly rows: readonly CountedRow[]; readonly history: JobHistory | undefined; readonly cwdMissing: boolean }
+export interface JobRead { readonly rows: readonly Row[]; readonly history: JobHistory | undefined; readonly cwdMissing: boolean }
 /** A loop's gate as this tick looked at it: when, what it read, and the event that stored the reading when it opened the wake. */
 export interface TakenLook { readonly at: string; readonly look: Look; readonly event?: string }
 export interface TickView {
@@ -765,11 +764,11 @@ function clockPass(scope: TickScope, sources: TickSources, now: number, looks?: 
 	const byId = new Map(jobs.map((job) => [job.id, job]));
 	const lanes = wanted({ jobs, clock, now, mine: new Set(mine.keys()) });
 	if (!lanes.size) return { ticked: [], jobs: byId };
-	const rowsByLane = new Map<LaneId, readonly CountedRow[]>();
+	const rowsByLane = new Map<LaneId, readonly Row[]>();
 	for (const lane of lanes.values()) {
 		if (!rowsByLane.has(lane)) {
 			const proof = sources.proof(lane);
-			rowsByLane.set(lane, sources.requests.list(lane).filter((row) => !landed(row, proof)) as CountedRow[]);
+			rowsByLane.set(lane, sources.requests.list(lane).filter((row) => !landed(row, proof)));
 		}
 	}
 	const history = sources.history();

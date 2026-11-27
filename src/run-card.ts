@@ -36,11 +36,15 @@ export function runCardsHere<R extends Pick<RunRecord, "cwd" | "forSession" | "r
 	return fresh.filter((r) => (r.requestedBy ? r.requestedBy.sessionId === here.sessionId : here.inProject(r.cwd) && (!r.forSession || r.forSession === here.sessionId)));
 }
 
-/** The lines under a card's title: for a run someone asked for that finished, the first line of its reply. */
-export function runCardLines(r: Pick<RunRecord, "ok" | "requestedBy" | "summary">): string[] {
-	if (!r.requestedBy || !r.ok || !r.summary) return [];
+/**
+ * The lines under a card's title: what the run survived (a pinned model it fell back from), then,
+ * for a run someone asked for that finished, the first line of its reply.
+ */
+export function runCardLines(r: Pick<RunRecord, "ok" | "requestedBy" | "summary" | "warning">): string[] {
+	const lines = r.warning ? [`! ${previewRedacted(r.warning, ERROR_CHARS)}`] : [];
+	if (!r.requestedBy || !r.ok || !r.summary) return lines;
 	const first = screenText(r.summary.split("\n").find((line) => line.trim()) ?? "").trim();
-	return first ? [first.length > ERROR_CHARS ? `${first.slice(0, ERROR_CHARS - 1)}…` : first] : [];
+	return first ? [...lines, first.length > ERROR_CHARS ? `${first.slice(0, ERROR_CHARS - 1)}…` : first] : lines;
 }
 
 /** One line for a run: the card's title, the panel's row and the burst line say it the same way. `name` is the loop's, when it has one. */
@@ -56,6 +60,11 @@ export function runLine(r: RunRecord, name?: string): string {
 /** What `/cron runs` adds to a run whose notes were cut at the write (src/notes.ts `notesWrite`), or "". */
 export function notesCutWords(r: Pick<RunRecord, "notesCut">): string {
 	return r.notesCut ? `, notes cut ${r.notesCut.from}→${r.notesCut.to} (whole text in ${OVERFLOW_FILE})` : "";
+}
+
+/** What `/cron runs` adds to a run that fell back from its pinned model, or "": without it the fallback looks like a clean run. */
+export function warningWords(r: Pick<RunRecord, "warning">): string {
+	return r.warning ? `, ! ${previewRedacted(r.warning, 80)}` : "";
 }
 
 /** The one line a burst's carded rest is folded into. */
