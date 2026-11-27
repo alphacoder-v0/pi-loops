@@ -815,9 +815,12 @@ log(`default model: ${parentModel ? `${parentModel.provider}/${parentModel.id}` 
 startMcpSources();
 host.start();
 // A push stored just before a crash, whose rows were not written yet: written now (a row there already is left).
-{
+// A rules file that cannot be read costs those pushes, not a start: they stay stored for the next start or a replay.
+try {
 	const lanes = host.rederivePushes((server) => mcpLoaded.servers.some((cfg) => cfg.name === server && deliveryOf(cfg) === "sub_agent"));
 	if (lanes) log(`pushes: ${lanes} row(s) written again for pushes stored before a stop`);
+} catch (err: any) {
+	log(`pushes stored before a stop: their rows could not be written (${err?.message ?? err})`);
 }
 ticker.start();
 // As in the minute timer below: a rules file that cannot be read must cost its rules, not every loop.

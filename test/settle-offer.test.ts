@@ -98,7 +98,7 @@ function world(answersOf: (string | undefined)[]) {
 }
 
 test("a question's selector has design 6.4's title, lines and options; Yes and No go through say once and print their line, and Esc says nothing", async () => {
-	const title = ["Allow this once?", 'The scheduled prompt "deploy-check" asked to run bash: sudo invocation.', CMD, "It went on without it. Yes runs it once in a new turn. Esc leaves the question open (/inbox)."].join("\n");
+	const title = ["Allow this once?", 'The scheduled prompt "deploy-check" asked to run bash: sudo invocation.', CMD, "It went on without it. Yes runs it once in a new turn. No refuses the same command for 14 days. Esc leaves the question open (/inbox)."].join("\n");
 	const yes = world(["Yes, run it once"]);
 	const asked = await yes.file();
 	assert.deepEqual(await offerAtSettle([{ kind: "question", finding: asked }], yes.deps), [{ kind: "question", id: asked.id, said: "Y1" }]);
@@ -112,7 +112,7 @@ test("a question's selector has design 6.4's title, lines and options; Yes and N
 	const refused = await no.file();
 	await offerAtSettle([{ kind: "question", finding: refused }], no.deps);
 	assert.deepEqual(no.said, [[refused.id, "no"]]);
-	assert.deepEqual(no.printed, ['said no: "deploy-check" is told in this conversation']);
+	assert.deepEqual(no.printed, ['said no: "deploy-check" is told in this conversation; the same command is refused for 14 days']);
 	assert.equal(no.finding(refused.id).status, "dismissed");
 
 	const esc = world([undefined]);

@@ -742,7 +742,13 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			if (!stored) return false;
 			const trigger = cwd ? { ...stored, cwd } : stored;
 			if (delivery === "sub_agent") {
-				const lanes = derivePush(pushDeps, event, trigger, Date.now());
+				// This runs in an MCP server's data handler: an error here would end the process and every run in it.
+				let lanes: LaneId[];
+				try { lanes = derivePush(pushDeps, event, trigger, Date.now()); }
+				catch (error) {
+					log(`push ${event.id} from ${server} stored, but its rows could not be written (${error instanceof Error ? error.message : String(error)}); pi-loops events replay ${event.id} writes them`);
+					return true;
+				}
 				derived(event.seq);
 				for (const lane of lanes) {
 					checks.drain(lane, Date.now()).catch((error) => log(`check lane ${lane}: ${error instanceof Error ? error.message : String(error)}`));

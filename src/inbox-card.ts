@@ -374,20 +374,41 @@ export function cancelRefusal(refusal: StepRefusal): string {
 	return "it has no queued answer to cancel";
 }
 
+/** Why pi-loops does not run in the background, when a person or a setting keeps it off. */
+export type BackgroundOff = "stopped" | "env-off" | "auto-off";
+
+/** The reason in the words `pi-loops status` uses. */
+export const BACKGROUND_OFF_WHY: Readonly<Record<BackgroundOff, string>> = {
+	stopped: "it was stopped by hand",
+	"env-off": "PI_LOOPS_HOST=off is set",
+	"auto-off": "[host] auto = false in config.toml",
+};
+
+/** Which reason keeps pi-loops off, in the order `pi-loops status` checks them; undefined when none does. */
+export function backgroundOff(facts: { stopped: boolean; envOff: boolean; auto: boolean }): BackgroundOff | undefined {
+	if (facts.stopped) return "stopped";
+	if (facts.envOff) return "env-off";
+	if (!facts.auto) return "auto-off";
+	return undefined;
+}
+
 /** What a Y1 adds when pi-loops is not running in the background: only that process runs a yes. */
-export const YES_WAITS_FOR_BACKGROUND = "It runs when pi-loops runs in the background.";
+export function yesWaitsForBackground(off?: BackgroundOff): string {
+	const why = off === undefined ? "" : ` It does not run now: ${BACKGROUND_OFF_WHY[off]}.`;
+	return `It runs once pi-loops runs in the background.${why} Run pi-loops start (or /pi-loops start) to start it.`;
+}
 
 /**
  * What a terminal prints after a yes (design 6.1, 6.2). Y1 on a question: the run that asked
  * resumes with the one call allowed. Y1 on any other finding: the run that reported it picks it up.
  * Y2: why nothing runs. `background`: pi-loops runs in the background now; when it does not, a Y1
- * says that the yes runs once it does. `here`: the conversation this window holds, whose own
+ * says that the yes runs once it does, how to start it, and `off`, the reason it is off when known. `here`: the conversation this window holds, whose own
  * questions it runs as a turn after the current one (design 6.4), with no card.
  */
-export function yesTerminalLine(said: { said: "Y1"; finding: InboxEntry } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, background: boolean, here?: string): string {
+export function yesTerminalLine(said: { said: "Y1"; finding: InboxEntry } | { said: "Y2"; finding: InboxEntry; why: string }, who: string, background: boolean, here?: string, off?: BackgroundOff): string {
 	if (said.said === "Y2") return `${said.why}; nothing runs`;
 	if (said.finding.ask && here !== undefined && said.finding.ask.lane === here && parseLane(here)?.kind === "conversation") return "approved: it runs in this conversation after the current turn, with this one command allowed.";
-	const waits = background ? "" : ` ${YES_WAITS_FOR_BACKGROUND}`;
+	const waits = background ? "" : ` ${yesWaitsForBackground(off)}`;
 	if (said.finding.ask) return `approved: ${who} resumes the run that asked, with this one command allowed.${waits} A card comes here when it ends.`;
 	return `claimed: ${who} picks this up in the run that reported it, in the background.${waits} A card comes here when it ends.`;
 }
@@ -442,7 +463,7 @@ export function settleQuestion(entry: InboxEntry & { ask: NonNullable<InboxEntry
 	const who = fromScheduledPrompt(entry.ask.lane, entry.job_id) ? `The scheduled prompt ${asker}` : asker.charAt(0).toUpperCase() + asker.slice(1);
 	const lines = ["Allow this once?", `${who} asked to run ${cardText(tool)}: ${cardText(reason).replace(/\.$/, "")}.`];
 	if (command !== undefined) lines.push(cardText(command));
-	lines.push("It went on without it. Yes runs it once in a new turn. Esc leaves the question open (/inbox).");
+	lines.push("It went on without it. Yes runs it once in a new turn. No refuses the same command for 14 days. Esc leaves the question open (/inbox).");
 	return { title: lines.join("\n"), options: [SETTLE_NO, SETTLE_YES] };
 }
 
@@ -451,9 +472,9 @@ export function settleYesLine(entry: Pick<InboxEntry, "cwd" | "job_id">, lane: L
 	return `queued: your yes to ${settleAsker(entry, lane, loopName)} runs after the current turn`;
 }
 
-/** What a terminal prints after the selector's No (design 6.4). */
+/** What a terminal prints after the selector's No (design 6.4): the words of `noQuestionLine`, with the 14-day hold. */
 export function settleNoLine(entry: Pick<InboxEntry, "cwd" | "job_id">, lane: LaneId, loopName: (jobId: string) => string | undefined): string {
-	return `said no: ${settleAsker(entry, lane, loopName)} is told in this conversation`;
+	return noQuestionLine("terminal", settleAsker(entry, lane, loopName), lane);
 }
 
 /** Why the CLI refuses a claim of a question (design 6.1): a claim from a shell allows no command, so the question stays open for a person to answer where a yes can run it. */
