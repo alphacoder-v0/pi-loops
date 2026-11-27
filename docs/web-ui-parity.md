@@ -38,8 +38,10 @@ weaker, and worth converting whenever one of them breaks.
       page: "not sent before pi stopped", with send and discard. `test/web.test.ts`: *a message typed
       before pi exits is offered, not sent, by the next page*.
 - [x] A send pi refuses (compaction in progress, no credentials) comes back to the composer with the
-      error, images included. `test/web.test.ts`: *a send pi refuses comes back to the composer with
-      the error*.
+      error, images included. The Not sent line says pi's own reason, redacted, with its `/login`
+      hint when no model or no credentials are set up. `test/web.test.ts`: *a send pi refuses comes
+      back to the composer with the error*; *a send pi refuses with no model or no credentials comes
+      back with pi's own reason, redacted*.
 - [x] A session also open in a terminal is answered by that terminal, and the page says so: "open in
       a terminal: answered there", with no pid. `test/web.test.ts`: *a page's message for
       a session a terminal holds is answered there*; `test/web-page.test.ts`: *a send answered

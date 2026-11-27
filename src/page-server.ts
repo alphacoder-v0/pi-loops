@@ -1455,8 +1455,12 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			// The bytes first: removing the row removes its image file.
 			const images = imagesOf(row);
 			requests.remove(sessionId, [row.id]);
-			audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "failed", sourceLabel: row.source, eventLabel: sessionId, details: { session_id: sessionId, error: row.last_error, returned: "to the composer" } });
-			child.broadcast({ type: "send_failed", id: row.id, text: row.payload?.text ?? "", images, error: row.last_error });
+			// pi's own reason, when it refused a send after this row was written: it names what is missing
+			// (a model, a key) and how to set it up, where the holder can only say no turn started.
+			const refused = child.live.refusedSend;
+			const error = refused && refused.at >= Date.parse(row.created_at) ? redact(refused.error) : row.last_error;
+			audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "failed", sourceLabel: row.source, eventLabel: sessionId, details: { session_id: sessionId, error, returned: "to the composer" } });
+			child.broadcast({ type: "send_failed", id: row.id, text: row.payload?.text ?? "", images, error });
 		}
 		const jobNames = new Map<string, string>((readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs ?? []).map((j: any) => [j?.id, j?.name]).filter(([id, name]: any) => typeof id === "string" && typeof name === "string"));
 		return rows
