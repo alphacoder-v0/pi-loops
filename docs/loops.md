@@ -801,8 +801,10 @@ and the next try while the wait holds it back:
     last run failed: 401 Unauthorized (7 in a row; next try 16:10)
 ```
 
-A time on another day has its date. Under a loop with a note of its clock, `/cron` says `note:
-<the note>` (`note: missed 2026-11-14 09:00 while pi-loops was not running (catch-up disabled)`),
+A time on another day has its date. The last failure stays until a run succeeds: a note written
+after it does not take its place. Under a loop with a note of its clock and no failure, `/cron` says
+`note: <the note>` (`note: missed 2026-11-14 09:00 while pi-loops was not running (catch-up
+disabled)`),
 and under a loop whose next run waits, `queued since <time>: <why>` (`queued since 09:00: deferred:
 3 sub-agent(s) already in flight (max 3)`). Any other word is `last error: <the word>`.
 `cron_list` gives the model the same facts as `last_error` (with the count and the next try),
