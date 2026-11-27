@@ -95,7 +95,7 @@ conversation, with the tool's name and its input on the card, and are refused in
 check's run. The cap holds until the turn settles, through pi's own retries and follow-ups. A row
 written into `requests/<session>.jsonl` by anything but this window, with a source that would make
 it yours, runs as a scheduled turn with no declared tools: the danger check asks you. Your own
-turns, a `/goal` continuation, a claimed finding, a recipe hand-off and `/new-trigger` never ask:
+turns, a `/goal` continuation, a recipe hand-off and `/new-trigger` never ask:
 they are yours, and a message you send into a scheduled turn makes the rest of it yours too.
 
 Nothing turns the cap off. `[engine] window_guard` is no longer a setting in 0.24.3: a

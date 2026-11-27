@@ -7,6 +7,51 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Upgrade notes
 
+To upgrade from 0.24.2 or earlier:
+
+1. Close every pi that runs pi-loops 0.24.2 or earlier, windows and terminals. A 0.24.2 terminal
+   that stays open cannot read what this version queues for its conversation, so a rule's result,
+   a queued prompt, a message or a claim sent from the page, and a stop or a cancel wait there until
+   you restart it (`pi-loops abort <session>` says the stop is queued, and the turn goes on), and it
+   does not run a scheduled prompt that pi-loops in the background queued for a closed conversation
+   it opens, though its turn is counted. A request that the earlier version queued itself stays
+   readable to it, except a scheduled prompt that pi-loops in the background has started to run in a
+   closed conversation.
+2. Update pi-loops.
+3. Start one pi. The first start of this version in a loops directory that pi-loops 0.24.2 or
+   earlier worked in converts it and pauses pi-loops:
+   - `~/.pi/agent/loops/jobs.json` becomes version 3, which 0.24.2 does not read. The file holds each
+     job's definition only: when a job last ran and how many times is in `clock.json`, and its
+     failures are read from `runs.jsonl`. The file before is kept beside it as `jobs.json.v2.bak`.
+   - A claim that 0.24.2 queued and that pi did not start is a new finding again. 0.24.2 queued
+     `/inbox claim` and the page's Yes as a turn in a conversation. The conversion removes each such
+     turn from its queue. If pi had the turn before the upgrade, the finding stays claimed. If pi did
+     not have it, the finding is `new` again: say yes to it again, and it runs as described under
+     Changed. Each removed turn is in the audit of requests as `converted`.
+   - While paused, no loop, plain job, rule check or push check runs, and no answer to a question
+     starts. Your own messages are answered as usual, and so are the commands you type in a window
+     (`/new-trigger`, a recipe's hand-off) and your `/goal`; a run you ask for with `/cron run` or
+     `/triggers run` waits for `resume`, and says so. Each pi window says so when it starts,
+     `pi-loops status` says so first, and the page says so above the conversation with a Resume
+     button: `pi-loops is paused after the upgrade, so that a pi that still runs an older pi-loops
+     does not run your loops and rules a second time. Close every such pi, then run \`pi-loops
+     resume\` (or Resume on the page).`
+   - Nothing else changes: each loop, plain job and rule keeps the on or off it had, with its run
+     count, findings and notes. A run that 0.24.2 owed is not queued.
+4. Run `pi-loops resume` (or `/pi-loops resume`, or Resume on the page). The pause is there because
+   a pi that still runs an older pi-loops (a 0.22 window, a 0.24.2 terminal, or 0.22 in the
+   background) would otherwise run your loops and rules beside this version: a 0.22 window checks
+   its project's rules itself, and a claim or a dismiss in an older version writes `inbox.jsonl`
+   again in its own shape, which removes what this version adds to a finding. `resume` refuses while
+   pi-loops 0.22 still runs here, or an older pi-loops in the background, and names its pid.
+   pi-loops 0.24.2 in the background, which an update of the package does not stop, is replaced by
+   the first pi window of this version, as before; until then it still checks every rule that is
+   on, so `resume` refuses while it runs. `resume` cannot see a 0.24.2 terminal that was not
+   restarted, so it cannot refuse for it: that is the cost of this design, with the one command that
+   every person who upgrades runs. Once resumed, a loop whose slots came due during the pause runs as
+   a loop turned on again does: once, for its latest slot, while pi-loops ran through the pause; with
+   catch-up off, a slot that came due while pi-loops was not running is skipped.
+
 - **Some commands of an unattended run are now asked about or refused (the dangerous-command
   policy, #231 and #172).** Asked: `git config` of a setting that runs a program, in any scope
   (`git config core.pager less` too); a template given to `git init` or `git clone`; a command that
@@ -21,34 +66,16 @@ All notable changes to pi-loops are documented here. The format follows
   several lines whose quoted text names a pi-loops stop or claim or the loops directory. `[danger]
   allow` in `config.toml` gives a loop one of these shell commands back. Refused, nobody asked, and no
   `allow` entry changes it: pi's `write` or `edit` of a git setup file. Nothing is converted.
-
-- **The first start of this version converts `~/.pi/agent/loops/jobs.json` to version 3, which
-  0.24.2 does not read.** The file holds each job's definition only: when a job last ran and how
-  many times is in `clock.json`, and its failures are read from `runs.jsonl`. The file before is
-  kept beside it as `jobs.json.v2.bak`. To go back to 0.24.2, stop pi-loops and every pi, and put
-  `jobs.json.v2.bak` back as `jobs.json`: it has the jobs and the run counts of the moment you
-  upgraded, and not the jobs you made since. 0.24.2 does not run a loop's run that this version
-  queued (`requests/@cron-*.jsonl`): it waits there until you upgrade again.
-- **A claim that 0.24.2 queued and that pi did not start is a new finding again.** 0.24.2 queued
-  `/inbox claim` and the page's Yes as a turn in a conversation. The first start of this version
-  removes each such turn from its queue. If pi had the turn before the upgrade, the finding stays
-  claimed. If pi did not have it, the finding is `new` again: say yes to it again, and it runs as
-  described under Changed. Each removed turn is in the audit of requests as `converted`.
-- **Restart every pi terminal that runs pi-loops 0.24.2 or earlier after you upgrade.** What
-  this version queues for a conversation is a line an earlier version cannot read. While a
-  terminal of an earlier version has a conversation open, none of these reaches it: a rule's
-  result, a queued prompt, a message or a claim sent from the page, and a stop or a cancel.
-  `pi-loops abort <session>` then says the stop is queued, and the turn goes on. Each waits in
-  the queue until you restart that terminal. A request the earlier version queued
-  itself stays readable to it, with one exception: a scheduled prompt that pi-loops in the
-  background has started to run in a closed conversation. Every scheduled prompt that pi-loops
-  in the background queues for a closed conversation is a line of this version too: a terminal
-  of an earlier version that opens that conversation does not run it, though its turn is
-  counted, until you restart that terminal.
-- **Before you go back to 0.24.2, let what is queued be delivered, or cancel it.** 0.24.2 does
-  not read what this version queued: it leaves those requests in the queue, `pi-loops status`
-  does not count them, and it removes the images of a queued message from the page after one
-  minute.
+- **Going back to 0.24.2.**
+  - Stop pi-loops and every pi, and put `jobs.json.v2.bak` back as `jobs.json`: it has the jobs and
+    the run counts of the moment you upgraded, and not the jobs you made since. Putting it back is an
+    upgrade again when you next start this version, and pauses again: the check is made once, when
+    the directory is converted.
+  - Before you go back, let what is queued be delivered, or cancel it. 0.24.2 does not read what this
+    version queued: it leaves those requests in the queue, `pi-loops status` does not count them,
+    and it removes the images of a queued message from the page after one minute. 0.24.2 does not
+    run a loop's run that this version queued (`requests/@cron-*.jsonl`): it waits there until you
+    upgrade again.
 - **`[engine] window_guard` is retired.** Nothing turns the cap on a scheduled turn off in a
   window any more. A `config.toml` that still sets the key is read, the key is ignored, and
   pi-loops reports one line at startup: `[engine] window_guard: no longer a setting in 0.24.3; a
@@ -78,32 +105,6 @@ All notable changes to pi-loops are documented here. The format follows
   built-in tool outside them is refused. pi-loops' other tools, and a tool of another extension or
   an MCP server, run. Nobody is asked about a tool that is refused, since a card cannot show what it
   would do. Before, the dialog let you allow it.
-- **The upgrade pauses pi-loops until you resume it.** The first start of this version in a loops
-  directory that pi-loops 0.24.2 or earlier worked in converts it and pauses: no loop, plain job,
-  rule check or push check runs, and no answer to a question starts, until you run `pi-loops resume`
-  (or `/pi-loops resume`, or Resume on the page). Your own messages are answered as usual, and so
-  are the commands you type in a window (`/new-trigger`, a recipe's hand-off) and your `/goal`; a
-  run you ask for with `/cron run` or `/triggers run` waits for `resume`, and says so. A pi that
-  still runs an older pi-loops (a 0.22 window, a 0.24.2 terminal, or 0.22 in the background) would
-  otherwise run your loops and rules beside this version: a 0.22 window checks its project's rules
-  itself, and a claim or a dismiss in an older version writes `inbox.jsonl` again in its own shape,
-  which removes what this version adds to a finding. Each pi window says so when it starts,
-  `pi-loops status` says so first, and the page says so above the conversation with a Resume button:
-  `pi-loops is paused after the upgrade, so that a pi that still runs an older pi-loops does not run
-  your loops and rules a second time. Close every such pi, then run \`pi-loops resume\` (or Resume
-  on the page).` Close those pis first: `resume` refuses while pi-loops 0.22 still runs here, or an
-  older pi-loops in the background, and names its pid. Nothing else changes: each loop, plain job and rule keeps the on or off it had,
-  with its run count, findings and notes, and the version 2 file is kept as `jobs.json.v2.bak`. A
-  run that 0.24.2 owed is not queued. Once resumed, a loop whose slots came due during the pause runs
-  as a loop turned on again does: once, for its latest slot, while pi-loops ran through the pause;
-  with catch-up off, a slot that came due while pi-loops was not running is skipped.
-  - The check is made once, when the directory is converted. Putting `jobs.json.v2.bak` back as
-    `jobs.json` is an upgrade again, and pauses again.
-  - pi-loops 0.24.2 in the background, which an upgrade of the package does not stop, is replaced
-    by the first pi window of this version, as before. Until then it still checks every rule that
-    is on, so `resume` refuses while it runs.
-  - A terminal of 0.24.2 that you do not restart cannot be seen from here: `resume` cannot refuse
-    for it. Restart every terminal of an older pi-loops before you resume.
 - **A loop's notes file from 0.24.2 needs no conversion.** `state/<id>.md` is read as it is. A
   file edited by hand to more than 2000 characters, which 0.24.2 cut when it read it, is now read
   whole, and the loop's next run writes it back under the cap.

@@ -8,7 +8,8 @@ Nothing in pi is patched.
 ![The pi-loops page: a decision and two findings from the project's loops beside a conversation, and the two loops on the right](docs/screenshot.png)
 
 A loop wakes up with the notes its last run left, does the work in a sub-agent that starts clean,
-and files what it found. You read the findings when you want to, and claim the ones worth a turn.
+and files what it found. You read the findings when you want to, and claim the ones worth acting on:
+the loop that found one picks it up in the background.
 It all keeps running after you close pi.
 
 ## Why this exists
@@ -92,7 +93,7 @@ watching this repo lands in the same list and you triage it in one pass.
 ```text
 /cron                  # what is scheduled here, and when it next runs
 /cron run 1            # do not wait until 9am — run it now and watch
-/inbox claim 1         # hand finding #1 to the agent as a real turn
+/inbox claim 1         # say yes to finding #1: the loop that found it acts on it in the background
 /inbox dismiss 2       # not interesting
 /inbox dismiss 3 that file is generated, ignore it    # the loop is told why on its next run
 ```
@@ -224,8 +225,8 @@ and thinking level you last chose start the next session whichever window it ope
 one is a session and not a viewer: what a person can still do after the window changed is a release
 gate, and [docs/web-ui-parity.md](docs/web-ui-parity.md) has it line by line.
 
-Even starting over stays in the window — **clear** begins a new session, **resume** goes back to an
-earlier one in this project, **compact** summarises what is there and says what it did, as buttons
+Even starting over stays in the window — **+ New** begins a new session, **Resume** goes back to an
+earlier one in this project, **Compact** summarises what is there and says what it did, as buttons
 or as `/clear`, `/new`, `/resume` and `/compact <what to keep>` in the composer. None of them
 deletes anything; the session you leave is a file that `resume` lists.
 
@@ -243,8 +244,8 @@ clipboard and needs no `pi-loops` on your PATH.
 
 From a phone, the best route is `tailscale serve --bg 4173`: this server stays on loopback and the
 tailnet does TLS and identity. On the same wifi, `[page] host = "0.0.0.0"` in `config.toml` works
-too. Press **add device** in a browser that is already signed in and point the phone at the
-QR it shows: nothing to type, that device stays signed in, and the page can go on the home screen.
+too. Press **Add a device** (behind the **⋯** menu in a narrow window or on a phone) in a browser
+that is already signed in and point the phone at the QR it shows: nothing to type, that device stays signed in, and the page can go on the home screen.
 
 ### Keeping it up to date
 
@@ -263,6 +264,11 @@ new one.
 Restart pi (or run `pi-loops` again) to load it. The launcher does not need reinstalling: pi keeps a
 package at the same path whatever its version — `~/.pi/agent/npm/node_modules/<name>` or
 `~/.pi/agent/git/<host>/<owner>/<repo>`.
+
+An upgrade from 0.24.2 or earlier pauses pi-loops: the first start converts the loops directory, and
+no loop, plain job or rule check runs until you run `pi-loops resume` (or `/pi-loops resume`, or
+**Resume** on the page). Close every pi that runs the older version first: `resume` refuses while
+one still runs here, and names its pid.
 
 Releases are tags on GitHub, published to npm under the same version; [CHANGELOG.md](CHANGELOG.md)
 says what is in each one.
