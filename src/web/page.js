@@ -3562,7 +3562,7 @@ function drawFrame(s) {
     const resume = document.createElement("button");
     resume.type = "button";
     resume.className = "sm";
-    resume.textContent = "Resume";
+    resume.textContent = "Resume pi-loops";
     resume.onclick = () => resumeFromPage(resume);
     line.append(resume);
   }
@@ -3581,7 +3581,7 @@ function drawFrame(s) {
   drawStarters();
 }
 
-/** The page's Resume: `POST /resume`. A refusal (an older pi-loops still runs here) is said in the line. */
+/** The page's Resume pi-loops: `POST /resume`. A refusal (an older pi-loops still runs here) is said in the line. */
 async function resumeFromPage(button) {
   if (!TOKEN) await tokenReady;
   button.disabled = true;

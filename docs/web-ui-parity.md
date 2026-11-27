@@ -270,10 +270,10 @@ weaker, and worth converting whenever one of them breaks.
 ## Automation, which is the reason this project exists
 
 - [x] **After an upgrade, the pause and its way out.** While the upgrade's pause holds, the line above
-      the conversation says so in the words `pi-loops status` uses, with a Resume button that ends it
+      the conversation says so in the words `pi-loops status` uses, with a Resume pi-loops button that ends it
       as `pi-loops resume` does; a refusal (an older pi-loops still runs here) is said beside the button.
       `test/web-page.test.ts`: *[upgrade-hold] while the upgrade's pause holds, the page says so above the
-      conversation with a Resume button that posts /resume*; `test/page-server.test.ts`: *[upgrade-hold] the page's
+      conversation with a Resume pi-loops button that posts /resume*; `test/page-server.test.ts`: *[upgrade-hold] the page's
       state says the upgrade's pause; POST /resume refuses while pi-loops 0.22 still runs here, then
       ends it*.
 - [x] Jobs, loops and rules: what they are, whether they are enabled, and what the last error was.
