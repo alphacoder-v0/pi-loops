@@ -230,7 +230,7 @@ for rule evaluation, per process for injected pushes. For rule evaluation it is 
 /triggers enable <id> /triggers disable <id> /triggers remove <id>   also --all | --all-projects
 /triggers set <id>    --model | --thinking | --timeout: what the action runs with
 /triggers run <id>    check one rule now, without waiting for its poll slot
-/triggers running     sub-agents in flight (dynamic checks and cron runs)   /triggers abort <trace>|--all
+/triggers running     sub-agents in flight (dynamic checks and cron runs)   /triggers abort <run|trace id>|--all
 /triggers audit [N]
 /triggers panel on|off
 /triggers help        all of the above, in the terminal
