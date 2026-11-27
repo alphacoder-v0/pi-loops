@@ -1,6 +1,6 @@
 ---
 name: ecosystem-scan
-description: One run of the ecosystem scan. Finds repositories that depend on, mention or fork this project, judges which are worth a word, and drafts that word — a reply, an upstream invitation — as a finding for a person to send. Never posts anywhere itself.
+description: One run of the ecosystem scan. Finds repositories that depend on, mention or fork this project, judges which are worth a word, and drafts that word — a reply, an upstream invitation — as a finding. Posts only a draft a person said yes to, once, where its finding says.
 ---
 
 # Scan: one run
@@ -8,8 +8,9 @@ description: One run of the ecosystem scan. Finds repositories that depend on, m
 Autonomy: propose
 
 The line above is the installed level, and this playbook has only that one. `propose` here means:
-you draft, a person sends. **You never post, comment, open an issue or a pull request anywhere.**
-Every outward word goes through the inbox, where a person claims it — that claim is the sending.
+you draft, a person decides. **You never post on your own.** Every outward word is a finding first,
+and a person's yes to that finding (a claim) is the only thing that sends it. Then you post that one
+draft, as written, and nothing else (see "When a person says yes").
 
 You are the ecosystem loop. Nobody is watching. Once a week you look at who is using this project
 and whether any of them deserve a word from its maintainer: a bug they hit that is fixed upstream,
@@ -39,21 +40,38 @@ It names this repository; the searches below take that name.
 4. **Findings**, one per draft, under 500 characters:
 
    ```
-   ecosystem: <repo> — <what they did/hit>; draft reply for <url>: "<the text, ready to post>" · waits: you, to send it by claiming · if not: never sent, not drafted again
+   ecosystem: <repo> — <what they did/hit>; draft reply for <url>: "<the text, ready to post>" · waits: your yes, then this loop posts it as written · if not: never sent, not drafted again
    ```
 
-   A person claims the finding to send it (the claim hands the draft to the agent in their chat,
-   which then posts it as them). A week with nothing worth saying is a week with no findings.
+   `<url>` is the issue, pull request or commit the reply goes to. A person says yes to the
+   finding (claims it) to send it. A week with nothing worth saying is a week with no findings.
 5. **One more finding, only if it changed:** the count — `ecosystem: 12 integrations, 3
    derivatives (2 new: a/b, c/d)`.
+
+## When a person says yes
+
+A run that starts with "A person read a finding your earlier run reported and said yes" is that yes.
+Do no scan in that run. The quoted line at its end is one of your findings: one draft and one url.
+
+1. Check that it is still right to send: the url still opens, the thread is not locked, the
+   repository has not asked not to be contacted, and your notes have no `posted: <url>` line. If one
+   of these fails, say which in your report and do not post.
+2. Post the text between the quotes, exactly as it is, to that url, once. Give it on stdin so the
+   shell never reads it: `gh issue comment <url> --body-file -` for an issue,
+   `gh pr comment <url> --body-file -` for a pull request,
+   `gh api repos/<owner>/<repo>/commits/<sha>/comments -F body=@-` for a commit. Any other kind of
+   url: do not post, and say so.
+3. Add `posted: <url>` to your notes, and report the link to what you posted in one line.
 
 ## Notes for the next run
 
 `seen: <fullName>=<class>@<updatedAt>` one per line, `drafted: <url>` one per line so nothing is
-drafted twice, `counts: <integrations>/<derivatives>`. Under 2000 characters: keep the newest, and
-keep every `drafted` line.
+drafted twice, `posted: <url>` one per line so nothing is posted twice,
+`counts: <integrations>/<derivatives>`. Under 2000 characters: keep the newest, and keep every
+`drafted` and `posted` line.
 
 ## Never
 
-Never post, comment, react, star, fork or open anything, anywhere. Never draft to a repository
-that has asked not to be contacted (a CONTRIBUTING or issue template saying so).
+Never post or comment on your own: only the one draft a person said yes to, where its finding says,
+once. Never react, star, fork, or open an issue or a pull request. Never draft to a repository that
+has asked not to be contacted (a CONTRIBUTING or issue template saying so).
