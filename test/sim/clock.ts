@@ -26,7 +26,6 @@ import { jobCounts, jobStatus, runHistory, type JobHistory } from "../../src/job
 import { JobStore, type LoopJob, type RunRecord } from "../../src/store.ts";
 import { type Random, weighted } from "./prng.ts";
 
-type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
 /** A decision a ticker read and has not finished writing: a slot's T2 and T3, or a follow-up's. */
 export type Pending = { decision: SpendDecision; written?: SlotWritten; t2?: undefined } | { decision: FollowupDecision; written?: undefined; t2?: FollowupT2 };
 export interface Ticker { readonly pid: number; readonly kind: "background" | "window"; alive: boolean; startedAt: number; pending: Pending[] }
@@ -47,7 +46,7 @@ const lanes = JOBS.map((job) => job.stateful ? loopLane(job.id) : job.sessionId!
 const keyOf = (job: string, slot: string): string => `${job}|${slot}`;
 
 /** Return the first violated I1 sentence, naming its job and slot. */
-export function checkI1(world: ClockWorld, queues: ReadonlyMap<LaneId, readonly CountedRow[]>): string | undefined {
+export function checkI1(world: ClockWorld, queues: ReadonlyMap<LaneId, readonly Row[]>): string | undefined {
 	const allRows = [...queues.values()].flat();
 	const internal = world as ClockWorld & { clock: Clock; subject: SimClockSubject; forgotten: boolean; newer: boolean };
 	for (const [key, entry] of world.ledger) {
@@ -124,7 +123,7 @@ export async function play(dir: string, random: Random, steps: number, subject: 
 	const woke = new Set<string>();
 	for (let i = 0; i < 3; i++) world.tickers.push({ pid: ++nextPid, kind: i === 0 || (i === 1 && twoBackgrounds) ? "background" : "window", alive: true, startedAt: world.now, pending: [] });
 	world.lease.holder = world.tickers[1].pid;
-	const queuesNow = (): Map<LaneId, CountedRow[]> => new Map(lanes.map((lane) => [lane, requests.list(lane) as CountedRow[]]));
+	const queuesNow = (): Map<LaneId, Row[]> => new Map(lanes.map((lane) => [lane, requests.list(lane)]));
 	const orphans = new Set<string>();
 	const spentWhenRead = new WeakSet<object>();
 	const ledger = (job: string, slot: string): SlotLedger => {
@@ -145,9 +144,9 @@ export async function play(dir: string, random: Random, steps: number, subject: 
 			return [];
 		}));
 		const selected = wanted({ jobs: JOBS, clock: file, now: world.now, mine: new Set(mine.keys()) });
-		const read = new Map<string, { rows: CountedRow[]; history: JobHistory | undefined; cwdMissing: boolean }>();
+		const read = new Map<string, { rows: Row[]; history: JobHistory | undefined; cwdMissing: boolean }>();
 		const histories = runHistory(world.records);
-		for (const [jobId, lane] of selected) read.set(jobId, { rows: requests.list(lane) as CountedRow[], history: histories.get(jobId), cwdMissing: false });
+		for (const [jobId, lane] of selected) read.set(jobId, { rows: requests.list(lane), history: histories.get(jobId), cwdMissing: false });
 		const decisions = decideTick({ jobs: JOBS, clock: file, view: { now: world.now, startedAt: ticker.startedAt, tickMs: 60_000, catchUp, kind: ticker.kind, self: { pid: ticker.pid, instance: String(ticker.pid), version: "sim" }, mine, read } });
 		ticker.pending = decisions.flatMap((decision): Pending[] => {
 			if (decision.do === "followup") {

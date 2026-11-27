@@ -225,7 +225,7 @@ test("[answer-overlap] a slot due beside an answer that starts in the same tick 
 		dueRow(w, now);
 		await w.tick(now);
 		const rows = w.stores.requests.list(LANE) as any[];
-		assert.deepEqual(rows.map((r) => [r.id, !!r.run, r.collapsed, r.skipped]), [[answerRowId(finding.id), true, 1, 1]], "the slot is counted on the answer's row and spent");
+		assert.deepEqual(rows.map((r) => [r.id, !!r.run, !!r.collapsed_slot, r.skipped]), [[answerRowId(finding.id), true, true, 1]], "the slot is counted on the answer's row and spent");
 		assert.deepEqual(s.calls.length, 1, "only the answer runs");
 		assert.equal(w.stores.clock.read().jobs[JOB]?.collapsed, 1);
 		s.release();
@@ -485,7 +485,7 @@ test("[answer-orphan-clock] the clock reads a claim of this process whose answer
 		await w.host.riders.clock(t0, { startedAt: 0, tickMs: 30_000 });
 		const rows = w.stores.requests.list(LANE) as any[];
 		const answer = rows.find((r) => r.id === rowId);
-		assert.deepEqual([answer?.collapsed, answer?.skipped, w.stores.clock.read().jobs[JOB]?.collapsed], [undefined, undefined, undefined], "nothing is counted on a claim that holds nothing");
+		assert.deepEqual([answer?.collapsed_slot, answer?.skipped, w.stores.clock.read().jobs[JOB]?.collapsed], [undefined, undefined, undefined], "nothing is counted on a claim that holds nothing");
 		assert.equal(rows.filter((r) => r.source === `cron:${JOB}`).length, 1, "the slot's own row is written");
 	} finally {
 		await w.host.stop();

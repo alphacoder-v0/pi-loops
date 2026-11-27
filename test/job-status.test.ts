@@ -4,13 +4,12 @@ import { fromV2, type V2Job } from "../src/convert-v2.ts";
 import { jobRuns, jobStatus, listedJob, runHistory } from "../src/job-status.ts";
 import type { JobClock } from "../src/clock.ts";
 import type { Row } from "../src/requests.ts";
-type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
 import type { LoopJob, RunRecord } from "../src/store.ts";
 
 const at = "2026-01-02T03:04:05.000Z";
 const job = (over: Partial<LoopJob> = {}): LoopJob => ({ id: "cron-job", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "work", cwd: "/", enabled: true, catchUp: true, createdAt: at, ...over });
 const record = (over: Partial<RunRecord> = {}): RunRecord => ({ runId: "r", jobId: "cron-job", stateful: true, cwd: "/", pid: 1, startedAt: at, finishedAt: at, ok: false, findings: 0, droppedFindings: 0, stateUpdated: false, ...over });
-const row = (over: Partial<CountedRow> = {}): CountedRow => ({ v: 3, id: "row", lane: "@cron-job", kind: "input", source: "cron:cron-job", mode: "unattended", wake: "turn", collapse_key: "cron:cron-job", created_at: at, created_by: { pid: 1, instance: "i", version: "1" }, attempts: 0, ...over });
+const row = (over: Partial<Row> = {}): Row => ({ v: 3, id: "row", lane: "@cron-job", kind: "input", source: "cron:cron-job", mode: "unattended", wake: "turn", collapse_key: "cron:cron-job", created_at: at, created_by: { pid: 1, instance: "i", version: "1" }, attempts: 0, ...over });
 
 test("[status-runs-loop] Loop runs keep the highest successful or failed ordinal, including the clock floor.", () => {
 	const history = runHistory([record({ runId: "a", ok: true, ordinal: 2 }), record({ runId: "b", ok: false, ordinal: 7 }), record({ runId: "c", aborted: true, ordinal: 9 })]).get("cron-job");
@@ -61,9 +60,9 @@ test("[status-disabled] Main's five disabled reasons map to codes, and disabled 
 // A loop as the lists show it: the fields main wrote, derived from rows, the run log and the cursor.
 const T = (minutes: number) => new Date(Date.parse(at) + minutes * 60_000).toISOString();
 const v2 = (over: Partial<V2Job> = {}): V2Job => ({ id: "cron-job", schedule: { kind: "every", ms: 600_000 }, stateful: true, prompt: "work", cwd: "/", enabled: true, catchUp: true, createdAt: at, runCount: 0, skippedOverlap: 0, ...over });
-const claimed = (startedAt: string, over: Partial<CountedRow> = {}): CountedRow => ({ ...row(over), run: { id: "run-1", pid: 7, started_at: startedAt } } as CountedRow);
+const claimed = (startedAt: string, over: Partial<Row> = {}): Row => ({ ...row(over), run: { id: "run-1", pid: 7, started_at: startedAt } } as Row);
 /** A version 2 job converted as a start converts it (`fromV2`), then listed. */
-const shown = (job: V2Job, rows: CountedRow[], records: RunRecord[], opts: { live?: boolean; cwd?: boolean; now?: number } = {}) =>
+const shown = (job: V2Job, rows: Row[], records: RunRecord[], opts: { live?: boolean; cwd?: boolean; now?: number } = {}) =>
 	listedJob(fromV2(job).job, fromV2(job).clock, rows, runHistory(records).get(job.id), () => opts.live ?? true);
 
 test("[listed-running] A loop runs while a live claim is on its row: the claim is the marker, and its start is the last fire.", () => {

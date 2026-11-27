@@ -51,10 +51,22 @@ test("[collapse-slot] collapse counts each later slot once, keeps claims, and re
 	assert.equal(store.collapse("s", "loop-row", "2026-01-01T00:01:00.000Z"), "counted-before");
 	assert.equal(store.collapse("s", "loop-row", "2026-01-01T00:00:30.000Z"), "counted-before");
 	assert.equal(store.collapse("s", "loop-row", "2026-01-01T00:02:00.000Z"), "counted");
-	assert.deepEqual([store.list("s")[0].collapsed, store.list("s")[0].collapsed_slot], [2, "2026-01-01T00:02:00.000Z"]);
+	assert.equal(store.list("s")[0].collapsed_slot, "2026-01-01T00:02:00.000Z");
 	assert.equal(store.collapse("s", "missing", "2026-01-01T00:03:00.000Z"), "missing");
 	assert.equal(store.update("s", "loop-row", { attempts: 1 }), true);
-	assert.equal(store.list("s")[0].collapsed, 2);
+	assert.equal(store.list("s")[0].collapsed_slot, "2026-01-01T00:02:00.000Z");
+});
+
+test("[collapse-slot] a row line an older version wrote with a collapsed count is read, and its slot still counts once", () => {
+	const store = new RequestStore(tmp());
+	const v3 = JSON.stringify({ ...row("v3-row"), collapsed: 2, collapsed_slot: "2026-01-01T00:01:00.000Z" });
+	const v2 = JSON.stringify({ ...JSON.parse(v2Line), lane: undefined, collapsed: 1, collapsed_slot: "2026-01-01T00:01:00.000Z" }).replace('"session_id":"s1"', '"session_id":"s"');
+	fs.mkdirSync(path.dirname(store.file("s")), { recursive: true });
+	fs.writeFileSync(store.file("s"), `${v3}\n${v2}\n`);
+	assert.deepEqual(store.list("s").map((r) => r.id), ["v3-row", "r1"], "both lines are rows");
+	assert.equal(store.collapse("s", "v3-row", "2026-01-01T00:01:00.000Z"), "counted-before");
+	assert.equal(store.collapse("s", "r1", "2026-01-01T00:02:00.000Z"), "counted");
+	assert.deepEqual(store.list("s").map((r) => r.collapsed_slot), ["2026-01-01T00:01:00.000Z", "2026-01-01T00:02:00.000Z"]);
 });
 
 test("an append that fails leaves no image file behind", () => {

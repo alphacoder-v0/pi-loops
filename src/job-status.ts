@@ -4,7 +4,6 @@ import { loopLane, parseLane } from "./lane.ts";
 import { runEnd } from "./settle.ts";
 import type { ClockFile, JobClock } from "./clock.ts";
 import type { ClaimedRow, RequestStore, Row } from "./requests.ts";
-type CountedRow = Row & { collapsed?: number; collapsed_slot?: string };
 import { computeNext, formatLocal } from "./schedule.ts";
 import { DISABLED_BY_PERSON, type Disabled, type JobStore, type LoopJob, type RunningMarker, type RunRecord } from "./store.ts";
 
@@ -95,14 +94,14 @@ export interface JobStatus {
 	readonly slot?: string;
 	readonly fired?: string;
 	readonly finished?: string;
-	readonly running?: { readonly runId: string; readonly since: string; readonly collapsed?: number };
-	readonly queued?: { readonly since: string; readonly why?: string; readonly collapsed?: number; readonly attempts: number };
+	readonly running?: { readonly runId: string; readonly since: string };
+	readonly queued?: { readonly since: string; readonly why?: string; readonly attempts: number };
 	readonly error?: { readonly text: string; readonly streak: number; readonly retryAt?: number };
 	readonly note?: string;
 	readonly runs: number;
 }
 
-export function jobStatus(job: LoopJob, clock: JobClock | undefined, rows: readonly CountedRow[], history: JobHistory | undefined, now: number): JobStatus {
+export function jobStatus(job: LoopJob, clock: JobClock | undefined, rows: readonly Row[], history: JobHistory | undefined, now: number): JobStatus {
 	const state = job.proposed ? "proposed" : job.enabled ? "enabled" : "disabled";
 	let next: number | undefined;
 	if (state === "enabled") {
@@ -122,8 +121,8 @@ export function jobStatus(job: LoopJob, clock: JobClock | undefined, rows: reado
 		...(clock?.slot === undefined ? {} : { slot: clock.slot }),
 		...(clock?.fired === undefined ? {} : { fired: clock.fired }),
 		...(history?.finished === undefined ? {} : { finished: history.finished }),
-		...(runningRow?.run ? { running: { runId: runningRow.run.id, since: runningRow.run.started_at, collapsed: runningRow.collapsed } } : {}),
-		...(queuedRow ? { queued: { since: queuedRow.created_at, ...(queuedRow.not_before && Date.parse(queuedRow.not_before) > now ? { why: `backing off${queuedRow.last_error ? `: ${queuedRow.last_error}` : ""}` } : {}), collapsed: queuedRow.collapsed, attempts: queuedRow.attempts } } : {}),
+		...(runningRow?.run ? { running: { runId: runningRow.run.id, since: runningRow.run.started_at } } : {}),
+		...(queuedRow ? { queued: { since: queuedRow.created_at, ...(queuedRow.not_before && Date.parse(queuedRow.not_before) > now ? { why: `backing off${queuedRow.last_error ? `: ${queuedRow.last_error}` : ""}` } : {}), attempts: queuedRow.attempts } } : {}),
 		...(history?.failed ? { error: { text: history.failed.error, streak: history.streak, ...(retryAt !== undefined && retryAt > now ? { retryAt } : {}) } } : {}),
 		...(clock?.note ? { note: clock.note.text } : {}),
 		runs: job.stateful ? Math.max(history?.ordinal ?? 0, clock?.runs ?? 0) : clock?.runs ?? 0,
@@ -256,8 +255,8 @@ export function listedJob(job: LoopJob, clock: JobClock | undefined, rows: reado
 		const error = word(job.enabled ? lastWord(failed, job.schedule?.kind === "once" && history?.streak === 1) : offWord(failed));
 		return { ...job, status: { ...(clock?.slot ? { due: clock.slot } : {}), ...(clock?.fired ? { fired: clock.fired } : {}), ...(history?.settled ? { completed: history.settled } : {}), ...counts, runs: clock?.runs ?? 0, ...(error.error ? error : {}) } };
 	}
-	const mine = rows.filter((row) => row.kind === "input") as CountedRow[];
-	const claim = mine.find((row): row is ClaimedRow & CountedRow => row.run !== undefined && live(row as ClaimedRow));
+	const mine = rows.filter((row) => row.kind === "input");
+	const claim = mine.find((row): row is ClaimedRow => row.run !== undefined && live(row as ClaimedRow));
 	const waiting = mine.filter((row) => !row.run).sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))[0];
 	// Main cleared the error at every launch: a failure shows while it is the newest run that ended with a record of its own.
 	const failed = history?.failed && history.failed.at === history.completed && afterEnable(history.failed.at) ? history.failed : undefined;
