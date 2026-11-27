@@ -44,8 +44,12 @@ directory), checkpoints first, then news, each oldest first; `--all` is every pr
 `dismiss` take a finding's `id` or a unique prefix of it (never a number), among the new findings
 machine-wide, and do to the entry what `/inbox claim` and `/inbox dismiss` do — the two actions of
 [CONTRACT.md](../CONTRACT.md) §2.3: `claim` marks it and stops, since there is no session to hand
-it to; a `--reason` is shown to the loop's next run. The object they print is the one of §2.2,
-field for field:
+it to; a `--reason` is shown to the loop's next run. One kind of finding cannot be claimed here:
+a question, where a run in the background asks a person about a call it did not make. A claim from
+a shell allows no command, so `claim` on a question exits 1 with
+`{"error": "inbox entry inb-… is a question from …, and a claim from a shell allows no command: answer it on the page or in pi with /inbox"}`
+and the question stays `new`. The list does not mark a question; leave it for a person, or
+`dismiss` it, which is a no. The object they print is the one of §2.2, field for field:
 
 ```json
 {"id": "inb-<32 hex>", "created_at": "2026-09-16T09:00:00.000+08:00", "status": "new",

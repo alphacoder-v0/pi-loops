@@ -31,7 +31,7 @@ talks to it only through a recipe directory, `hooks.toml`, and the `pi-loops inb
 
 ### 2.1 Instance
 
-- Instance data in the loops directory: the jobs, the trigger rules, the findings, the notes, the run records (including each run's transcript), `hooks.toml`, `config.toml`, `mcp.toml`. Every other file and directory there is private state and can be deleted at any time.
+- Instance data in the loops directory: the jobs, the trigger rules, the findings, the notes, the run records (including each run's transcript), `hooks.toml`, `config.toml`, `mcp.toml`. Every other file and directory there is private state and can be deleted while no pi and no pi-loops runs, at two costs: a message still queued in `requests/` is lost, and with no `upgrade-hold.json` the upgrade's pause ends without the check that `pi-loops resume` makes.
 - Instance data in a project: the playbooks and recipe files installed under `.agents/skills/<recipe>/`, and, when a recipe declares `needs_tracker`, `docs/agents/issue-tracker.md`.
 - Tool code does not enter an instance. Instance data does not enter the tool.
 
@@ -46,16 +46,16 @@ talks to it only through a recipe directory, `hooks.toml`, and the `pi-loops inb
 ### 2.3 Permitted actions
 
 - **Install a recipe**: copy the playbooks into the project with the level line written, and create the jobs the manifest declares. A manifest that breaks a rule is refused whole; no file is copied.
-- **Run**: emit one `run_start` and one `run_end` with the same `run_id`. The run's findings enter the queue with `status = new` and `run_id` = that run.
+- **Run**: emit one `run_start` and one `run_end` with the same `run_id`. The run's findings enter the queue with `status = new` and `run_id` = that run, except a loop's finding whose `text` equals that of a `new` finding of the same loop: it is not filed again.
 - **Claim** and **dismiss**: take a finding's `id` or a unique prefix of it, and each succeeds only on a `new` finding, so a finding is decided once unless a cancel opens it again. Dismiss can carry a `reason`, written to `dismiss_reason`. **Cancel** takes a claimed finding whose answer has not started back to `new`.
 
 ### 2.4 Ledger
 
-The events are the ledger of runs: each run has exactly one `run_start` / `run_end` pair. A finding's `status` is its own ledger: `new → claimed` or `new → dismissed`. The one way back is `claimed → new`, by a cancel before the answer starts.
+The events are the ledger of runs: each run has exactly one `run_start` / `run_end` pair. A finding's `status` is its own ledger: `new → claimed` or `new → dismissed`. The one way back is `claimed → new`: by a cancel before the answer starts, or by the upgrade's conversion, for a claim that an older version queued and never started.
 
 ### 2.5 Write conditions
 
-A finding is written by a run, and its `text` is what the run said, except the texts pi-loops writes itself: in the inbox, a dead letter (a prompt that never reached its conversation), a question about a call it did not run, and the news `not-run` and `outcome` about an answer (each with `re`, the id of the finding answered); in a conversation, a proposal's receipt, the message that a person said no, the prompt of an answer's turn, a run's card, and the goal's notices and continuation prompt. `status` changes only through claim, dismiss or cancel. A rule that fails or hangs does not change the run's result. An install is complete or does not happen.
+A finding is written by a run, and its `text` is what the run said, except the texts pi-loops writes itself: in the inbox, a dead letter (a prompt that never reached its conversation, or `rule result <id>` for a rule's result with no text), a push for another project, filed as it arrived, a question about a call it did not run, and the news `not-run` and `outcome` about an answer (each with `re`, the id of the finding answered); in a conversation, a proposal's receipt, the message that a person said no, the prompt of an answer's turn, a run's card, and the goal's notices and continuation prompt. `status` changes only through claim, dismiss, cancel or the upgrade's conversion of 2.4. A rule that fails or hangs does not change the run's result. An install is complete or does not happen.
 
 ### 2.6 Deterministic rules
 
@@ -67,7 +67,7 @@ A finding is written by a run, and its `text` is what the run said, except the t
 
 1. A recipe is a directory. `/recipe add <dir>` and `pi-loops recipe add <dir>` install it.
 2. A `hooks.toml` rule with `event = "run_start" | "run_end"` receives the event of 2.2.
-3. `pi-loops inbox list [--all] [--cwd <dir>] --json`, `inbox claim <id> --json`, `inbox dismiss <id> [--reason <text>] --json`: exit 0 and one JSON object (`{"findings": [...]}` or `{"finding": {...}}`); on failure exit 1 and `{"error": "<why>"}`.
+3. `pi-loops inbox list [--all] [--cwd <dir>] --json`, `inbox claim <id> --json`, `inbox dismiss <id> [--reason <text>] --json`: exit 0 and one JSON object (`{"findings": [...]}` or `{"finding": {...}}`); on failure exit 1 and `{"error": "<why>"}`. A claim of a question (a finding that asks a person about a call) always fails so: a claim from a shell allows no command. Dismiss of a question succeeds.
 
 Any file, field, path or command not listed above is not an interface.
 
