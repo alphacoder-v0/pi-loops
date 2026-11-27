@@ -1,8 +1,8 @@
 /**
  * The answer protocol's tables that only the tests read (`.docs/redesign-0243/answer-protocol.md`):
  * the durable writes of each transition in order, with the lock held at each (`PROTOCOL`), and the
- * news filed with each state (`BESIDE`). test/ask.test.ts, test/ask-scenes.test.ts and
- * test/convert-v2.test.ts log the writes of each transition and compare the log with `PROTOCOL`.
+ * news filed with each state (`BESIDE`). test/ask.test.ts and test/convert-v2.test.ts log the
+ * writes of each transition and compare the log with `PROTOCOL`.
  */
 import type { AnswerState, Beside, OpenState } from "../src/ask.ts";
 
