@@ -422,9 +422,11 @@ To upgrade from 0.24.2 or earlier:
 - **A yes to an ecosystem draft posts it again.** In this version a claim goes to the run that
   drafted the finding, and the ecosystem playbook told that run never to post, so a claim sent
   nothing. The playbook now has one exception: after a person says yes, that run posts that one
-  draft, as written, to the issue, pull request or commit its finding names, in one command. A
-  finding gets one yes, and a run that stops halfway is not run again, so a draft is sent once at
-  most. It still posts nothing on its own. Run `/recipe update ecosystem` to get the new playbook.
+  draft, as written, to the issue, pull request or commit its finding names, in one command, and
+  the playbook asks it to post once. A finding gets one yes, and a run that stops halfway is not run
+  again. It still posts nothing on its own. Run `/recipe update ecosystem` to get the new playbook:
+  a draft made after that is sent on a yes; a draft made before it was made under the old playbook,
+  and a yes to it posts nothing. A claim with `pi-loops inbox claim` runs nothing, so it sends nothing.
 - **Undo in the page puts the withdrawn text back in the composer.** The text is in the composer of
   the conversation that pi forked into, as in 0.24.2, and is no longer kept as an unsent draft of
   the conversation it was sent in. pi gives back only the text, so an image of that message is not
