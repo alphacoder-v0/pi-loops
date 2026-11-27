@@ -28,7 +28,7 @@ weaker, and worth converting whenever one of them breaks.
       pi's own queue*.
 - [x] What pi-loops addressed to this conversation is in the same queue as your messages, with its
       source in the words `/cron queue` uses ("you", "cron nightly", "/cron run nightly", "rule
-      3f2a…", "claim 3f2a…"), in the order it runs, cancellable one at a time.
+      3f2a…", "answer"), in the order it runs, cancellable one at a time.
       A chat message is a request row in `requests/<session>.jsonl`, the file the pi holding the
       session drains; the page reads the file for the list and the count. What pi itself still holds
       (a slash command typed while busy) is listed after them as "pi", counted with them, and cleared

@@ -411,8 +411,7 @@ To upgrade from 0.24.2 or earlier:
   reports `requested abort for N runs and M checks`. `/cron help` says that a running loop run
   stops with `/triggers abort <run id>`.
 - **The page's queue names each source in the words `/cron queue` uses.** A `/cron run` row says
-  `/cron run <name>` (it said `cron <name>`), and a claimed finding's row says `claim <id>` (it said
-  `inbox <id>`).
+  `/cron run <name>` (it said `cron <name>`).
 - **`/triggers audit` says more about a loop's runs.** It also lists a run that is stopped, removed
   with its job, failed because the process running it stopped, or parked, and the removal of a
   one-shot that has finished. The second try of a failed one-shot is listed with the time it runs,

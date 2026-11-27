@@ -2380,6 +2380,9 @@ test("undo puts the withdrawn message in the composer of the conversation pi for
 	const doc = g.document;
 	await doc.getElementById("undo").onclick();
 	await settled();
+	// pi's move can come late or not at all: until it comes, the text is saved where it is.
+	assert.equal(tab.get(`pi-web-draft:${SESSION_UNDER_TEST}`), "the withdrawn one", "before the move, the text is this conversation's draft");
+	await new Promise((r) => setTimeout(r, 50));
 	dom.source().onmessage({ data: JSON.stringify({ type: "page_moved", sessionId: "01b0-forked", seq: 1, epoch: "e1" }) });
 	await settled();
 	assert.equal(doc.getElementById("input").value, "the withdrawn one", "the text is in the composer after the move");

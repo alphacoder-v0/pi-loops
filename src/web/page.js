@@ -1979,9 +1979,10 @@ $("undo").onclick = async () => {
   // pi hands back the forked message; put it where it came from. pi forked into a new conversation,
   // and the page usually hears of that after this answer: the text then moves with the composer.
   $("input").value = r.data?.text ?? "";
-  // pi's fork moves the page soon; if that move never comes, the next unrelated move must not carry it.
-  if (SESSION === from) { carryComposer = true; setTimeout(() => { carryComposer = false; }, 10_000); }
-  else saveDraft();
+  // Kept as this conversation's draft until pi's fork moves the page, which takes it along; if
+  // that move is late or never comes, the text is still saved here.
+  saveDraft();
+  if (SESSION === from) carryComposer = true;
   autoGrow();
   // The branch moved, so the conversation is taken again — through resync, which is the one path
   // that also resets what the page is counting against and drains what arrived meanwhile. This used
@@ -2055,6 +2056,7 @@ async function swap(call, body, why) {
   const held = waiting.splice(0, waiting.length);
   if (r.success && !r.data?.cancelled && typeof r.sessionId === "string" && r.sessionId && r.sessionId !== SESSION) {
     // Moved first, then one reload, for the reason given; what waited is applied after it.
+    carryComposer = false;
     moveTo(r.sessionId);
     waiting.push(...held);
     await resync(reloadReason());
