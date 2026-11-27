@@ -321,7 +321,6 @@ pi-loops stays stopped until `pi-loops start`, or until `pi-loops` opens the bro
 | `/cron cost [today\|7d\|all]` | What automation has cost, against `[limits] daily_budget_usd` |
 | `/cron scheduler` | This window, its conversation, and pi-loops status |
 | `/pi-loops start\|stop\|restart\|status` | Start, stop, restart or show pi-loops |
-| `/cron clear <ref>` | Nothing to clear: a run's claim closes when its process is gone (it says so) |
 | `/cron gc` | Remove plain jobs whose session was deleted (they are parked as disabled first) |
 | `/cron panel on\|off` | The side panel above the editor: Rules, Loops, Runs, MCP |
 | `/cron snapshot` | Write what only this process knows — connected MCP servers and their tools, active tools, hooks, whether pi-loops is running and its pid — into the session as a `pi_loops_snapshot` entry, for a front end that is not a terminal |

@@ -763,7 +763,7 @@ running, so this is how you actually go quiet; `/pi-loops stop` pauses every loo
 machine until `/pi-loops start`.
 
 A loop shows `running` while a live process holds the claim on its run's row; the claim is closed
-when that process is gone, so there is nothing to release by hand. `/cron clear <ref>` says so.
+when that process is gone, so there is nothing to release by hand.
 
 `/cron remove` takes a name of this project, a number from its listing, or the exact id of a job
 anywhere — the rule `cron_remove` follows, because a removal cannot be undone and a name this

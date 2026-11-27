@@ -834,7 +834,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		// `[host] auto = false` pauses nothing while a window is open: this window starts the process, and
 		// it leaves with the last window (src/host-control.ts leavesWithWindows).
 		const spawns = readSpawnLog(dir);
-		if (crashPaused(spawns, Date.now())) return crashPauseText(spawns);
+		if (crashPaused(spawns, Date.now())) return crashPauseText(spawns, "/pi-loops start");
 		if (hostState?.kind === "start-failed") return `pi-loops could not start — ${hostState.detail}`;
 		return undefined;
 	}
@@ -1276,7 +1276,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		"/cron snapshot                 what only this process knows — connected MCP servers and their tools, whether pi-loops runs — written into the session, for a front end that is not a terminal",
 		"/cron gc                       remove plain jobs whose session was deleted (they are parked as disabled first)",
 		"/cron cost [today|7d|all]      what automation has cost, by job, and today's budget if one is set",
-		"/cron clear <n|id|name>        nothing to clear: a run's claim closes when its process is gone",
+		"/triggers abort <run id>       stop a running loop run (/triggers running shows its id)",
 		"/cron remove <ref> [--purge]   remove a job; its loop state is kept unless --purge",
 		"/cron disable --all            pause every job in this project (--all-projects for the machine); /cron enable --all resumes",
 		"/inbox                         triage findings from stateful jobs (/inbox help)",
@@ -1287,7 +1287,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	// The accepted source check carries no quoted scheduler name; the command is still `/cron scheduler`.
 	const schedulerCommand = "sched" + "uler";
 	const cronCompletions = (prefix: string) => {
-		const subs = ["add", "list", "all", "enable", "disable", "remove", "set", "queue", "clear", "cost", "gc", "run", "state", "runs", "trace", schedulerCommand, "panel", "snapshot", "help"];
+		const subs = ["add", "list", "all", "enable", "disable", "remove", "set", "queue", "cost", "gc", "run", "state", "runs", "trace", schedulerCommand, "panel", "snapshot", "help"];
 		const items = subs.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
 		return items.length ? items : null;
 	};
@@ -1305,12 +1305,11 @@ export default function piLoops(pi: ExtensionAPI) {
 			// Every subcommand, by name only: with five more of them the argument spellings no longer fit
 			// on a line a notification can show, and `/cron help` has them all. A name left out of here
 			// is a subcommand nobody finds, which is the worse of the two.
-			const CRON_USAGE = "[list|all|add|set|run|queue|enable|disable|remove|state|runs|trace|cost|clear|gc|sched" + "uler|panel|snapshot|help] — /cron help for the arguments";
+			const CRON_USAGE = "[list|all|add|set|run|queue|enable|disable|remove|state|runs|trace|cost|gc|sched" + "uler|panel|snapshot|help] — /cron help for the arguments";
 			try {
 				switch (sub) {
 					case "":
 					case "list":
-					case "ls":
 					case "status":
 					case "all": {
 						const all = jobs();
@@ -1458,10 +1457,8 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "enable":
-					case "resume":
-					case "disable":
-					case "pause": {
-						const enable = sub === "enable" || sub === "resume";
+					case "disable": {
+						const enable = sub === "enable";
 						// Quitting pi is the *on* switch here (the host takes over), so "stop everything"
 						// has to be one command rather than one per job.
 						const scope = rest.trim();
@@ -1491,9 +1488,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						ctx.ui.notify(`${enable ? "enabled" : "disabled"} cron job ${job.name ? `"${job.name}"` : job.id}`, "info");
 						return;
 					}
-					case "remove":
-					case "rm":
-					case "delete": {
+					case "remove": {
 						// `--purge` also deletes the loop's notes and transcripts. Without it they are kept:
 						// remove-and-re-add is how a schedule or prompt gets changed, and that must not
 						// throw away months of accumulated state.
@@ -1523,14 +1518,6 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "host": {
 						// 0.22.8's spelling of /pi-loops start | stop | status.
 						await backgroundCommand(rest.trim() || "status", ctx);
-						return;
-					}
-					case "clear": {
-						// A run is the claim on its row now, and a claim is closed when its process is gone:
-						// there is no marker to clear (0.24.2's are converted at the start, src/convert-v2.ts).
-						const job = pick(rest);
-						if (!job) return;
-						ctx.ui.notify(`${job.name ?? job.id} has no running marker to clear: a run's claim is closed when its process is gone`, "info");
 						return;
 					}
 					case "cost": {
@@ -2294,7 +2281,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		"/triggers run <n|id>           check one rule now — dedup, audit, sub-agent and promotion as on a poll",
 		"/triggers running              actions in flight (dynamic checks and cron runs), and the sub-agent slots in use",
 		"/triggers audit [N] [--all]    recent decisions, with each run's transcript path (default 10)",
-		"/triggers abort <trace_id>     stop one running action             /triggers abort --all   stop every one",
+		"/triggers abort <run|trace id> stop a running run or check        /triggers abort --all   stop every one",
 		"/triggers panel on|off         side panel above the editor (Rules / Loops / Runs / MCP)",
 		"create one: /new-trigger when ~/build.done exists, run cargo test and show me the result",
 		"config: ~/.pi/agent/loops/config.toml [triggers] poll_interval_secs, mcp.toml for push sources, hooks.toml for lifecycle hooks",
@@ -2316,7 +2303,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			const pickRule = (ref: string) => {
 				const all = store.load();
 				const rule = /^\d+$/.test(ref.trim()) ? resolveRuleRef(all.filter((r) => sameProject(r.cwd, session.cwd)), ref, { ordinals: true }) : resolveRuleRef(all, ref);
-				if (!rule) ctx.ui.notify(ref ? `no dynamic trigger rule with id '${ref}'` : `usage: /triggers ${sub} <id>${sub === "remove" || sub === "rm" || sub === "delete" ? "|--all" : ""}`, "warning");
+				if (!rule) ctx.ui.notify(ref ? `no dynamic trigger rule with id '${ref}'` : `usage: /triggers ${sub} <id>${sub === "remove" ? "|--all" : ""}`, "warning");
 				return rule;
 			};
 			try {
@@ -2385,10 +2372,8 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "enable":
-					case "resume":
-					case "disable":
-					case "pause": {
-						const enable = sub === "enable" || sub === "resume";
+					case "disable": {
+						const enable = sub === "enable";
 						const scope = rest.trim();
 						if (scope === "--all" || scope === "--all-projects") {
 							const everywhere = scope === "--all-projects";
@@ -2412,9 +2397,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						]);
 						return;
 					}
-					case "remove":
-					case "rm":
-					case "delete": {
+					case "remove": {
 						// `--all` means "all of this project's", scoped to the project, not the machine; wiping every
 						// project on the machine needs saying so.
 						if (rest.trim() === "--all" || rest.trim() === "--all-projects") {
@@ -2538,11 +2521,12 @@ export default function piLoops(pi: ExtensionAPI) {
 							return !!answer?.ok && !!answer.aborted;
 						};
 						if (rest.trim() === "--all") {
-							let n = 0;
+							let runs = 0;
+							let checks = 0;
 							const host = await refreshHostSnapshot();
-							for (const r of host?.runs ?? []) if (await askHostAbort(r.runId, true)) n++;
-							for (const c of host?.checks ?? []) if (await askHostAbort(c.traceId, false)) n++;
-							ctx.ui.notify(`requested abort for ${plural(n, "running trigger")}`, "info");
+							for (const r of host?.runs ?? []) if (await askHostAbort(r.runId, true)) runs++;
+							for (const c of host?.checks ?? []) if (await askHostAbort(c.traceId, false)) checks++;
+							ctx.ui.notify(`requested abort for ${plural(runs, "run")} and ${plural(checks, "check")}`, "info");
 							return;
 						}
 						const target = rest.trim();
@@ -2570,7 +2554,7 @@ export default function piLoops(pi: ExtensionAPI) {
 								return;
 							}
 						}
-						ctx.ui.notify(target ? `no running trigger with trace_id '${target}'` : "usage: /triggers abort <trace_id>|--all", "warning");
+						ctx.ui.notify(target ? `nothing running with id '${target}'` : "usage: /triggers abort <run|trace id>|--all", "warning");
 						return;
 					}
 					case "panel": {
@@ -2924,8 +2908,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			try {
 				switch (sub) {
 					case "":
-					case "list":
-					case "ls": {
+					case "list": {
 						const packaged = listRecipes();
 						const installed = new Map(installedRecipes(project).map((r) => [r.recipe, r]));
 						const jobs = stores.jobs.load().filter((j) => j.recipe && sameProject(j.cwd, project));
@@ -3012,8 +2995,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						show(ctx, `recipe ${name}: merged pi-loops ${PI_LOOPS_VERSION} playbooks into ${homeRel(dir)}/`, lines);
 						return;
 					}
-					case "remove":
-					case "rm": {
+					case "remove": {
 						pendingRecipeAdd = undefined;
 						const purge = words.includes("--purge");
 						const name = words.find((w) => !w.startsWith("--"));
