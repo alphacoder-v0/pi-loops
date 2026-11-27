@@ -472,8 +472,6 @@ To upgrade from 0.24.2 or earlier:
   loops directory (`~/.pi`, home, `/`), since such a command reads the page's token with the rest;
   `ls` and `du` of that directory are not asked about. It is asked before `pi-loops resume` and
   `pi-loops events replay`.
-- **`ls ~/.config/git` is no longer asked about.** It reads the same as `ls ~/.config/git/`. A
-  write into that directory is still asked about.
 - **pi-loops in the background keeps running when a push cannot be turned into rows.** A push that
   arrived while `triggers.json` did not parse ended the process. The push stays in `events.jsonl`,
   the error goes to `host.log`, and `pi-loops events replay <id>` writes its rows. A start with such

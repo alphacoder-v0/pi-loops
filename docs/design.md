@@ -689,7 +689,8 @@ machine. Everything here follows from that, and each one has a price.
     puts there. git's options are read against lists of the ones the policy knows, and an option it
     does not know is taken as one that may write, since git takes any unique prefix of a long option.
     The cost: `echo it's`, `ls # don't`, `git config core.pager less`, `git checkout -- .gitattributes`
-    and a command such as `du -sh .git` are each one question; a command over several lines that the
+    and a command such as `du -sh .git` or `ls ~/.config/git` are each one question, under the git
+    setup reason although they only read (`ls ~/.config/git/`, with the slash, is not asked); a command over several lines that the
     policy stops is refused, since a card shows one line, and so is one whose quoted text names a
     pi-loops stop or claim or the loops directory. What this does not see (#172): a setting or a hook
     that something other than an unattended turn wrote (a person, another tool, a clone), which a later

@@ -556,8 +556,10 @@ function piLoopsWordRewritten(flat: string): boolean {
 		const words = sub.trim().split(/\s+/).filter(Boolean);
 		const at = words.findIndex((w) => PI_LOOPS_NAME.test(w));
 		if (at === -1) continue;
-		const verbs = words.slice(at + 1).filter((w) => !w.startsWith("-") && w !== "host").slice(0, 2);
-		if (verbs.some((w) => !literalWord(w))) return true;
+		const [verb, second] = words.slice(at + 1).filter((w) => !w.startsWith("-") && w !== "host");
+		if (verb !== undefined && !literalWord(verb)) return true;
+		// A glob in the second word is a verb only after a group (`inbox cl?im`); after `export` it is a path.
+		if (second !== undefined && !literalWord(second) && (/[$`\\{}]/.test(second) || (verb !== undefined && ANSWER_SUBVERBS.has(verb)))) return true;
 	}
 	return false;
 }
@@ -633,8 +635,7 @@ export function gitSettingRunsProgram(key: string, value: string | undefined): b
 /** Whether a shell word runs git: `git` or a path to it, after a `$(`, a `(`, a backtick, a `{` or an assignment. */
 function isGitWord(w: string): boolean {
 	const word = w.replace(/^.*[=(`{]/, "");
-	// git's directory under `.config` is not its program: `ls ~/.config/git` reads as `ls ~/.config/git/`.
-	return (word.split("/").pop() ?? "") === "git" && !/(?:^|\/)\.config\/git$/i.test(word);
+	return (word.split("/").pop() ?? "") === "git";
 }
 
 /**

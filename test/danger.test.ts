@@ -1068,7 +1068,9 @@ test("[policy-glob-word] a verb after pi-loops or a git key or sub-command that 
 	for (const command of ["pi-loops st?p", "pi-loops st[o]p", "pi-loops w[e]b --no-open", "pi-loops op*n", "pi-loops inbox d?smiss x", "pi-loops inbox cl[a]im x", "git conf?g core.pager x", "git config core.pag[e]r /tmp/x.sh", "git config core.* x"]) {
 		assert.notEqual(reach(command), undefined, command);
 	}
-	for (const command of ["ls *.ts", "grep -r foo src/*", "cat src/[a-c]*.ts", "git add src/*.ts", "git log -- 'src/*.ts'", "pi-loops inbox list *.json", "find . -name '*.md'"]) assert.equal(reach(command), undefined, command);
+	for (const command of ["ls *.ts", "grep -r foo src/*", "cat src/[a-c]*.ts", "git add src/*.ts", "git log -- 'src/*.ts'", "pi-loops inbox list *.json", "find . -name '*.md'", "pi-loops export out-*.tar", "pi-loops inspect ./backup-*.pisession"]) assert.equal(reach(command), undefined, command);
+	// The rules of $ and a backtick stay as they were: any of the first two words.
+	assert.notEqual(reach("pi-loops export $OUT"), undefined, "a $ in the second word is still asked about");
 });
 
 test("[policy-recursive-read] a recursive read or copy of a directory that holds the loops directory reads pi-loops' own files; a plain list of it, du, and a recursive read elsewhere do not", () => {
@@ -1108,7 +1110,8 @@ test("[policy-new-verbs] pi-loops resume and pi-loops events replay answer for a
 	assert.equal(reasonOf("pi-loops status"), undefined);
 });
 
-test("[git-setup-dir] git's directory under .config reads the same with a trailing slash or without: a reader is not asked, a write into it is", () => {
-	for (const command of ["ls ~/.config/git", "ls ~/.config/git/", "ls -la ~/.config/git", "ls .config/git", "ls .config/git/", "cat ~/.config/git/config"]) assert.equal(reasonOf(command), undefined, command);
-	for (const command of ["cp x ~/.config/git", "cp x ~/.config/git/", "echo x > ~/.config/git/attributes", "cp -r hooks ~/.config/git/"]) assert.equal(reasonOf(command), GIT_SETUP, command);
+test("[git-setup-dir] a write into git's directory under .config is asked about, after a cd into it too; a plain list of it is asked as well (decision 28's cost)", () => {
+	for (const command of ["cp x ~/.config/git", "cp x ~/.config/git/", "echo x > ~/.config/git/attributes", "cp -r hooks ~/.config/git/", "cd ~/.config/git && cp /tmp/c config", "cd ~/.config/git; echo x >> config", "cd $HOME/.config/git && tee config < /tmp/x"]) assert.equal(reasonOf(command), GIT_SETUP, command);
+	assert.equal(reasonOf("ls ~/.config/git"), GIT_SETUP, "a reader that names the directory with no slash is asked, one question");
+	assert.equal(reasonOf("cat ~/.config/git/config"), undefined, "a reader of a file in it is not");
 });
