@@ -630,7 +630,10 @@ machine. Everything here follows from that, and each one has a price.
     unattended run writes.** A question costs one tap, so the policy stops a command it cannot read
     with confidence: a command of one line that ends inside a quote, a `$'…'` with a backslash (bash
     and sh read it differently), and a verb after `pi-loops` or a git key or sub-command that the shell
-    rewrites (`$`, a brace, a backslash) are asked about (#231). A command over several lines is read
+    rewrites (`$`, a brace, a backslash, a glob: `*`, `?`, `[`) are asked about (#231). A program that
+    reads a directory above the loops directory recursively (`grep -r`, `rg`, `cp -r`, `tar`, `rsync`,
+    `find`, `zip -r`) is asked about as for pi-loops' own files, since it reads the page's token with
+    the rest; `ls` and `du` of that directory are not. A command over several lines is read
     as written, every quote in it: bash reads lines in ways the policy would have to copy to set a
     quoted phrase aside (a heredoc's body, a comment, a backslash that continues one line and not
     another), and each copy missed one. A shell command that writes a git setting on the policy's list
