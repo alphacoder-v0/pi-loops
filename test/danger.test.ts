@@ -1060,3 +1060,55 @@ test("[policy-dollar-dollar] a `$'…'` that holds a backslash is asked about: s
 	assert.equal(reasonOf("echo $'plain'"), undefined);
 	assert.equal(reasonOf("echo $$'a\\'"), undefined, "`$$` then a plain quote is read alike by both");
 });
+
+test("[policy-glob-word] a verb after pi-loops or a git key or sub-command that the shell builds from a glob is asked about; a glob in another program's words is not", () => {
+	const loops = "/home/u/.pi/agent/loops";
+	const reach = (command: string) => dangerousCommandReason(command, "/home/u", [], loops, "linux");
+	// With a file named `stop`, `web` or `dismiss` in the cwd, bash runs each as that verb.
+	for (const command of ["pi-loops st?p", "pi-loops st[o]p", "pi-loops w[e]b --no-open", "pi-loops op*n", "pi-loops inbox d?smiss x", "pi-loops inbox cl[a]im x", "git conf?g core.pager x", "git config core.pag[e]r /tmp/x.sh", "git config core.* x"]) {
+		assert.notEqual(reach(command), undefined, command);
+	}
+	for (const command of ["ls *.ts", "grep -r foo src/*", "cat src/[a-c]*.ts", "git add src/*.ts", "git log -- 'src/*.ts'", "pi-loops inbox list *.json", "find . -name '*.md'"]) assert.equal(reach(command), undefined, command);
+});
+
+test("[policy-recursive-read] a recursive read or copy of a directory that holds the loops directory reads pi-loops' own files; a plain list of it, du, and a recursive read elsewhere do not", () => {
+	const loops = "/home/u/.pi/agent/loops";
+	const reach = (command: string, platform: NodeJS.Platform = "linux") => dangerousCommandReason(command, "/home/u", [], loops, platform);
+	for (const command of [
+		"grep -r token ~/.pi",
+		"grep -rn . ~/.pi/agent",
+		"grep -R x $HOME/.pi/agent/",
+		"grep --recursive x /home/u/.pi",
+		"egrep -r x ~",
+		"rg token ~/.pi",
+		"ag token ~/.pi/agent",
+		"cp -r ~/.pi /tmp/x",
+		"cp -a ~/.pi/agent/ /tmp/x",
+		"cp -R /home/u /tmp/x",
+		"tar czf /tmp/x.tgz ~/.pi",
+		"rsync -a ~/.pi/ /tmp/y",
+		"find ~/.pi -name web-token -exec cat {} +",
+		"find $HOME -type f",
+		"zip -qr /tmp/x.zip ~/.pi",
+		"timeout 5 grep -r x ~/.pi",
+		"cd /tmp && cp -r ${HOME}/.pi x",
+		"grep -r x ~/.pi/../.pi",
+		"grep -r x $PI_CODING_AGENT_DIR",
+	]) {
+		assert.equal(reach(command), OWN_FILES, command);
+	}
+	assert.equal(reach("rg token ~/.PI", "darwin"), OWN_FILES, "letter case is ignored where the file system ignores it");
+	for (const command of ["ls ~/.pi/agent", "ls -la ~/.pi/agent/", "du -sh ~/.pi", "cat ~/.pi/agent/settings.json", "grep x ~/.pi/agent/settings.json", "grep -r x src", "rg foo ~/code/piz", "cp -r src /tmp/x", "cp ~/.pi/agent/settings.json /tmp/x", "find . -name '*.ts'", "tar czf x.tgz dist", "zip x.zip ~/.pi/agent/settings.json", "rg token ~/.PI", "grep -r x '~/.pi' docs"]) {
+		assert.equal(reach(command), undefined, command);
+	}
+});
+
+test("[policy-new-verbs] pi-loops resume and pi-loops events replay answer for a person: one ends the upgrade's pause, the other writes rows that run a loop or a check", () => {
+	for (const command of ["pi-loops resume", "cd /tmp && pi-loops resume", "pi-loops events replay ev-1", "npx pi-loops events replay ev-1", "pi-loops events $V ev-1"]) assert.equal(reasonOf(command), ANSWERS, command);
+	assert.equal(reasonOf("pi-loops status"), undefined);
+});
+
+test("[git-setup-dir] git's directory under .config reads the same with a trailing slash or without: a reader is not asked, a write into it is", () => {
+	for (const command of ["ls ~/.config/git", "ls ~/.config/git/", "ls -la ~/.config/git", "ls .config/git", "ls .config/git/", "cat ~/.config/git/config"]) assert.equal(reasonOf(command), undefined, command);
+	for (const command of ["cp x ~/.config/git", "cp x ~/.config/git/", "echo x > ~/.config/git/attributes", "cp -r hooks ~/.config/git/"]) assert.equal(reasonOf(command), GIT_SETUP, command);
+});
