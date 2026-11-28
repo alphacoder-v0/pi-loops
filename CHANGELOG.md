@@ -45,7 +45,9 @@ To upgrade from 0.24.2 or earlier:
    again in its own shape, which removes what this version adds to a finding. `resume` refuses while
    pi-loops 0.22 still runs here, or an older pi-loops in the background, and names its pid.
    pi-loops 0.24.2 in the background, which an update of the package does not stop, is replaced by
-   the first pi window of this version, as before; until then it still checks every rule that is
+   the first pi window of this version, as before. If you run pi-loops only from the command line or
+   a service manager, run `pi-loops stop` with 0.24.2 before you update: `pi-loops start` does not
+   replace it. Until it is replaced or stopped, it still checks every rule that is
    on, so `resume` refuses while it runs. `resume` cannot see a 0.24.2 terminal that was not
    restarted, so it cannot refuse for it: that is the cost of this design, with the one command that
    every person who upgrades runs. Once resumed, a loop whose slots came due during the pause runs as
@@ -475,7 +477,8 @@ To upgrade from 0.24.2 or earlier:
   before a git sub-command or key that holds a glob: with a matching file in the directory, the
   shell runs another verb (`pi-loops st?p` is a stop, `pi-loops inbox --reason r cl?im` a claim). It is asked before
   `grep -r`, `rg`, `ag`, `cp -r`, `tar`, `rsync`, `find` or `zip -r` of a directory that holds the
-  loops directory (`~/.pi`, home, `/`), since such a command reads the page's token with the rest;
+  loops directory when the command names it (`~/.pi`, home, `/`), since such a command reads the
+  page's token with the rest; a recursive read of `.` in a run whose directory holds it is not seen;
   `ls` and `du` of that directory are not asked about. It is asked before `pi-loops resume` and
   `pi-loops events replay`.
 - **pi-loops in the background keeps running when a push cannot be turned into rows.** A push that

@@ -252,8 +252,8 @@ playbook 拷到 `.agents/skills/<name>/`，通过 `.git/info/exclude` 排除在�
                                                                 # loop：子代理 + 跨轮笔记 + findings 进 /inbox
 /cron add --stateful --name ci every 30m run the test suite; only report tests that changed status since your notes
 /cron add in 10m 提醒我看一下测试结果                           # 会话级闹钟
-/cron  ·  /cron list|ls|status      本项目的任务，[stateful] 标记；/cron all 看整台机器
-/cron enable|resume|disable|pause|remove <n|id|name>
+/cron  ·  /cron list|status         本项目的任务，[stateful] 标记；/cron all 看整台机器
+/cron enable|disable|remove <n|id|name>
                                     remove 只认本项目的名字和编号，别的项目的任务要给完整 id（删除撤不回来）
 /cron set <ref> …                   改已有任务而不换 id（笔记因此留着）：--prompt、--schedule，
                                     以及 --model、--thinking、--timeout、--name 这几个钉子（`-` 解掉）
@@ -399,7 +399,7 @@ backup.pisession                 无压缩 ustar，0600，拒绝覆盖已有文�
 - 结果默认只落在 TUI 卡片和 audit 里；规则带 `promote_to_chat` 时，它以 `[Trigger <trace_id>] …` 开头插进主对话，后面的 turn 看得见。
 - 5 分钟 dedup 窗口，`listChanged` 类通知用稳定 key 折叠成最新一条，自定义通知必须带 `_meta.pi_dedup_key`，否则在源头丢弃并计数。
 - 自然语言里出现「每小时 / daily / cron / 定时任务」之类时，`new_trigger` 会拒绝并让 agent 改用 `cron_create`。
-- 工具：`new_trigger`（condition / action / spec / fire_once / promote_to_chat）、`list_triggers`、`remove_trigger`（id | all）、`set_trigger_state`，描述与返回文本固定。建规则、删规则、重新启用自动化这三件事都要你点头：工具把原因摆出来等你确认，没有 UI 可点的场合（子会话、后台进程）一律拒绝。
+- 工具：`new_trigger`（condition / action / spec / fire_once / promote_to_chat）、`list_triggers`、`remove_trigger`（id | all）、`set_trigger_state`，描述与返回文本固定。建规则、删规则、重新启用这三件事都要你点头。`new_trigger` 写下的是一条提议（proposal），你在卡片上说好才生效，在你自己的轮次和定时轮次里都一样。删规则、重新启用规则、停用别的项目的规则，在你自己的轮次里弹 pi 的确认框；停用本项目的规则不用确认。在定时轮次里，`remove_trigger` 和 `set_trigger_state` 的每次调用都先不执行，pi-loops 在对话和 inbox 里问你，你说好才执行那一次。loop 或检查的运行拿不到 `remove_trigger`；它能停用本项目的规则（和 0.24.2 一样），重新启用规则或改别的项目的规则会被拒绝。
 - 规则是机器全局的（带 cwd），`/triggers rules` 默认只看本项目；子代理进程里不注册这些工具，所以一条 trigger 的动作造不出新的 trigger。
 - 轮询间隔：`config.toml` 的 `[triggers] poll_interval_secs`，pi-loops 每分钟重读一次。`--trigger-poll-secs` 已不起作用，传了会提示一句。
 
@@ -439,7 +439,7 @@ stdio 服务器崩溃后自动重连；`Mcp-Session-Id` 会话头；服务器发
 
 `mcp.toml` 里每台服务器握完手就 `tools/list`，把工具逐个 `pi.registerTool` 给 agent：名字用服务器给的原名（和已有工具撞名就加 `<server>_` 前缀），参数 schema 原样透传，`tools/call` 的 text / image / resource 内容映射成 pi 的工具结果，`isError` 变成工具错误，用户中断时给服务器发 `notifications/cancelled`。
 
-连接是每个 pi 进程自己的事——工具得在手边才用得上，子代理也一样。推送通知则是交互式 pi 各自收各自的，机器级的 `dedup.json` 保证同一条只处理一次；子代理不注册通知钩子，收不到推送，万一还有触发跑到 hop ≥ 1，运行时把它记成 `cycle_suppressed`。
+连接是每个 pi 进程自己的事——工具得在手边才用得上，子代理也一样。每条推送一到就原样写进 `events.jsonl`，然后才有人处理它。要按规则判断的推送，由后台的 pi-loops 在每个项目里各判断一次：它在该项目的检查队列里等着，重启也不丢；同一个幂等键 5 分钟内只算一次。子代理不注册通知钩子，收不到推送。0.24.2 的 `dedup.json` 在启动时会被删掉。
 
 `/triggers sources` 显示每台服务器注册了哪些工具。
 
@@ -466,20 +466,35 @@ stdio 服务器崩溃后自动重连；`Mcp-Session-Id` 会话头；服务器发
 ## 子代理每次收到的 prompt
 
 ```text
-You are running the recurring loop "ci" (current run started <这次运行开始的时间，跑它那台机器的钟，带那台机器的偏移>; write any time in your notes with its offset, as that one has). This is a background run: nobody is watching, and your final reply is parsed by a program.
+You are running the recurring loop "ci" (current run started <这次运行开始的时间，跑它那台机器的钟，带那台机器的偏移>; write any time in your notes with its offset, as that one has). This is a background run: nobody is watching, and your final reply is parsed by a program. The run is stopped after <任务的超时> and counted as a failure, so finish inside that time.
 
 [loop-state] (your notes from the previous run of this recurring job)
 <state 文件内容，或 (first run)>
 [/loop-state]
 
+[notes-files] (longer notes you keep as files in <loops dir>/state/<id>/; read one when you need it)
+- prs.md · 3.1 KB · changed 2026-11-13
+[/notes-files]
+
+[reported] (what this loop already told a person, and what they did with it; do not report these again unless what they describe has changed)
+- 11-12 new: PR #12 has failing CI
+[/reported]
+
+[asked] (questions of yours that wait for a person; do not ask them again)
+- 11-13 run `git push --force origin fix/login`
+[/asked]
+
 <你的 prompt>
 
 Output protocol (mandatory):
-- End your reply with <loop-state>notes for the next run</loop-state> — it REPLACES the saved state; keep it under 2000 characters and make it the information your next run needs (baselines, ids already seen, watermarks).
+- End your reply with <loop-state>notes for the next run</loop-state>: it REPLACES the saved notes; keep it under 2000 characters and make it what your next run needs and cannot look up again (baselines, watermarks, decisions). What you reported is listed for you under [reported]: do not keep ids of reported things here. Put anything longer in a file under <loops dir>/state/<id>/ and name the file in your notes.
 - For each finding a human should act on, emit <inbox>one concise line</inbox>, at most 16 per run and 500 characters each. No findings → no inbox tags; do not invent work.
 - When a finding needs a person to decide, write it as <inbox><the decision> · waits: <what waits on it> · if not: <what happens if nobody acts></inbox>.
+- To be woken before your next scheduled run, or to skip scheduled runs until a time, call wake_me.
 - Keep everything after the last tool call short so the tags are not truncated.
 ```
+
+没有内容的块不出现。`[woken]` 块只在 loop 自己要求唤醒的那次运行里出现。完整说明见 [docs/loops.md](docs/loops.md)。
 
 ## 它是怎么搭起来的
 

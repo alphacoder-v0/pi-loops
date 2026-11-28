@@ -131,9 +131,9 @@ export interface Conversion {
 
 /**
  * The conversion of a loops directory that 0.24.2 left, at every start (design section 5). Under
- * `jobs.lock`, for a `version: 2` `jobs.json`: (1) each job's cursor into `clock.json`, (2) one row
- * for each owed slot and each dead run marker whose prompt was not written (a plain job's whose
- * prompt is in its conversation is counted as a run, not asked again), (5) `jobs.json.v2.bak`, then `jobs.json` as version 3
+ * `jobs.lock`, for a `version: 2` `jobs.json`: (1) each job's cursor into `clock.json`, (2) no row
+ * for an owed slot or a dead run marker (each owed slot is logged; a plain job's whose prompt is in its
+ * conversation is counted as a run), (5) `jobs.json.v2.bak`, then `jobs.json` as version 3
  * with the counters dropped and `disabled` from the reason; then each claim row of 0.24.2 leaves its
  * queue (`convertClaimRows`), and (6) the retired files go. No mark
  * says "converted": each step reads its own store, so a crash after any step leaves stores that the

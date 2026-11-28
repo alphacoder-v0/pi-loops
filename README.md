@@ -331,7 +331,7 @@ pi-loops stays stopped until `pi-loops start`, or until `pi-loops` opens the bro
 | `/cron gc` | Remove plain jobs whose session was deleted (they are parked as disabled first) |
 | `/cron panel on\|off` | The side panel above the editor: Rules, Loops, Runs, MCP |
 | `/cron snapshot` | Write what only this process knows — connected MCP servers and their tools, active tools, hooks, whether pi-loops is running and its pid — into the session as a `pi_loops_snapshot` entry, for a front end that is not a terminal |
-| `/inbox [list\|all\|claim <n>\|dismiss <n> [reason]\|clear] [--all]` | Triage findings from stateful loops. This project's by default, `--all` for every project — the same scoping `/cron` and `/triggers` use. A reason given with `dismiss` is shown to the loop's next run |
+| `/inbox [list\|all\|claim <n>\|dismiss <n> [reason]\|cancel [n]\|clear] [--all]` | Triage findings from stateful loops. `cancel` takes back a yes that has not started. This project's by default, `--all` for every project — the same scoping `/cron` and `/triggers` use. A reason given with `dismiss` is shown to the loop's next run |
 | `/goal [<condition>]`, `/goal pause\|resume\|clear` | Hold the session to a stop condition: after every turn an evaluator with no tools decides whether it is met, and sends the agent back to work if not (max 8 continuations). Bare `/goal` shows the one in force |
 | `/new-trigger <natural language>` | Create a condition-based rule ("when ~/build.done exists, run cargo test") |
 | `/triggers [status\|rules\|enable\|disable\|remove\|running\|audit [N]\|abort]` | Dynamic rules: what exists, what is running, what happened |
