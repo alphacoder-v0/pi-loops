@@ -36,7 +36,7 @@ import { Ticker, HOST_RIDERS, BACKGROUND_RIDERS, type Riders } from "./ticker.ts
 import { McpPool } from "./mcp-pool.ts";
 import { deliveryOf } from "./push.ts";
 import { ruleLook } from "./check-tick.ts";
-import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mcpToolDefinitions, mcpTokenFromEnv, type McpNotification, type McpServerConfig } from "./mcp.ts";
+import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mcpToolDefinitions, mcpTokenResolver, type McpNotification, type McpServerConfig } from "./mcp.ts";
 import { failingJobs } from "./job-health.ts";
 import { jobRuns, listedJobs } from "./job-status.ts";
 import { loopLabel } from "./job-lines.ts";
@@ -127,18 +127,7 @@ let mcpReadAt = mcpConfigStamp();
 const mcpSources: McpSource[] = [];
 const mcpToolDefs = new Map<string, ToolDefinition<any, any>[]>();
 const mcpToolNames = new Map<string, string[]>();
-const resolveMcpToken = (ref: string): string | undefined => {
-	const fromEnv = mcpTokenFromEnv(ref);
-	if (fromEnv) return fromEnv;
-	try {
-		const cred: any = readStoredCredential(ref);
-		if (cred && typeof cred === "object") return cred.key ?? cred.access ?? cred.token;
-		if (typeof cred === "string") return cred;
-	} catch {
-		/* no store */
-	}
-	return undefined;
-};
+const resolveMcpToken = mcpTokenResolver((ref) => readStoredCredential(ref));
 
 /* ------------------------------------------------------------ runtime */
 

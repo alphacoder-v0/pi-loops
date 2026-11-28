@@ -417,7 +417,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
 name = "hub"
 kind = "streamable_http"
 endpoint = "https://example.com/mcp"      # 必须 https，127.0.0.1 除外
-auth = { kind = "bearer", token_keychain_ref = "PI_MCP_TOKEN_HUB" }  # token 不写在文件里：查 pi 的凭据库，或 PI_MCP_TOKEN_* 前缀的环境变量
+auth = { kind = "bearer", token_keychain_ref = "PI_MCP_TOKEN_HUB" }  # token 不写在文件里：PI_MCP_TOKEN_* 前缀的环境变量；你自己的 mcp.toml 还可以写 pi 凭据库里的条目名
 request_timeout_ms = 30000                # 默认 30s
 sse_idle_timeout_ms = 60000               # 事件流静默超过此值就重连，默认 60s
 body_cap_bytes = 1048576                  # 响应体上限，默认 1 MB

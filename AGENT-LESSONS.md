@@ -57,6 +57,18 @@ is there.
   rehearsal that runs the previous release beside head; until then, run J1-J14 on any PR that
   touches `src/engine.ts`, `src/requests.ts` or `src/window-executor.ts`.
 
+- **A shipped playbook that reads text anyone can write says whose text it acts on.** A playbook is
+  the program of an unattended run. Incident: the issue-loop implement playbook took the latest
+  `## Agent Brief` comment on an issue as its contract and addressed every comment on its pull
+  requests, whoever wrote them; only the ecosystem playbook had a rule against planted
+  instructions, and the issue-loop triage playbook reproduced a bug by running the reporter's commands. An
+  input that the program under test runs (a hook, a server's command) is a command too. Found
+  by the audit of 0.24.3 and the review of its fix, not by a review of the recipe. A rule added in
+  one step of a playbook does not hold while another step says the opposite: read the whole
+  playbook as the run will. Check: `test/recipe.test.ts` holds the rules in the issue-loop
+  playbooks. Check owed: the same for any
+  new playbook that acts on issues, comments or pages.
+
 ## Verification that was not rigorous
 
 - **A check that never runs the code proves nothing about it.** `node --check`, a curl at a route
@@ -68,6 +80,15 @@ is there.
   copy of `handOver`; `markTurnEvent` and a regex over `src/pi-loops.ts` test the turn marks, not
   the code that runs them. Check owed: a lint rule that a test file
   must not define a function with the name of a `src/` export.
+- **A security test runs the real path, and a stub must not stand where the hole is.** Incident:
+  `test/mcp-token.test.ts` said a config file could not name an unrelated secret, and proved it for
+  the environment only. For pi's credential store it used a stub resolver and asserted that the
+  store "still wins for any ref". The real store is keyed by provider id, so a project's
+  `.pi/mcp.toml` could name a model's key and have it sent to its own endpoint, in every release up
+  to 0.24.3. The first fix repeated the mistake one level up: its test built a config by hand
+  with the label the fix depends on, so a loader that set the wrong label passed. Check: the test
+  writes real files, reads them with the real loaders and pi's reader, and a rule that grants
+  access names the one case it grants (`source === "user"`), so an unknown case is refused.
 - **A mutation whose find text no longer exists is a failed gate, not a waiver.** Incident: at the
   0.24.3 release (#284), most earlier mutation sets were invalid because the code had moved, and
   they were waived in bulk. No mutation tool is tracked yet; when one is,

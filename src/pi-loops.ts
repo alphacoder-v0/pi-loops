@@ -30,7 +30,7 @@ import { loopSignal, signalSummary } from "./job-signal.ts";
 import { LoopsLog, pruneLogs } from "./log.ts";
 import { type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
 import { McpPool } from "./mcp-pool.ts";
-import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
+import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mcpToolDefinitions, mcpTokenResolver } from "./mcp.ts";
 import { capRedacted, plainLine, previewRedacted, redact, screenText } from "./redact.ts";
 import { CANCELLED_LINE, answerLine, answerWho, backgroundOff, cancelRefusal, cardLines, cardOrigin, clearLeftTail, dismissOutcome, dismissTail, inboxCard, noQuestionLine, questionActions, threadOrder, threadedLines, threads, yesTerminalLine } from "./inbox-card.ts";
 import { type Answers, conversationFile, createAnswers } from "./answers.ts";
@@ -407,22 +407,9 @@ export default function piLoops(pi: ExtensionAPI) {
 		mcpConfigError = mcpDiagnostics.length ? mcpDiagnostics.join("; ") : undefined;
 	}
 
-	/** `auth.token_keychain_ref` → environment variable, then pi's credential store (`/login`-style api keys). */
+	/** `auth.token_keychain_ref` → a `PI_MCP_TOKEN_` variable, then pi's credential store (src/mcp.ts). */
 	function resolveMcpToken(ref: string): string | undefined {
-		const fromEnv = mcpTokenFromEnv(ref);
-		if (fromEnv) return fromEnv;
-		try {
-			const cred: any = readStoredCredential(ref);
-			if (cred && typeof cred === "object") {
-				if (typeof cred.key === "string") return cred.key;
-				if (typeof cred.access === "string") return cred.access;
-				if (typeof cred.token === "string") return cred.token;
-			}
-			if (typeof cred === "string") return cred;
-		} catch {
-			/* no store */
-		}
-		return undefined;
+		return mcpTokenResolver((r) => readStoredCredential(r))(ref);
 	}
 
 	/** MCP tool names registered with pi, per server. */

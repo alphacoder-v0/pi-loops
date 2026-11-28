@@ -21,7 +21,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
 name = "hub"
 kind = "streamable_http"
 endpoint = "https://example.com/mcp"   # https required, 127.0.0.1 excepted
-auth = { kind = "bearer", token_keychain_ref = "PI_MCP_TOKEN_HUB" }  # pi's credential store, or a PI_MCP_TOKEN_* env var
+auth = { kind = "bearer", token_keychain_ref = "PI_MCP_TOKEN_HUB" }  # a PI_MCP_TOKEN_* env var; in your own mcp.toml, an entry of pi's credential store too
 request_timeout_ms = 30000
 sse_idle_timeout_ms = 60000            # reconnect when the event stream goes silent
 body_cap_bytes = 1048576
@@ -33,6 +33,15 @@ inject_summary = true                  # summary straight into the chat, no mode
 A misconfigured server is reported as `mcp server '<name>' failed: …`; the others still connect.
 stdio servers must not set `endpoint`/`auth`; timeouts, caps and reconnect delays must be positive;
 only bearer auth is supported.
+
+`token_keychain_ref` names where the token is, so that the token is not in the file. In your own
+`mcp.toml` it names an environment variable that starts with `PI_MCP_TOKEN_`, or an entry of pi's
+credential store. In a project's `.pi/mcp.toml` it names a `PI_MCP_TOKEN_` variable only: pi's
+store holds your model keys under their provider names, and this line of a project's file must not
+be what sends one of them to the endpoint that the same file names. This bounds what the line can
+read. It is not what protects your keys from a project: a project's file is read only when you
+trust the project, a trusted project's stdio server runs with your environment, and a project's
+file may name any `PI_MCP_TOKEN_` variable that you export. Trust is the boundary.
 
 ## Notifications → triggers
 

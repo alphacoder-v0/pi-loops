@@ -47,11 +47,33 @@ export const MCP_TOKEN_ENV_PREFIX = "PI_MCP_TOKEN_";
 /**
  * The environment half of credential resolution, prefix-bound. Every caller must go through this:
  * reading `process.env[ref]` directly would let a project's `.pi/mcp.toml` name an unrelated secret
- * (a model API key) and have it sent as a bearer token to that server's own endpoint. A ref names
- * pi's credential store first; only a variable under this prefix is accepted as the fallback.
+ * (a model API key) and have it sent as a bearer token to that server's own endpoint. Only a
+ * variable under this prefix is read. pi's credential store is the other half (`mcpTokenResolver`),
+ * and `McpSource` asks it for the person's own mcp.toml alone.
  */
 export function mcpTokenFromEnv(ref: string): string | undefined {
 	return ref.startsWith(MCP_TOKEN_ENV_PREFIX) ? process.env[ref] : undefined;
+}
+
+/**
+ * What a `token_keychain_ref` names, for a window and for pi-loops in the background alike: a
+ * `PI_MCP_TOKEN_` variable, then the entry of pi's credential store that `readStore` reads. The
+ * store is keyed by provider id, so `McpSource` asks it only for the person's own mcp.toml.
+ */
+export function mcpTokenResolver(readStore: (ref: string) => unknown): (ref: string) => string | undefined {
+	return (ref) => {
+		const fromEnv = mcpTokenFromEnv(ref);
+		if (fromEnv) return fromEnv;
+		let cred: any;
+		try {
+			cred = readStore(ref);
+		} catch {
+			return undefined; // no store
+		}
+		if (typeof cred === "string") return cred;
+		if (!cred || typeof cred !== "object") return undefined;
+		return [cred.key, cred.access, cred.token].find((v) => typeof v === "string");
+	};
 }
 const USER_AGENT = `pi-loops/${PI_LOOPS_VERSION} (mcp-streamable-http/2025-03-26)`;
 
@@ -84,7 +106,7 @@ export interface ParsedMcpConfig {
 }
 
 /** Parse one `mcp.toml` document (`[[server]]`), validated per server. */
-export function parseMcpConfig(doc: Record<string, unknown>, source: "user" | "project" = "user"): ParsedMcpConfig {
+export function parseMcpConfig(doc: Record<string, unknown>, source: "user" | "project"): ParsedMcpConfig {
 	const servers = Array.isArray(doc.server) ? (doc.server as any[]) : [];
 	const out: ParsedMcpConfig = { servers: [], diagnostics: [] };
 	const seen = new Set<string>();
@@ -507,12 +529,15 @@ export class McpSource {
 		const auth = this.config.auth;
 		if (!auth) return undefined;
 		if (auth.tokenKeychainRef) {
-			// pi's credential store answers first. Reading any environment variable a config file
-			// names would let `.pi/mcp.toml` send an unrelated secret (a model API key) to its own
-			// endpoint, so the env fallback is bound to the `PI_MCP_TOKEN_` prefix.
+			// A `token_keychain_ref` must not read an unrelated secret (a model API key) and send it to
+			// the file's own endpoint. So the environment is read only under the `PI_MCP_TOKEN_` prefix,
+			// and pi's credential store, which holds the model keys under their provider ids, is asked
+			// for the person's own mcp.toml and for no other source. This bounds what the ref reads; it
+			// is not what keeps a project from your keys: a trusted project's stdio server runs with
+			// your environment (docs/mcp.md).
 			const ref = auth.tokenKeychainRef;
-			const token = this.hooks.resolveToken?.(ref) ?? mcpTokenFromEnv(ref);
-			if (!token) throw new Error(`configured bearer credential was not found; store it with pi's credential store, or export it as ${MCP_TOKEN_ENV_PREFIX}… and name that variable`);
+			const token = (this.config.source === "user" ? this.hooks.resolveToken?.(ref) : undefined) ?? mcpTokenFromEnv(ref);
+			if (!token) throw new Error(this.config.source !== "user" ? `configured bearer credential was not found; a project's mcp.toml names a variable: export it as ${MCP_TOKEN_ENV_PREFIX}… and name that variable` : `configured bearer credential was not found; store it with pi's credential store, or export it as ${MCP_TOKEN_ENV_PREFIX}… and name that variable`);
 			return token;
 		}
 		return auth.token;

@@ -5,7 +5,7 @@ import { McpSource, mapNotification, mergeMcpConfigs, parseMcpConfig } from "../
 import { parseToml } from "../src/toml.ts";
 
 test("parseMcpConfig: mcp.toml validation and defaults", () => {
-	const cfg = parseMcpConfig(parseToml(`[[server]]\nname = "fs"\ncommand = "node"\nargs = ["x.js"]\n[[server]]\nname = "hub"\nkind = "streamable_http"\nendpoint = "https://h/mcp"\nauth = { kind = "bearer", token_keychain_ref = "HUB_TOKEN" }\nsse_idle_timeout_ms = 5000\nreconnect = { initial_ms = 100, max_ms = 1000, max_attempts = 3 }\ninject_and_run = true\n`)).servers;
+	const cfg = parseMcpConfig(parseToml(`[[server]]\nname = "fs"\ncommand = "node"\nargs = ["x.js"]\n[[server]]\nname = "hub"\nkind = "streamable_http"\nendpoint = "https://h/mcp"\nauth = { kind = "bearer", token_keychain_ref = "HUB_TOKEN" }\nsse_idle_timeout_ms = 5000\nreconnect = { initial_ms = 100, max_ms = 1000, max_attempts = 3 }\ninject_and_run = true\n`), "user").servers;
 	assert.equal(cfg[0].kind, "stdio");
 	assert.equal(cfg[0].requestTimeoutMs, 30_000);
 	assert.equal(cfg[0].bodyCapBytes, 1024 * 1024);
@@ -15,26 +15,26 @@ test("parseMcpConfig: mcp.toml validation and defaults", () => {
 	assert.deepEqual(cfg[1].auth, { kind: "bearer", tokenKeychainRef: "HUB_TOKEN", token: undefined });
 	assert.deepEqual(cfg[1].reconnect, { initialMs: 100, maxMs: 1000, maxAttempts: 3 });
 	const bad = (doc: any, re: RegExp) => {
-		const r = parseMcpConfig(doc);
+		const r = parseMcpConfig(doc, "user");
 		assert.equal(r.servers.length, 0);
 		assert.match(r.diagnostics[0], re);
 	};
 	bad({ server: [{ name: "a", kind: "streamable_http", endpoint: "https://x", command: "c" }] }, /must set endpoint, not command/);
 	bad({ server: [{ name: "a", command: "c", endpoint: "https://x" }] }, /must not set endpoint or auth/);
 	bad({ server: [{ name: "a", kind: "streamable_http", endpoint: "http://example.com/mcp" }] }, /must be https/);
-	assert.equal(parseMcpConfig({ server: [{ name: "a", kind: "streamable_http", endpoint: "http://127.0.0.1:9/mcp" }] }).servers[0].endpoint, "http://127.0.0.1:9/mcp");
-	const mixed = parseMcpConfig({ server: [{ name: "ok", command: "x" }, { name: "bad", kind: "streamable_http", endpoint: "http://example.com" }] });
+	assert.equal(parseMcpConfig({ server: [{ name: "a", kind: "streamable_http", endpoint: "http://127.0.0.1:9/mcp" }] }, "user").servers[0].endpoint, "http://127.0.0.1:9/mcp");
+	const mixed = parseMcpConfig({ server: [{ name: "ok", command: "x" }, { name: "bad", kind: "streamable_http", endpoint: "http://example.com" }] }, "user");
 	assert.deepEqual(mixed.servers.map((x) => x.name), ["ok"], "one bad server does not take the file down");
 	assert.match(mixed.diagnostics[0], /^mcp server 'bad' failed: /);
 	bad({ server: [{ name: "a", kind: "streamable_http", endpoint: "https://x", auth: { kind: "basic" } }] }, /unsupported streamable_http auth kind; expected bearer/);
 	bad({ server: [{ name: "a", kind: "streamable_http", endpoint: "https://x", auth: { kind: "bearer" } }] }, /requires token_keychain_ref/);
 	bad({ server: [{ name: "a", kind: "streamable_http", endpoint: "https://x", request_timeout_ms: 0 }] }, /request_timeout_ms must be positive/);
 	bad({ server: [{ name: "a", kind: "streamable_http", endpoint: "https://x", reconnect: { initial_ms: 0 } }] }, /reconnect delays must be positive/);
-	const dup = parseMcpConfig({ server: [{ name: "a", command: "x" }, { name: "a", command: "y" }] });
+	const dup = parseMcpConfig({ server: [{ name: "a", command: "x" }, { name: "a", command: "y" }] }, "user");
 	assert.equal(dup.servers.length, 1);
 	assert.equal(dup.servers[0].command, "y", "the later entry wins");
 	assert.match(dup.diagnostics[0], /duplicate name .* later entry wins/);
-	const merged = mergeMcpConfigs(parseMcpConfig({ server: [{ name: "a", command: "user" }, { name: "b", command: "b" }] }).servers, parseMcpConfig({ server: [{ name: "a", command: "project" }] }, "project").servers);
+	const merged = mergeMcpConfigs(parseMcpConfig({ server: [{ name: "a", command: "user" }, { name: "b", command: "b" }] }, "user").servers, parseMcpConfig({ server: [{ name: "a", command: "project" }] }, "project").servers);
 	assert.deepEqual(merged.map((s) => [s.name, s.command, s.source]), [["a", "project", "project"], ["b", "b", "user"]]);
 });
 
