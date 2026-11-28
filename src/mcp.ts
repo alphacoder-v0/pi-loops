@@ -501,12 +501,28 @@ export class McpSource {
 				this.failPending("transport closed");
 				err ? reject(err) : resolve();
 			};
-			this.sendFrame = (frame) => proc.stdin?.write(`${JSON.stringify(frame)}\n`);
+			// The server's stdin is a pipe to another process: it can close before the `close` event below,
+			// and then a write ends in EPIPE, an `error` event on the pipe. With no listener that error
+			// ends the process in every mode pi-loops runs in. So the error
+			// ends the connection at once, says why, and stops the server, by SIGKILL when SIGTERM is not
+			// enough; the reconnect loop then runs as for a server that exits.
+			proc.stdin?.on("error", (err) => {
+				if (settled) return;
+				proc.kill("SIGTERM");
+				const hard = setTimeout(() => proc.kill("SIGKILL"), 2000);
+				hard.unref?.();
+				proc.once("exit", () => clearTimeout(hard));
+				finish(new Error(`the server's input closed (${err.message})`));
+			});
+			const write = (frame: unknown) => {
+				if (proc.stdin?.writable) proc.stdin.write(`${JSON.stringify(frame)}\n`);
+			};
+			this.sendFrame = write;
 			proc.stdout?.on("data", (chunk) => {
 				buffer += chunk.toString();
 				const lines = buffer.split("\n");
 				buffer = lines.pop() ?? "";
-				for (const line of lines) this.handleFrame(line, (frame) => proc.stdin?.write(`${JSON.stringify(frame)}\n`));
+				for (const line of lines) this.handleFrame(line, write);
 			});
 			proc.stderr?.on("data", (chunk) => {
 				// Kept apart from lastError: chatter must not mask a real error.
@@ -515,7 +531,7 @@ export class McpSource {
 			});
 			proc.on("error", (err) => finish(new Error(`failed to spawn ${this.config.command}: ${err.message}`)));
 			proc.on("close", (code) => finish(this.stopped ? undefined : new Error(`server exited with code ${code}`)));
-			void this.initialize((msg) => proc.stdin?.write(`${JSON.stringify(msg)}\n`)).catch((err) => {
+			void this.initialize(write).catch((err) => {
 				proc.kill("SIGTERM");
 				const hard = setTimeout(() => proc.kill("SIGKILL"), 2000);
 				hard.unref?.();

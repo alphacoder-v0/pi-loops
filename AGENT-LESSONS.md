@@ -111,7 +111,11 @@ is there.
   `test/sim-model.test.ts`, and each allowance has a named reason.** Incident: in #246 an allowance
   hid a person message answered twice.
 - **A flake that passes when run again alone is a defect, and its cause is read from the failed
-  run, not guessed.** Journey J6 failed under load in #281 and merged as a note that blamed its fixed
+  run, not guessed.** `test/mcp-pool.test.ts` failed once in a full run (#289) and passed 30 times
+  alone. Its error, a late `EPIPE`, was a real path that ends pi: the MCP stdio client wrote to a
+  server's stdin with no error listener. The browser front end had learned this in 9cb321c; the
+  same class twice is why `test/child-stdin.test.ts` now holds it for every file that writes to a
+  child's stdin. Journey J6 failed under load in #281 and merged as a note that blamed its fixed
   4 s wait. The files of a later failed run showed another cause: the page's Mark all seen moves the
   cursor to the time of the page's latest answer, and the journey clicked before the page had asked
   after the loop's run ended, so the terminal was right to report that run. The journey now waits
@@ -180,4 +184,7 @@ is there.
 - **A subagent's cleanup touches only what it made.** Incidents: a reviewer ran `git checkout main`
   in the shared tree; another ran `rm -rf tmp.*` in a shared scratch directory; a cleanup glob
   removed six worktrees that were not this run's. Say "do not check out, do not remove a glob" in
-  every brief.
+  every brief. A `pgrep -f` or `pkill -f` pattern also matches the shell whose command line holds
+  it: a watcher that waited on `pgrep -f "journey/run.mjs all"` waited on itself, and a `pkill -f`
+  with that pattern killed the command that ran it. Match a pid you recorded, or the process's own
+  argv (`pgrep -f '^node test/journey'`).
