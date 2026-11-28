@@ -107,7 +107,7 @@ export function markTurn(marks: TurnMarks, reason: TurnReason, since: string | u
 }
 
 /** The marks after pi's `event` at `now`. Any event that is not in `TURN_EVENTS` changes nothing. */
-export function markTurnEvent(marks: TurnMarks, event: string, now: string): TurnMarks {
+function markTurnEvent(marks: TurnMarks, event: string, now: string): TurnMarks {
 	const e = (TURN_EVENTS as Record<string, { reason: TurnReason; busy: boolean }>)[event];
 	return e ? markTurn(marks, e.reason, e.busy ? now : undefined) : marks;
 }
@@ -500,9 +500,18 @@ export class LeaseBinding {
 	 * another holder. A write that throws (the disk) throws here.
 	 */
 	mark(reason: TurnReason, since: string | undefined): boolean {
+		return this.setMarks(markTurn(this.marks, reason, since));
+	}
+
+	/** `mark` for one of pi's events at `now` (`TURN_EVENTS`); an event that is not one of them changes nothing. */
+	markEvent(event: string, now: string): boolean {
+		return this.setMarks(markTurnEvent(this.marks, event, now));
+	}
+
+	private setMarks(next: TurnMarks): boolean {
 		const was = turnSinceOf(this.marks);
-		this.marks = markTurn(this.marks, reason, since);
-		const now = turnSinceOf(this.marks);
+		this.marks = next;
+		const now = turnSinceOf(next);
 		if (now === was || !this.sessionId || this.epoch === undefined || !this.self().turns) return true;
 		return this.store.setTurn(this.sessionId, this.self(), this.epoch, now);
 	}

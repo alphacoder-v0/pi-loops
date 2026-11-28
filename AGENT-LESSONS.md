@@ -77,8 +77,11 @@ is there.
   `src/web/page.js` is called by `test/web-page.test.ts` (measured at 0.24.3: 3 of 168 are not,
   `cells`, `showDetail` and `closePairing`).
 - **Tests import and call the production function, never a local copy.** Incidents: #246 tested a
-  copy of `handOver`; `markTurnEvent` and a regex over `src/pi-loops.ts` test the turn marks, not
-  the code that runs them. Check owed: a lint rule that a test file
+  copy of `handOver`; the turn marks were tested on `markTurnEvent`, a copy of the mapping that
+  the extension did inline, and the extension's line was held only as text by a regex over
+  `src/pi-loops.ts`. The decision now lives in the binding's `markEvent`, which the extension calls
+  and the test drives; the call itself is still held only by that regex. When the code that decides
+  is in the unimportable extension, move the decision into a module and leave only the call. Check owed: a lint rule that a test file
   must not define a function with the name of a `src/` export.
 - **A security test runs the real path, and a stub must not stand where the hole is.** Incident:
   `test/mcp-token.test.ts` said a config file could not name an unrelated secret, and proved it for
