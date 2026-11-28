@@ -290,3 +290,45 @@ test("cwd = loops names the pi-loops directory; an unknown cwd is refused with i
 	const where = (runner as any).hooks.map((h: any) => (runner as any).resolveCwd(h));
 	assert.deepEqual(where, [dir], "the one hook that loaded runs in the loops directory");
 });
+
+test("a hook's payload is written in a directory of its own, never in one another user could have made first", async () => {
+	// A shared temp directory: someone made `pi-hooks` there before us, open to everyone.
+	const dir = tmp("pi-loops-hooks-");
+	const shared = path.join(dir, "tmp");
+	const missing = path.join(dir, "not-made-yet");
+	const planted = path.join(shared, "pi-hooks");
+	fs.mkdirSync(planted, { recursive: true });
+	fs.chmodSync(planted, 0o777);
+	const seen = path.join(dir, "seen.txt");
+	fs.writeFileSync(path.join(dir, "hooks.toml"), `[[hook]]\nevent = "agent_start"\ncommand = "printf '%s\\n' \\"$PI_HOOK_PAYLOAD\\" > ${seen}; ls -ld \\"$(dirname \\"$PI_HOOK_PAYLOAD\\")\\" >> ${seen}"\n`);
+	const was = process.env.TMPDIR;
+	process.env.TMPDIR = shared;
+	try {
+		const runner = new HookRunner({ loopsDir: dir, projectCwd: dir, warn: () => {}, getSession: () => ({ cwd: dir }) });
+		runner.load();
+		await runner.fire({ event: "agent_start" });
+		await runner.drain(3000);
+	} finally {
+		if (was === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = was;
+	}
+	const [payload, listing] = fs.readFileSync(seen, "utf8").split("\n");
+	assert.ok(payload.startsWith(shared + path.sep), `the payload is under the temp directory: ${payload}`);
+	assert.notEqual(path.dirname(payload), planted, "not in the directory someone else made");
+	assert.match(listing, /^drwx------/, "its directory is the person's alone");
+	assert.ok(!fs.existsSync(path.dirname(payload)), "the directory is removed with the payload");
+
+	// A TMPDIR that is not there yet is made, and the hook still runs.
+	fs.rmSync(seen);
+	process.env.TMPDIR = missing;
+	try {
+		const runner = new HookRunner({ loopsDir: dir, projectCwd: dir, warn: () => {}, getSession: () => ({ cwd: dir }) });
+		runner.load();
+		await runner.fire({ event: "agent_start" });
+		await runner.drain(3000);
+	} finally {
+		if (was === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = was;
+	}
+	assert.ok(fs.readFileSync(seen, "utf8").startsWith(missing + path.sep), "the hook ran with its payload under the new temp directory");
+});

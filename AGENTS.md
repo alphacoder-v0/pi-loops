@@ -20,7 +20,8 @@ Keep these invariants:
     before (or by `install-launcher`), rewritten afterwards only where one of ours already is, and
     removed by `uninstall-launcher`. `install-launcher --dir <dir>` writes it in the directory the
     person names, and makes that directory when it is not there;
-  - temporary files: a hook's payload in `$TMPDIR/pi-hooks/` (`src/hooks.ts`) and the three inputs
+  - temporary files: a hook's payload in a directory of its own for each run, `$TMPDIR/pi-hooks-*/`
+    (`src/hooks.ts`), and the three inputs
     of a recipe update's `git merge-file` in `$TMPDIR/pi-loops-merge-*/` (`src/recipe.ts`);
   - on `/recipe add`, `pi-loops recipe add` and their update, the recipe's files in the project's
     `.agents/skills/<recipe>/` and a line in the project's `.git/info/exclude` (`src/recipe.ts`);

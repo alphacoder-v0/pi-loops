@@ -23,6 +23,12 @@ All notable changes to pi-loops are documented here. The format follows
   not run what an issue gives, and leaves to a person a report whose input the program would run. Run `/recipe update issue-loop` in a project that has the
   recipe.
 
+- **A hook's payload file is no longer written in a shared `$TMPDIR/pi-hooks/`.** Another user
+  of the machine could make that directory first, open to all, and every payload (message
+  summaries and tool arguments) would land in it. Each hook run now writes its payload in a
+  directory of its own that only you can open, and removes it afterwards. `$PI_HOOK_PAYLOAD` still
+  names the file.
+
 ### Removed
 
 - The environment variable `PI_LOOPS_PAGE_IDLE_MS`, which no document named, is no longer read.

@@ -327,15 +327,18 @@ export class HookRunner {
 
 	private async runRule(h: HookConfig, payload: HookPayload, signal?: AbortSignal): Promise<void> {
 		const json = JSON.stringify(payload);
-		const dir = path.join(os.tmpdir(), "pi-hooks");
-		fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+		// A directory of its own for each run, made by mkdtemp (0700, ours): a fixed name in a shared
+		// temp directory could be one another user made first, and mkdir leaves an existing one as it is.
+		// The temp directory itself is made when it is not there, as before.
+		fs.mkdirSync(os.tmpdir(), { recursive: true });
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-hooks-"));
 		const payloadFile = path.join(dir, `${randomUUID()}.json`);
-		fs.writeFileSync(payloadFile, json, { mode: 0o600 });
 		try {
+			fs.writeFileSync(payloadFile, json, { mode: 0o600, flag: "wx" });
 			if (h.command) await this.runCommand(h, payload, payloadFile, signal);
 			if (h.webhook) await this.postWebhook(h, json, signal);
 		} finally {
-			fs.rmSync(payloadFile, { force: true });
+			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	}
 
