@@ -1,8 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { McpSource, mapNotification, mergeMcpConfigs, parseMcpConfig } from "../src/mcp.ts";
 import { parseToml } from "../src/toml.ts";
+import { tmp } from "./tmp.ts";
 
 test("parseMcpConfig: mcp.toml validation and defaults", () => {
 	const cfg = parseMcpConfig(parseToml(`[[server]]\nname = "fs"\ncommand = "node"\nargs = ["x.js"]\n[[server]]\nname = "hub"\nkind = "streamable_http"\nendpoint = "https://h/mcp"\nauth = { kind = "bearer", token_keychain_ref = "HUB_TOKEN" }\nsse_idle_timeout_ms = 5000\nreconnect = { initial_ms = 100, max_ms = 1000, max_attempts = 3 }\ninject_and_run = true\n`), "user").servers;
@@ -252,4 +254,87 @@ test("the built-in tool names pi-loops reserves match the installed pi", async (
 	const block = src.slice(src.indexOf("allToolNames = new Set(["));
 	const names = [...block.slice(0, block.indexOf("]")).matchAll(/"([a-z]+)"/g)].map((m) => m[1]);
 	assert.deepEqual([...PI_BUILTIN_TOOL_NAMES].sort(), names.sort(), "pi added or removed a built-in tool: update PI_BUILTIN_TOOL_NAMES");
+});
+
+test("a stdio server that closes its input while it runs is a closed connection, not an uncaught EPIPE that ends pi", async () => {
+	// An uncaught error ends the process in every mode pi-loops runs in: an `error` event on the server's stdin with no
+	// listener would end the editor and every loop, rule and connection in it.
+	const dir = tmp("pi-loops-mcp-epipe-");
+	const server = path.join(dir, "server.cjs");
+	fs.writeFileSync(server, [
+		"const fs = require('fs'); let buf = '';",
+		"process.stdin.on('data', (d) => { buf += d; const i = buf.indexOf('\\n'); if (i < 0) return;",
+		"  const m = JSON.parse(buf.slice(0, i));",
+		"  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'x', version: '1' } } }) + '\\n');",
+		"  process.stdin.pause(); process.stdin.removeAllListeners('data');",
+		"  setTimeout(() => { try { fs.closeSync(0); } catch {} }, 50); setTimeout(() => {}, 5000); });",
+		// It also ignores SIGTERM: the connection must not wait for the process to go.
+		"process.on('SIGTERM', () => {});",
+	].join("\n"));
+	const uncaught: Error[] = [];
+	const onUncaught = (err: Error) => void uncaught.push(err);
+	// node:test reports an uncaught exception as this test's failure; catch it here to assert on it.
+	process.on("uncaughtException", onUncaught);
+	const src = new McpSource({ name: "closes", kind: "stdio", command: process.execPath, args: [server], injectSummary: false, injectAndRun: false, requestTimeoutMs: 500, sseIdleTimeoutMs: 60_000, bodyCapBytes: 1024 * 1024, reconnect: { initialMs: 100, maxMs: 200, maxAttempts: 1 }, source: "user" } as any, {});
+	try {
+		src.start();
+		for (let i = 0; i < 100 && src.status.state !== "connected"; i++) await new Promise((r) => setTimeout(r, 25));
+		assert.equal(src.status.state, "connected", "the control: the server answered the handshake");
+		const send = (src as any).sendFrame as ((f: unknown) => void) | undefined;
+		for (let i = 0; i < 40 && send; i++) {
+			send({ jsonrpc: "2.0", method: "notifications/x", params: { pad: "y".repeat(65_536) } });
+			await new Promise((r) => setTimeout(r, 25));
+		}
+		assert.deepEqual(uncaught.map((e) => e.message), [], "no write reaches the process as an uncaught error");
+		assert.match(src.status.lastError ?? "", /input closed/, "the person can see why the server went away");
+		assert.notEqual(src.status.state, "connected", "the connection is closed though the server ignores SIGTERM");
+	} finally {
+		process.off("uncaughtException", onUncaught);
+		await src.stop();
+	}
+});
+
+test("after a server's input closes, the next server is the connection: the old one is killed and its late close changes nothing", async () => {
+	const dir = tmp("pi-loops-mcp-epipe-");
+	const server = path.join(dir, "server.cjs");
+	const first = path.join(dir, "first.pid");
+	// The first start answers the handshake, closes its input and ignores SIGTERM; a later start is a
+	// plain server that answers tools/list.
+	fs.writeFileSync(server, [
+		"const fs = require('fs'); const firstPid = process.argv[2]; const isFirst = !fs.existsSync(firstPid);",
+		"if (isFirst) { fs.writeFileSync(firstPid, String(process.pid)); process.on('SIGTERM', () => {}); }",
+		"let buf = '';",
+		"process.stdin.on('data', (d) => { buf += d; let i; while ((i = buf.indexOf('\\n')) >= 0) { const m = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1);",
+		"  if (m.method === 'initialize') process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'x', version: '1' } } }) + '\\n');",
+		"  else if (m.method === 'tools/list') process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, result: { tools: [{ name: 'second' }] } }) + '\\n');",
+		"  if (isFirst && m.method === 'initialize') { process.stdin.pause(); process.stdin.removeAllListeners('data'); setTimeout(() => { try { fs.closeSync(0); } catch {} }, 50); setTimeout(() => {}, 30000); return; } } });",
+	].join("\n"));
+	const src = new McpSource({ name: "closes", kind: "stdio", command: process.execPath, args: [server, first], injectSummary: false, injectAndRun: false, requestTimeoutMs: 2000, sseIdleTimeoutMs: 60_000, bodyCapBytes: 1024 * 1024, reconnect: { initialMs: 100, maxMs: 200, maxAttempts: 5 }, source: "user" } as any, {});
+	const alive = (pid: number) => {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false; // no such process
+		}
+	};
+	try {
+		src.start();
+		for (let i = 0; i < 100 && !fs.existsSync(first); i++) await new Promise((r) => setTimeout(r, 25));
+		const oldPid = Number(fs.readFileSync(first, "utf8"));
+		for (let i = 0; i < 40 && (src as any).sendFrame && Number((src as any).proc?.pid) === oldPid; i++) {
+			(src as any).sendFrame({ jsonrpc: "2.0", method: "notifications/x", params: { pad: "y".repeat(65_536) } });
+			await new Promise((r) => setTimeout(r, 25));
+		}
+		// The old server ignores SIGTERM: it is gone only after the SIGKILL that follows, and its
+		// close comes after the new server connected.
+		for (let i = 0; i < 160 && alive(oldPid); i++) await new Promise((r) => setTimeout(r, 25));
+		assert.equal(alive(oldPid), false, "the server whose input closed is killed though it ignores SIGTERM");
+		await new Promise((r) => setTimeout(r, 200));
+		assert.equal(src.status.state, "connected");
+		assert.notEqual(Number((src as any).proc?.pid), oldPid, "the connection is the new server's");
+		assert.deepEqual((await src.listTools()).map((t) => t.name), ["second"], "and it answers: the old close did not clear it");
+	} finally {
+		await src.stop();
+	}
 });

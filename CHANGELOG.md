@@ -29,6 +29,13 @@ All notable changes to pi-loops are documented here. The format follows
   directory of its own that only you can open, and removes it afterwards. `$PI_HOOK_PAYLOAD` still
   names the file.
 
+### Fixed
+
+- **A stdio MCP server that closes its input no longer ends pi.** A write to a server whose input had
+  closed, while it still ran or just as it exited, was an unhandled `EPIPE` error, which ends the
+  process: the editor, and every loop, rule and connection in it. Now the connection is closed and
+  reconnected as for a server that exits, and `/triggers sources` says `the server's input closed`.
+
 ### Removed
 
 - The environment variable `PI_LOOPS_PAGE_IDLE_MS`, which no document named, is no longer read.

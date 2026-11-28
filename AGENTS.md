@@ -171,6 +171,7 @@ test/sim/                   the seeded simulation of the request engine that tes
 test/check-lanes.test.ts    the background running a check lane's rows: one record per row, a dead row, the budget, one run at a time, a claim whose process died
 test/push-wiring.test.ts    a push in the background: stored raw first, its rows written again at start, an injecting push deduped against its own process
 test/push-crash.test.ts     a push and a restart after a crash at each write: stored with no row, a row not claimed, a claim with no record, a record with the row still claimed, a closed row; each runs once or not again
+test/child-stdin.test.ts    a file of src/ that writes to a child's stdin has an error listener on it (EPIPE would end pi); a source scan
 test/check-tick.test.ts     the periodic check: one row per project and poll, the collapse onto an active check, the gates, the failure backoff, promotion
 test/tmp.ts                 every test's temporary directory: removed when the test passes, kept and named when it fails (PI_LOOPS_KEEP_TMP=1 keeps all), strays it started ended
 scripts/                    typecheck.mjs, lint.mjs, check-docs.mjs — TypeScript comes through npx, nothing is a dependency
