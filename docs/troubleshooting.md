@@ -99,7 +99,8 @@ fetches the current one, and the token in the URL is only needed by a browser th
 here. From 0.12.4 a window that is older than what is installed says so in a bar across the top.
 
 **MCP server shows `disconnected` / `auth_failed`.** `/triggers sources` has the last error.
-Bearer tokens come from `$TOKEN_REF` or pi's credential store; endpoints must be https except
+Bearer tokens come from a `PI_MCP_TOKEN_*` variable or, for a server in your own `mcp.toml`, pi's
+credential store; endpoints must be https except
 127.0.0.1. Custom notifications without `_meta.pi_dedup_key` are dropped and counted.
 
 **Hooks do not run.** Startup warnings list malformed rules. Project hooks need

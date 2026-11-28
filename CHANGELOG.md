@@ -5,6 +5,28 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **A project's `.pi/mcp.toml` can no longer name an entry of pi's credential store as its bearer
+  token.** pi keeps your model keys there under their provider names, so a project's file that named
+  one had it sent to the endpoint the same file names. A project's file now names a
+  `PI_MCP_TOKEN_*` environment variable only. Your own `mcp.toml` reads the store as before. If a
+  project's server used a store entry, export the token as `PI_MCP_TOKEN_<NAME>` and name that
+  variable. This was so in every release before this one. It bounds what that line of the file
+  reads; trust of the project is still what protects your keys from it (`docs/mcp.md`).
+- **The issue-loop recipe acts only on what you or a maintainer wrote.** Its implement playbook took
+  the latest `## Agent Brief` comment on an issue as its contract, and addressed every comment on
+  its pull requests, whoever wrote them. It now builds from a brief, and answers review comments,
+  only when the author is the loop's own account or a person who can write to the repository, and
+  it does not build an issue that has no such brief. Its triage playbook reproduced a bug by
+  running the reporter's commands; it now writes its own steps with the repository's own code, does
+  not run what an issue gives, and leaves to a person a report whose input the program would run. Run `/recipe update issue-loop` in a project that has the
+  recipe.
+
+### Removed
+
+- The environment variable `PI_LOOPS_PAGE_IDLE_MS`, which no document named, is no longer read.
+
 ## [0.24.3] - 2026-11-27
 
 ### Upgrade notes
