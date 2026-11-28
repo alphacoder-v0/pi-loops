@@ -748,11 +748,6 @@ export function sessionFileEntries(file: string): unknown[] {
 	});
 }
 
-/** `conversationHas` over a session file on disk (pi's JSONL), for a process with no session open on it. */
-export function sessionFileHas(file: string, id: string): boolean {
-	return conversationHas(sessionFileEntries(file), id);
-}
-
 /**
  * The modes each executor runs (design §6.3): a window every one, since the person is there to be
  * asked; the background process no attended row, which waits for a window. The view carries the one

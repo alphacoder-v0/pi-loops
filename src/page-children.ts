@@ -903,12 +903,6 @@ export const PAGE_STREAMS_TOTAL = 32;
 /** Exits of one conversation's pi that stop the page from starting it again on its own. */
 export const PAGE_CRASH_BUDGET = { count: 3, windowMs: 5 * 60_000 };
 
-/** `PAGE_IDLE_MS`, or `PI_LOOPS_PAGE_IDLE_MS` when that is a positive number of milliseconds. */
-export function pageIdleMs(env: NodeJS.ProcessEnv): number {
-	const told = Number(env.PI_LOOPS_PAGE_IDLE_MS);
-	return Number.isFinite(told) && told > 0 ? told : PAGE_IDLE_MS;
-}
-
 /**
  * Nobody would notice this child stop: no browser attached, no turn running, no dialog waiting and
  * no message of the person's that it still has to ring for. The last one matters because the row's
@@ -1063,7 +1057,7 @@ export class ChildPool {
 		this.opts = opts;
 		this.probe = opts.probe ?? systemProbe;
 		this.now = opts.now ?? Date.now;
-		this.idleMs = pageIdleMs(opts.env);
+		this.idleMs = PAGE_IDLE_MS;
 		this.self = { pid: process.pid, procStart: procStart(process.pid) };
 		this.reaped = this.reap();
 	}

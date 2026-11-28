@@ -1,21 +1,39 @@
 # Working on pi-loops
 
 pi-loops is an automation layer for pi, shipped as an extension that touches nothing in pi.
-Read [LESSONS.md](LESSONS.md) before you start: it lists the mistakes that merged changes made here.
+Read [AGENT-LESSONS.md](AGENT-LESSONS.md) before you start: it lists the mistakes that merged changes
+made here, and what to check before you merge a change that an agent or a contributor wrote. Notes
+that one machine keeps for itself go in `LESSONS.md`, which git ignores; read it too when it is there.
 Keep these invariants:
 
 - **Non-invasive.** Only public pi exports (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`,
-  `typebox`). No monkeypatching, no private fields, no writes outside `~/.pi/agent/loops/`
-  (override with `PI_LOOPS_DIR`). Two paths are the exceptions. The control socket's fallback directory
-  `$TMPDIR/pi-loops-<uid>/` is used when the loops directory's path is too long for a unix socket.
-  The other is the launcher, `pi-loops` in a directory already on your PATH. It is written on the
-  first interactive session when a directory on PATH has room for it and the person has not removed
-  it before (or by `install-launcher`), rewritten afterwards only where one of ours already is, and
-  removed by `uninstall-launcher`. A session file that pi itself
-  writes when we call its public session API is pi's write, not ours, the same class of write as
-  `pi.sendUserMessage`: `/inbox open` asks `SessionManager.forkFrom` for a new conversation and never
-  opens the run's transcript for writing, and pi-loops writes into a closed conversation
-  (`SessionManager.open` and an `AgentSession`) only while it holds that conversation's lease.
+  `typebox`). No monkeypatching and no private fields, with one named exception: every loaded set
+  of a sub-session (shared and held) replaces `runtime.invalidate` with a no-op (`src/sdk-runner.ts`,
+  `subSessionResources`), because pi's `session.dispose()` would otherwise leave every later run of
+  that set with a stale runtime. Add no second one.
+- **Writes go to the loops directory**, `~/.pi/agent/loops/` (override with `PI_LOOPS_DIR`), and to
+  this closed list of other places, nowhere else. A change that adds a place adds it here:
+  - the control socket's fallback directory `$TMPDIR/pi-loops-<uid>/`, when the loops directory's
+    path is too long for a unix socket;
+  - the launcher, `pi-loops` in a directory already on your PATH. It is written on the first
+    interactive session when a directory on PATH has room for it and the person has not removed it
+    before (or by `install-launcher`), rewritten afterwards only where one of ours already is, and
+    removed by `uninstall-launcher`. `install-launcher --dir <dir>` writes it in the directory the
+    person names, and makes that directory when it is not there;
+  - temporary files: a hook's payload in `$TMPDIR/pi-hooks/` (`src/hooks.ts`) and the three inputs
+    of a recipe update's `git merge-file` in `$TMPDIR/pi-loops-merge-*/` (`src/recipe.ts`);
+  - on `/recipe add`, `pi-loops recipe add` and their update, the recipe's files in the project's
+    `.agents/skills/<recipe>/` and a line in the project's `.git/info/exclude` (`src/recipe.ts`);
+  - on `pi-loops import` and `/session-import`, a new session file in pi's session directory
+    (`src/archive.ts`), and on export (`pi-loops export`, `/session-export`), the archive at the
+    path the person names. When none is named, it is `pi-session-<the id's first 16 characters>.pisession` in the directory
+    the command runs in (`pi-loops export`) or in the conversation's project (`/session-export`).
+
+  A session file that pi itself writes when we call its public session API is pi's write, not ours,
+  the same class of write as `pi.sendUserMessage`: `/inbox open` asks `SessionManager.forkFrom` for a
+  new conversation and never opens the run's transcript for writing, and pi-loops writes into a
+  closed conversation (`SessionManager.open` and an `AgentSession`) only while it holds that
+  conversation's lease.
 - **No runtime dependencies.** Node built-ins plus pi's bundled packages. The TOML parser, tar
   writer, MCP client and file locks are in-tree on purpose.
 - **Behaviour is specified in `docs/` and pinned by the tests.** When it is in doubt, the doc is
@@ -38,6 +56,7 @@ src/pi-loops.ts             the extension: commands, tools, lifecycle, badge, pa
 src/cli.ts                  `pi-loops`: the session launcher (web or terminal) and export|import|start|stop|restart|status|abort|recipe|inbox
 src/cli-entry.mjs           the bin that loads it
 src/ts-entry.mjs            how an .mjs entry point imports this package's .ts: Node's type stripping, or pi's jiti under node_modules
+src/pi-floor.ts             the oldest pi this extension loads into, read before anything else is imported
 
 the pipelines
 src/backoff.ts              the one table of waits after a failure: a row, a loop, a rule check
@@ -45,6 +64,7 @@ src/job-status.ts           what a list shows for one job, folded from its clock
 src/clock.ts                the schedule cursor in clock.json, pure tick decisions and their compare-and-set writes
 src/settle.ts               how a plain job's turn ends, as one table: what becomes of its row and of its job, for each way a run ends
 src/loop-run.ts              one loop run, its stop record, and its ordered closing writes
+src/notes.ts                a loop's notes: the one cap at the write, the `[reported]` lines, the `[notes-files]` lines
 src/ticker.ts               one process timer and its typed, ordered riders
 src/stores.ts               stores of a loops directory, opened once, and job removal
 src/push.ts                 what a stored push becomes: a row in each project's check lane, decided over the event log and the lane under its lock, or a delivery into a chat; its replay
@@ -68,6 +88,8 @@ src/run-list.ts             the runs that are going in this process, as one list
 src/job-health.ts           which loops and trigger rules count as failing, and the badge/summary line and `[failing ×N]` mark that say so
 src/job-signal.ts           what a loop's runs came to: findings filed, claimed, dismissed, and the quiet streak `/cron` marks
 src/job-lines.ts            the `/cron` listing itself, out of the unimportable extension so a marker or column is testable
+src/rule-lines.ts           what `/triggers` prints, out of the unimportable extension so a test reads the lines a person reads
+src/job-name.ts             the name a loop gets when it is made without one
 src/job-owner.ts            where a job runs, as one question the scheduler, the lists and `/cron run` all ask the same way
 src/job-tune.ts             the one change the page suggests for a loop, decided from its signal, never applied by itself
 src/run-card.ts             what a finished run writes into the conversation, and which runs are fresh (`freshRuns`)
@@ -102,10 +124,11 @@ src/requests.ts             requests/<lane>.jsonl: what is addressed to a lane (
 src/engine.ts               decideDrain, the pure decision for a lane's rows: classify, take the lane, start; drain, which applies it through an executor; the exits, attempts and dead letters
 src/window-executor.ts      the engine's executor in a window: a turn row as a `pi-loops:turn` custom message with its mark and cap, the person's page message as a user message, the list of what it gave pi, and the cap of each turn; `windowGuard`, the `tool_call` handler that judges a scheduled turn's calls through `guardCall`
 src/window-claim.ts         the window's three decisions over that list: whose a message is, what a settle leaves, the editor without our prompts
+src/settle-offer.ts         what a terminal offers when a turn settles: each open question and proposal of its conversation, one at a time
 src/mark.ts                 the mark { lane, id } on the entry pi writes for a row: one writer, one reader; `TURN_TYPE` and the row a turn's message names
 src/turn-render.ts          how a terminal draws a `pi-loops:turn` message: as a message the person typed
 src/register-pi.mjs         node --import hook resolving pi's packages outside pi (pi-loops, tests)
-src/pi-resolver.mjs         where that hook looks for them
+src/pi-resolver.mjs         where that hook looks for them; src/pi-resolver.d.mts declares it
 
 storage
 src/lane.ts                 a lane's id and its one grammar: a conversation's session id, `@cron-…` for a loop, `@check-…` for a project's checks; the file name it gives
@@ -132,6 +155,7 @@ src/log.ts                  logs/pi-<pid>.log: rotation, and who gets to write
 src/trust.ts                whether pi trusts a directory, asked before anything reads that project
 src/toml.ts                 TOML subset parser
 src/version.ts              the version every archive, payload and `/pi-loops` line reports
+src/plural.ts               `1 loop`, `2 loops`: a count a person reads
 
 src/web.mjs                 the browser page as strings (`DOOR`, `ICON`, `PAGE`), with src/web/ inlined at import; src/web.d.mts declares them
 src/web/page.js             the page's script: plain browser JavaScript, one classic script, no imports

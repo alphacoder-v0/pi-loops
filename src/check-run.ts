@@ -78,8 +78,6 @@ export function checkCap(cwd: string, rules: readonly Pick<DynamicTriggerRule, "
 /** Check transcripts kept per project, as docs/configuration.md promises. */
 export const TRIGGER_SESSIONS_KEPT = 40;
 
-export const DEFAULT_TRIGGER_RUN_TIMEOUT_MS = 15 * 60_000;
-
 /** The engine prefixes `[Trigger <trace>] ` and injects the payload summary itself, capped. */
 export function promotionBody(trigger: Trigger, summary: string): string {
 	// Capped, never reflowed: a promoted result is often a file, a diff or test output, and rewrapping

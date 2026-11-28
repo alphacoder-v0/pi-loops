@@ -568,6 +568,8 @@ pi-loops，旧版窗口不会替换新版 pi-loops。升级前请关闭所有 pi
 
 ## 代码结构
 
+下面只列主要模块，完整、和代码保持一致的清单在 [AGENTS.md](AGENTS.md) 的 Layout 一节（`npm run check:docs` 会核对它）。
+
 ```
 src/extension-entry.ts      pi 加载的入口：先查 pi 版本（src/pi-floor.ts），够了再导入 src/pi-loops.ts
 src/pi-loops.ts             扩展本体：命令、工具、生命周期、状态栏角标、面板
@@ -580,7 +582,7 @@ src/backoff.ts              失败后的等待时间表：排队的请求、loop
 src/clock.ts                调度游标：每个 tick 的到期判定与比较后写入；每个时段写成一行请求
 src/ticker.ts               每个进程一个定时器，按固定顺序调用各个 rider
 src/loop-run.ts             一次 loop 运行：子会话执行、记录、按顺序收尾写入
-src/trigger-runtime.ts      动态规则运行时：admit、投递（sub_agent / inject_summary / inject_and_run）、fire-once、promote、audit
+src/check-run.ts            一个项目的一次规则检查：子代理运行、audit 行、findings、promote
 src/triggers.ts             规则本身：解析、prompt、id 提取、存储、dedup 窗口
 src/goal.ts                 /goal：停止条件状态机、评估器 prompt、续跑预算
 src/tools.ts                cron / trigger 工具定义（交互会话、子会话、宿主三处共用）
@@ -596,7 +598,7 @@ src/job-health.ts           哪些 loop 算在失败，以及说出这件事的�
 src/runner.ts               运行器接口、结果形状、父会话可继承的标志
 src/sdk-runner.ts           用 pi SDK 在同进程里开会话的那个实现（每次运行一个 createAgentSession）
 src/danger.ts               无人值守运行的危险命令策略
-src/subagent-guard.ts       把该策略装进每个子会话的合成扩展
+src/guard.ts                每个无人值守轮次的守卫：judgeCall 做唯一的判断，并把它装进每个子会话
 src/transcript.ts           把子代理 session 文件压成可读的几十行
 
 没有 pi 开着的时候
