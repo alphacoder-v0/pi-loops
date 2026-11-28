@@ -92,6 +92,12 @@ export async function run(ctx) {
 	ctx.addEvidence(path.join(ctx.dir, "terminal-line.txt"));
 
 	// Mark all seen: the card goes, and stays gone after a reload; seen.json has the project's new cursor.
+	// The mark is the asOf of the page's latest answer, so the page must first have asked after the real
+	// run ended: a mark from an answer older than that run leaves the run unseen, and the terminal says so.
+	await ctx.waitFor("the page's answer newer than the real run", () => {
+		const asOf = page(`typeof inboxAnswer === "object" && inboxAnswer && inboxAnswer.away ? inboxAnswer.away.asOf : null`);
+		return { ok: !!asOf && Date.parse(asOf) > Date.parse(real.finishedAt), last: asOf };
+	}, 60000);
 	ctx.browser("click", `#awaySlot .away [data-act="seen"]`);
 	await ctx.waitFor("the card gone", () => ({ ok: card() === null, last: card() }), 30000);
 	ctx.browser("open", `${ctx.boot.pageUrl}?token=${ctx.boot.token}`);

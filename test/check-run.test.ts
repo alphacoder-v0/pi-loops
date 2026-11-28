@@ -6,7 +6,8 @@ import * as path from "node:path";
 import { JobStore } from "../src/store.ts";
 import { Inbox } from "../src/inbox.ts";
 import { attentionFrom } from "../src/activity.ts";
-import { type CheckDeps, type CheckInput, DEFAULT_TRIGGER_RUN_TIMEOUT_MS, TRIGGER_SESSIONS_KEPT, checkCap, checkSessionDir, lastChecks, promotionSummaryBody, promotionToInbox, runCheck, triggerSessionKey } from "../src/check-run.ts";
+import { type CheckDeps, type CheckInput, TRIGGER_SESSIONS_KEPT, checkCap, checkSessionDir, lastChecks, promotionSummaryBody, promotionToInbox, runCheck, triggerSessionKey } from "../src/check-run.ts";
+import { DEFAULT_TRIGGER_RUN_TIMEOUT_SECS } from "../src/config.ts";
 import { checkLane } from "../src/lane.ts";
 import { runHistory } from "../src/job-status.ts";
 import { clockStore } from "../src/stores.ts";
@@ -33,7 +34,7 @@ function checks(dir: string, over: Partial<CheckDeps> = {}) {
 	const store = new TriggerStore(dir);
 	const jobs = new JobStore(dir);
 	const logs: string[] = [];
-	const deps: CheckDeps = { runner: fakeRunner(), rules: store, jobs, clock: clockStore(dir), promote: () => "chat", session: { sessionId: "s", cwd: dir }, hop: 0, runTimeoutMs: DEFAULT_TRIGGER_RUN_TIMEOUT_MS, log: (m) => void logs.push(m), now: Date.now, ...over };
+	const deps: CheckDeps = { runner: fakeRunner(), rules: store, jobs, clock: clockStore(dir), promote: () => "chat", session: { sessionId: "s", cwd: dir }, hop: 0, runTimeoutMs: DEFAULT_TRIGGER_RUN_TIMEOUT_SECS * 1000, log: (m) => void logs.push(m), now: Date.now, ...over };
 	const check = (trigger: Trigger = buildPeriodicCheckTrigger(dir, 1), input: Partial<CheckInput> = {}) =>
 		runCheck(deps, { trigger, rules: store.load().filter((r) => r.enabled), signal: new AbortController().signal, run: { id: trigger.traceId, cause: "check" }, ...input });
 	return { store, jobs, logs, deps, check };

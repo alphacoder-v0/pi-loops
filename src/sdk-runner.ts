@@ -849,8 +849,8 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			if (shared === STOPPED) return stoppedResult();
 			const own = loopRunTools(req, deps.loopsDir ?? defaultLoopsDir());
 			const customTools = [...shared, ...own];
-			// A held turn runs in someone's conversation, so it gets a loader of its own: the shared one
-			// stubs `invalidate`, which is fine for a throwaway sub-session and wrong for that.
+			// A held turn runs in someone's conversation, so its loaded set is that conversation's own;
+			// both kinds of set stub `invalidate` (`subSessionResources`).
 			// A held turn borrows its conversation's cached set and hands it back however the run ends.
 			// A loop's run borrows the shared set the same way, so a newer set does not shut this one under it.
 			const load = req.sessionFile ? heldSubSessionResources(req, deps) : sharedSubSessionResources(req, deps);

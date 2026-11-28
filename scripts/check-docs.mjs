@@ -19,6 +19,12 @@
  *                  an npm spec's version matches it the way npm spells a release, without the `v`.
  *   repository     the host/owner/repo and the package name in a command match `repository.url`
  *                  and `name`.
+ *   layout         every tracked file under src/ is named in the Layout block of AGENTS.md, and
+ *                  every path a Layout line starts with, and every src/ path a line names, is a
+ *                  tracked file or directory (a path with a `<placeholder>` is not checked).
+ *                  Agents find code by that map.
+ *   agents-link    every relative link in AGENTS.md is to a tracked file or directory. A link to a file that
+ *                  git ignores reads as an instruction that no agent in a fresh clone can follow.
  *
  * **Instruction, not description.** Only lines inside a fenced block are read — that is the text a
  * reader copies. Prose is left alone, and deliberately: `docs/cli.md` explains where pi puts a
@@ -214,6 +220,38 @@ if (!installs) {
 		`check:docs: read ${files.length} Markdown file(s) and found no install command in any fenced block. Either the install instructions are gone or this check no longer recognises them; both need a person.`,
 	);
 	process.exit(1);
+}
+
+/* ---------------------------------------------------------------- AGENTS.md */
+
+{
+	const tracked = new Set(execSync("git ls-files -z", { cwd: root, encoding: "utf8" }).split("\0").filter(Boolean));
+	const agents = fs.readFileSync(path.join(root, "AGENTS.md"), "utf8").split("\n");
+	const start = agents.findIndex((l) => /^## Layout\b/.test(l));
+	const open = agents.findIndex((l, i) => i > start && /^```/.test(l));
+	const close = agents.findIndex((l, i) => i > open && /^```/.test(l));
+	if (start < 0 || open < 0 || close < 0) report("AGENTS.md", 1, 1, "layout", "no fenced block under a '## Layout' heading");
+	else {
+		const block = agents.slice(open + 1, close);
+		// A file is named when a Layout line has its path as a whole word, whatever its extension.
+		const named = new Set(block.flatMap((l) => l.match(/src\/[\w./-]*\w/g) ?? []));
+		for (const f of [...tracked].filter((f) => f.startsWith("src/")).sort()) if (!named.has(f)) report("AGENTS.md", open + 1, 1, "layout", `${f} is tracked but the Layout block does not name it`);
+		const exists = (p) => tracked.has(p) || [...tracked].some((f) => f.startsWith(`${p.replace(/\/$/, "")}/`));
+		block.forEach((l, i) => {
+			const first = l.match(/^([\w.-]+\/[\w./<>-]*)(?:\s|$)/)?.[1];
+			if (first && !first.includes("<") && !exists(first)) report("AGENTS.md", open + 2 + i, 1, "layout", `${first} is in the Layout block but not in the repository`);
+			// A src/ path anywhere in a line is a claim too: a description that names a module that is gone.
+			for (const p of l.match(/src\/[\w./-]*\w/g) ?? []) if (p !== first && !exists(p)) report("AGENTS.md", open + 2 + i, 1, "layout", `${p} is named in the Layout block but not in the repository`);
+		});
+	}
+	// The target of an inline link is what follows `](`, whatever title comes after it; and reference definitions.
+	agents.forEach((l, i) => {
+		for (const m of [...l.matchAll(/\]\(\s*<?([^)#\s>]+)/g), ...l.matchAll(/^\s*\[[^\]]+\]:\s*<?([^\s#>]+)/g)]) {
+			const target = m[1];
+			if (/^[a-z]+:/.test(target)) continue;
+			if (!tracked.has(path.normalize(target)) && ![...tracked].some((f) => f.startsWith(`${path.normalize(target).replace(/\/$/, "")}/`))) report("AGENTS.md", i + 1, m.index + 1, "agents-link", `${target} is not a tracked file: an agent in a fresh clone cannot read it`);
+		}
+	});
 }
 
 /* ---------------------------------------------------------------- output */
