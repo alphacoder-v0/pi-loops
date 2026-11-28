@@ -77,8 +77,11 @@ is there.
   `src/web/page.js` is called by `test/web-page.test.ts` (measured at 0.24.3: 3 of 168 are not,
   `cells`, `showDetail` and `closePairing`).
 - **Tests import and call the production function, never a local copy.** Incidents: #246 tested a
-  copy of `handOver`; `markTurnEvent` and a regex over `src/pi-loops.ts` test the turn marks, not
-  the code that runs them. Check owed: a lint rule that a test file
+  copy of `handOver`; the turn marks were tested on `markTurnEvent`, a copy of the mapping that
+  the extension did inline, and the extension's line was held only as text by a regex over
+  `src/pi-loops.ts`. The decision now lives in the binding's `markEvent`, which the extension calls
+  and the test drives; the call itself is still held only by that regex. When the code that decides
+  is in the unimportable extension, move the decision into a module and leave only the call. Check owed: a lint rule that a test file
   must not define a function with the name of a `src/` export.
 - **A security test runs the real path, and a stub must not stand where the hole is.** Incident:
   `test/mcp-token.test.ts` said a config file could not name an unrelated secret, and proved it for
@@ -113,6 +116,10 @@ is there.
   cursor to the time of the page's latest answer, and the journey clicked before the page had asked
   after the loop's run ended, so the terminal was right to report that run. The journey now waits
   for that answer. Journeys and page tests wait on a condition, never on a fixed sleep.
+- **A test that uses a random value asserts nothing that depends on which value it got.**
+  Incident: `test/store.test.ts` looked a job up by the first 8 characters of its random id; 3 of
+  those are random, so in about 1 run in 4096 two jobs shared the prefix and the test failed (macOS,
+  #288). The test now builds a prefix that only one of the two ids has.
 - **Report success from the effect, not from an exit code.** Incident: 0.24.0 told WSL users the
   browser had opened when the address had no key (fixed in #182).
 - **Each behaviour sentence in CHANGELOG.md, README.md and README.zh-CN.md is held to the code.**

@@ -3532,9 +3532,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * for such a holder (`turns`).
 	 */
 	function markTurn(event: keyof typeof TURN_EVENTS): void {
-		const e = TURN_EVENTS[event];
 		try {
-			binding.mark(e.reason, e.busy ? stamp() : undefined);
+			binding.markEvent(event, stamp());
 		} catch (err: any) {
 			log.info(`lease: ${err?.message ?? err}`);
 		}

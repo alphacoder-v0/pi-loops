@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { LeaseBinding, LeaseStore, TURN_EVENTS, markTurn, closedConversation, VIEWER_REREAD_GAP_MS, decideAcquire, markTurnEvent, shouldReadAgain, turnSinceOf, type TurnMarks, decideHostAcquire, holderAlive, openWindowPids, procStart, type LeaseHolder, type ProcessProbe, type SessionLease } from "../src/lease.ts";
+import { LeaseBinding, LeaseStore, TURN_EVENTS, markTurn, closedConversation, VIEWER_REREAD_GAP_MS, decideAcquire, shouldReadAgain, turnSinceOf, type TurnMarks, decideHostAcquire, holderAlive, openWindowPids, procStart, type LeaseHolder, type ProcessProbe, type SessionLease } from "../src/lease.ts";
 
 const me: LeaseHolder = { kind: "terminal", pid: 10, instance: "a", procStart: "start", acquiredAt: "2026-01-01T00:00:00.000Z", pushServers: [] };
 const probe = (over: Partial<ProcessProbe> = {}): ProcessProbe => ({ alive: () => true, startTime: () => "start", bootedAt: () => Date.parse("2025-01-01T00:00:00Z"), ...over });
@@ -331,14 +331,15 @@ test("a tui window viewing the page mid-turn takes the conversation on its first
 });
 
 test("a page's pi stays mid-turn from agent_start to agent_settled and through a compaction, in pi's own event order", () => {
+	// Through the binding the extension calls (`markEvent`), read back from the lease on disk.
 	const marks = (events: string[]) => {
-		let m: TurnMarks = {};
-		const seen: Array<string | undefined> = [];
-		events.forEach((event, i) => {
-			m = markTurnEvent(m, event, `2026-01-01T00:00:0${i}.000Z`);
-			seen.push(turnSinceOf(m));
+		const store = new LeaseStore(tmp(), probe());
+		const page = new LeaseBinding(store, "page", () => ({ kind: "terminal", pid: 30, procStart: "start", mode: "rpc", page: true, turns: true, pushServers: [] }), probe());
+		assert.equal(page.bind("s").outcome, "acquired");
+		return events.map((event, i) => {
+			assert.equal(page.markEvent(event, `2026-01-01T00:00:0${i}.000Z`), true);
+			return store.read("s")?.holder?.turnSince;
 		});
-		return seen;
 	};
 	// A run that pi retries or continues after agent_end: compaction, then agent.continue(), then settled.
 	const run = ["agent_start", "agent_end", "session_before_compact", "session_compact", "agent_start", "agent_end", "agent_settled"];
@@ -346,6 +347,7 @@ test("a page's pi stays mid-turn from agent_start to agent_settled and through a
 	// Compaction before the prompt runs before agent_start; /compact runs with no run at all.
 	assert.deepEqual(marks(["session_before_compact", "session_compact", "agent_start", "agent_end", "agent_settled"]).slice(0, 2), ["2026-01-01T00:00:00.000Z", undefined]);
 	assert.deepEqual(marks(["session_before_compact", "session_compact_failed"]), ["2026-01-01T00:00:00.000Z", undefined], "a compaction that failed or was cancelled ends the mark too");
+	assert.deepEqual(marks(["agent_start", "turn_end", "message_end"]), Array(3).fill("2026-01-01T00:00:00.000Z"), "an event that is not a turn event changes nothing");
 	assert.deepEqual(Object.keys(TURN_EVENTS).sort(), ["agent_settled", "agent_start", "session_before_compact", "session_compact", "session_compact_failed"]);
 });
 
@@ -367,7 +369,7 @@ test("the page's pi and a terminal mark their lease, on every event TURN_EVENTS 
 	assert.match(source, /const pageChild = claimPageChild\(\);/, "the page-child claim, read once and kept across the factory's re-runs (src/page-children.ts)");
 	assert.match(source, /new LeaseBinding\([^\n]*\.\.\.\(pageChild \? \{ page: true as const \} : \{\}\)/, "page: true on the holder");
 	// Which holder writes a turn is the binding's rule now (`turns` on the holder: the test of a print holder above); markTurn only reports pi's events.
-	assert.match(source, /function markTurn\(event: keyof typeof TURN_EVENTS\): void \{\n\t\tconst e = TURN_EVENTS\[event\];\n\t\ttry \{\n\t\t\tbinding\.mark\(e\.reason, e\.busy \? stamp\(\) : undefined\);/, "markTurn hands each event to the binding");
+	assert.match(source, /function markTurn\(event: keyof typeof TURN_EVENTS\): void \{\n\t\ttry \{\n\t\t\tbinding\.markEvent\(event, stamp\(\)\);/, "markTurn hands each event to the binding, which decides (the test above)");
 	assert.match(source, /new LeaseBinding\([^\n]*\.\.\.\(pageChild \|\| leaseMode === "tui" \? \{ turns: true as const \} : \{\}\)/, "turns: true on a holder that writes them");
 	const marked = [...source.matchAll(/markTurn\("(\w+)"\)/g)].map((m) => m[1]).sort();
 	assert.deepEqual(marked, Object.keys(TURN_EVENTS).sort());
