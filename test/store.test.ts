@@ -48,7 +48,11 @@ test("job store round trip, update, remove keeps state unless purged", async () 
 	assert.equal(resolveJobRef(store.load(), "2"), undefined, "a number is a position in a list, so only a caller that printed one gets it");
 	assert.equal(resolveJobRef(store.load(), "2", { ordinals: true })?.id, b.id);
 	assert.equal(resolveJobRef(store.load(), "a")?.id, a.id);
-	assert.equal(resolveJobRef(store.load(), a.id.slice(0, 8))?.id, a.id);
+	// Ids are random, so build the prefixes from them: a prefix only a has, and one both have.
+	let n = 8;
+	while (b.id.startsWith(a.id.slice(0, n))) n++;
+	assert.equal(resolveJobRef(store.load(), a.id.slice(0, n))?.id, a.id, "a prefix of one id is that job");
+	assert.equal(resolveJobRef(store.load(), "cron-"), undefined, "a prefix of two ids is neither");
 	// Removing keeps the notes: remove-and-re-add is how a schedule or prompt is changed, and a
 	// stateful loop's accumulated state is the thing that makes it able to report only what changed.
 	await store.remove(a.id);

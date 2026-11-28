@@ -116,6 +116,10 @@ is there.
   cursor to the time of the page's latest answer, and the journey clicked before the page had asked
   after the loop's run ended, so the terminal was right to report that run. The journey now waits
   for that answer. Journeys and page tests wait on a condition, never on a fixed sleep.
+- **A test that uses a random value asserts nothing that depends on which value it got.**
+  Incident: `test/store.test.ts` looked a job up by the first 8 characters of its random id; 3 of
+  those are random, so in about 1 run in 4096 two jobs shared the prefix and the test failed (macOS,
+  #288). The test now builds a prefix that only one of the two ids has.
 - **Report success from the effect, not from an exit code.** Incident: 0.24.0 told WSL users the
   browser had opened when the address had no key (fixed in #182).
 - **Each behaviour sentence in CHANGELOG.md, README.md and README.zh-CN.md is held to the code.**
