@@ -699,7 +699,7 @@ machine. Everything here follows from that, and each one has a price.
     unattended `git` call runs as you; a setting given for one command (git's global `-c`, `GIT_*`
     variables) other than a template, which runs a program the way the run could run it itself; a
     path or a name the shell builds at run time or reaches after a `cd` (a recursive read of `.` after
-    `cd ~` too), and a glob below the directory that holds it; a program that runs git
+    `cd ~` too, and of `.` in a run whose directory holds it), and a glob below the directory that holds it; a program that runs git
     another way; a setting the list does not name. Reading a repository's setup before each unattended
     git call was built and withdrawn: four reviews each found programs git runs that the read did not
     see (a hooksPath an `includeIf` sets, submodule hooks, `ext::` remote URLs, the scripts a setting
